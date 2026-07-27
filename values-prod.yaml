@@ -5,6 +5,18 @@ clusterGroup:
     external-secrets-operator:
       operatorGroup: true
       targetNamespaces: []
+    openshift-cnv:
+      operatorGroup: true
+      targetNamespaces: []
+    rhbk-operator:
+      operatorGroup: true
+      targetNamespaces: []
+    rhdh-operator:
+      operatorGroup: true
+      targetNamespaces: []
+    ansible-automation-platform:
+      operatorGroup: true
+      targetNamespaces: []
     secure-agent-workspace:
     vault:
   subscriptions:
@@ -12,6 +24,22 @@ clusterGroup:
       name: openshift-external-secrets-operator
       namespace: external-secrets-operator
       channel: stable-v1
+    openshift-virtualization:
+      name: kubevirt-hyperconverged
+      namespace: openshift-cnv
+      channel: stable
+    rhbk:
+      name: rhbk-operator
+      namespace: rhbk-operator
+      channel: stable-v24
+    rhdh:
+      name: rhdh
+      namespace: rhdh-operator
+      channel: fast
+    aap:
+      name: ansible-automation-platform-operator
+      namespace: ansible-automation-platform
+      channel: stable-2.5
   applications:
     openshift-external-secrets:
       name: openshift-external-secrets

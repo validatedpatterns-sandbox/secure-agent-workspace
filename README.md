@@ -71,16 +71,23 @@ make sandbox-create SANDBOX_NAME=my-sandbox PROVIDER=gemini MODEL=gemini-2.5-fla
 # Prompt: "Logged in as 'alice'. Press Enter to set owner to 'alice', or type a different owner:"
 
 # 4. Configure the openshell CLI to point at the gateway
+#    Option A: via make target (auto-detects route URL and OIDC issuer)
 make openshell-configure-gateway SANDBOX_NAME=my-sandbox
+#    Option B: manually with openshell gateway add
+GATEWAY_URL=$(oc get route my-sandbox-gateway -n openshell-agents -o jsonpath='https://{.spec.host}')
+openshell gateway add "$GATEWAY_URL" --name my-sandbox --gateway-insecure \
+  --oidc-issuer https://<keycloak-host>/realms/openshell --oidc-client-id openshell-cli
 
 # 5. Authenticate with the gateway via the openshell CLI
 openshell gateway login
 
 # 6. Use your sandbox (already created during provisioning)
-openshell sandbox list
+openshell --gateway-insecure sandbox list
 ```
 
 Users interact only via the `openshell` CLI and their gateway URL. No knowledge of OpenShift or Kubernetes is required after the initial setup.
+
+> **Note:** The gateway VM uses a self-signed TLS certificate. Pass `--gateway-insecure` to `openshell` commands, or set `export OPENSHELL_GATEWAY_INSECURE=true` in your shell profile to skip certificate verification.
 
 ## Quick Start (containerDisk mode)
 
@@ -98,7 +105,7 @@ make login                    # Authenticate with OIDC
 make sandbox-create SANDBOX_NAME=my-sandbox PROVIDER=gemini MODEL=gemini-2.5-flash API_KEY=<key>
 make openshell-configure-gateway SANDBOX_NAME=my-sandbox
 openshell gateway login
-openshell sandbox list
+openshell --gateway-insecure sandbox list
 ```
 
 ## Quick Start (snapshot mode)
@@ -117,7 +124,7 @@ make login
 make sandbox-create SANDBOX_NAME=my-sandbox PROVIDER=gemini MODEL=gemini-2.5-flash API_KEY=<key>
 make openshell-configure-gateway SANDBOX_NAME=my-sandbox
 openshell gateway login
-openshell sandbox list
+openshell --gateway-insecure sandbox list
 ```
 
 See `make help` for all available targets.
@@ -129,23 +136,25 @@ Each sandbox is protected by an **auth proxy** (openresty/nginx+lua) that valida
 ### How It Works
 
 ```
-User (openshell CLI)
-  │
-  │ Authorization: Bearer <JWT>
-  ▼
-OpenShift Route (TLS edge)
-  │
-  ▼
-Auth proxy (per-sandbox, openresty)
-  │ Decodes JWT, checks: preferred_username == owner
-  │ If mismatch → 403 Forbidden
-  │ If no token → 401 Unauthorized
-  ▼
-OpenShell Gateway (in VM)
-  │ Also validates OIDC token (signature, expiry, roles)
+User (openshell CLI)                    User (browser)
+  │                                       │
+  │ Authorization: Bearer <JWT>           │ Authorization: Bearer <JWT>
+  ▼                                       ▼
+OpenShift Route (TLS passthrough)       OpenShift Route (TLS edge)
+  │                                       │
+  │ gRPC/HTTP2 preserved                  ▼
+  │                                     Auth proxy (per-sandbox, openresty)
+  │                                       │ Decodes JWT, checks: preferred_username == owner
+  │                                       │ If mismatch → 403 Forbidden
+  │                                       │ If no token → 401 Unauthorized
+  ▼                                       ▼
+OpenShell Gateway (in VM)               Dashboard (in VM)
+  │ Validates OIDC token (signature, expiry, roles)
   ▼
 Sandbox container
 ```
+
+The gateway route uses TLS **passthrough** so that gRPC/HTTP2 is preserved end-to-end. The gateway validates OIDC tokens directly (signature, expiry, issuer, audience, roles). The dashboard route uses TLS **edge** termination with an auth proxy that additionally checks `preferred_username == owner` for per-user access control.
 
 - Owner is auto-detected from `make login` OIDC token
 - Admin can provision for another user: `make sandbox-create ... OWNER=alice`

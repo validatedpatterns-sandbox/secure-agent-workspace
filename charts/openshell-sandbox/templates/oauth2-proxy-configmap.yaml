@@ -94,7 +94,7 @@ data:
             end
           }
 
-          proxy_pass https://{{ include "openshell-sandbox.fullname" . }}-gateway:17670;
+          proxy_pass https://{{ include "openshell-sandbox.fullname" . }}-gateway:18789;
           proxy_ssl_verify off;
           proxy_set_header Host $host;
           proxy_set_header X-Real-IP $remote_addr;

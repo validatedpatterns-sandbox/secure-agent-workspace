@@ -42,11 +42,13 @@ data:
             "oauth2.device.polling.interval": "5"
           },
           "redirectUris": [
-            "http://localhost:8400/callback",
+            "http://localhost:*",
+            "http://127.0.0.1:*",
             "urn:ietf:wg:oauth:2.0:oob"
           ],
           "webOrigins": [
-            "http://localhost:8400"
+            "http://localhost",
+            "http://127.0.0.1"
           ],
           "protocolMappers": [
             {

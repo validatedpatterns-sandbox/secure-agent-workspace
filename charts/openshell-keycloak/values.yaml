@@ -1,0 +1,73 @@
+keycloak:
+  image: quay.io/keycloak/keycloak:26.2
+  replicas: 1
+  realm: openshell
+  adminUser: admin
+  # When empty, a random password is generated and stored in a Secret.
+  adminPassword: ""
+  # Allow self-registration of new users via the Keycloak login page.
+  registrationAllowed: true
+
+  route:
+    enabled: true
+    # When empty, OpenShift auto-generates a hostname.
+    host: ""
+
+  storage:
+    size: 1Gi
+    storageClass: ""
+
+  clients:
+    cli:
+      clientId: openshell-cli
+      public: true
+      # Access token lifetime in seconds (must exceed sandbox setup time).
+      accessTokenLifespan: 900
+
+  testUsers:
+    - username: developer
+      firstName: Developer
+      lastName: User
+      password: developer
+      roles:
+        - openshell-user
+    - username: admin
+      firstName: Admin
+      lastName: User
+      password: admin
+      roles:
+        - openshell-user
+        - openshell-admin
+    - username: alice
+      firstName: Alice
+      lastName: User
+      password: alice
+      roles:
+        - openshell-user
+        - openshell-admin
+    - username: bob
+      firstName: Bob
+      lastName: User
+      password: bob
+      roles:
+        - openshell-user
+        - openshell-admin
+
+  roles:
+    - openshell-user
+    - openshell-admin
+
+  # Federation to an external IdP (optional -- Keycloak brokers the login).
+  externalIdp:
+    enabled: false
+    alias: corporate-sso
+    displayName: "Corporate SSO"
+    providerType: oidc
+    issuerUrl: ""
+    authorizationUrl: ""
+    tokenUrl: ""
+    clientId: ""
+    clientSecret: ""
+    scopes: "openid email profile"
+    # When true, skip the Keycloak login page and redirect straight to the external IdP.
+    defaultIdp: false

@@ -1,0 +1,23 @@
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata:
+  name: {{ include "openshell-gateway.fullname" . }}-root
+  labels:
+    {{- include "openshell-gateway.labels" . | nindent 4 }}
+  annotations:
+    cdi.kubevirt.io/storage.bind.immediate.requested: "true"
+spec:
+  source:
+    {{- if eq .Values.image.mode "containerDisk" }}
+    registry:
+      url: "docker://{{ .Values.image.containerDisk }}"
+    {{- else }}
+    http:
+      url: {{ .Values.image.fedoraCloud | quote }}
+    {{- end }}
+  storage:
+    accessModes:
+      - ReadWriteOnce
+    resources:
+      requests:
+        storage: {{ .Values.vm.diskSize }}

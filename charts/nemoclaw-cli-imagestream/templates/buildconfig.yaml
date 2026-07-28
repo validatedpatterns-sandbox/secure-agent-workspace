@@ -1,0 +1,44 @@
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: {{ (split ":" .Values.output.imageStreamTag)._0 }}
+  labels:
+    {{- include "nemoclaw-cli-imagestream.labels" . | nindent 4 }}
+spec:
+  source:
+    type: Git
+    git:
+      uri: {{ .Values.source.git.uri }}
+      ref: {{ .Values.source.git.ref }}
+    dockerfile: |
+      FROM {{ .Values.build.nodeImage }} AS builder
+      ENV NPM_CONFIG_AUDIT=false \
+          NPM_CONFIG_FUND=false \
+          NPM_CONFIG_UPDATE_NOTIFIER=false
+      WORKDIR /opt/nemoclaw
+      COPY package.json package-lock.json ./
+      COPY nemoclaw/package.json nemoclaw/package-lock.json nemoclaw/tsconfig.json nemoclaw/tsconfig.shared.json ./nemoclaw/
+      RUN npm ci --ignore-scripts && cd nemoclaw && npm ci --ignore-scripts
+      COPY . .
+      RUN npm run build:cli
+
+      FROM {{ .Values.build.nodeImage }}
+      WORKDIR /opt/nemoclaw
+      COPY --from=builder /opt/nemoclaw/package.json /opt/nemoclaw/package-lock.json ./
+      RUN npm ci --omit=dev --ignore-scripts
+      COPY --from=builder /opt/nemoclaw/dist/ ./dist/
+      COPY --from=builder /opt/nemoclaw/bin/ ./bin/
+      COPY --from=builder /opt/nemoclaw/nemoclaw/dist/ ./nemoclaw/dist/
+      COPY --from=builder /opt/nemoclaw/agents/ ./agents/
+      COPY --from=builder /opt/nemoclaw/scripts/ ./scripts/
+      COPY --from=builder /opt/nemoclaw/nemoclaw-blueprint/ ./nemoclaw-blueprint/
+      COPY --from=builder /opt/nemoclaw/schemas/ ./schemas/
+      ENTRYPOINT ["node", "/opt/nemoclaw/bin/nemoclaw.js"]
+  strategy:
+    type: Docker
+    dockerStrategy: {}
+  output:
+    to:
+      kind: ImageStreamTag
+      name: {{ .Values.output.imageStreamTag }}
+  triggers: []

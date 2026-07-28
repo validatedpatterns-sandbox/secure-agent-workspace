@@ -1,0 +1,149 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "openshell-keycloak.fullname" . }}-test
+  labels:
+    {{- include "openshell-keycloak.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-weight: "5"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: test
+      image: registry.fedoraproject.org/fedora:44
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      env:
+        - name: KEYCLOAK_URL
+          value: "http://{{ include "openshell-keycloak.fullname" . }}:8080"
+        - name: REALM
+          value: {{ .Values.keycloak.realm | quote }}
+        - name: CLIENT_ID
+          value: {{ .Values.keycloak.clients.cli.clientId | quote }}
+      command:
+        - /bin/bash
+        - -c
+        - |
+          set -euo pipefail
+
+          echo "=== Keycloak OIDC verification ==="
+
+          dnf install -y --setopt=install_weak_deps=False curl jq >/dev/null 2>&1
+
+          ISSUER_URL="${KEYCLOAK_URL}/realms/${REALM}"
+          PASS=0
+          FAIL=0
+
+          ok()   { echo "PASS: $1"; PASS=$((PASS + 1)); }
+          fail() { echo "FAIL: $1"; FAIL=$((FAIL + 1)); }
+
+          # --- Test 1: Keycloak health ---
+          echo ""
+          echo "--- Test 1: Keycloak reachable ---"
+          if curl -sf "${KEYCLOAK_URL}/realms/master" >/dev/null; then
+            ok "Keycloak is reachable"
+          else
+            fail "Keycloak not reachable at ${KEYCLOAK_URL}"
+            echo "Cannot proceed without Keycloak. Aborting."
+            exit 1
+          fi
+
+          # --- Test 2: Realm exists ---
+          echo ""
+          echo "--- Test 2: Realm '${REALM}' exists ---"
+          REALM_INFO="$(curl -sf "${ISSUER_URL}" || true)"
+          if echo "${REALM_INFO}" | jq -e '.realm' >/dev/null 2>&1; then
+            ok "Realm '${REALM}' exists"
+          else
+            fail "Realm '${REALM}' not found at ${ISSUER_URL}"
+          fi
+
+          # --- Test 3: OIDC discovery ---
+          echo ""
+          echo "--- Test 3: OIDC discovery endpoint ---"
+          DISCOVERY_URL="${ISSUER_URL}/.well-known/openid-configuration"
+          DISCOVERY="$(curl -sf "${DISCOVERY_URL}" || true)"
+          if echo "${DISCOVERY}" | jq -e '.authorization_endpoint' >/dev/null 2>&1; then
+            ok "OIDC discovery endpoint works"
+            AUTH_EP="$(echo "${DISCOVERY}" | jq -r '.authorization_endpoint')"
+            TOKEN_EP="$(echo "${DISCOVERY}" | jq -r '.token_endpoint')"
+            echo "  authorization_endpoint: ${AUTH_EP}"
+            echo "  token_endpoint: ${TOKEN_EP}"
+          else
+            fail "OIDC discovery failed at ${DISCOVERY_URL}"
+          fi
+
+          # --- Test 4: JWKS endpoint ---
+          echo ""
+          echo "--- Test 4: JWKS endpoint ---"
+          JWKS_URI="$(echo "${DISCOVERY}" | jq -r '.jwks_uri // empty')"
+          if [[ -n "${JWKS_URI}" ]]; then
+            JWKS="$(curl -sf "${JWKS_URI}" || true)"
+            KEY_COUNT="$(echo "${JWKS}" | jq '.keys | length' 2>/dev/null || echo 0)"
+            if (( KEY_COUNT > 0 )); then
+              ok "JWKS has ${KEY_COUNT} key(s)"
+            else
+              fail "JWKS has no keys"
+            fi
+          else
+            fail "JWKS URI not in discovery document"
+          fi
+
+          # --- Test 5: Test user authentication ---
+          echo ""
+          echo "--- Test 5: Test user authentication ---"
+          {{- range .Values.keycloak.testUsers }}
+          echo "  Testing user '{{ .username }}'..."
+          TOKEN_RESPONSE="$(curl -sf -X POST "${TOKEN_EP}" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -d "grant_type=password" \
+            -d "client_id=${CLIENT_ID}" \
+            -d "username={{ .username }}" \
+            -d "password={{ .password }}" \
+            -d "scope=openid" || true)"
+          ACCESS_TOKEN="$(echo "${TOKEN_RESPONSE}" | jq -r '.access_token // empty' 2>/dev/null)"
+          if [[ -n "${ACCESS_TOKEN}" && "${ACCESS_TOKEN}" != "null" ]]; then
+            ok "User '{{ .username }}' authenticated successfully"
+            PAYLOAD="$(echo "${ACCESS_TOKEN}" | cut -d. -f2 | tr '_-' '/+' | base64 -d 2>/dev/null || true)"
+            ROLES="$(echo "${PAYLOAD}" | jq -r '.realm_access.roles // [] | join(", ")' 2>/dev/null || echo "n/a")"
+            echo "    roles: ${ROLES}"
+          else
+            ERROR="$(echo "${TOKEN_RESPONSE}" | jq -r '.error_description // .error // empty' 2>/dev/null)"
+            fail "User '{{ .username }}' authentication failed: ${ERROR}"
+          fi
+          {{- end }}
+
+          # --- Test 6: Device authorization endpoint ---
+          echo ""
+          echo "--- Test 6: Device authorization endpoint ---"
+          DEVICE_EP="$(echo "${DISCOVERY}" | jq -r '.device_authorization_endpoint // empty')"
+          if [[ -n "${DEVICE_EP}" ]]; then
+            DEVICE_RESP="$(curl -sf -X POST "${DEVICE_EP}" \
+              -H "Content-Type: application/x-www-form-urlencoded" \
+              -d "client_id=${CLIENT_ID}" \
+              -d "scope=openid" || true)"
+            DEVICE_CODE="$(echo "${DEVICE_RESP}" | jq -r '.device_code // empty' 2>/dev/null)"
+            if [[ -n "${DEVICE_CODE}" ]]; then
+              ok "Device authorization flow works"
+              echo "    user_code: $(echo "${DEVICE_RESP}" | jq -r '.user_code')"
+            else
+              fail "Device authorization returned no device_code"
+            fi
+          else
+            fail "Device authorization endpoint not in discovery"
+          fi
+
+          # --- Summary ---
+          echo ""
+          echo "=== Results: ${PASS} passed, ${FAIL} failed ==="
+          if (( FAIL > 0 )); then
+            exit 1
+          fi

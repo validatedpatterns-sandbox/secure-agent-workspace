@@ -1,0 +1,43 @@
+openshell-sandbox "{{ .Values.sandboxName }}" deployed.
+
+A setup Job is configuring your sandbox (clone VM, Vertex AI, NemoClaw agent).
+
+Monitor progress:
+
+  oc -n {{ .Release.Namespace }} logs -f job/{{ include "openshell-sandbox.fullname" . }}-setup
+
+Check Job status:
+
+  oc -n {{ .Release.Namespace }} get job/{{ include "openshell-sandbox.fullname" . }}-setup
+
+Once the Job completes, connect:
+{{- if .Values.route.enabled }}
+
+  Gateway URL (get after Route is assigned):
+
+    oc get route {{ include "openshell-sandbox.fullname" . }}-gateway -n {{ .Release.Namespace }} -o jsonpath='https://{.spec.host}'
+
+  Use the OpenShell CLI:
+
+    openshell --gateway $(oc get route {{ include "openshell-sandbox.fullname" . }}-gateway -n {{ .Release.Namespace }} -o jsonpath='https://{.spec.host}') sandbox list
+{{- end }}
+{{- if .Values.route.dashboard }}
+
+  Dashboard URL:
+
+    oc get route {{ include "openshell-sandbox.fullname" . }}-dashboard -n {{ .Release.Namespace }} -o jsonpath='https://{.spec.host}'
+{{- end }}
+
+  SSH (debugging):
+
+    virtctl -n {{ .Release.Namespace }} ssh cloud-user@vm/{{ include "openshell-sandbox.fullname" . }} \
+      --local-ssh-opts "-o StrictHostKeyChecking=no"
+
+  TUI / GUI:
+
+    make tui SANDBOX_NAME={{ .Values.sandboxName }}
+    make gui SANDBOX_NAME={{ .Values.sandboxName }}
+
+To tear down:
+
+  helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}

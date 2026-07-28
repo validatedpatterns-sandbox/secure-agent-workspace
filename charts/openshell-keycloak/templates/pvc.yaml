@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "openshell-keycloak.fullname" . }}-data
+  labels:
+    {{- include "openshell-keycloak.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.keycloak.storage.size }}
+  {{- if .Values.keycloak.storage.storageClass }}
+  storageClassName: {{ .Values.keycloak.storage.storageClass | quote }}
+  {{- end }}

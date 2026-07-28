@@ -1,0 +1,19 @@
+source:
+  git:
+    uri: "https://github.com/NVIDIA/NemoClaw.git"
+    ref: "main"
+
+build:
+  baseImage: "ghcr.io/nvidia/nemoclaw/sandbox-base:latest"
+  model: "claude-sonnet-4-6"
+  inferenceBaseUrl: "https://inference.local/v1"
+  inferenceApi: "openai-completions"
+  contextWindow: "200000"
+  maxTokens: "8192"
+  reasoning: "false"
+  toolDisclosure: "progressive"
+  agentTimeout: "600"
+  webSearchEnabled: "0"
+
+output:
+  imageStreamTag: "nemoclaw-sandbox:latest"

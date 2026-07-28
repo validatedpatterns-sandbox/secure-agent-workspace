@@ -1,0 +1,38 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "openshell-sandbox.fullname" . }}-setup
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachines"]
+    verbs: ["get", "list", "patch"]
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachines/start"]
+    verbs: ["update"]
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachineinstances"]
+    verbs: ["get", "list"]
+  - apiGroups: ["subresources.kubevirt.io"]
+    resources: ["virtualmachines/portforward"]
+    verbs: ["get"]
+  {{- if eq .Values.sourceMode "snapshot" }}
+  - apiGroups: ["clone.kubevirt.io"]
+    resources: ["virtualmachineclones"]
+    verbs: ["get", "list"]
+  - apiGroups: ["snapshot.kubevirt.io"]
+    resources: ["virtualmachinesnapshots"]
+    verbs: ["get", "list"]
+  {{- else }}
+  - apiGroups: ["cdi.kubevirt.io"]
+    resources: ["datavolumes"]
+    verbs: ["get", "list"]
+  {{- end }}
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ .Values.sshSecret | quote }}]
+    verbs: ["get"]

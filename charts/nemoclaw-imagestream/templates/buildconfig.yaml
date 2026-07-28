@@ -1,0 +1,42 @@
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: {{ (split ":" .Values.output.imageStreamTag)._0 }}
+  labels:
+    {{- include "nemoclaw-imagestream.labels" . | nindent 4 }}
+spec:
+  source:
+    type: Git
+    git:
+      uri: {{ .Values.source.git.uri }}
+      ref: {{ .Values.source.git.ref }}
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+      buildArgs:
+        - name: BASE_IMAGE
+          value: {{ .Values.build.baseImage | quote }}
+        - name: NEMOCLAW_MODEL
+          value: {{ .Values.build.model | quote }}
+        - name: NEMOCLAW_INFERENCE_BASE_URL
+          value: {{ .Values.build.inferenceBaseUrl | quote }}
+        - name: NEMOCLAW_INFERENCE_API
+          value: {{ .Values.build.inferenceApi | quote }}
+        - name: NEMOCLAW_CONTEXT_WINDOW
+          value: {{ .Values.build.contextWindow | quote }}
+        - name: NEMOCLAW_MAX_TOKENS
+          value: {{ .Values.build.maxTokens | quote }}
+        - name: NEMOCLAW_REASONING
+          value: {{ .Values.build.reasoning | quote }}
+        - name: NEMOCLAW_TOOL_DISCLOSURE
+          value: {{ .Values.build.toolDisclosure | quote }}
+        - name: NEMOCLAW_AGENT_TIMEOUT
+          value: {{ .Values.build.agentTimeout | quote }}
+        - name: NEMOCLAW_WEB_SEARCH_ENABLED
+          value: {{ .Values.build.webSearchEnabled | quote }}
+  output:
+    to:
+      kind: ImageStreamTag
+      name: {{ .Values.output.imageStreamTag }}
+  triggers: []

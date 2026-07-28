@@ -1,0 +1,52 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "openshell-sandbox.fullname" . }}-setup
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+spec:
+  backoffLimit: {{ .Values.job.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.job.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "openshell-sandbox.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "openshell-sandbox.fullname" . }}-setup
+      restartPolicy: OnFailure
+      containers:
+        - name: setup
+          image: {{ .Values.job.image }}
+          command: ["/bin/bash", "/scripts/run-setup.sh"]
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: setup-env
+              mountPath: /secrets
+              readOnly: true
+            {{- if .Values.vertexSaJson }}
+            - name: gcp-sa
+              mountPath: /gcp-sa
+              readOnly: true
+            {{- end }}
+            - name: ssh-key
+              mountPath: /ssh-key
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ include "openshell-sandbox.fullname" . }}-scripts
+            defaultMode: 0755
+        - name: setup-env
+          secret:
+            secretName: {{ include "openshell-sandbox.fullname" . }}-setup-env
+        {{- if .Values.vertexSaJson }}
+        - name: gcp-sa
+          secret:
+            secretName: {{ include "openshell-sandbox.fullname" . }}-gcp-sa
+        {{- end }}
+        - name: ssh-key
+          secret:
+            secretName: {{ .Values.sshSecret }}
+            defaultMode: 0600

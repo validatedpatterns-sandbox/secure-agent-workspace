@@ -1,0 +1,536 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "openshell-sandbox.fullname" . }}-scripts
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+data:
+  run-setup.sh: |
+    #!/usr/bin/env bash
+    # Job entrypoint: wait for snapshot restore, start VM, SCP scripts, run sandbox setup.
+    set -euo pipefail
+
+    VM_NAME="{{ include "openshell-sandbox.fullname" . }}"
+    CLONE_NAME="clone-${VM_NAME}"
+    NS="{{ .Release.Namespace }}"
+    SSH_USER="{{ .Values.sshUser }}"
+    SSH_SECRET="{{ .Values.sshSecret }}"
+
+    SCRIPTS_DIR="/scripts"
+    SECRETS_DIR="/secrets"
+    WORK_DIR="/tmp/setup-work"
+    mkdir -p "${WORK_DIR}"
+
+    # --- Install dependencies (in the Job Pod, not the VM) ---
+    echo "Installing openssh-clients..."
+    dnf install -y --setopt=install_weak_deps=False openssh-clients
+
+    echo "Installing kubectl..."
+    K8S_VERSION="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
+    curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/${K8S_VERSION}/bin/linux/amd64/kubectl"
+    chmod +x /usr/local/bin/kubectl
+
+    echo "Downloading virtctl from cluster..."
+    VIRTCTL_URL="$(kubectl get ConsoleCLIDownload virtctl-clidownloads-kubevirt-hyperconverged \
+      -o jsonpath='{.spec.links[?(@.text=="Download virtctl for Linux for x86_64")].href}' 2>/dev/null || true)"
+    if [[ -n "${VIRTCTL_URL}" ]]; then
+      echo "  using cluster URL: ${VIRTCTL_URL}"
+      curl -fsSL "${VIRTCTL_URL}" | tar xz -C /usr/local/bin virtctl
+    else
+      VIRTCTL_VERSION="{{ .Values.virtctlVersion }}"
+      echo "  ConsoleCLIDownload not found, falling back to GitHub ${VIRTCTL_VERSION}"
+      curl -fsSL -o /usr/local/bin/virtctl \
+        "https://github.com/kubevirt/kubevirt/releases/download/${VIRTCTL_VERSION}/virtctl-${VIRTCTL_VERSION}-linux-amd64"
+    fi
+    chmod +x /usr/local/bin/virtctl
+
+    # --- Extract SSH identity from Secret ---
+    echo "Extracting SSH identity..."
+    SSH_KEY="${WORK_DIR}/id_ssh"
+    cp /ssh-key/key "${SSH_KEY}"
+    chmod 600 "${SSH_KEY}"
+
+    SOURCE_MODE="{{ .Values.sourceMode }}"
+
+    if [[ "${SOURCE_MODE}" == "snapshot" ]]; then
+      # --- Wait for VM restore from snapshot to Succeed ---
+      echo "Waiting for VM restore from snapshot (${CLONE_NAME}) to succeed..."
+      deadline=$((SECONDS + 900))
+      while true; do
+        phase="$(kubectl -n "${NS}" get virtualmachineclone "${CLONE_NAME}" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+        echo "  restore phase=${phase:-unknown}"
+        case "${phase}" in
+          Succeeded) break ;;
+          Failed|Unknown)
+            echo "Restore from snapshot failed!" >&2
+            kubectl -n "${NS}" get virtualmachineclone "${CLONE_NAME}" -o yaml >&2
+            exit 1 ;;
+        esac
+        if (( SECONDS > deadline )); then
+          echo "Timed out waiting for restore from snapshot" >&2
+          exit 1
+        fi
+        sleep 10
+      done
+    else
+      # --- ContainerDisk mode: wait for DataVolume provisioning ---
+      DV_NAME="${VM_NAME}-root"
+      echo "Waiting for DataVolume ${DV_NAME} to be provisioned..."
+      deadline=$((SECONDS + 900))
+      while true; do
+        dv_phase="$(kubectl -n "${NS}" get datavolume "${DV_NAME}" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+        echo "  datavolume phase=${dv_phase:-unknown}"
+        if [[ "${dv_phase}" == "Succeeded" ]]; then
+          break
+        fi
+        if (( SECONDS > deadline )); then
+          echo "Timed out waiting for DataVolume provisioning" >&2
+          exit 1
+        fi
+        sleep 10
+      done
+    fi
+
+    # --- Label and start VM ---
+    echo "Labeling vm/${VM_NAME}..."
+    kubectl -n "${NS}" label vm "${VM_NAME}" \
+      "app.kubernetes.io/name=${VM_NAME}" \
+      "app.kubernetes.io/part-of=openshell-cnv-fedora" \
+      "openshell.pattern/role=gateway" \
+      --overwrite
+
+    echo "Setting runStrategy=Always and starting vm/${VM_NAME}..."
+    kubectl -n "${NS}" patch vm "${VM_NAME}" --type merge -p '{"spec":{"runStrategy":"Always"}}'
+    virtctl -n "${NS}" start "${VM_NAME}" 2>/dev/null || true
+
+    # --- Wait for VMI Running + Ready ---
+    echo "Waiting for vmi/${VM_NAME} to be Running and Ready..."
+    deadline=$((SECONDS + 600))
+    while true; do
+      phase="$(kubectl -n "${NS}" get vmi "${VM_NAME}" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+      ready="$(kubectl -n "${NS}" get vmi "${VM_NAME}" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
+      echo "  vmi phase=${phase:-pending} ready=${ready:-false}"
+      if [[ "${phase}" == "Running" && "${ready}" == "True" ]]; then
+        break
+      fi
+      if (( SECONDS > deadline )); then
+        echo "Timed out waiting for VMI Ready" >&2
+        exit 1
+      fi
+      sleep 8
+    done
+
+    # --- Wait for SSH ---
+    guest_ssh() {
+      virtctl -n "${NS}" ssh "${SSH_USER}@vm/${VM_NAME}" \
+        --identity-file="${SSH_KEY}" \
+        --local-ssh-opts=-oStrictHostKeyChecking=no \
+        --local-ssh-opts=-oUserKnownHostsFile=/dev/null \
+        --command="$1"
+    }
+
+    guest_scp() {
+      virtctl -n "${NS}" scp "$1" \
+        "${SSH_USER}@vm/${VM_NAME}:$2" \
+        --identity-file="${SSH_KEY}" \
+        --local-ssh-opts=-oStrictHostKeyChecking=no \
+        --local-ssh-opts=-oUserKnownHostsFile=/dev/null
+    }
+
+    echo "Waiting for guest SSH on vm/${VM_NAME}..."
+    deadline=$((SECONDS + 300))
+    ssh_ok=0
+    while (( SECONDS <= deadline )); do
+      if guest_ssh "echo ssh-ok" >/dev/null 2>&1; then
+        ssh_ok=1
+        break
+      fi
+      sleep 8
+    done
+    if [[ "${ssh_ok}" -ne 1 ]]; then
+      echo "SSH not ready in time" >&2
+      exit 1
+    fi
+
+    # --- Post-clone hygiene ---
+    echo "Post-clone hygiene (hostname)..."
+    guest_ssh "sudo hostnamectl set-hostname '${VM_NAME}' || true; openshell gateway select openshell >/dev/null 2>&1 || true" || true
+
+    # --- Authenticate VM's Podman to OpenShift image registry ---
+    REGISTRY_ROUTE="$(kubectl get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null || true)"
+    SANDBOX_IMAGE=""
+    if [[ -n "${REGISTRY_ROUTE}" ]]; then
+      echo "Authenticating VM to image registry (${REGISTRY_ROUTE})..."
+      SA_TOKEN="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
+      guest_ssh "podman login --tls-verify=false -u serviceaccount -p '${SA_TOKEN}' '${REGISTRY_ROUTE}'" || true
+      SANDBOX_IMAGE="${REGISTRY_ROUTE}/${NS}/nemoclaw-sandbox:latest"
+      echo "Resolved sandbox image: ${SANDBOX_IMAGE}"
+    fi
+
+    # --- SCP SA JSON + scripts ---
+    echo "Copying scripts to vm/${VM_NAME}..."
+    {{- if .Values.vertexSaJson }}
+    guest_scp "/gcp-sa/sa.json" "/home/${SSH_USER}/vertex-sa-{{ .Values.sandboxName }}.json"
+    {{- end }}
+    for script in configure-vertex-user.sh setup-nemoclaw.sh inject-user-pubkey.sh run-create.sh; do
+      guest_scp "${SCRIPTS_DIR}/${script}" "/home/${SSH_USER}/${script}"
+    done
+    cp "${SECRETS_DIR}/run-create.env" "${WORK_DIR}/run-create.env"
+    if [[ -n "${SANDBOX_IMAGE}" ]]; then
+      echo "SANDBOX_IMAGE=${SANDBOX_IMAGE}" >> "${WORK_DIR}/run-create.env"
+    fi
+    if [[ -n "${REGISTRY_ROUTE}" ]]; then
+      echo "NEMOCLAW_CLI_IMAGE=${REGISTRY_ROUTE}/${NS}/nemoclaw-cli:latest" >> "${WORK_DIR}/run-create.env"
+    fi
+    guest_scp "${WORK_DIR}/run-create.env" "/home/${SSH_USER}/run-create.env"
+
+    # --- Run sandbox setup ---
+    echo "Running sandbox setup on vm/${VM_NAME}..."
+    guest_ssh "bash /home/${SSH_USER}/run-create.sh"
+
+    echo "Setup complete: sandbox={{ .Values.sandboxName }} on vm/${VM_NAME}"
+
+  configure-vertex-user.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    SA_JSON="${SA_JSON:?}"
+    PROVIDER_NAME="${PROVIDER_NAME:?}"
+    REGION="${VERTEX_AI_REGION:-global}"
+    MODEL="${VERTEX_MODEL:-claude-sonnet-4-6}"
+    GATEWAY_NAME="${OPENSHELL_GATEWAY:-openshell}"
+
+    test -r "${SA_JSON}"
+    PROJECT_ID="$(jq -r '.project_id // empty' "${SA_JSON}")"
+    CLIENT_EMAIL="$(jq -r '.client_email // empty' "${SA_JSON}")"
+    PRIVATE_KEY="$(jq -r '.private_key // empty' "${SA_JSON}")"
+
+    if [[ -z "${PRIVATE_KEY}" || "${PRIVATE_KEY}" == "null" || -z "${CLIENT_EMAIL}" || "${CLIENT_EMAIL}" == "null" ]]; then
+      echo "vertex_skip incomplete SA JSON (missing private_key/client_email); continuing without Vertex"
+      exit 0
+    fi
+
+    openshell gateway use "${GATEWAY_NAME}" 2>/dev/null || true
+    openshell settings set --global --key providers_v2_enabled --value true --yes
+
+    if openshell provider get "${PROVIDER_NAME}" >/dev/null 2>&1; then
+      openshell provider update "${PROVIDER_NAME}" \
+        --config "VERTEX_AI_PROJECT_ID=${PROJECT_ID}" \
+        --config "VERTEX_AI_REGION=${REGION}"
+    else
+      openshell provider create \
+        --name "${PROVIDER_NAME}" \
+        --type google-vertex-ai \
+        --credential "GOOGLE_SERVICE_ACCOUNT_KEY=$(cat "${SA_JSON}")" \
+        --config "VERTEX_AI_PROJECT_ID=${PROJECT_ID}" \
+        --config "VERTEX_AI_REGION=${REGION}"
+    fi
+
+    openshell provider refresh configure "${PROVIDER_NAME}" \
+      --credential-key GOOGLE_VERTEX_AI_SERVICE_ACCOUNT_TOKEN \
+      --strategy google-service-account-jwt \
+      --material "client_email=${CLIENT_EMAIL}" \
+      --material "private_key=${PRIVATE_KEY}" \
+      --secret-material-key private_key
+
+    ok=0
+    for _ in $(seq 1 36); do
+      if openshell provider refresh status "${PROVIDER_NAME}" --credential-key GOOGLE_VERTEX_AI_SERVICE_ACCOUNT_TOKEN 2>/dev/null \
+        | grep -qiE '[[:space:]]refreshed[[:space:]]'; then
+        ok=1
+        break
+      fi
+      sleep 5
+    done
+    [[ "${ok}" -eq 1 ]]
+
+    openshell inference set --provider "${PROVIDER_NAME}" --model "${MODEL}" --no-verify
+    echo "vertex_ok provider=${PROVIDER_NAME} region=${REGION} model=${MODEL}"
+
+  setup-nemoclaw.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    SANDBOX_NAME="${SANDBOX_NAME:?}"
+    GATEWAY_NAME="${OPENSHELL_GATEWAY:-openshell}"
+    NEMOCLAW_AGENT="${NEMOCLAW_AGENT:-openclaw}"
+    ONBOARD_CLI="${ONBOARD_CLI:-openclaw}"
+    SANDBOX_IMAGE="${SANDBOX_IMAGE:-}"
+    NEMOCLAW_CLI_IMAGE="${NEMOCLAW_CLI_IMAGE:-}"
+    NEMOCLAW_PROVIDER="${NEMOCLAW_PROVIDER:-}"
+    NEMOCLAW_MODEL="${NEMOCLAW_MODEL:-}"
+    NEMOCLAW_API_KEY="${NEMOCLAW_API_KEY:-}"
+    NEMOCLAW_ENDPOINT_URL="${NEMOCLAW_ENDPOINT_URL:-}"
+    NEMOCLAW_WEB_SEARCH_PROVIDER="${NEMOCLAW_WEB_SEARCH_PROVIDER:-}"
+    # Vertex AI legacy path
+    PROVIDER_NAME="${PROVIDER_NAME:-}"
+    VERTEX_MODEL="${VERTEX_MODEL:-claude-sonnet-4-6}"
+
+    openshell gateway select "${GATEWAY_NAME}" >/dev/null 2>&1 || true
+
+    # --- Install nemoclaw CLI (needed for sandbox connect / dashboard-url) ---
+    if ! command -v nemoclaw &>/dev/null; then
+      if [[ -n "${NEMOCLAW_CLI_IMAGE}" ]]; then
+        echo "Installing nemoclaw CLI from ${NEMOCLAW_CLI_IMAGE}..."
+        CID="$(podman create "${NEMOCLAW_CLI_IMAGE}" 2>/dev/null || true)"
+        if [[ -n "${CID}" ]]; then
+          podman cp "${CID}:/opt/nemoclaw" /tmp/nemoclaw-cli
+          podman rm "${CID}" >/dev/null
+          sudo mv /tmp/nemoclaw-cli /opt/nemoclaw
+          printf '#!/usr/bin/env bash\nexec node /opt/nemoclaw/bin/nemoclaw.js "$@"\n' | sudo tee /usr/local/bin/nemoclaw >/dev/null
+          sudo chmod 755 /usr/local/bin/nemoclaw
+          echo "nemoclaw CLI installed"
+        else
+          echo "WARN: could not create container from ${NEMOCLAW_CLI_IMAGE}"
+        fi
+      else
+        echo "WARN: nemoclaw not found and NEMOCLAW_CLI_IMAGE not set"
+      fi
+    fi
+
+    # --- Prerequisites for nemoclaw onboard path ---
+    if [[ "${ONBOARD_CLI}" == "nemoclaw" ]]; then
+      if ! command -v docker &>/dev/null; then
+        echo "Installing podman-docker..."
+        sudo dnf install -y --setopt=install_weak_deps=False podman-docker
+      fi
+    fi
+
+    # --- Write OIDC token for CLI auth (when gateway uses OIDC) ---
+    if [[ -n "${OIDC_TOKEN:-}" ]]; then
+      OIDC_TOKEN_PATH="${HOME}/.config/openshell/gateways/${GATEWAY_NAME}/oidc_token.json"
+      mkdir -p "$(dirname "${OIDC_TOKEN_PATH}")"
+      chmod 700 "$(dirname "${OIDC_TOKEN_PATH}")"
+      cat > "${OIDC_TOKEN_PATH}" <<OIDCEOF
+    {"access_token":"${OIDC_TOKEN}","issuer":"${OIDC_ISSUER:-}","client_id":"${OIDC_CLIENT_ID:-openshell-cli}"}
+    OIDCEOF
+      chmod 600 "${OIDC_TOKEN_PATH}"
+      echo "OIDC token configured for gateway auth"
+    fi
+
+    # --- Create sandbox ---
+    CREATE_ARGS=(--name "${SANDBOX_NAME}")
+    if [[ -n "${SANDBOX_IMAGE}" ]]; then
+      CREATE_ARGS+=(--from "${SANDBOX_IMAGE}")
+    fi
+    if [[ -n "${PROVIDER_NAME}" ]] && openshell provider get "${PROVIDER_NAME}" >/dev/null 2>&1; then
+      CREATE_ARGS+=(--provider "${PROVIDER_NAME}")
+    fi
+    if ! openshell sandbox get "${SANDBOX_NAME}" >/dev/null 2>&1; then
+      echo "Creating sandbox (image=${SANDBOX_IMAGE:-default}, agent=${NEMOCLAW_AGENT})..."
+      openshell sandbox create "${CREATE_ARGS[@]}" --no-tty -- sh -c "echo sandbox-ready"
+    fi
+
+    # --- Onboard: configure inference provider ---
+    echo "Running ${ONBOARD_CLI} onboard (provider=${NEMOCLAW_PROVIDER:-vertex-legacy}, model=${NEMOCLAW_MODEL:-${VERTEX_MODEL}})..."
+
+    if [[ "${ONBOARD_CLI}" == "nemoclaw" ]]; then
+      # --- nemoclaw onboard: runs on gateway VM ---
+      CRED_ENV=""
+      case "${NEMOCLAW_PROVIDER}" in
+        gemini)              CRED_ENV="GEMINI_API_KEY" ;;
+        anthropic)           CRED_ENV="ANTHROPIC_API_KEY" ;;
+        anthropicCompatible) CRED_ENV="COMPATIBLE_ANTHROPIC_API_KEY" ;;
+        openai)              CRED_ENV="OPENAI_API_KEY" ;;
+        build)               CRED_ENV="NVIDIA_INFERENCE_API_KEY" ;;
+        openrouter)          CRED_ENV="OPENROUTER_API_KEY" ;;
+        custom)              CRED_ENV="COMPATIBLE_API_KEY" ;;
+        ollama|"")           CRED_ENV="" ;;
+        *)                   CRED_ENV="COMPATIBLE_API_KEY" ;;
+      esac
+
+      ONBOARD_ENV=(
+        "NEMOCLAW_NON_INTERACTIVE=1"
+        "NEMOCLAW_YES=1"
+        "NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1"
+      )
+      [[ -n "${NEMOCLAW_PROVIDER}" ]] && ONBOARD_ENV+=("NEMOCLAW_PROVIDER=${NEMOCLAW_PROVIDER}")
+      [[ -n "${NEMOCLAW_MODEL}" ]] && ONBOARD_ENV+=("NEMOCLAW_MODEL=${NEMOCLAW_MODEL}")
+      [[ -n "${NEMOCLAW_ENDPOINT_URL}" ]] && ONBOARD_ENV+=("NEMOCLAW_ENDPOINT_URL=${NEMOCLAW_ENDPOINT_URL}")
+      [[ -n "${NEMOCLAW_WEB_SEARCH_PROVIDER}" ]] && ONBOARD_ENV+=("NEMOCLAW_WEB_SEARCH_PROVIDER=${NEMOCLAW_WEB_SEARCH_PROVIDER}")
+      [[ -n "${CRED_ENV}" && -n "${NEMOCLAW_API_KEY}" ]] && ONBOARD_ENV+=("${CRED_ENV}=${NEMOCLAW_API_KEY}")
+      ONBOARD_ENV+=("NEMOCLAW_SANDBOX_NAME=${SANDBOX_NAME}")
+
+      env "${ONBOARD_ENV[@]}" \
+        nemoclaw onboard \
+          --non-interactive \
+          --name "${SANDBOX_NAME}" \
+          --agent "${NEMOCLAW_AGENT}" \
+          --yes \
+          --yes-i-accept-third-party-software \
+        || echo "WARN: nemoclaw onboard failed, tui may not work"
+
+    else
+      # --- openclaw onboard: runs inside the sandbox ---
+      AUTH_CHOICE=""
+      KEY_FLAG=""
+      case "${NEMOCLAW_PROVIDER}" in
+        gemini)      AUTH_CHOICE="gemini-api-key";     KEY_FLAG="--gemini-api-key" ;;
+        anthropic)   AUTH_CHOICE="apiKey";             KEY_FLAG="--anthropic-api-key" ;;
+        openai)      AUTH_CHOICE="openai-api-key";     KEY_FLAG="--openai-api-key" ;;
+        build)       AUTH_CHOICE="nvidia-api-key";     KEY_FLAG="--nvidia-api-key" ;;
+        openrouter)  AUTH_CHOICE="openrouter-api-key"; KEY_FLAG="--openrouter-api-key" ;;
+        ollama)      AUTH_CHOICE="ollama";             KEY_FLAG="" ;;
+        custom)      AUTH_CHOICE="custom-api-key";     KEY_FLAG="--custom-api-key" ;;
+        *)           AUTH_CHOICE="skip";               KEY_FLAG="" ;;
+      esac
+
+      ONBOARD_ARGS=(
+        --non-interactive
+        --accept-risk
+        --skip-channels
+        --skip-skills
+        --skip-hooks
+        --skip-search
+        --skip-ui
+        --skip-health
+        --no-install-daemon
+      )
+      [[ -n "${AUTH_CHOICE}" ]] && ONBOARD_ARGS+=(--auth-choice "${AUTH_CHOICE}")
+      [[ -n "${KEY_FLAG}" && -n "${NEMOCLAW_API_KEY}" ]] && ONBOARD_ARGS+=("${KEY_FLAG}" "${NEMOCLAW_API_KEY}")
+      if [[ "${NEMOCLAW_PROVIDER}" == "custom" ]]; then
+        [[ -n "${NEMOCLAW_ENDPOINT_URL}" ]] && ONBOARD_ARGS+=(--custom-base-url "${NEMOCLAW_ENDPOINT_URL}")
+        [[ -n "${NEMOCLAW_MODEL}" ]] && ONBOARD_ARGS+=(--custom-model-id "${NEMOCLAW_MODEL}")
+      fi
+
+      openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- \
+        openclaw onboard "${ONBOARD_ARGS[@]}" \
+        || echo "WARN: openclaw onboard failed, tui may not work"
+
+      if [[ -n "${NEMOCLAW_MODEL}" && "${NEMOCLAW_PROVIDER}" != "custom" ]]; then
+        BARE_MODEL="${NEMOCLAW_MODEL##*/}"
+        MODEL_PREFIX=""
+        case "${NEMOCLAW_PROVIDER}" in
+          gemini)      MODEL_PREFIX="google" ;;
+          anthropic)   MODEL_PREFIX="claude-cli" ;;
+          openai)      MODEL_PREFIX="openai" ;;
+          build)       MODEL_PREFIX="inference" ;;
+          openrouter)  MODEL_PREFIX="openrouter" ;;
+          ollama)      MODEL_PREFIX="ollama" ;;
+        esac
+        if [[ -n "${MODEL_PREFIX}" ]]; then
+          FULL_MODEL="${MODEL_PREFIX}/${BARE_MODEL}"
+        else
+          FULL_MODEL="${BARE_MODEL}"
+        fi
+        echo "Setting model to ${FULL_MODEL}..."
+        openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- \
+          openclaw models set "${FULL_MODEL}" 2>/dev/null || true
+      fi
+    fi
+
+    # --- Extract auth token for GUI access ---
+    echo "Extracting auth token for GUI access..."
+    if [[ "${ONBOARD_CLI}" == "nemoclaw" ]] && command -v nemoclaw &>/dev/null; then
+      DASHBOARD_URL=$(nemoclaw sandbox dashboard-url "${SANDBOX_NAME}" 2>/dev/null | grep -o 'http[^ ]*' | tail -1)
+      TOKEN=$(echo "${DASHBOARD_URL}" | grep -o '#token=.*' | sed 's/#token=//')
+    else
+      openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- node -e "
+        const fs = require('fs');
+        const c = JSON.parse(fs.readFileSync('/sandbox/.openclaw/openclaw.json','utf8'));
+        fs.writeFileSync('/tmp/auth-token', (c.gateway && c.gateway.auth && c.gateway.auth.token) || '');
+      " || true
+      TOKEN=$(openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- cat /tmp/auth-token 2>/dev/null | tr -d '[:space:]')
+    fi
+    if [[ -n "${TOKEN}" ]]; then
+      echo "${TOKEN}" > "${HOME}/.openclaw-token-${SANDBOX_NAME}"
+      echo "Auth token saved"
+    else
+      echo "WARN: could not extract auth token (make gui may not work)"
+    fi
+
+    # --- Start openclaw gateway inside sandbox ---
+    echo "Starting openclaw gateway inside sandbox..."
+    openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- sh -c '
+      nohup openclaw gateway --port 18789 > /tmp/openclaw-gateway.log 2>&1 &
+      for i in $(seq 1 10); do
+        sleep 3
+        if openclaw health >/dev/null 2>&1; then
+          echo "openclaw gateway ready"
+          exit 0
+        fi
+        echo "  waiting for gateway... (attempt $i)"
+      done
+      echo "WARN: gateway health check timed out"
+      cat /tmp/openclaw-gateway.log 2>/dev/null | tail -5
+    ' || echo "WARN: openclaw gateway start failed"
+
+    echo "setup-nemoclaw OK agent=${NEMOCLAW_AGENT} sandbox=${SANDBOX_NAME}"
+
+  inject-user-pubkey.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    : "${SSH_PUBKEY:?}"
+    : "${SANDBOX_NAME:?}"
+
+    mkdir -p "${HOME}/.openshell-user-keys"
+    umask 077
+    printf '%s\n' "${SSH_PUBKEY}" > "${HOME}/.openshell-user-keys/${SANDBOX_NAME}.pub"
+    mkdir -p "${HOME}/.ssh"
+    chmod 700 "${HOME}/.ssh"
+    touch "${HOME}/.ssh/authorized_keys"
+    chmod 600 "${HOME}/.ssh/authorized_keys"
+    if ! grep -Fxq "${SSH_PUBKEY}" "${HOME}/.ssh/authorized_keys"; then
+      printf '%s\n' "${SSH_PUBKEY}" >> "${HOME}/.ssh/authorized_keys"
+    fi
+    echo "pubkey_installed sandbox=${SANDBOX_NAME}"
+
+  run-create.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    if [[ -f "${HOME}/run-create.env" ]]; then
+      set -a
+      source "${HOME}/run-create.env"
+      set +a
+    fi
+
+    : "${SANDBOX_NAME:?}"
+    : "${SSH_PUBKEY:?}"
+    NEMOCLAW_AGENT="${NEMOCLAW_AGENT:-openclaw}"
+    NEMOCLAW_PROVIDER="${NEMOCLAW_PROVIDER:-}"
+    NEMOCLAW_MODEL="${NEMOCLAW_MODEL:-}"
+    NEMOCLAW_API_KEY="${NEMOCLAW_API_KEY:-}"
+    NEMOCLAW_ENDPOINT_URL="${NEMOCLAW_ENDPOINT_URL:-}"
+    NEMOCLAW_WEB_SEARCH_PROVIDER="${NEMOCLAW_WEB_SEARCH_PROVIDER:-}"
+    PROVIDER_NAME="${PROVIDER_NAME:-}"
+    SA_JSON="${SA_JSON:-}"
+
+    chmod +x \
+      "${HOME}/configure-vertex-user.sh" \
+      "${HOME}/setup-nemoclaw.sh" \
+      "${HOME}/inject-user-pubkey.sh"
+
+    # Vertex AI legacy path: configure provider via openshell commands
+    if [[ -n "${SA_JSON}" && -f "${SA_JSON}" ]]; then
+      VERTEX_AI_REGION="${VERTEX_AI_REGION:-global}"
+      VERTEX_MODEL="${VERTEX_MODEL:-claude-sonnet-4-6}"
+      export SA_JSON PROVIDER_NAME VERTEX_AI_REGION VERTEX_MODEL SANDBOX_NAME NEMOCLAW_AGENT
+      "${HOME}/configure-vertex-user.sh"
+    fi
+
+    # Run nemoclaw onboard (handles both Vertex and direct providers)
+    export SANDBOX_NAME NEMOCLAW_AGENT NEMOCLAW_PROVIDER NEMOCLAW_MODEL NEMOCLAW_API_KEY
+    export NEMOCLAW_ENDPOINT_URL NEMOCLAW_WEB_SEARCH_PROVIDER
+    export ONBOARD_CLI="${ONBOARD_CLI:-openclaw}"
+    export PROVIDER_NAME SANDBOX_IMAGE="${SANDBOX_IMAGE:-}" VERTEX_MODEL="${VERTEX_MODEL:-}"
+    export NEMOCLAW_CLI_IMAGE="${NEMOCLAW_CLI_IMAGE:-}"
+    export OIDC_TOKEN="${OIDC_TOKEN:-}" OIDC_ISSUER="${OIDC_ISSUER:-}" OIDC_CLIENT_ID="${OIDC_CLIENT_ID:-openshell-cli}" OIDC_PASSTHROUGH="${OIDC_PASSTHROUGH:-}"
+    "${HOME}/setup-nemoclaw.sh"
+
+    SSH_PUBKEY="${SSH_PUBKEY}" SANDBOX_NAME="${SANDBOX_NAME}" "${HOME}/inject-user-pubkey.sh"
+
+    if [[ -n "${OIDC_TOKEN}" && "${OIDC_PASSTHROUGH}" == "true" ]]; then
+      echo "Writing OIDC token to sandbox for MCP server auth..."
+      openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- sh -c "
+        mkdir -p /sandbox/.oidc
+        printf '{\"access_token\":\"%s\"}' '${OIDC_TOKEN}' > /sandbox/.oidc/token.json
+        chmod 600 /sandbox/.oidc/token.json
+      " || echo "WARN: could not write OIDC token to sandbox"
+    fi
+
+    if [[ -n "${SA_JSON}" && -f "${SA_JSON}" ]]; then
+      shred -u "${SA_JSON}" 2>/dev/null || rm -f "${SA_JSON}"
+    fi
+    echo "run-create OK sandbox=${SANDBOX_NAME} provider=${NEMOCLAW_PROVIDER:-${PROVIDER_NAME:-none}}"

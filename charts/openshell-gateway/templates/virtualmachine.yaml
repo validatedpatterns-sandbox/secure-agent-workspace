@@ -1,0 +1,50 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: {{ include "openshell-gateway.fullname" . }}
+  labels:
+    {{- include "openshell-gateway.labels" . | nindent 4 }}
+    openshell.pattern/role: gateway
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        {{- include "openshell-gateway.labels" . | nindent 8 }}
+        openshell.pattern/role: gateway
+    spec:
+      domain:
+        cpu:
+          cores: {{ .Values.vm.cores }}
+        resources:
+          requests:
+            memory: {{ .Values.vm.memory }}
+        devices:
+          disks:
+            - name: rootdisk
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+          interfaces:
+            - name: default
+              masquerade: {}
+        firmware:
+          bootloader:
+            efi:
+              secureBoot: false
+        features:
+          acpi: {}
+          smm: {}
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        - name: rootdisk
+          persistentVolumeClaim:
+            claimName: {{ include "openshell-gateway.fullname" . }}-root
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            secretRef:
+              name: {{ include "openshell-gateway.fullname" . }}-cloudinit

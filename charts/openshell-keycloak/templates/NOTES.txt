@@ -1,0 +1,23 @@
+Keycloak deployed: {{ include "openshell-keycloak.fullname" . }}
+
+{{- if .Values.keycloak.route.enabled }}
+
+  Keycloak URL:
+    oc get route {{ include "openshell-keycloak.fullname" . }} -n {{ .Release.Namespace }} -o jsonpath='{.spec.host}'
+
+  OIDC Issuer URL (for make gateway / make login):
+    https://$(oc get route {{ include "openshell-keycloak.fullname" . }} -n {{ .Release.Namespace }} -o jsonpath='{.spec.host}')/realms/{{ .Values.keycloak.realm }}
+{{- end }}
+
+  Admin password:
+    oc -n {{ .Release.Namespace }} get secret {{ include "openshell-keycloak.fullname" . }}-admin -o jsonpath='{.data.KEYCLOAK_ADMIN_PASSWORD}' | base64 -d
+
+  Test users:
+{{- range .Values.keycloak.testUsers }}
+    - {{ .username }} / {{ .password }}  (roles: {{ join ", " .roles }})
+{{- end }}
+
+  Quick start:
+    make gateway OIDC_ISSUER=$(make keycloak-issuer)
+    make login
+    make sandbox SANDBOX_NAME=my-sandbox PROVIDER=gemini MODEL=gemini-2.5-flash API_KEY=<key>

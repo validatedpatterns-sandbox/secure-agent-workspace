@@ -1,0 +1,29 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "openshell-sandbox.fullname" . }}-registry-reader
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["route.openshift.io"]
+    resources: ["routes"]
+    resourceNames: ["default-route"]
+    verbs: ["get"]
+  - apiGroups: ["console.openshift.io"]
+    resources: ["consoleclidownloads"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "openshell-sandbox.fullname" . }}-registry-reader
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "openshell-sandbox.fullname" . }}-setup
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "openshell-sandbox.fullname" . }}-registry-reader

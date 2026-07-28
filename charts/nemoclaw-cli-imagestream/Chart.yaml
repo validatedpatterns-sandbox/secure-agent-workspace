@@ -1,0 +1,13 @@
+apiVersion: v2
+name: nemoclaw-cli-imagestream
+description: Builds the NemoClaw CLI image via OpenShift BuildConfig and stores it in an ImageStream
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - nemoclaw
+  - cli
+  - openshell
+  - openshift
+  - imagestream
+  - buildconfig

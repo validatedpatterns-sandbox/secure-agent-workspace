@@ -1,0 +1,11 @@
+apiVersion: v2
+name: openshell-keycloak
+description: Keycloak OIDC provider for OpenShell -- local development and testing
+type: application
+version: 0.1.0
+appVersion: "26.2"
+keywords:
+  - openshell
+  - keycloak
+  - oidc
+  - authentication

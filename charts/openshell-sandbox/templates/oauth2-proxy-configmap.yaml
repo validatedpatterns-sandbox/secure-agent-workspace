@@ -1,0 +1,110 @@
+{{- if .Values.accessControl.enabled }}
+{{- if not .Values.accessControl.owner }}
+{{- fail "accessControl.owner is required when accessControl.enabled is true" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "openshell-sandbox.fullname" . }}-auth-proxy
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+data:
+  nginx.conf: |
+    worker_processes 1;
+    error_log /dev/stderr info;
+    pid /tmp/nginx.pid;
+    events { worker_connections 256; }
+    http {
+      client_body_temp_path /tmp/client_body;
+      proxy_temp_path /tmp/proxy;
+      fastcgi_temp_path /tmp/fastcgi;
+      uwsgi_temp_path /tmp/uwsgi;
+      scgi_temp_path /tmp/scgi;
+      resolver local=on;
+      lua_shared_dict jwks_cache 1m;
+
+      server {
+        listen 4180;
+
+        location /healthz {
+          access_log off;
+          return 200 "ok";
+        }
+
+        location / {
+          access_by_lua_block {
+            local allowed_user = {{ .Values.accessControl.owner | quote }}
+
+            -- Extract Bearer token
+            local auth = ngx.var.http_authorization
+            if not auth then
+              ngx.status = 401
+              ngx.header["Content-Type"] = "application/json"
+              ngx.say('{"error":"missing Authorization header"}')
+              return ngx.exit(401)
+            end
+
+            local token = auth:match("^[Bb]earer%s+(.+)$")
+            if not token then
+              ngx.status = 401
+              ngx.header["Content-Type"] = "application/json"
+              ngx.say('{"error":"invalid Authorization header"}')
+              return ngx.exit(401)
+            end
+
+            -- Decode JWT payload (base64url, no crypto — the upstream
+            -- gateway validates signature, expiry, issuer, and audience)
+            local parts = {}
+            for p in token:gmatch("[^%.]+") do parts[#parts+1] = p end
+            if #parts < 2 then
+              ngx.status = 401
+              ngx.header["Content-Type"] = "application/json"
+              ngx.say('{"error":"malformed JWT"}')
+              return ngx.exit(401)
+            end
+
+            local payload_b64 = parts[2]:gsub("-", "+"):gsub("_", "/")
+            local pad = 4 - #payload_b64 % 4
+            if pad < 4 then payload_b64 = payload_b64 .. ("="):rep(pad) end
+
+            local ok, payload_json = pcall(ngx.decode_base64, payload_b64)
+            if not ok or not payload_json then
+              ngx.status = 401
+              ngx.header["Content-Type"] = "application/json"
+              ngx.say('{"error":"cannot decode JWT payload"}')
+              return ngx.exit(401)
+            end
+
+            local cjson = require("cjson.safe")
+            local claims, err = cjson.decode(payload_json)
+            if not claims then
+              ngx.status = 401
+              ngx.header["Content-Type"] = "application/json"
+              ngx.say('{"error":"invalid JWT payload"}')
+              return ngx.exit(401)
+            end
+
+            local username = claims["preferred_username"] or ""
+            if username ~= allowed_user then
+              ngx.log(ngx.WARN, "access denied: user=", username, " allowed=", allowed_user)
+              ngx.status = 403
+              ngx.header["Content-Type"] = "application/json"
+              ngx.say('{"error":"forbidden","user":"' .. username .. '"}')
+              return ngx.exit(403)
+            end
+          }
+
+          proxy_pass https://{{ include "openshell-sandbox.fullname" . }}-gateway:17670;
+          proxy_ssl_verify off;
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_set_header Authorization $http_authorization;
+          proxy_http_version 1.1;
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection "upgrade";
+        }
+      }
+    }
+{{- end }}

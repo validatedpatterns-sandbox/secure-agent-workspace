@@ -1,0 +1,35 @@
+{{- if .Values.goldenImage.enabled }}
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata:
+  name: {{ (split ":" .Values.output.imageStreamTag)._0 }}-golden
+  labels:
+    {{- include "openshell-gateway-image.labels" . | nindent 4 }}
+  annotations:
+    cdi.kubevirt.io/storage.bind.immediate.requested: "true"
+spec:
+  source:
+    registry:
+      url: "docker://image-registry.openshift-image-registry.svc:5000/{{ .Release.Namespace }}/{{ .Values.output.imageStreamTag }}"
+      pullMethod: node
+  storage:
+    accessModes:
+      - ReadWriteOnce
+    resources:
+      requests:
+        storage: {{ .Values.goldenImage.diskSize }}
+---
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataSource
+metadata:
+  name: {{ (split ":" .Values.output.imageStreamTag)._0 }}
+  labels:
+    {{- include "openshell-gateway-image.labels" . | nindent 4 }}
+    instancetype.kubevirt.io/default-instancetype: u1.medium
+    instancetype.kubevirt.io/default-preference: fedora
+spec:
+  source:
+    pvc:
+      name: {{ (split ":" .Values.output.imageStreamTag)._0 }}-golden
+      namespace: {{ .Release.Namespace }}
+{{- end }}

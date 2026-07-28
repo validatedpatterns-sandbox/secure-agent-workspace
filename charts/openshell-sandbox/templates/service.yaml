@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "openshell-sandbox.fullname" . }}-gateway
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "openshell-sandbox.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: gateway
+      port: 17670
+      targetPort: 17670
+      protocol: TCP
+    - name: dashboard
+      port: 18789
+      targetPort: 18789
+      protocol: TCP
+    - name: ssh
+      port: 22
+      targetPort: 22
+      protocol: TCP

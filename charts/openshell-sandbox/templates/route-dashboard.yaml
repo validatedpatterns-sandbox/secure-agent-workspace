@@ -1,0 +1,26 @@
+{{- if .Values.route.dashboard }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ include "openshell-sandbox.fullname" . }}-dashboard
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+spec:
+  to:
+    kind: Service
+    {{- if .Values.accessControl.enabled }}
+    name: {{ include "openshell-sandbox.fullname" . }}-auth-proxy
+    {{- else }}
+    name: {{ include "openshell-sandbox.fullname" . }}-gateway
+    {{- end }}
+    weight: 100
+  port:
+    {{- if .Values.accessControl.enabled }}
+    targetPort: proxy
+    {{- else }}
+    targetPort: dashboard
+    {{- end }}
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+{{- end }}

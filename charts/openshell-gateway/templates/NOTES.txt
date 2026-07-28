@@ -1,0 +1,17 @@
+openshell-gateway deployed.
+
+The VM is booting and running cloud-init (~5-8 min for first install).
+
+Verify the gateway is ready:
+
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }} --logs
+
+SSH into the gateway:
+
+  ssh-keygen -R "vm.{{ include "openshell-gateway.fullname" . }}.{{ .Release.Namespace }}"
+  virtctl -n {{ .Release.Namespace }} ssh cloud-user@vm/{{ include "openshell-gateway.fullname" . }}
+
+{{- if .Values.test.enabled }}
+
+To skip the cloud-init test on install, pass --set test.enabled=false.
+{{- end }}

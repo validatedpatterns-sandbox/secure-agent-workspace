@@ -1,0 +1,99 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "openshell-sandbox.fullname" . }}-cleanup
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "openshell-sandbox.fullname" . }}-cleanup
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+rules:
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachines"]
+    verbs: ["get", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "openshell-sandbox.fullname" . }}-cleanup
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "openshell-sandbox.fullname" . }}-cleanup
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "openshell-sandbox.fullname" . }}-cleanup
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "openshell-sandbox.fullname" . }}-cleanup
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-weight: "5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  serviceAccountName: {{ include "openshell-sandbox.fullname" . }}-cleanup
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: cleanup
+      image: {{ .Values.job.image }}
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      command:
+        - /bin/bash
+        - -c
+        - |
+          set -euo pipefail
+          VM_NAME="{{ include "openshell-sandbox.fullname" . }}"
+          NS="{{ .Release.Namespace }}"
+          API_SERVER="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
+          TOKEN="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
+          CACERT="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
+          kube() {
+            curl -sf --cacert "${CACERT}" -H "Authorization: Bearer ${TOKEN}" "$@"
+          }
+
+          echo "Deleting VM ${VM_NAME}..."
+          kube -X DELETE "${API_SERVER}/apis/kubevirt.io/v1/namespaces/${NS}/virtualmachines/${VM_NAME}" || echo "VM not found (already deleted)"
+
+          echo "Deleting PVCs for ${VM_NAME}..."
+          PVCS=$(kube "${API_SERVER}/api/v1/namespaces/${NS}/persistentvolumeclaims" \
+            | grep -o "\"${VM_NAME}[^\"]*\"" | tr -d '"' | sort -u || true)
+          for pvc in ${PVCS}; do
+            echo "  deleting PVC ${pvc}"
+            kube -X DELETE "${API_SERVER}/api/v1/namespaces/${NS}/persistentvolumeclaims/${pvc}" || true
+          done
+
+          echo "Cleanup complete."

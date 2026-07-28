@@ -1,0 +1,11 @@
+apiVersion: v2
+name: openshell-sandbox
+description: Per-user NemoClaw agent sandbox — clones from a gateway VM snapshot and configures via Job
+type: application
+version: 0.1.0
+appVersion: "0.0.89"
+keywords:
+  - openshell
+  - nemoclaw
+  - kubevirt
+  - vertex-ai

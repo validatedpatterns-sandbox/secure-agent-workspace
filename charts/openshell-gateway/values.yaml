@@ -1,0 +1,38 @@
+# Required — must be set at install time.
+sshPublicKey: ""
+
+vm:
+  cores: 4
+  memory: 8Gi
+  diskSize: 40Gi
+
+openshell:
+  version: "0.0.89"
+  fedoraRelease: "44"
+
+image:
+  mode: snapshot  # "snapshot" (cloud-init + snapshot) or "containerDisk" (pre-baked image)
+  containerDisk: ""  # Required when mode=containerDisk. e.g., "image-registry.openshift-image-registry.svc:5000/openshell-agents/openshell-gateway:latest"
+  fedoraCloud: "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"
+  sandbox: "image-registry.openshift-image-registry.svc:5000/openshell-agents/nemoclaw-sandbox:latest"
+  nemoclawCli: "image-registry.openshift-image-registry.svc:5000/openshell-agents/nemoclaw-cli:latest"
+  supervisor: "ghcr.io/nvidia/openshell/supervisor:latest"
+
+snapshot:
+  enabled: true
+  timeout: 900
+
+test:
+  enabled: true
+  image: registry.fedoraproject.org/fedora:44
+  vmiTimeout: 600
+  gatewayTimeout: 300
+
+oidc:
+  enabled: false
+  issuerUrl: ""
+  clientId: "openshell-cli"
+  rolesClaim: "realm_access.roles"
+  adminRole: "openshell-admin"
+  userRole: "openshell-user"
+  jwksTtlSecs: 3600

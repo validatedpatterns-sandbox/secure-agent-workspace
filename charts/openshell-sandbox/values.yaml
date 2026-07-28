@@ -1,0 +1,81 @@
+# Required — must be set at install time.
+sandboxName: ""
+sshPublicKey: ""
+
+# Source mode: "snapshot" clones from a VirtualMachineSnapshot, "containerDisk" boots from a pre-baked image.
+sourceMode: snapshot
+# Snapshot to clone from (used when sourceMode=snapshot).
+sourceSnapshot: snap-openshell-gateway
+# Golden image DataSource name (used when sourceMode=containerDisk).
+# Created by the openshell-gateway-image chart.
+sourceGoldenImage: openshell-gateway
+# Namespace where the golden image DataSource lives (for cross-namespace sandboxes).
+# Defaults to the release namespace if empty.
+sourceGoldenImageNamespace: ""
+
+vm:
+  cores: 4
+  memory: 8Gi
+  diskSize: 40Gi
+
+# Agent to run inside the sandbox: openclaw, hermes, or langchain-deepagents-code
+agent: openclaw
+
+# Onboarding CLI: openclaw (runs inside sandbox) or nemoclaw (runs on gateway VM, requires Docker)
+onboardCli: openclaw
+
+# Inference provider configuration.
+# Provider keys: gemini, anthropic, openai, build (NVIDIA), openrouter, ollama, custom
+inference:
+  provider: ""
+  model: ""
+  apiKey: ""
+  endpointUrl: ""
+  webSearch: ""
+
+# Vertex AI via GCP service account (legacy — optional).
+# When set, the Vertex provider is configured via openshell provider commands
+# before nemoclaw onboard runs.
+vertexSaJson: ""
+vertex:
+  region: global
+  model: claude-sonnet-4-6
+
+# SSH identity Secret for virtctl — must exist in the namespace.
+# The Secret should have a 'key' data field with the private key.
+sshSecret: openshell-aap-ssh
+sshUser: cloud-user
+
+# Fallback virtctl version if auto-detection from the cluster fails.
+virtctlVersion: "v1.4.1"
+
+job:
+  image: "registry.fedoraproject.org/fedora:44"
+  backoffLimit: 2
+  activeDeadlineSeconds: 1800
+
+# Expose the sandbox gateway and dashboard via OpenShift Routes.
+route:
+  enabled: false
+  host: ""
+  dashboard: false
+
+# OIDC authentication (injected by Makefile from 'make login').
+oidc:
+  token: ""
+  issuerUrl: ""
+  clientId: "openshell-cli"
+  passthrough: true
+
+# Per-user access control via oauth2-proxy.
+# When enabled, an oauth2-proxy pod validates that the OIDC token's
+# preferred_username matches the configured owner before forwarding
+# requests to the gateway.
+accessControl:
+  enabled: false
+  owner: ""
+  image: "docker.io/openresty/openresty:1.27.1.1-alpine"
+
+# Namespace strategy: "shared" places all sandboxes in the release namespace;
+# "perUser" expects a per-user namespace (e.g. saw-<username>).
+namespaceMode: shared

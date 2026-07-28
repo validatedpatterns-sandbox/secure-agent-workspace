@@ -1,0 +1,76 @@
+{{- if eq .Values.sourceMode "containerDisk" }}
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: {{ include "openshell-sandbox.fullname" . }}
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+    openshell.pattern/role: gateway
+spec:
+  runStrategy: Always
+  dataVolumeTemplates:
+    - metadata:
+        name: {{ include "openshell-sandbox.fullname" . }}-root
+      spec:
+        sourceRef:
+          kind: DataSource
+          name: {{ .Values.sourceGoldenImage }}
+          namespace: {{ .Values.sourceGoldenImageNamespace | default .Release.Namespace }}
+        storage:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: {{ .Values.vm.diskSize }}
+  template:
+    metadata:
+      labels:
+        {{- include "openshell-sandbox.labels" . | nindent 8 }}
+        openshell.pattern/role: gateway
+    spec:
+      domain:
+        cpu:
+          cores: {{ .Values.vm.cores }}
+        resources:
+          requests:
+            memory: {{ .Values.vm.memory }}
+        devices:
+          disks:
+            - name: rootdisk
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+          interfaces:
+            - name: default
+              masquerade: {}
+              ports:
+                - name: gateway
+                  port: 17670
+                  protocol: TCP
+                - name: dashboard
+                  port: 18789
+                  protocol: TCP
+                - name: ssh
+                  port: 22
+                  protocol: TCP
+        firmware:
+          bootloader:
+            efi:
+              secureBoot: false
+        features:
+          acpi: {}
+          smm: {}
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        - name: rootdisk
+          dataVolume:
+            name: {{ include "openshell-sandbox.fullname" . }}-root
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            secretRef:
+              name: {{ include "openshell-sandbox.fullname" . }}-cloudinit
+{{- end }}

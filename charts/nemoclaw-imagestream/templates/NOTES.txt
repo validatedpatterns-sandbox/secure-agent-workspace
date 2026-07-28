@@ -1,0 +1,13 @@
+nemoclaw-imagestream deployed.
+
+The ImageStream and BuildConfig are ready. To trigger a build:
+
+  make build              # or: oc start-build {{ (split ":" .Values.output.imageStreamTag)._0 }} -n {{ .Release.Namespace }}
+
+Follow build progress:
+
+  make build-follow       # or: oc logs -f bc/{{ (split ":" .Values.output.imageStreamTag)._0 }} -n {{ .Release.Namespace }}
+
+Check the image after the build completes:
+
+  oc get is {{ (split ":" .Values.output.imageStreamTag)._0 }} -n {{ .Release.Namespace }}

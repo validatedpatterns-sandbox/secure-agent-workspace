@@ -1,0 +1,21 @@
+{{- if .Values.keycloak.route.enabled }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ include "openshell-keycloak.fullname" . }}
+  labels:
+    {{- include "openshell-keycloak.labels" . | nindent 4 }}
+spec:
+  {{- if .Values.keycloak.route.host }}
+  host: {{ .Values.keycloak.route.host | quote }}
+  {{- end }}
+  to:
+    kind: Service
+    name: {{ include "openshell-keycloak.fullname" . }}
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+{{- end }}

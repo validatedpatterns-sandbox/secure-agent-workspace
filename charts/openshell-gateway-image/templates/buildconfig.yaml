@@ -1,0 +1,191 @@
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: {{ (split ":" .Values.output.imageStreamTag)._0 }}
+  labels:
+    {{- include "openshell-gateway-image.labels" . | nindent 4 }}
+spec:
+  source:
+    type: Dockerfile
+    dockerfile: |
+      FROM {{ .Values.build.builderImage }} AS builder
+
+      ARG OPENSHELL_VERSION={{ .Values.openshell.version }}
+      ARG FEDORA_RELEASE={{ .Values.openshell.fedoraRelease }}
+      ARG FEDORA_CLOUD_URL={{ .Values.image.fedoraCloud }}
+
+      ENV LIBGUESTFS_BACKEND=direct
+
+      RUN dnf install -y libguestfs-tools-c qemu-img curl && dnf clean all
+
+      WORKDIR /build
+      RUN curl -fL --retry 3 -o base.qcow2 "${FEDORA_CLOUD_URL}"
+
+      # Determine RPM URLs
+      RUN ARCH=$(uname -m) && \
+          case "${ARCH}" in \
+            x86_64|amd64) RPM_ARCH="x86_64" ;; \
+            aarch64|arm64) RPM_ARCH="aarch64" ;; \
+            *) echo "unsupported arch: ${ARCH}" >&2; exit 1 ;; \
+          esac && \
+          BASE_URL="https://github.com/NVIDIA/OpenShell/releases/download/v${OPENSHELL_VERSION}" && \
+          curl -fL --retry 3 -o openshell.rpm \
+            "${BASE_URL}/openshell-${OPENSHELL_VERSION}-1.fc${FEDORA_RELEASE}.${RPM_ARCH}.rpm" && \
+          curl -fL --retry 3 -o openshell-gateway.rpm \
+            "${BASE_URL}/openshell-gateway-${OPENSHELL_VERSION}-1.fc${FEDORA_RELEASE}.${RPM_ARCH}.rpm"
+
+      # Write the generic first-boot setup service
+      RUN cat > /build/openshell-gateway-setup.service <<'UNIT'
+      [Unit]
+      Description=OpenShell gateway user-service setup (first boot)
+      After=multi-user.target
+      ConditionPathExists=!/var/lib/openshell-gateway-setup.done
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=true
+      ExecStart=/usr/local/sbin/openshell-gateway-user-setup.sh
+      ExecStartPost=/usr/bin/touch /var/lib/openshell-gateway-setup.done
+
+      [Install]
+      WantedBy=multi-user.target
+      UNIT
+
+      # Write the generic user-setup script
+      # This script is deployment-agnostic: it reads config from /etc/openshell/
+      # placed there by cloud-init at boot time.
+      RUN cat > /build/openshell-gateway-user-setup.sh <<'SETUP'
+      #!/usr/bin/env bash
+      set -euo pipefail
+      USER_NAME="cloud-user"
+      USER_UID="$(id -u "${USER_NAME}")"
+      USER_HOME="$(getent passwd "${USER_NAME}" | cut -d: -f6)"
+
+      # Start user systemd session
+      systemctl start "user@${USER_UID}.service"
+      for _ in $(seq 1 90); do
+        if [[ -S "/run/user/${USER_UID}/bus" ]]; then break; fi
+        sleep 1
+      done
+      if [[ ! -S "/run/user/${USER_UID}/bus" ]]; then
+        echo "user systemd bus not ready for ${USER_NAME}" >&2
+        exit 1
+      fi
+
+      export XDG_RUNTIME_DIR="/run/user/${USER_UID}"
+      export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${USER_UID}/bus"
+
+      run_user() {
+        sudo -u "${USER_NAME}" \
+          XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" \
+          DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS}" \
+          systemctl --user "$@"
+      }
+
+      run_user daemon-reload
+      for unit in podman.socket openshell-gateway.service; do
+        ok=0
+        for _ in $(seq 1 15); do
+          if run_user enable --now "${unit}"; then ok=1; break; fi
+          sleep 2
+          run_user daemon-reload || true
+        done
+        if [[ "${ok}" -ne 1 ]]; then
+          echo "failed to enable --now ${unit} for ${USER_NAME}" >&2
+          exit 1
+        fi
+      done
+
+      sleep 3
+
+      # Copy gateway config from /etc/openshell/ (placed by cloud-init)
+      install -d -m 0755 "${USER_HOME}/.config/openshell"
+      cp /etc/openshell/gateway.env "${USER_HOME}/.config/openshell/gateway.env"
+      if [[ -f /etc/openshell/gateway.toml ]]; then
+        cp /etc/openshell/gateway.toml "${USER_HOME}/.config/openshell/gateway.toml"
+      fi
+      chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/openshell"
+
+      # Determine auth mode from gateway.toml presence
+      AUTH_MODE="mtls"
+      OIDC_FIELDS=""
+      if [[ -f /etc/openshell/gateway.toml ]]; then
+        AUTH_MODE="oidc"
+        OIDC_ISSUER="$(grep -oP 'issuer\s*=\s*"\K[^"]+' /etc/openshell/gateway.toml || true)"
+        OIDC_CLIENT="$(grep -oP 'audience\s*=\s*"\K[^"]+' /etc/openshell/gateway.toml || true)"
+        OIDC_FIELDS=",\"oidc_issuer\":\"${OIDC_ISSUER}\",\"oidc_client_id\":\"${OIDC_CLIENT}\",\"oidc_audience\":\"${OIDC_CLIENT}\""
+      fi
+
+      sudo -u "${USER_NAME}" \
+        XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" \
+        DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS}" \
+        bash -lc "
+          set -euo pipefail
+          TLS_DIR=\"\${HOME}/.local/state/openshell/tls\"
+          if [[ \"${AUTH_MODE}\" == \"mtls\" ]]; then
+            MTLS_DIR=\"\${HOME}/.config/openshell/gateways/openshell/mtls\"
+            mkdir -p \"\${MTLS_DIR}\"
+            if [[ -f \"\${TLS_DIR}/ca.crt\" ]]; then
+              cp -f \"\${TLS_DIR}/ca.crt\" \"\${MTLS_DIR}/ca.crt\"
+              cp -f \"\${TLS_DIR}/client/tls.crt\" \"\${MTLS_DIR}/tls.crt\"
+              cp -f \"\${TLS_DIR}/client/tls.key\" \"\${MTLS_DIR}/tls.key\"
+            fi
+          fi
+          mkdir -p \"\${HOME}/.config/openshell/gateways/openshell\"
+          printf '%s\n' '{\"name\":\"openshell\",\"gateway_endpoint\":\"https://127.0.0.1:17670\",\"is_remote\":false,\"gateway_port\":17670,\"auth_mode\":\"${AUTH_MODE}\"${OIDC_FIELDS}}' > \"\${HOME}/.config/openshell/gateways/openshell/metadata.json\"
+          echo openshell > \"\${HOME}/.config/openshell/active_gateway\"
+        "
+
+      # Pre-pull sandbox image if configured in gateway.env
+      SANDBOX_IMAGE="$(grep -oP 'OPENSHELL_SANDBOX_IMAGE=\K.*' /etc/openshell/gateway.env || true)"
+      if [[ -n "${SANDBOX_IMAGE}" ]]; then
+        echo "Pre-pulling sandbox image: ${SANDBOX_IMAGE}"
+        sudo -u "${USER_NAME}" \
+          XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" \
+          DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS}" \
+          podman pull "${SANDBOX_IMAGE}" || true
+      fi
+
+      echo "OpenShell gateway user setup complete."
+      SETUP
+
+      # Bake packages and config into the qcow2
+      RUN virt-customize -a base.qcow2 \
+            --install podman,podman-docker,curl,jq,qemu-guest-agent,openssh-clients \
+            --install nodejs \
+            --copy-in /build/openshell.rpm:/tmp/ \
+            --copy-in /build/openshell-gateway.rpm:/tmp/ \
+            --run-command 'dnf install -y /tmp/openshell.rpm /tmp/openshell-gateway.rpm && rm -f /tmp/openshell*.rpm' \
+            --run-command 'useradd -m -G wheel cloud-user 2>/dev/null; echo "cloud-user ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/cloud-user; chmod 440 /etc/sudoers.d/cloud-user' \
+            --run-command 'loginctl enable-linger cloud-user || mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/cloud-user' \
+            --run-command 'systemctl enable podman.socket' \
+            --copy-in /build/openshell-gateway-setup.service:/etc/systemd/system/ \
+            --copy-in /build/openshell-gateway-user-setup.sh:/usr/local/sbin/ \
+            --run-command 'chmod 755 /usr/local/sbin/openshell-gateway-user-setup.sh' \
+            --run-command 'systemctl enable openshell-gateway-setup.service' \
+            --run-command 'mkdir -p /etc/openshell && chown root:root /etc/openshell && chmod 750 /etc/openshell' \
+            --selinux-relabel && \
+          mkdir -p /output && \
+          qemu-img convert -c -O qcow2 base.qcow2 /output/disk.qcow2 && \
+          rm -f base.qcow2
+
+      FROM scratch
+      COPY --from=builder /output/disk.qcow2 /disk/disk.qcow2
+  strategy:
+    type: Docker
+    dockerStrategy:
+      buildArgs:
+        - name: OPENSHELL_VERSION
+          value: {{ .Values.openshell.version | quote }}
+        - name: FEDORA_RELEASE
+          value: {{ .Values.openshell.fedoraRelease | quote }}
+        - name: FEDORA_CLOUD_URL
+          value: {{ .Values.image.fedoraCloud | quote }}
+  output:
+    to:
+      kind: ImageStreamTag
+      name: {{ .Values.output.imageStreamTag }}
+  resources:
+    limits:
+      memory: {{ .Values.build.memoryLimit }}
+  triggers: []

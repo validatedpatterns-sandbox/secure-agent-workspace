@@ -1,0 +1,94 @@
+{{- if and .Values.snapshot.enabled (eq .Values.image.mode "snapshot") }}
+{{- $snapshotAPI := "snapshot.kubevirt.io/v1beta1" }}
+{{- if not (.Capabilities.APIVersions.Has "snapshot.kubevirt.io/v1beta1") }}
+  {{- $snapshotAPI = "snapshot.kubevirt.io/v1alpha1" }}
+{{- end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "openshell-gateway.fullname" . }}-snap-cleanup
+  labels:
+    {{- include "openshell-gateway.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "openshell-gateway.fullname" . }}-snap-cleanup
+  labels:
+    {{- include "openshell-gateway.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+rules:
+  - apiGroups: ["snapshot.kubevirt.io"]
+    resources: ["virtualmachinesnapshots"]
+    verbs: ["get", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "openshell-gateway.fullname" . }}-snap-cleanup
+  labels:
+    {{- include "openshell-gateway.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "openshell-gateway.fullname" . }}-snap-cleanup
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "openshell-gateway.fullname" . }}-snap-cleanup
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "openshell-gateway.fullname" . }}-snap-cleanup
+  labels:
+    {{- include "openshell-gateway.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-weight: "5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  serviceAccountName: {{ include "openshell-gateway.fullname" . }}-snap-cleanup
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: cleanup
+      image: {{ .Values.test.image }}
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      command:
+        - /bin/bash
+        - -c
+        - |
+          set -euo pipefail
+          SNAP_NAME="snap-{{ include "openshell-gateway.fullname" . }}"
+          NS="{{ .Release.Namespace }}"
+          SNAPSHOT_API="{{ $snapshotAPI }}"
+          API_SERVER="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
+          TOKEN="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
+          CACERT="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
+          kube() {
+            curl -sf --cacert "${CACERT}" -H "Authorization: Bearer ${TOKEN}" "$@"
+          }
+
+          echo "Deleting snapshot '${SNAP_NAME}'..."
+          kube -X DELETE "${API_SERVER}/apis/${SNAPSHOT_API}/namespaces/${NS}/virtualmachinesnapshots/${SNAP_NAME}" || echo "Snapshot not found (already deleted)"
+          echo "Snapshot cleanup complete."
+{{- end }}

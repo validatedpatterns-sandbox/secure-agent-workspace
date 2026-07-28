@@ -1,0 +1,10 @@
+source:
+  git:
+    uri: "https://github.com/NVIDIA/NemoClaw.git"
+    ref: "main"
+
+build:
+  nodeImage: "node:22-trixie-slim"
+
+output:
+  imageStreamTag: "nemoclaw-cli:latest"

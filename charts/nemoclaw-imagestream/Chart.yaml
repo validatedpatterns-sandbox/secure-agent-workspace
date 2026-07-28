@@ -1,0 +1,12 @@
+apiVersion: v2
+name: nemoclaw-imagestream
+description: Builds the NemoClaw sandbox image via OpenShift BuildConfig and stores it in an ImageStream
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - nemoclaw
+  - openshell
+  - openshift
+  - imagestream
+  - buildconfig

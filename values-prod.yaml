@@ -17,6 +17,9 @@ clusterGroup:
     ansible-automation-platform:
       operatorGroup: true
       targetNamespaces: []
+    redhat-ods-operator:
+      operatorGroup: true
+      targetNamespaces: []
     secure-agent-workspace:
     vault:
   subscriptions:
@@ -40,6 +43,10 @@ clusterGroup:
       name: ansible-automation-platform-operator
       namespace: ansible-automation-platform
       channel: stable-2.5
+    openshift-ai:
+      name: rhods-operator
+      namespace: redhat-ods-operator
+      channel: fast
   applications:
     openshift-external-secrets:
       name: openshift-external-secrets

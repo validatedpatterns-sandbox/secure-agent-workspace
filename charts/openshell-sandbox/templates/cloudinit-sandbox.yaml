@@ -1,4 +1,3 @@
-{{- if eq .Values.sourceMode "containerDisk" }}
 apiVersion: v1
 kind: Secret
 metadata:
@@ -72,5 +71,4 @@ stringData:
         chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/openshell"
         systemctl start openshell-gateway-setup.service
 
-    final_message: "openshell-sandbox cloud-init finished (containerDisk mode)"
-{{- end }}
+    final_message: "openshell-sandbox cloud-init finished"

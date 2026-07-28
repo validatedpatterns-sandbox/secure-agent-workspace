@@ -10,13 +10,7 @@ Follow build progress:
   make build-gateway-image-follow
   # or: oc logs -f bc/{{ (split ":" .Values.output.imageStreamTag)._0 }} -n {{ .Release.Namespace }}
 
-Use the image in the gateway chart:
+The build produces a bootc image that CDI imports directly into a golden
+image PVC. Use the golden image to create sandboxes:
 
-  make gateway-from-image
-
-Or manually:
-
-  helm upgrade --install openshell-gateway ./openshell-gateway \
-    --set image.mode=containerDisk \
-    --set image.containerDisk=image-registry.openshift-image-registry.svc:5000/{{ .Release.Namespace }}/{{ .Values.output.imageStreamTag }} \
-    --set sshPublicKey="$(cat ~/.ssh/id_ed25519.pub)"
+  make sandbox-create SANDBOX_NAME=my-sandbox SOURCE_MODE=containerDisk ...

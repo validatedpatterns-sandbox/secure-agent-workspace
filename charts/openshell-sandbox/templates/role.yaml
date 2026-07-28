@@ -17,18 +17,9 @@ rules:
   - apiGroups: ["subresources.kubevirt.io"]
     resources: ["virtualmachines/portforward"]
     verbs: ["get"]
-  {{- if eq .Values.sourceMode "snapshot" }}
-  - apiGroups: ["clone.kubevirt.io"]
-    resources: ["virtualmachineclones"]
-    verbs: ["get", "list"]
-  - apiGroups: ["snapshot.kubevirt.io"]
-    resources: ["virtualmachinesnapshots"]
-    verbs: ["get", "list"]
-  {{- else }}
   - apiGroups: ["cdi.kubevirt.io"]
     resources: ["datavolumes"]
     verbs: ["get", "list"]
-  {{- end }}
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]

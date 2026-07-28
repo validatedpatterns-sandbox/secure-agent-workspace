@@ -21,19 +21,12 @@ Helm charts for deploying per-user OpenShell + NemoClaw agent sandboxes on OpenS
                │ JWKS validation
                ▼
 ┌─────────────────────────────┐
-│  openshell-gateway-image    │  (Optional) Pre-baked gateway
-│  ImageStream + BuildConfig  │  VM disk image for faster boot
-│  virt-customize + qcow2     │
+│  openshell-gateway-image    │  Build once per cluster
+│  ImageStream + BuildConfig  │  Bootc image (Fedora 44 + OpenShell)
+│  DataVolume + DataSource    │  CDI imports → golden image PVC
 └──────────────┬──────────────┘
-               │ containerDisk (alternative to snapshot)
-               ▼
-┌─────────────────────────────────────────────────────────────┐
-│  openshell-gateway                                          │  Deploy once per cluster
-│  (master VM + snapshot)                                     │  Fedora 44 + OpenShell gateway
-│  DataVolume + cloud-init + golden image DataSource          │  Post-install hook creates snapshot
-└──────────────────────────────┬──────────────────────────────┘
-                               │
-         ┌─────────────────────┼─────────────────────┐
+               │ sandboxes clone from golden image
+         ┌─────┼─────────────────────┐
          ▼                     ▼                     ▼
   ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
   │ alice sandbox    │  │ bob sandbox      │  │ carol sandbox    │
@@ -46,7 +39,7 @@ Helm charts for deploying per-user OpenShell + NemoClaw agent sandboxes on OpenS
    openshell-agents                              saw-alice, saw-bob
 ```
 
-Sandboxes can live in a **shared namespace** (default, scales to thousands of users) or in **per-user namespaces** (`saw-<username>`). Each sandbox has an **auth proxy** that restricts access to the owning user by validating the OIDC token's `preferred_username`.
+Sandboxes can live in a **shared namespace** (default, scales to thousands of users) or in **per-user namespaces** (`saw-<username>`). Each sandbox has an **auth proxy** (dashboard only) that restricts access to the owning user by validating the OIDC token's `preferred_username`.
 
 ## Prerequisites
 
@@ -89,38 +82,19 @@ Users interact only via the `openshell` CLI and their gateway URL. No knowledge 
 
 > **Note:** The gateway VM uses a self-signed TLS certificate. Pass `--gateway-insecure` to `openshell` commands, or set `export OPENSHELL_GATEWAY_INSECURE=true` in your shell profile to skip certificate verification.
 
-## Quick Start (containerDisk mode)
+## Quick Start
 
-Pre-bakes all OpenShell packages into a container disk image. Sandboxes boot directly from the image -- no master VM or snapshot required.
+Builds a bootc gateway image, then clones from it for each user sandbox.
 
 ```bash
 # One-time cluster setup
 make build                    # NemoClaw sandbox image
 make build-cli                # NemoClaw CLI image
-make build-gateway-image      # Pre-baked gateway VM image (~15 min)
+make build-gateway-image      # Bootc gateway VM image (~10 min)
 make keycloak                 # OIDC provider (or use external SSO)
 
 # Per-user
 make login                    # Authenticate with OIDC
-make sandbox-create SANDBOX_NAME=my-sandbox PROVIDER=gemini MODEL=gemini-2.5-flash API_KEY=<key>
-make openshell-configure-gateway SANDBOX_NAME=my-sandbox
-openshell gateway login
-openshell --gateway-insecure sandbox list
-```
-
-## Quick Start (snapshot mode)
-
-Creates a master gateway VM, snapshots it, then clones from the snapshot for each user.
-
-```bash
-# One-time cluster setup
-make build                    # NemoClaw sandbox image
-make build-cli                # NemoClaw CLI image
-make keycloak                 # OIDC provider
-make gateway OIDC_ISSUER=$(make keycloak-issuer)   # Master VM + snapshot (~8-12 min)
-
-# Per-user
-make login
 make sandbox-create SANDBOX_NAME=my-sandbox PROVIDER=gemini MODEL=gemini-2.5-flash API_KEY=<key>
 make openshell-configure-gateway SANDBOX_NAME=my-sandbox
 openshell gateway login
@@ -260,7 +234,7 @@ Creates a dedicated VM with inference provider, OpenClaw agent, and per-user acc
 |-----|---------|-------------|
 | `sandboxName` | `""` (required) | DNS-safe sandbox name |
 | `sshPublicKey` | `""` (required) | User's SSH public key |
-| `sourceMode` | `snapshot` | `snapshot` or `containerDisk` |
+| `sourceGoldenImage` | `openshell-gateway` | Golden image DataSource name |
 | `agent` | `openclaw` | Agent: `openclaw`, `hermes`, or `langchain-deepagents-code` |
 | `inference.provider` | `""` | Provider key |
 | `inference.model` | `""` | Model ID |
@@ -271,22 +245,11 @@ Creates a dedicated VM with inference provider, OpenClaw agent, and per-user acc
 | `route.enabled` | `false` | Expose gateway via OpenShift Route |
 | `route.dashboard` | `false` | Expose dashboard via OpenShift Route |
 
-**What it creates:** VirtualMachineClone, Service, setup Job, auth proxy (Deployment + Service + ConfigMap), Routes, ServiceAccount + RBAC.
+**What it creates:** VirtualMachine (from golden image), Service, setup Job, auth proxy (Deployment + Service + ConfigMap), Routes, ServiceAccount + RBAC.
 
-### openshell-gateway (master VM + snapshot)
+### openshell-gateway-image (bootc VM image)
 
-Deploys a Fedora 44 VM with OpenShell gateway. A post-install hook creates a VirtualMachineSnapshot for fast cloning.
-
-```bash
-helm install openshell-gateway ./charts/openshell-gateway \
-  --namespace openshell-agents --create-namespace \
-  --set sshPublicKey="$(cat ~/.ssh/id_ed25519.pub)" \
-  --timeout 30m
-```
-
-### openshell-gateway-image (pre-baked VM image)
-
-Builds a pre-baked VM image via `virt-customize` in an OpenShift BuildConfig.
+Builds a bootc-based gateway VM image via OpenShift BuildConfig. CDI imports the image into a golden image PVC that sandboxes clone from.
 
 ```bash
 make build-gateway-image

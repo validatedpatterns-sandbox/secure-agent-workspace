@@ -2,12 +2,7 @@
 sandboxName: ""
 sshPublicKey: ""
 
-# Source mode: "snapshot" clones from a VirtualMachineSnapshot, "containerDisk" boots from a pre-baked image.
-sourceMode: snapshot
-# Snapshot to clone from (used when sourceMode=snapshot).
-sourceSnapshot: snap-openshell-gateway
-# Golden image DataSource name (used when sourceMode=containerDisk).
-# Created by the openshell-gateway-image chart.
+# Golden image DataSource name (created by the openshell-gateway-image chart).
 sourceGoldenImage: openshell-gateway
 # Namespace where the golden image DataSource lives (for cross-namespace sandboxes).
 # Defaults to the release namespace if empty.

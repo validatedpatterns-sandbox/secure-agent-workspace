@@ -25,12 +25,11 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
 		exit 1; \
 	}
 
-SOURCE_MODE    ?= containerDisk
 
 .PHONY: help build build-logs build-cli build-cli-logs \
         build-gateway-image build-gateway-image-logs \
         keycloak keycloak-issuer login whoami logout teardown-keycloak \
-        gateway gateway-from-image gateway-test gateway-verify \
+        gateway gateway-test gateway-verify \
         sandbox-create list-sandboxes sandbox-logs sandbox-ssh ssh-secret \
         openshell-configure-gateway \
         tui gui \
@@ -63,7 +62,7 @@ build-cli-logs: ## Follow the latest NemoClaw CLI image build logs
 
 # --- Gateway VM image ---
 
-build-gateway-image: ## Build pre-baked gateway VM image (containerDisk)
+build-gateway-image: ## Build the bootc gateway VM image
 	helm upgrade --install openshell-gateway-image $(HELM_DIR)openshell-gateway-image \
 		--namespace $(NS) --create-namespace
 	oc start-build openshell-gateway -n $(NS) --follow
@@ -125,25 +124,15 @@ teardown-keycloak: ## Uninstall Keycloak
 
 # --- Gateway ---
 
-gateway: .check-ssh-key ## Deploy the gateway master VM and snapshot it
-	@echo "Deploying gateway VM and creating snapshot (this takes 5-8 min for cloud-init + snapshot)..."
+gateway: .check-ssh-key ## Deploy a gateway VM from the pre-built bootc image
+	@echo "Deploying gateway from bootc image..."
 	helm upgrade --install openshell-gateway $(HELM_DIR)openshell-gateway \
 		--namespace $(NS) --create-namespace \
 		--set sshPublicKey="$(SSH_PUBKEY)" \
-		$(if $(OIDC_ISSUER),--set oidc.enabled=true --set oidc.issuerUrl=$(OIDC_ISSUER) --set oidc.clientId=$(OIDC_CLIENT_ID)) \
-		--timeout 30m
-	@echo "Gateway deployed and snapshot created."
-
-gateway-from-image: .check-ssh-key ## Deploy gateway using pre-built containerDisk image (no snapshot)
-	@echo "Deploying gateway from pre-built image (no snapshot)..."
-	helm upgrade --install openshell-gateway $(HELM_DIR)openshell-gateway \
-		--namespace $(NS) --create-namespace \
-		--set sshPublicKey="$(SSH_PUBKEY)" \
-		--set image.mode=containerDisk \
 		--set image.containerDisk=image-registry.openshift-image-registry.svc:5000/$(NS)/openshell-gateway:latest \
 		$(if $(OIDC_ISSUER),--set oidc.enabled=true --set oidc.issuerUrl=$(OIDC_ISSUER) --set oidc.clientId=$(OIDC_CLIENT_ID)) \
 		--timeout 15m
-	@echo "Gateway deployed from pre-built image."
+	@echo "Gateway deployed."
 
 gateway-test: ## Run the gateway helm test (streams logs separately)
 	@echo "Starting helm test in background..."
@@ -237,7 +226,7 @@ endif
 		$$OIDC_OPTS \
 		$$AC_OPTS \
 		--set namespaceMode=$(NAMESPACE_MODE) \
-		$(if $(filter containerDisk,$(SOURCE_MODE)),--set sourceMode=containerDisk) \
+		\
 		--set route.enabled=true --set route.dashboard=true; \
 	echo ""; \
 	echo "Sandbox '$(SANDBOX_NAME)' deployed."; \

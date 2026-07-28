@@ -8,20 +8,17 @@ spec:
   source:
     type: Dockerfile
     dockerfile: |
-      FROM {{ .Values.build.builderImage }} AS builder
+      FROM {{ .Values.build.baseImage }}
 
       ARG OPENSHELL_VERSION={{ .Values.openshell.version }}
       ARG FEDORA_RELEASE={{ .Values.openshell.fedoraRelease }}
-      ARG FEDORA_CLOUD_URL={{ .Values.image.fedoraCloud }}
 
-      ENV LIBGUESTFS_BACKEND=direct
+      RUN dnf install -y \
+            podman podman-docker curl jq \
+            qemu-guest-agent openssh-clients openssh-server \
+            nodejs cloud-init \
+          && dnf clean all
 
-      RUN dnf install -y libguestfs-tools-c qemu-img curl && dnf clean all
-
-      WORKDIR /build
-      RUN curl -fL --retry 3 -o base.qcow2 "${FEDORA_CLOUD_URL}"
-
-      # Determine RPM URLs
       RUN ARCH=$(uname -m) && \
           case "${ARCH}" in \
             x86_64|amd64) RPM_ARCH="x86_64" ;; \
@@ -29,13 +26,28 @@ spec:
             *) echo "unsupported arch: ${ARCH}" >&2; exit 1 ;; \
           esac && \
           BASE_URL="https://github.com/NVIDIA/OpenShell/releases/download/v${OPENSHELL_VERSION}" && \
-          curl -fL --retry 3 -o openshell.rpm \
+          curl -fL --retry 3 -o /tmp/openshell.rpm \
             "${BASE_URL}/openshell-${OPENSHELL_VERSION}-1.fc${FEDORA_RELEASE}.${RPM_ARCH}.rpm" && \
-          curl -fL --retry 3 -o openshell-gateway.rpm \
-            "${BASE_URL}/openshell-gateway-${OPENSHELL_VERSION}-1.fc${FEDORA_RELEASE}.${RPM_ARCH}.rpm"
+          curl -fL --retry 3 -o /tmp/openshell-gateway.rpm \
+            "${BASE_URL}/openshell-gateway-${OPENSHELL_VERSION}-1.fc${FEDORA_RELEASE}.${RPM_ARCH}.rpm" && \
+          dnf install -y /tmp/openshell.rpm /tmp/openshell-gateway.rpm && \
+          rm -f /tmp/openshell*.rpm && \
+          dnf clean all
 
-      # Write the generic first-boot setup service
-      RUN cat > /build/openshell-gateway-setup.service <<'UNIT'
+      RUN useradd -m -G wheel cloud-user 2>/dev/null; \
+          echo "cloud-user ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/cloud-user && \
+          chmod 440 /etc/sudoers.d/cloud-user && \
+          mkdir -p /var/lib/systemd/linger && \
+          touch /var/lib/systemd/linger/cloud-user
+
+      RUN systemctl enable podman.socket && \
+          systemctl enable qemu-guest-agent.service && \
+          systemctl enable cloud-init-main.service && \
+          systemctl enable cloud-init-local.service && \
+          systemctl enable cloud-config.service && \
+          systemctl enable cloud-final.service
+
+      RUN cat > /etc/systemd/system/openshell-gateway-setup.service <<'UNIT'
       [Unit]
       Description=OpenShell gateway user-service setup (first boot)
       After=multi-user.target
@@ -51,10 +63,9 @@ spec:
       WantedBy=multi-user.target
       UNIT
 
-      # Write the generic user-setup script
-      # This script is deployment-agnostic: it reads config from /etc/openshell/
-      # placed there by cloud-init at boot time.
-      RUN cat > /build/openshell-gateway-user-setup.sh <<'SETUP'
+      RUN mkdir -p /usr/local/sbin
+
+      RUN cat > /usr/local/sbin/openshell-gateway-user-setup.sh <<'SETUP'
       #!/usr/bin/env bash
       set -euo pipefail
       USER_NAME="cloud-user"
@@ -149,28 +160,12 @@ spec:
       echo "OpenShell gateway user setup complete."
       SETUP
 
-      # Bake packages and config into the qcow2
-      RUN virt-customize -a base.qcow2 \
-            --install podman,podman-docker,curl,jq,qemu-guest-agent,openssh-clients \
-            --install nodejs \
-            --copy-in /build/openshell.rpm:/tmp/ \
-            --copy-in /build/openshell-gateway.rpm:/tmp/ \
-            --run-command 'dnf install -y /tmp/openshell.rpm /tmp/openshell-gateway.rpm && rm -f /tmp/openshell*.rpm' \
-            --run-command 'useradd -m -G wheel cloud-user 2>/dev/null; echo "cloud-user ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/cloud-user; chmod 440 /etc/sudoers.d/cloud-user' \
-            --run-command 'loginctl enable-linger cloud-user || mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/cloud-user' \
-            --run-command 'systemctl enable podman.socket' \
-            --copy-in /build/openshell-gateway-setup.service:/etc/systemd/system/ \
-            --copy-in /build/openshell-gateway-user-setup.sh:/usr/local/sbin/ \
-            --run-command 'chmod 755 /usr/local/sbin/openshell-gateway-user-setup.sh' \
-            --run-command 'systemctl enable openshell-gateway-setup.service' \
-            --run-command 'mkdir -p /etc/openshell && chown root:root /etc/openshell && chmod 750 /etc/openshell' \
-            --selinux-relabel && \
-          mkdir -p /output && \
-          qemu-img convert -c -O qcow2 base.qcow2 /output/disk.qcow2 && \
-          rm -f base.qcow2
+      RUN chmod 755 /usr/local/sbin/openshell-gateway-user-setup.sh && \
+          systemctl enable openshell-gateway-setup.service
 
-      FROM scratch
-      COPY --from=builder /output/disk.qcow2 /disk/disk.qcow2
+      RUN mkdir -p /etc/openshell && \
+          chown root:root /etc/openshell && \
+          chmod 750 /etc/openshell
   strategy:
     type: Docker
     dockerStrategy:
@@ -179,8 +174,6 @@ spec:
           value: {{ .Values.openshell.version | quote }}
         - name: FEDORA_RELEASE
           value: {{ .Values.openshell.fedoraRelease | quote }}
-        - name: FEDORA_CLOUD_URL
-          value: {{ .Values.image.fedoraCloud | quote }}
   output:
     to:
       kind: ImageStreamTag

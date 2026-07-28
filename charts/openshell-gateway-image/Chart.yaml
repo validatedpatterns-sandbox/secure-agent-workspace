@@ -1,6 +1,6 @@
 apiVersion: v2
 name: openshell-gateway-image
-description: Builds a pre-baked OpenShell gateway VM disk image via OpenShift BuildConfig
+description: Builds a bootc-based OpenShell gateway VM image via OpenShift BuildConfig
 type: application
 version: 0.1.0
 appVersion: "0.0.89"
@@ -8,4 +8,4 @@ keywords:
   - openshell
   - gateway
   - openshift
-  - containerdisk
+  - bootc

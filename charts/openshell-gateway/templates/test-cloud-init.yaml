@@ -32,7 +32,6 @@ spec:
           VM_NAME="{{ include "openshell-gateway.fullname" . }}"
           SVC_NAME="{{ include "openshell-gateway.fullname" . }}-gateway"
           NAMESPACE="{{ .Release.Namespace }}"
-          IMAGE_MODE="{{ .Values.image.mode }}"
           VMI_TIMEOUT={{ .Values.test.vmiTimeout }}
           GW_TIMEOUT={{ .Values.test.gatewayTimeout }}
 
@@ -45,63 +44,33 @@ spec:
               "${API_SERVER}${1}"
           }
 
-          echo "=== Gateway verification for ${VM_NAME} (mode: ${IMAGE_MODE}) ==="
+          echo "=== Gateway verification for ${VM_NAME} ==="
 
-          if [ "${IMAGE_MODE}" = "snapshot" ]; then
-            # --- Snapshot mode: Check snapshot readyToUse ---
-            SNAP_NAME="snap-${VM_NAME}"
-            echo "Waiting up to ${VMI_TIMEOUT}s for snapshot '${SNAP_NAME}' readyToUse..."
-            READY=""
-            elapsed=0
-            while [ "${elapsed}" -lt "${VMI_TIMEOUT}" ]; do
-              READY=$(kube_get "/apis/snapshot.kubevirt.io/v1beta1/namespaces/${NAMESPACE}/virtualmachinesnapshots/${SNAP_NAME}" \
-                | tr -d '\n\r ' \
-                | grep -o '"readyToUse":[a-z]*' \
-                | head -1 \
-                | cut -d: -f2 || true)
+          # --- Check DataVolume provisioning ---
+          DV_NAME="${VM_NAME}-root"
+          echo "Waiting up to ${VMI_TIMEOUT}s for DataVolume '${DV_NAME}' to succeed..."
+          DV_PHASE=""
+          elapsed=0
+          while [ "${elapsed}" -lt "${VMI_TIMEOUT}" ]; do
+            DV_PHASE=$(kube_get "/apis/cdi.kubevirt.io/v1beta1/namespaces/${NAMESPACE}/datavolumes/${DV_NAME}" \
+              | tr -d '\n\r ' \
+              | grep -o '"phase":"[^"]*"' \
+              | head -1 \
+              | cut -d'"' -f4 || true)
 
-              if [ "${READY}" = "true" ]; then
-                echo "Snapshot '${SNAP_NAME}' is readyToUse (${elapsed}s)"
-                break
-              fi
-
-              echo "  waiting for snapshot readyToUse... (${elapsed}s/${VMI_TIMEOUT}s)"
-              sleep 10
-              elapsed=$((elapsed + 10))
-            done
-
-            if [ "${READY}" != "true" ]; then
-              echo "FAIL: Snapshot '${SNAP_NAME}' not readyToUse after ${VMI_TIMEOUT}s"
-              kube_get "/apis/snapshot.kubevirt.io/v1beta1/namespaces/${NAMESPACE}/virtualmachinesnapshots/${SNAP_NAME}" || true
-              exit 1
+            if [ "${DV_PHASE}" = "Succeeded" ]; then
+              echo "DataVolume '${DV_NAME}' is Succeeded (${elapsed}s)"
+              break
             fi
-          else
-            # --- ContainerDisk mode: Check DataVolume provisioning ---
-            DV_NAME="${VM_NAME}-root"
-            echo "Waiting up to ${VMI_TIMEOUT}s for DataVolume '${DV_NAME}' to succeed..."
-            DV_PHASE=""
-            elapsed=0
-            while [ "${elapsed}" -lt "${VMI_TIMEOUT}" ]; do
-              DV_PHASE=$(kube_get "/apis/cdi.kubevirt.io/v1beta1/namespaces/${NAMESPACE}/datavolumes/${DV_NAME}" \
-                | tr -d '\n\r ' \
-                | grep -o '"phase":"[^"]*"' \
-                | head -1 \
-                | cut -d'"' -f4 || true)
 
-              if [ "${DV_PHASE}" = "Succeeded" ]; then
-                echo "DataVolume '${DV_NAME}' is Succeeded (${elapsed}s)"
-                break
-              fi
+            echo "  waiting for DataVolume... phase=${DV_PHASE:-unknown} (${elapsed}s/${VMI_TIMEOUT}s)"
+            sleep 10
+            elapsed=$((elapsed + 10))
+          done
 
-              echo "  waiting for DataVolume... phase=${DV_PHASE:-unknown} (${elapsed}s/${VMI_TIMEOUT}s)"
-              sleep 10
-              elapsed=$((elapsed + 10))
-            done
-
-            if [ "${DV_PHASE}" != "Succeeded" ]; then
-              echo "FAIL: DataVolume '${DV_NAME}' not Succeeded after ${VMI_TIMEOUT}s"
-              exit 1
-            fi
+          if [ "${DV_PHASE}" != "Succeeded" ]; then
+            echo "FAIL: DataVolume '${DV_NAME}' not Succeeded after ${VMI_TIMEOUT}s"
+            exit 1
           fi
 
           # --- Check VMI status and optionally probe ports ---
@@ -135,7 +104,7 @@ spec:
               echo "WARN: SSH port 22 not reachable on ${SVC_NAME} (non-fatal)"
             fi
           else
-            echo "VMI is '${VMI_PHASE:-not found}' (expected after snapshot in snapshot mode). Skipping port checks."
+            echo "VMI is '${VMI_PHASE:-not found}'. Skipping port checks."
           fi
 
           echo "=== All checks passed ==="

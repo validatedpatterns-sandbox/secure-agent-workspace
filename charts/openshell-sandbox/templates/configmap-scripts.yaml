@@ -7,11 +7,10 @@ metadata:
 data:
   run-setup.sh: |
     #!/usr/bin/env bash
-    # Job entrypoint: wait for snapshot restore, start VM, SCP scripts, run sandbox setup.
+    # Job entrypoint: wait for DataVolume provisioning, start VM, SCP scripts, run sandbox setup.
     set -euo pipefail
 
     VM_NAME="{{ include "openshell-sandbox.fullname" . }}"
-    CLONE_NAME="clone-${VM_NAME}"
     NS="{{ .Release.Namespace }}"
     SSH_USER="{{ .Values.sshUser }}"
     SSH_SECRET="{{ .Values.sshSecret }}"
@@ -50,46 +49,22 @@ data:
     cp /ssh-key/key "${SSH_KEY}"
     chmod 600 "${SSH_KEY}"
 
-    SOURCE_MODE="{{ .Values.sourceMode }}"
-
-    if [[ "${SOURCE_MODE}" == "snapshot" ]]; then
-      # --- Wait for VM restore from snapshot to Succeed ---
-      echo "Waiting for VM restore from snapshot (${CLONE_NAME}) to succeed..."
-      deadline=$((SECONDS + 900))
-      while true; do
-        phase="$(kubectl -n "${NS}" get virtualmachineclone "${CLONE_NAME}" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
-        echo "  restore phase=${phase:-unknown}"
-        case "${phase}" in
-          Succeeded) break ;;
-          Failed|Unknown)
-            echo "Restore from snapshot failed!" >&2
-            kubectl -n "${NS}" get virtualmachineclone "${CLONE_NAME}" -o yaml >&2
-            exit 1 ;;
-        esac
-        if (( SECONDS > deadline )); then
-          echo "Timed out waiting for restore from snapshot" >&2
-          exit 1
-        fi
-        sleep 10
-      done
-    else
-      # --- ContainerDisk mode: wait for DataVolume provisioning ---
-      DV_NAME="${VM_NAME}-root"
-      echo "Waiting for DataVolume ${DV_NAME} to be provisioned..."
-      deadline=$((SECONDS + 900))
-      while true; do
-        dv_phase="$(kubectl -n "${NS}" get datavolume "${DV_NAME}" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
-        echo "  datavolume phase=${dv_phase:-unknown}"
-        if [[ "${dv_phase}" == "Succeeded" ]]; then
-          break
-        fi
-        if (( SECONDS > deadline )); then
-          echo "Timed out waiting for DataVolume provisioning" >&2
-          exit 1
-        fi
-        sleep 10
-      done
-    fi
+    # --- Wait for DataVolume provisioning ---
+    DV_NAME="${VM_NAME}-root"
+    echo "Waiting for DataVolume ${DV_NAME} to be provisioned..."
+    deadline=$((SECONDS + 900))
+    while true; do
+      dv_phase="$(kubectl -n "${NS}" get datavolume "${DV_NAME}" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+      echo "  datavolume phase=${dv_phase:-unknown}"
+      if [[ "${dv_phase}" == "Succeeded" ]]; then
+        break
+      fi
+      if (( SECONDS > deadline )); then
+        echo "Timed out waiting for DataVolume provisioning" >&2
+        exit 1
+      fi
+      sleep 10
+    done
 
     # --- Label and start VM ---
     echo "Labeling vm/${VM_NAME}..."

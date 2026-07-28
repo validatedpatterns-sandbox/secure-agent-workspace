@@ -11,16 +11,10 @@ openshell:
   fedoraRelease: "44"
 
 image:
-  mode: snapshot  # "snapshot" (cloud-init + snapshot) or "containerDisk" (pre-baked image)
-  containerDisk: ""  # Required when mode=containerDisk. e.g., "image-registry.openshift-image-registry.svc:5000/openshell-agents/openshell-gateway:latest"
-  fedoraCloud: "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"
+  containerDisk: ""  # Required. e.g., "image-registry.openshift-image-registry.svc:5000/openshell-agents/openshell-gateway:latest"
   sandbox: "image-registry.openshift-image-registry.svc:5000/openshell-agents/nemoclaw-sandbox:latest"
   nemoclawCli: "image-registry.openshift-image-registry.svc:5000/openshell-agents/nemoclaw-cli:latest"
   supervisor: "ghcr.io/nvidia/openshell/supervisor:latest"
-
-snapshot:
-  enabled: true
-  timeout: 900
 
 test:
   enabled: true

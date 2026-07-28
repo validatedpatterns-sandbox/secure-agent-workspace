@@ -9,16 +9,9 @@ rules:
   - apiGroups: ["kubevirt.io"]
     resources: ["virtualmachineinstances"]
     verbs: ["get", "list"]
-  {{- if eq .Values.image.mode "snapshot" }}
-  - apiGroups: ["snapshot.kubevirt.io"]
-    resources: ["virtualmachinesnapshots"]
-    verbs: ["get", "list"]
-  {{- end }}
-  {{- if eq .Values.image.mode "containerDisk" }}
   - apiGroups: ["cdi.kubevirt.io"]
     resources: ["datavolumes"]
     verbs: ["get", "list"]
-  {{- end }}
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["get", "list"]

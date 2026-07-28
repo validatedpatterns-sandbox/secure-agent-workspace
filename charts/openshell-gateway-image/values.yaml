@@ -2,12 +2,9 @@ openshell:
   version: "0.0.89"
   fedoraRelease: "44"
 
-image:
-  fedoraCloud: "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"
-
 build:
-  builderImage: "registry.fedoraproject.org/fedora:44"
-  memoryLimit: "4Gi"
+  baseImage: "quay.io/fedora/fedora-bootc:44"
+  memoryLimit: "2Gi"
 
 output:
   imageStreamTag: "openshell-gateway:latest"

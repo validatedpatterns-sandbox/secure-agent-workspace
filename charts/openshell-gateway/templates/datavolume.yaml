@@ -8,13 +8,8 @@ metadata:
     cdi.kubevirt.io/storage.bind.immediate.requested: "true"
 spec:
   source:
-    {{- if eq .Values.image.mode "containerDisk" }}
     registry:
       url: "docker://{{ .Values.image.containerDisk }}"
-    {{- else }}
-    http:
-      url: {{ .Values.image.fedoraCloud | quote }}
-    {{- end }}
   storage:
     accessModes:
       - ReadWriteOnce

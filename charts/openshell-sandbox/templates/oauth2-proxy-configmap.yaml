@@ -23,6 +23,7 @@ data:
       resolver local=on;
       lua_shared_dict jwks_cache 1m;
 
+      {{- $oidcIssuer := include "openshell-sandbox.oidcIssuerUrl" . }}
       server {
         listen 4180;
 
@@ -31,9 +32,24 @@ data:
           return 200 "ok";
         }
 
+        # Internal subrequest location for Keycloak userinfo validation.
+        # Validates the access token server-side (signature, expiry, issuer)
+        # and returns user claims including preferred_username.
+        location = /_validate_token {
+          internal;
+          proxy_method GET;
+          proxy_pass_request_body off;
+          proxy_set_header Content-Length "";
+          proxy_set_header Authorization $http_authorization;
+          set $userinfo_url "{{ printf "%s/protocol/openid-connect/userinfo" $oidcIssuer }}";
+          proxy_pass $userinfo_url;
+          proxy_ssl_verify off;
+        }
+
         location / {
           access_by_lua_block {
             local allowed_user = {{ .Values.accessControl.owner | quote }}
+            local cjson = require("cjson.safe")
 
             -- Extract Bearer token
             local auth = ngx.var.http_authorization
@@ -52,39 +68,28 @@ data:
               return ngx.exit(401)
             end
 
-            -- Decode JWT payload (base64url, no crypto — the upstream
-            -- gateway validates signature, expiry, issuer, and audience)
-            local parts = {}
-            for p in token:gmatch("[^%.]+") do parts[#parts+1] = p end
-            if #parts < 2 then
+            -- Validate token via Keycloak userinfo endpoint.
+            -- Keycloak verifies signature, expiry, issuer, and audience server-side.
+            -- Returns user claims if the token is valid; 401 if invalid/expired.
+            local res = ngx.location.capture("/_validate_token")
+
+            if not res or res.status ~= 200 then
               ngx.status = 401
               ngx.header["Content-Type"] = "application/json"
-              ngx.say('{"error":"malformed JWT"}')
+              ngx.say('{"error":"token is invalid or expired"}')
               return ngx.exit(401)
             end
 
-            local payload_b64 = parts[2]:gsub("-", "+"):gsub("_", "/")
-            local pad = 4 - #payload_b64 % 4
-            if pad < 4 then payload_b64 = payload_b64 .. ("="):rep(pad) end
-
-            local ok, payload_json = pcall(ngx.decode_base64, payload_b64)
-            if not ok or not payload_json then
+            local userinfo = cjson.decode(res.body)
+            if not userinfo then
               ngx.status = 401
               ngx.header["Content-Type"] = "application/json"
-              ngx.say('{"error":"cannot decode JWT payload"}')
+              ngx.say('{"error":"invalid userinfo response"}')
               return ngx.exit(401)
             end
 
-            local cjson = require("cjson.safe")
-            local claims, err = cjson.decode(payload_json)
-            if not claims then
-              ngx.status = 401
-              ngx.header["Content-Type"] = "application/json"
-              ngx.say('{"error":"invalid JWT payload"}')
-              return ngx.exit(401)
-            end
-
-            local username = claims["preferred_username"] or ""
+            -- Token is valid — now check ownership
+            local username = userinfo["preferred_username"] or ""
             if username ~= allowed_user then
               ngx.log(ngx.WARN, "access denied: user=", username, " allowed=", allowed_user)
               ngx.status = 403

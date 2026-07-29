@@ -64,12 +64,14 @@ def auto_detect_issuer(issuer, namespace, token_dir, client_id, shared_namespace
 
     lookup_ns = shared_namespace or namespace
 
-    # Step 2: from gateway helm release values
-    vals = helm.get_values("openshell-gateway", lookup_ns)
-    if vals and vals.get("oidc", {}).get("enabled"):
-        detected = vals["oidc"].get("issuerUrl")
-        if detected:
-            return detected
+    # Step 2: from Keycloak CR status (RHBK operator)
+    r = kube.run(
+        ["oc", "get", "keycloak", "openshell-keycloak", "-n", lookup_ns,
+         "-o", "jsonpath={.status.externalURL}"],
+        capture=True, check=False,
+    )
+    if r.returncode == 0 and r.stdout.strip():
+        return f"{r.stdout.strip()}/realms/openshell"
 
     # Step 3: from saved token file
     tf = _token_file(token_dir)
@@ -83,10 +85,10 @@ def auto_detect_issuer(issuer, namespace, token_dir, client_id, shared_namespace
         except Exception:
             pass
 
-    # Step 4: from Keycloak route (always in shared namespace)
+    # Step 4: from Keycloak route by label (always in shared namespace)
     r = kube.run(
-        ["oc", "get", "route", "openshell-keycloak", "-n", lookup_ns,
-         "-o", "jsonpath={.spec.host}"],
+        ["oc", "get", "route", "-n", lookup_ns, "-l", "app=keycloak",
+         "-o", "jsonpath={.items[0].spec.host}"],
         capture=True, check=False,
     )
     if r.returncode == 0 and r.stdout.strip():

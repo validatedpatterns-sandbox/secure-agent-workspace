@@ -77,10 +77,9 @@ def sandbox():
 @click.option("--endpoint-url", default=None, help="Custom endpoint URL")
 @click.option("--web-search", default=None, help="Enable web search")
 @click.option("--gcp-sa-json", default=None, help="GCP service account JSON file (Vertex AI)")
-@click.option("--source-mode", default=None, help="VM source mode (containerDisk or snapshot)")
 @click.pass_context
 def sandbox_create(ctx, name, owner, namespace_mode, provider, model, api_key,
-                   agent, endpoint_url, web_search, gcp_sa_json, source_mode):
+                   agent, endpoint_url, web_search, gcp_sa_json):
     """Provision a new agent sandbox."""
     cfg = ctx.obj["cfg"]
     shared_ns = cfg["shared_namespace"]
@@ -124,7 +123,6 @@ def sandbox_create(ctx, name, owner, namespace_mode, provider, model, api_key,
     # Resolve chart
     chart = config.chart_path("openshell-sandbox")
 
-    src_mode = source_mode or cfg.get("source_mode", "containerDisk")
     sets = {
         "sandboxName": name,
         "sshPublicKey": pubkey,
@@ -139,8 +137,6 @@ def sandbox_create(ctx, name, owner, namespace_mode, provider, model, api_key,
         "sourceGoldenImageNamespace": shared_ns,
         "namespaceMode": ns_mode,
     }
-    if src_mode == "containerDisk":
-        sets["sourceMode"] = "containerDisk"
 
     # Access control
     if owner:

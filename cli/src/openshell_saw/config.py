@@ -16,8 +16,7 @@ USER_NS_PREFIX = "saw-"
 DEFAULTS = {
     "namespace": SHARED_NAMESPACE,
     "shared_namespace": SHARED_NAMESPACE,
-    "ssh_key": os.path.expanduser("~/.ssh/id_ed25519"),
-    "source_mode": "containerDisk",
+    "ssh_key": ".generated-ssh-keys/sandbox-ssh",
     "agent": "openclaw",
     "oidc": {
         "client_id": "openshell-cli",
@@ -51,7 +50,7 @@ def repo_root():
     env_root = os.environ.get("OPENSHELL_REPO_ROOT")
     if env_root:
         p = Path(env_root)
-        if (p / "helm").is_dir():
+        if (p / "charts").is_dir():
             return p
     try:
         result = subprocess.run(
@@ -60,7 +59,7 @@ def repo_root():
         )
         if result.returncode == 0:
             p = Path(result.stdout.strip())
-            if (p / "helm").is_dir():
+            if (p / "charts").is_dir():
                 return p
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
@@ -71,9 +70,10 @@ def chart_path(chart_name):
     """Resolve a Helm chart path. Prefers repo charts over bundled ones."""
     root = repo_root()
     if root:
-        repo_chart = root / "helm" / chart_name
-        if repo_chart.is_dir():
-            return str(repo_chart)
+        for search_dir in ["charts", "image-builder-charts/helm"]:
+            repo_chart = root / search_dir / chart_name
+            if repo_chart.is_dir():
+                return str(repo_chart)
     bundled = Path(__file__).parent / "charts" / chart_name
     if bundled.is_dir():
         return str(bundled)

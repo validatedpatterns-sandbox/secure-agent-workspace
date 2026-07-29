@@ -163,7 +163,15 @@ make generate-keys
 cp values-secret.yaml.template ~/values-secret.yaml
 # Edit ~/values-secret.yaml — set at least one provider API key and SSH keys
 
-# 4. Deploy the pattern
+# 4. Build images (one-time, ~15 min total)
+# These build the sandbox container image and bootc gateway VM image
+# inside the cluster via OpenShift BuildConfig. This step will be
+# replaced by pre-built upstream golden images in a future release.
+make build                    # NemoClaw sandbox image
+make build-cli                # NemoClaw CLI image
+make build-gateway-image      # Bootc gateway VM image
+
+# 5. Deploy the pattern
 make install
 ```
 

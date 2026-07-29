@@ -1,24 +1,18 @@
 #!/usr/bin/env bash
-# Open the OpenClaw web UI via virtctl port-forward.
-# Fetches the dashboard auth token and prints the URL.
-# Uses virtctl SSH + local port-forward — no OIDC token needed.
+# Open the OpenClaw web UI via openshell ssh-proxy port-forward.
+# Uses the local openshell CLI with fresh OIDC token — no virtctl needed.
 
 set -euo pipefail
 
-NS="${NS:-openshell-agents}"
 SANDBOX_NAME="${SANDBOX_NAME:?SANDBOX_NAME is required}"
-SSH_KEY_PATH="${SSH_KEY_PATH:-.generated-ssh-keys/sandbox-ssh}"
+GATEWAY_NAME="${GATEWAY_NAME:-${SANDBOX_NAME}}"
+WORKSPACE="${WORKSPACE:-default}"
 GUI_PORT="${GUI_PORT:-18789}"
+SSH_USER="${SSH_USER:-sandbox}"
 
-SSH_OPTS=(
-  --identity-file="${SSH_KEY_PATH}"
-  --local-ssh-opts="-oStrictHostKeyChecking=no"
-  --local-ssh-opts="-oUserKnownHostsFile=/dev/null"
-  --local-ssh-opts="-oConnectTimeout=15"
-)
-
-guest_ssh() {
-  virtctl -n "${NS}" ssh "cloud-user@vm/${SANDBOX_NAME}" "${SSH_OPTS[@]}" --command="$1" 2>/dev/null
+command -v openshell >/dev/null 2>&1 || {
+  echo "Error: openshell CLI not found. Install from https://github.com/NVIDIA/OpenShell/releases"
+  exit 1
 }
 
 # Kill any existing port-forward on this port
@@ -28,26 +22,22 @@ if [[ -n "${pids}" ]]; then
   sleep 1
 fi
 
-ssh-keygen -R "vm.${SANDBOX_NAME}.${NS}" 2>/dev/null || true
-
-# Fetch dashboard token
+# Fetch dashboard token via openshell sandbox exec
 echo "Fetching dashboard token..."
-TOKEN=$(guest_ssh "cat ~/.openclaw-token-${SANDBOX_NAME} 2>/dev/null" | tr -d '[:space:]' || true)
+TOKEN=$(openshell --gateway-insecure sandbox exec -n "${SANDBOX_NAME}" --no-tty -- \
+  cat /sandbox/.openclaw/openclaw.json 2>/dev/null \
+  | python3 -c "import sys,json; c=json.load(sys.stdin); print((c.get('gateway',{}).get('auth',{}).get('token','')))" 2>/dev/null || true)
 
 if [[ -z "${TOKEN}" ]]; then
-  DASHBOARD_URL=$(guest_ssh "nemoclaw sandbox dashboard-url ${SANDBOX_NAME}" 2>/dev/null | grep -o 'http[^ ]*' | tail -1 || true)
-  TOKEN=$(echo "${DASHBOARD_URL}" | grep -o '#token=.*' | sed 's/#token=//' || true)
+  TOKEN=$(openshell --gateway-insecure sandbox exec -n "${SANDBOX_NAME}" --no-tty -- \
+    cat /tmp/auth-token 2>/dev/null | tr -d '[:space:]' || true)
 fi
 
 if [[ -z "${TOKEN}" ]]; then
   echo "Error: Could not extract dashboard token."
-  echo "  Make sure the sandbox setup Job has completed successfully."
+  echo "  Make sure the sandbox setup has completed and openclaw is configured."
   echo ""
-  echo "  Alternatively, access the dashboard directly via the route:"
-  DASH_HOST=$(oc get route "${SANDBOX_NAME}-dashboard" -n "${NS}" -o jsonpath='{.spec.host}' 2>/dev/null || true)
-  if [[ -n "${DASH_HOST}" ]]; then
-    echo "  https://${DASH_HOST}"
-  fi
+  echo "  Try: openshell --gateway-insecure sandbox list"
   exit 1
 fi
 
@@ -56,11 +46,10 @@ echo "OpenClaw UI: http://localhost:${GUI_PORT}/#token=${TOKEN}"
 echo "Press Ctrl-C to stop."
 echo ""
 
-# Port-forward via virtctl SSH — tunnels localhost:GUI_PORT to VM's 18789
-# Uses SSH key auth only, no OIDC token required.
-virtctl -n "${NS}" ssh "cloud-user@vm/${SANDBOX_NAME}" \
-  --identity-file="${SSH_KEY_PATH}" \
-  --local-ssh-opts="-oStrictHostKeyChecking=no" \
-  --local-ssh-opts="-oUserKnownHostsFile=/dev/null" \
-  --local-ssh-opts="-L${GUI_PORT}:127.0.0.1:18789" \
-  --command="sleep infinity"
+# Port-forward via openshell ssh-proxy — uses local OIDC token
+ssh -o "ProxyCommand=openshell --gateway-insecure ssh-proxy --gateway-name ${GATEWAY_NAME} --name ${SANDBOX_NAME} --workspace ${WORKSPACE}" \
+  -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/dev/null \
+  -o LogLevel=ERROR \
+  -L "${GUI_PORT}:127.0.0.1:18789" \
+  -N "${SSH_USER}@openshell-${SANDBOX_NAME}.${WORKSPACE}"

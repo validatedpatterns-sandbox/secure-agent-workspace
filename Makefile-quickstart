@@ -192,25 +192,23 @@ sandbox-logs: ## Follow sandbox setup Job logs (SANDBOX_NAME=)
 	oc -n $(NS) logs -f job/$(SANDBOX_NAME)-setup
 
 sandbox-ssh: ## SSH into a sandbox VM (SANDBOX_NAME=)
-	@ssh-keygen -R vm.$(SANDBOX_NAME).$(NS) 2>/dev/null || true
-	virtctl -n $(NS) ssh cloud-user@vm/$(SANDBOX_NAME) \
-		--identity-file="$(SSH_KEY_PATH)" \
-		--local-ssh-opts="-oStrictHostKeyChecking=no" \
-		--local-ssh-opts="-oUserKnownHostsFile=/dev/null"
+	@ssh -o "ProxyCommand=openshell --gateway-insecure ssh-proxy --gateway-name $(SANDBOX_NAME) --name $(SANDBOX_NAME) --workspace default" \
+		-o StrictHostKeyChecking=no \
+		-o UserKnownHostsFile=/dev/null \
+		-o LogLevel=ERROR \
+		sandbox@openshell-$(SANDBOX_NAME).default
 
 # --- User access ---
 
 tui: ## Launch OpenClaw TUI (SANDBOX_NAME=)
-	@ssh-keygen -R vm.$(SANDBOX_NAME).$(NS) 2>/dev/null || true
-	virtctl -n $(NS) ssh cloud-user@vm/$(SANDBOX_NAME) \
-		--identity-file="$(SSH_KEY_PATH)" \
-		--local-ssh-opts="-oStrictHostKeyChecking=no" \
-		--local-ssh-opts="-oUserKnownHostsFile=/dev/null" \
-		--local-ssh-opts="-tt" \
-		--command="ssh -o 'ProxyCommand=openshell ssh-proxy --gateway-name openshell --name $(SANDBOX_NAME) --workspace default' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -tt sandbox@openshell-$(SANDBOX_NAME).default openclaw"
+	@ssh -o "ProxyCommand=openshell --gateway-insecure ssh-proxy --gateway-name $(SANDBOX_NAME) --name $(SANDBOX_NAME) --workspace default" \
+		-o StrictHostKeyChecking=no \
+		-o UserKnownHostsFile=/dev/null \
+		-o LogLevel=ERROR \
+		-tt sandbox@openshell-$(SANDBOX_NAME).default openclaw
 
 gui: ## Open OpenClaw web UI (SANDBOX_NAME=, GUI_PORT=18789)
-	@NS=$(NS) SANDBOX_NAME=$(SANDBOX_NAME) SSH_KEY_PATH=$(SSH_KEY_PATH) \
+	@SANDBOX_NAME=$(SANDBOX_NAME) GATEWAY_NAME=$(SANDBOX_NAME) \
 	GUI_PORT=$(GUI_PORT) $(SCRIPTS_DIR)/sandbox-gui.sh
 
 # --- Test ---

@@ -26,7 +26,7 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
 	@test -f "$(SSH_KEY_PATH).pub" || { \
 		echo "Error: SSH key not found at $(SSH_KEY_PATH).pub"; \
 		echo "Generate one with: make generate-keys"; \
-		echo "Or set SSH_KEY_PATH to your own key: make sandbox-create SSH_KEY_PATH=~/.ssh/my_key"; \
+		echo "Or set SSH_KEY_PATH to your own key: make openshell-saw-create SSH_KEY_PATH=~/.ssh/my_key"; \
 		exit 1; \
 	}
 
@@ -54,9 +54,9 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
         build build-logs build-cli build-cli-logs \
         build-gateway-image build-gateway-image-logs \
         keycloak keycloak-issuer login whoami logout teardown-keycloak \
-        sandbox-create list-sandboxes sandbox-logs sandbox-ssh ssh-secret \
-        openshell-configure-gateway tui gui test \
-        delete-sandbox delete-all status \
+        openshell-saw-create openshell-saw-list openshell-saw-logs openshell-saw-ssh ssh-secret \
+        openshell-saw-configure-gateway openshell-saw-tui openshell-saw-gui test \
+        openshell-saw-delete delete-all status \
         .check-ssh-key .check-prereqs
 
 check-prereqs: .check-prereqs ## Verify required operators and CLI tools
@@ -146,7 +146,7 @@ ssh-secret: ## Create the SSH private key secret for sandbox Jobs
 
 # --- Sandbox ---
 
-sandbox-create: .check-ssh-key ssh-secret ## Provision a sandbox (PROVIDER=, MODEL=, API_KEY=)
+openshell-saw-create: .check-ssh-key ssh-secret ## Provision a sandbox (PROVIDER=, MODEL=, API_KEY=)
 	@NS=$(NS) SANDBOX_NAME=$(SANDBOX_NAME) SANDBOX_CHART=$(SANDBOX_CHART) \
 	SSH_PUBKEY="$(SSH_PUBKEY)" AGENT=$(AGENT) \
 	PROVIDER=$(PROVIDER) MODEL=$(MODEL) API_KEY=$(API_KEY) \
@@ -156,7 +156,7 @@ sandbox-create: .check-ssh-key ssh-secret ## Provision a sandbox (PROVIDER=, MOD
 	NAMESPACE_MODE=$(NAMESPACE_MODE) SCRIPTS_DIR=$(SCRIPTS_DIR) \
 	$(SCRIPTS_DIR)/sandbox-create.sh
 
-openshell-configure-gateway: ## Configure openshell CLI for a sandbox gateway (SANDBOX_NAME=)
+openshell-saw-configure-gateway: ## Configure openshell CLI for a sandbox gateway (SANDBOX_NAME=)
 	@command -v openshell >/dev/null 2>&1 || { echo "Error: openshell CLI not found."; exit 1; }
 	@GW_URL=$$(oc get route $(SANDBOX_NAME)-gateway -n $(NS) -o jsonpath='https://{.spec.host}' 2>/dev/null); \
 	if [ -z "$$GW_URL" ]; then echo "Error: Gateway route not found for '$(SANDBOX_NAME)'."; exit 1; fi; \
@@ -177,7 +177,7 @@ openshell-configure-gateway: ## Configure openshell CLI for a sandbox gateway (S
 	echo "Gateway '$(SANDBOX_NAME)' configured. Endpoint: $$GW_URL"; \
 	if [ -n "$$OIDC_ISSUER" ]; then echo "Next: openshell gateway login"; fi
 
-list-sandboxes: ## List all sandboxes
+openshell-saw-list: ## List all sandboxes
 	@printf "%-20s %-12s %-10s %s\n" "NAME" "STATUS" "VM" "CREATED"
 	@helm list -n $(NS) --filter '.*' -o json 2>/dev/null \
 		| jq -r '.[] | select(.chart | startswith("openshell-sandbox")) | .name' 2>/dev/null \
@@ -188,10 +188,10 @@ list-sandboxes: ## List all sandboxes
 			printf "%-20s %-12s %-10s %s\n" "$$name" "$$status" "$$vm" "$$created"; \
 		done
 
-sandbox-logs: ## Follow sandbox setup Job logs (SANDBOX_NAME=)
+openshell-saw-logs: ## Follow sandbox setup Job logs (SANDBOX_NAME=)
 	oc -n $(NS) logs -f job/$(SANDBOX_NAME)-setup
 
-sandbox-ssh: ## SSH into a sandbox VM (SANDBOX_NAME=)
+openshell-saw-ssh: ## SSH into a sandbox VM (SANDBOX_NAME=)
 	@ssh -o "ProxyCommand=openshell --gateway-insecure ssh-proxy --gateway-name $(SANDBOX_NAME) --name $(SANDBOX_NAME) " \
 		-o StrictHostKeyChecking=no \
 		-o UserKnownHostsFile=/dev/null \
@@ -200,14 +200,14 @@ sandbox-ssh: ## SSH into a sandbox VM (SANDBOX_NAME=)
 
 # --- User access ---
 
-tui: ## Launch OpenClaw TUI (SANDBOX_NAME=)
+openshell-saw-tui: ## Launch OpenClaw TUI (SANDBOX_NAME=)
 	@ssh -o "ProxyCommand=openshell --gateway-insecure ssh-proxy --gateway-name $(SANDBOX_NAME) --name $(SANDBOX_NAME) " \
 		-o StrictHostKeyChecking=no \
 		-o UserKnownHostsFile=/dev/null \
 		-o LogLevel=ERROR \
 		-tt sandbox@openshell-$(SANDBOX_NAME).default openclaw
 
-gui: ## Open OpenClaw web UI (SANDBOX_NAME=, GUI_PORT=18789)
+openshell-saw-gui: ## Open OpenClaw web UI (SANDBOX_NAME=, GUI_PORT=18789)
 	@SANDBOX_NAME=$(SANDBOX_NAME) GATEWAY_NAME=$(SANDBOX_NAME) \
 	GUI_PORT=$(GUI_PORT) $(SCRIPTS_DIR)/sandbox-gui.sh
 
@@ -218,7 +218,7 @@ test: ## Run headless E2E test (auto-detects provider from ~/values-secret.yaml)
 
 # --- Teardown ---
 
-delete-sandbox: ## Uninstall a sandbox (SANDBOX_NAME=)
+openshell-saw-delete: ## Uninstall a sandbox (SANDBOX_NAME=)
 	helm uninstall $(SANDBOX_NAME) --namespace $(NS)
 
 delete-all: ## Uninstall everything (keycloak + imagestreams + gateway image)

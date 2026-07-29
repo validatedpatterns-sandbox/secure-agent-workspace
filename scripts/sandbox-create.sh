@@ -31,7 +31,7 @@ if [[ -z "${PROVIDER}" && -z "${GCP_SA_JSON}" ]]; then
   echo "Error: PROVIDER or GCP_SA_JSON is required."
   echo ""
   echo "Usage:"
-  echo "  make sandbox-create SANDBOX_NAME=my-sandbox PROVIDER=gemini MODEL=gemini-2.5-flash API_KEY=<key>"
+  echo "  make openshell-saw-create SANDBOX_NAME=my-sandbox PROVIDER=gemini MODEL=gemini-2.5-flash API_KEY=<key>"
   echo ""
   echo "Providers: gemini, anthropic, openai, build (NVIDIA), openrouter, ollama, custom"
   exit 1
@@ -131,6 +131,6 @@ fi
 
 echo ""
 echo "Next steps:"
-echo "  1. make openshell-configure-gateway SANDBOX_NAME=${SANDBOX_NAME} NS=${DEPLOY_NS}"
+echo "  1. make openshell-saw-configure-gateway SANDBOX_NAME=${SANDBOX_NAME} NS=${DEPLOY_NS}"
 echo "  2. openshell gateway login"
 echo "  3. openshell --gateway-insecure sandbox list"

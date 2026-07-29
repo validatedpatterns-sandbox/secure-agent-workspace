@@ -202,14 +202,14 @@ make keycloak
 make login                    # Opens browser for OIDC login
 
 # 7. Create a sandbox
-make sandbox-create \
+make openshell-saw-create \
   SANDBOX_NAME=my-sandbox \
   PROVIDER=gemini \
   MODEL=gemini-2.5-flash \
   API_KEY=<your-api-key>
 
 # 8. Configure the openshell CLI
-make openshell-configure-gateway SANDBOX_NAME=my-sandbox
+make openshell-saw-configure-gateway SANDBOX_NAME=my-sandbox
 
 # 9. Login to the gateway
 openshell gateway login
@@ -239,13 +239,13 @@ openshell --gateway-insecure sandbox list
 openshell --gateway-insecure sandbox list
 
 # SSH into the sandbox VM
-make sandbox-ssh SANDBOX_NAME=my-sandbox
+make openshell-saw-ssh SANDBOX_NAME=my-sandbox
 
 # Launch the OpenClaw TUI
-make tui SANDBOX_NAME=my-sandbox
+make openshell-saw-tui SANDBOX_NAME=my-sandbox
 
 # Open the web UI
-make gui SANDBOX_NAME=my-sandbox
+make openshell-saw-gui SANDBOX_NAME=my-sandbox
 
 # Run the automated E2E test
 make test
@@ -257,7 +257,7 @@ The `make test` target runs a fully headless E2E test: auto-detects a provider f
 
 ```bash
 # Delete a single sandbox
-make delete-sandbox SANDBOX_NAME=my-sandbox
+make openshell-saw-delete SANDBOX_NAME=my-sandbox
 
 # Delete all quickstart resources (Keycloak, images, gateway image)
 make delete-all
@@ -345,7 +345,7 @@ The system implements layered isolation:
 
 The sandbox chart resolves the OIDC issuer URL automatically:
 - **Validated Pattern flow:** Computed from `global.clusterDomain` (injected by ArgoCD)
-- **Quickstart flow:** Detected from the Keycloak route at `make sandbox-create` time
+- **Quickstart flow:** Detected from the Keycloak route at `make openshell-saw-create` time
 - **Manual override:** Set `oidc.issuerUrl` explicitly
 
 ## Tags

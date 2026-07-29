@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Provision a sandbox — detects owner from OIDC token, deploys via helm.
 #
-# Required env vars: SANDBOX_NAME, SSH_PUBKEY, SANDBOX_CHART
+# Required env vars: OPENSHELL_SAW_NAME, SSH_PUBKEY, SAW_CHART
 # Required env vars (provider): PROVIDER + MODEL + API_KEY, or GCP_SA_JSON
 # Optional: OWNER, OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_TOKEN_DIR, NS,
 #           AGENT, ENDPOINT_URL, WEB_SEARCH, NAMESPACE_MODE, SCRIPTS_DIR
@@ -9,8 +9,8 @@
 set -euo pipefail
 
 NS="${NS:-openshell-agents}"
-SANDBOX_NAME="${SANDBOX_NAME:?SANDBOX_NAME is required}"
-SANDBOX_CHART="${SANDBOX_CHART:?SANDBOX_CHART is required}"
+OPENSHELL_SAW_NAME="${OPENSHELL_SAW_NAME:?OPENSHELL_SAW_NAME is required}"
+SAW_CHART="${SAW_CHART:?SAW_CHART is required}"
 SSH_PUBKEY="${SSH_PUBKEY:?SSH_PUBKEY is required}"
 AGENT="${AGENT:-openclaw}"
 PROVIDER="${PROVIDER:-}"
@@ -31,7 +31,7 @@ if [[ -z "${PROVIDER}" && -z "${GCP_SA_JSON}" ]]; then
   echo "Error: PROVIDER or GCP_SA_JSON is required."
   echo ""
   echo "Usage:"
-  echo "  make openshell-saw-create SANDBOX_NAME=my-sandbox PROVIDER=gemini MODEL=gemini-2.5-flash API_KEY=<key>"
+  echo "  make openshell-saw-create OPENSHELL_SAW_NAME=my-sandbox PROVIDER=gemini MODEL=gemini-2.5-flash API_KEY=<key>"
   echo ""
   echo "Providers: gemini, anthropic, openai, build (NVIDIA), openrouter, ollama, custom"
   exit 1
@@ -95,12 +95,12 @@ if [[ "${NAMESPACE_MODE}" == "perUser" ]]; then
 fi
 
 # --- Deploy ---
-echo "Provisioning sandbox '${SANDBOX_NAME}' for owner '${OWNER}' in namespace '${DEPLOY_NS}'..."
+echo "Provisioning sandbox '${OPENSHELL_SAW_NAME}' for owner '${OWNER}' in namespace '${DEPLOY_NS}'..."
 
 # shellcheck disable=SC2086
-helm upgrade --install "${SANDBOX_NAME}" "${SANDBOX_CHART}" \
+helm upgrade --install "${OPENSHELL_SAW_NAME}" "${SAW_CHART}" \
   --namespace "${DEPLOY_NS}" --create-namespace \
-  --set sandboxName="${SANDBOX_NAME}" \
+  --set sandboxName="${OPENSHELL_SAW_NAME}" \
   --set sshPublicKey="${SSH_PUBKEY}" \
   --set agent="${AGENT}" \
   --set inference.provider="${PROVIDER}" \
@@ -115,22 +115,22 @@ helm upgrade --install "${SANDBOX_NAME}" "${SANDBOX_CHART}" \
   --set route.enabled=true --set route.dashboard=true
 
 echo ""
-echo "Sandbox '${SANDBOX_NAME}' deployed."
+echo "Sandbox '${OPENSHELL_SAW_NAME}' deployed."
 echo "  Owner:     ${OWNER}"
 echo "  Namespace: ${DEPLOY_NS}"
 
-GW_URL=$(oc get route "${SANDBOX_NAME}-gateway" -n "${DEPLOY_NS}" -o jsonpath='https://{.spec.host}' 2>/dev/null || true)
+GW_URL=$(oc get route "${OPENSHELL_SAW_NAME}-gateway" -n "${DEPLOY_NS}" -o jsonpath='https://{.spec.host}' 2>/dev/null || true)
 if [[ -n "${GW_URL}" ]]; then
   echo "  Gateway:   ${GW_URL}"
 fi
 
-DASH_URL=$(oc get route "${SANDBOX_NAME}-dashboard" -n "${DEPLOY_NS}" -o jsonpath='https://{.spec.host}' 2>/dev/null || true)
+DASH_URL=$(oc get route "${OPENSHELL_SAW_NAME}-dashboard" -n "${DEPLOY_NS}" -o jsonpath='https://{.spec.host}' 2>/dev/null || true)
 if [[ -n "${DASH_URL}" ]]; then
   echo "  Dashboard: ${DASH_URL}"
 fi
 
 echo ""
 echo "Next steps:"
-echo "  1. make openshell-saw-configure-gateway SANDBOX_NAME=${SANDBOX_NAME} NS=${DEPLOY_NS}"
+echo "  1. make openshell-saw-configure-gateway OPENSHELL_SAW_NAME=${OPENSHELL_SAW_NAME} NS=${DEPLOY_NS}"
 echo "  2. openshell gateway login"
 echo "  3. openshell --gateway-insecure sandbox list"

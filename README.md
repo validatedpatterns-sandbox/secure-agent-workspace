@@ -203,13 +203,13 @@ make login                    # Opens browser for OIDC login
 
 # 7. Create a sandbox
 make openshell-saw-create \
-  SANDBOX_NAME=my-sandbox \
+  OPENSHELL_SAW_NAME=my-saw \
   PROVIDER=gemini \
   MODEL=gemini-2.5-flash \
   API_KEY=<your-api-key>
 
 # 8. Configure the openshell CLI
-make openshell-saw-configure-gateway SANDBOX_NAME=my-sandbox
+make openshell-saw-configure-gateway OPENSHELL_SAW_NAME=my-saw
 
 # 9. Login to the gateway
 openshell gateway login
@@ -239,13 +239,13 @@ openshell --gateway-insecure sandbox list
 openshell --gateway-insecure sandbox list
 
 # SSH into the sandbox VM
-make openshell-saw-ssh SANDBOX_NAME=my-sandbox
+make openshell-saw-ssh OPENSHELL_SAW_NAME=my-saw
 
 # Launch the OpenClaw TUI
-make openshell-saw-tui SANDBOX_NAME=my-sandbox
+make openshell-saw-tui OPENSHELL_SAW_NAME=my-saw
 
 # Open the web UI
-make openshell-saw-gui SANDBOX_NAME=my-sandbox
+make openshell-saw-gui OPENSHELL_SAW_NAME=my-saw
 
 # Run the automated E2E test
 make test
@@ -257,7 +257,7 @@ The `make test` target runs a fully headless E2E test: auto-detects a provider f
 
 ```bash
 # Delete a single sandbox
-make openshell-saw-delete SANDBOX_NAME=my-sandbox
+make openshell-saw-delete OPENSHELL_SAW_NAME=my-saw
 
 # Delete all quickstart resources (Keycloak, images, gateway image)
 make delete-all
@@ -272,7 +272,7 @@ make uninstall
 .
 ├── Makefile                          # Root Makefile (includes common + quickstart)
 ├── Makefile-common                   # Validated Pattern targets (install, load-secrets, etc.)
-├── Makefile-quickstart               # Quickstart targets (build, keycloak, sandbox-create, etc.)
+├── Makefile-quickstart               # Quickstart targets (build, keycloak, openshell-saw-create, etc.)
 ├── values-global.yaml                # Pattern config (name, ArgoCD, secret loader)
 ├── values-prod.yaml                  # ClusterGroup (operators, subscriptions, applications)
 ├── values-secret.yaml.template       # Secrets template (inference keys, SSH keys)
@@ -289,9 +289,9 @@ make uninstall
 │       └── openshell-gateway-image/  # Bootc gateway VM image + golden image
 ├── scripts/                          # Runtime utilities and automation
 │   ├── e2e-test.sh                   # Headless E2E test
-│   ├── sandbox-create.sh             # Sandbox provisioning logic
-│   ├── sandbox-gui.sh                # Web UI port-forward
-│   ├── sandbox-logout.sh             # Clear OIDC tokens from VMs
+│   ├── openshell-saw-create.sh             # Sandbox provisioning logic
+│   ├── openshell-saw-gui.sh                # Web UI port-forward
+│   ├── openshell-saw-logout.sh             # Clear OIDC tokens from VMs
 │   ├── generate-keys.sh              # SSH keypair generation
 │   └── oidc-login.sh                 # Browser-based OIDC login
 ├── tests/                            # Test scripts

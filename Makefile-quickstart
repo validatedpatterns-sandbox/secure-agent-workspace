@@ -1,5 +1,5 @@
 NS             ?= openshell-agents
-SANDBOX_NAME   ?= $(OPENSHELL_SAW_NAME)
+OPENSHELL_SAW_NAME ?=
 AGENT          ?= openclaw
 PROVIDER       ?=
 MODEL          ?=
@@ -15,7 +15,7 @@ SSH_KEY_PATH   ?= .generated-ssh-keys/sandbox-ssh
 OWNER          ?=
 NAMESPACE_MODE ?= shared
 HELM_DIR       := image-builder-charts/helm/
-SANDBOX_CHART  := charts/openshell-sandbox
+SAW_CHART  := charts/openshell-sandbox
 KEYCLOAK_CHART := charts/openshell-keycloak
 SCRIPTS_DIR    := scripts
 GUI_PORT       ?= 18789
@@ -23,10 +23,10 @@ GUI_PORT       ?= 18789
 SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
 
 .check-saw-name:
-	@if [ -z "$(SANDBOX_NAME)" ]; then \
-		echo "Error: SANDBOX_NAME is required."; \
+	@if [ -z "$(OPENSHELL_SAW_NAME)" ]; then \
+		echo "Error: OPENSHELL_SAW_NAME is required."; \
 		echo "  Set it via: export OPENSHELL_SAW_NAME=my-saw"; \
-		echo "  Or pass it: make <target> SANDBOX_NAME=my-saw"; \
+		echo "  Or pass it: make <target> OPENSHELL_SAW_NAME=my-saw"; \
 		exit 1; \
 	fi
 
@@ -140,7 +140,7 @@ whoami: ## Show current OIDC identity and token status
 logout: ## Revoke OIDC token and clear sandbox credentials
 	@OIDC_CLIENT_ID=$(OIDC_CLIENT_ID) OIDC_TOKEN_DIR=$(OIDC_TOKEN_DIR) \
 	$(SCRIPTS_DIR)/oidc-login.sh logout
-	@NS=$(NS) SSH_KEY_PATH=$(SSH_KEY_PATH) $(SCRIPTS_DIR)/sandbox-logout.sh
+	@NS=$(NS) SSH_KEY_PATH=$(SSH_KEY_PATH) $(SCRIPTS_DIR)/openshell-saw-logout.sh
 
 teardown-keycloak: ## Uninstall Keycloak
 	helm uninstall openshell-keycloak --namespace $(NS)
@@ -155,19 +155,19 @@ ssh-secret: ## Create the SSH private key secret for sandbox Jobs
 # --- Sandbox ---
 
 openshell-saw-create: .check-saw-name .check-ssh-key ssh-secret ## Provision a sandbox (PROVIDER=, MODEL=, API_KEY=)
-	@NS=$(NS) SANDBOX_NAME=$(SANDBOX_NAME) SANDBOX_CHART=$(SANDBOX_CHART) \
+	@NS=$(NS) OPENSHELL_SAW_NAME=$(OPENSHELL_SAW_NAME) SAW_CHART=$(SAW_CHART) \
 	SSH_PUBKEY="$(SSH_PUBKEY)" AGENT=$(AGENT) \
 	PROVIDER=$(PROVIDER) MODEL=$(MODEL) API_KEY=$(API_KEY) \
 	ENDPOINT_URL=$(ENDPOINT_URL) WEB_SEARCH=$(WEB_SEARCH) GCP_SA_JSON=$(GCP_SA_JSON) \
 	OIDC_ISSUER=$(OIDC_ISSUER) OIDC_CLIENT_ID=$(OIDC_CLIENT_ID) \
 	OIDC_TOKEN_DIR=$(OIDC_TOKEN_DIR) OWNER=$(OWNER) \
 	NAMESPACE_MODE=$(NAMESPACE_MODE) SCRIPTS_DIR=$(SCRIPTS_DIR) \
-	$(SCRIPTS_DIR)/sandbox-create.sh
+	$(SCRIPTS_DIR)/openshell-saw-create.sh
 
 openshell-saw-configure-gateway: .check-saw-name ## Configure openshell CLI for a sandbox gateway
 	@command -v openshell >/dev/null 2>&1 || { echo "Error: openshell CLI not found."; exit 1; }
-	@GW_URL=$$(oc get route $(SANDBOX_NAME)-gateway -n $(NS) -o jsonpath='https://{.spec.host}' 2>/dev/null); \
-	if [ -z "$$GW_URL" ]; then echo "Error: Gateway route not found for '$(SANDBOX_NAME)'."; exit 1; fi; \
+	@GW_URL=$$(oc get route $(OPENSHELL_SAW_NAME)-gateway -n $(NS) -o jsonpath='https://{.spec.host}' 2>/dev/null); \
+	if [ -z "$$GW_URL" ]; then echo "Error: Gateway route not found for '$(OPENSHELL_SAW_NAME)'."; exit 1; fi; \
 	OIDC_ISSUER="$(OIDC_ISSUER)"; \
 	if [ -z "$$OIDC_ISSUER" ]; then \
 		KC_HOST=$$(oc get keycloak openshell-keycloak -n $(NS) -o jsonpath='{.status.externalURL}' 2>/dev/null \
@@ -179,10 +179,10 @@ openshell-saw-configure-gateway: .check-saw-name ## Configure openshell CLI for 
 	fi; \
 	OIDC_OPTS=""; \
 	if [ -n "$$OIDC_ISSUER" ]; then OIDC_OPTS="--oidc-issuer $$OIDC_ISSUER --oidc-client-id $(OIDC_CLIENT_ID)"; fi; \
-	echo "Registering gateway '$(SANDBOX_NAME)'..."; \
-	openshell gateway add "$$GW_URL" --name $(SANDBOX_NAME) --gateway-insecure $$OIDC_OPTS; \
-	openshell gateway select $(SANDBOX_NAME); \
-	echo "Gateway '$(SANDBOX_NAME)' configured. Endpoint: $$GW_URL"; \
+	echo "Registering gateway '$(OPENSHELL_SAW_NAME)'..."; \
+	openshell gateway add "$$GW_URL" --name $(OPENSHELL_SAW_NAME) --gateway-insecure $$OIDC_OPTS; \
+	openshell gateway select $(OPENSHELL_SAW_NAME); \
+	echo "Gateway '$(OPENSHELL_SAW_NAME)' configured. Endpoint: $$GW_URL"; \
 	if [ -n "$$OIDC_ISSUER" ]; then echo "Next: openshell gateway login"; fi
 
 openshell-saw-list: ## List all sandboxes
@@ -197,27 +197,27 @@ openshell-saw-list: ## List all sandboxes
 		done
 
 openshell-saw-logs: .check-saw-name ## Follow sandbox setup Job logs
-	oc -n $(NS) logs -f job/$(SANDBOX_NAME)-setup
+	oc -n $(NS) logs -f job/$(OPENSHELL_SAW_NAME)-setup
 
 openshell-saw-ssh: .check-saw-name ## SSH into a sandbox
-	@ssh -o "ProxyCommand=openshell --gateway-insecure ssh-proxy --gateway-name $(SANDBOX_NAME) --name $(SANDBOX_NAME) " \
+	@ssh -o "ProxyCommand=openshell --gateway-insecure ssh-proxy --gateway-name $(OPENSHELL_SAW_NAME) --name $(OPENSHELL_SAW_NAME) " \
 		-o StrictHostKeyChecking=no \
 		-o UserKnownHostsFile=/dev/null \
 		-o LogLevel=ERROR \
-		sandbox@openshell-$(SANDBOX_NAME).default
+		sandbox@openshell-$(OPENSHELL_SAW_NAME).default
 
 # --- User access ---
 
 openshell-saw-tui: .check-saw-name ## Launch OpenClaw TUI
-	@ssh -o "ProxyCommand=openshell --gateway-insecure ssh-proxy --gateway-name $(SANDBOX_NAME) --name $(SANDBOX_NAME) " \
+	@ssh -o "ProxyCommand=openshell --gateway-insecure ssh-proxy --gateway-name $(OPENSHELL_SAW_NAME) --name $(OPENSHELL_SAW_NAME) " \
 		-o StrictHostKeyChecking=no \
 		-o UserKnownHostsFile=/dev/null \
 		-o LogLevel=ERROR \
-		-tt sandbox@openshell-$(SANDBOX_NAME).default openclaw
+		-tt sandbox@openshell-$(OPENSHELL_SAW_NAME).default openclaw
 
 openshell-saw-gui: .check-saw-name ## Open OpenClaw web UI (GUI_PORT=18789)
-	@SANDBOX_NAME=$(SANDBOX_NAME) GATEWAY_NAME=$(SANDBOX_NAME) \
-	GUI_PORT=$(GUI_PORT) $(SCRIPTS_DIR)/sandbox-gui.sh
+	@OPENSHELL_SAW_NAME=$(OPENSHELL_SAW_NAME) GATEWAY_NAME=$(OPENSHELL_SAW_NAME) \
+	GUI_PORT=$(GUI_PORT) $(SCRIPTS_DIR)/openshell-saw-gui.sh
 
 # --- Test ---
 
@@ -227,7 +227,7 @@ test: ## Run headless E2E test (auto-detects provider from ~/values-secret.yaml)
 # --- Teardown ---
 
 openshell-saw-delete: .check-saw-name ## Uninstall a sandbox
-	helm uninstall $(SANDBOX_NAME) --namespace $(NS)
+	helm uninstall $(OPENSHELL_SAW_NAME) --namespace $(NS)
 
 delete-all: ## Uninstall everything (keycloak + imagestreams + gateway image)
 	-helm uninstall openshell-keycloak --namespace $(NS) 2>/dev/null

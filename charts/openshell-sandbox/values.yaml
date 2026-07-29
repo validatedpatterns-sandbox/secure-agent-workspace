@@ -1,5 +1,7 @@
 # Required — must be set at install time.
 sandboxName: ""
+# SSH public key for VM access. Set explicitly, or leave empty to read
+# from the 'public_key' field in the sshSecret (created by ESO/pattern-secrets).
 sshPublicKey: ""
 
 # Golden image DataSource name (created by the openshell-gateway-image chart).
@@ -27,6 +29,9 @@ inference:
   apiKey: ""
   endpointUrl: ""
   webSearch: ""
+  # Name of a k8s Secret containing an 'api_key' field (created by ESO/pattern-secrets).
+  # When set, overrides inference.apiKey. Provider name is used by default if empty.
+  secretName: ""
 
 # Vertex AI via GCP service account (legacy — optional).
 # When set, the Vertex provider is configured via openshell provider commands
@@ -55,12 +60,16 @@ route:
   host: ""
   dashboard: false
 
-# OIDC authentication (injected by Makefile from 'make login').
+# OIDC authentication.
+# issuerUrl can be set explicitly, or computed from global.clusterDomain
+# when deployed via the validated pattern.
 oidc:
   token: ""
   issuerUrl: ""
   clientId: "openshell-cli"
   passthrough: true
+  keycloakName: "openshell-keycloak"
+  realm: "openshell"
 
 # Per-user access control via oauth2-proxy.
 # When enabled, an oauth2-proxy pod validates that the OIDC token's

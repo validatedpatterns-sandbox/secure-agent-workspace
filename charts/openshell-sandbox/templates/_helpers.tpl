@@ -31,3 +31,17 @@ Selector labels for Service → VMI matching.
 app.kubernetes.io/name: {{ include "openshell-sandbox.fullname" . }}
 vm.kubevirt.io/name: {{ include "openshell-sandbox.fullname" . }}
 {{- end }}
+
+{{/*
+Resolve the OIDC issuer URL.
+Priority: explicit oidc.issuerUrl > computed from global.clusterDomain.
+*/}}
+{{- define "openshell-sandbox.oidcIssuerUrl" -}}
+{{- if .Values.oidc.issuerUrl -}}
+  {{- .Values.oidc.issuerUrl -}}
+{{- else if .Values.global -}}
+  {{- if .Values.global.clusterDomain -}}
+    {{- printf "https://%s-ingress-%s.apps.%s/realms/%s" .Values.oidc.keycloakName .Release.Namespace .Values.global.clusterDomain .Values.oidc.realm -}}
+  {{- end -}}
+{{- end -}}
+{{- end }}

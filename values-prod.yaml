@@ -58,3 +58,17 @@ clusterGroup:
       namespace: vault
       chart: hashicorp-vault
       chartVersion: 0.1.*
+    openshell-keycloak:
+      name: openshell-keycloak
+      namespace: secure-agent-workspace
+      path: charts/openshell-keycloak
+    pattern-secrets:
+      name: pattern-secrets
+      namespace: secure-agent-workspace
+      path: charts/pattern-secrets
+    openshell-sandbox:
+      name: openshell-sandbox
+      namespace: secure-agent-workspace
+      path: charts/openshell-sandbox
+      extraValueFiles:
+        - /overrides/openshell-sandbox.yaml

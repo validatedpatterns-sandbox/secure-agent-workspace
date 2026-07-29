@@ -1,0 +1,5 @@
+apiVersion: v2
+name: pattern-secrets
+description: ExternalSecret resources for inference provider API keys via Vault + ESO
+type: application
+version: 0.1.0

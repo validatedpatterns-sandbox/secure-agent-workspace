@@ -1,6 +1,7 @@
 {{- if .Values.accessControl.enabled }}
-{{- if not .Values.oidc.issuerUrl }}
-{{- fail "oidc.issuerUrl is required when accessControl.enabled is true" }}
+{{- $oidcIssuer := include "openshell-sandbox.oidcIssuerUrl" . }}
+{{- if not $oidcIssuer }}
+{{- fail "oidc.issuerUrl (or global.clusterDomain) is required when accessControl.enabled is true" }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment

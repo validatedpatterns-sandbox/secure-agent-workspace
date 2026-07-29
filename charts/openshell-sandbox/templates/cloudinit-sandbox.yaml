@@ -34,17 +34,19 @@ stringData:
           OPENSHELL_TLS_CERT=/home/cloud-user/.local/state/openshell/tls/server/tls.crt
           OPENSHELL_TLS_KEY=/home/cloud-user/.local/state/openshell/tls/server/tls.key
           OPENSHELL_TLS_CLIENT_CA=/home/cloud-user/.local/state/openshell/tls/ca.crt
-          {{- if .Values.oidc.token }}
+          {{- $oidcIssuer := include "openshell-sandbox.oidcIssuerUrl" . }}
+          {{- if or .Values.oidc.token $oidcIssuer }}
           OPENSHELL_CONFIG_FILE=/etc/openshell/gateway.toml
           {{- end }}
 
-      {{- if .Values.oidc.token }}
+      {{- $oidcIssuer := include "openshell-sandbox.oidcIssuerUrl" . }}
+      {{- if or .Values.oidc.token $oidcIssuer }}
       - path: /etc/openshell/gateway.toml
         owner: root:root
         permissions: "0644"
         content: |
           [openshell.gateway.oidc]
-          issuer = {{ .Values.oidc.issuerUrl | quote }}
+          issuer = {{ $oidcIssuer | quote }}
           audience = {{ .Values.oidc.clientId | quote }}
 
           [openshell.gateway.auth]
@@ -63,11 +65,9 @@ stringData:
         chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config"
         install -d -m 0755 "${USER_HOME}/.config/openshell"
         cp /etc/openshell/gateway.env "${USER_HOME}/.config/openshell/gateway.env"
-        {{- if .Values.oidc.token }}
         if [[ -f /etc/openshell/gateway.toml ]]; then
           cp /etc/openshell/gateway.toml "${USER_HOME}/.config/openshell/gateway.toml"
         fi
-        {{- end }}
         chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/openshell"
         systemctl start openshell-gateway-setup.service
 

@@ -1,0 +1,7 @@
+secretStoreRef:
+  name: vault-backend
+  kind: ClusterSecretStore
+
+refreshInterval: 15s
+
+vaultPrefix: secret/data/hub

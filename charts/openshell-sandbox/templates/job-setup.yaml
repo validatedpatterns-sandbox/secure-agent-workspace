@@ -30,6 +30,11 @@ spec:
               mountPath: /gcp-sa
               readOnly: true
             {{- end }}
+            {{- if or .Values.inference.secretName .Values.inference.provider }}
+            - name: provider-secret
+              mountPath: /provider-secret
+              readOnly: true
+            {{- end }}
             - name: ssh-key
               mountPath: /ssh-key
               readOnly: true
@@ -45,6 +50,12 @@ spec:
         - name: gcp-sa
           secret:
             secretName: {{ include "openshell-sandbox.fullname" . }}-gcp-sa
+        {{- end }}
+        {{- if or .Values.inference.secretName .Values.inference.provider }}
+        - name: provider-secret
+          secret:
+            secretName: {{ .Values.inference.secretName | default .Values.inference.provider }}
+            optional: true
         {{- end }}
         - name: ssh-key
           secret:

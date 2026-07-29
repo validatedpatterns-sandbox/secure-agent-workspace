@@ -61,7 +61,7 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
 .PHONY: check-prereqs generate-keys \
         build build-logs build-cli build-cli-logs \
         build-gateway-image build-gateway-image-logs \
-        keycloak keycloak-issuer login whoami logout teardown-keycloak \
+        keycloak keycloak-issuer login whoami logout delete-keycloak \
         openshell-saw-create openshell-saw-list openshell-saw-logs openshell-saw-ssh ssh-secret \
         openshell-saw-configure-gateway openshell-saw-tui openshell-saw-gui test \
         openshell-saw-delete delete-all status \
@@ -142,8 +142,11 @@ logout: ## Revoke OIDC token and clear sandbox credentials
 	$(SCRIPTS_DIR)/oidc-login.sh logout
 	@NS=$(NS) SSH_KEY_PATH=$(SSH_KEY_PATH) $(SCRIPTS_DIR)/openshell-saw-logout.sh
 
-teardown-keycloak: ## Uninstall Keycloak
-	helm uninstall openshell-keycloak --namespace $(NS)
+delete-keycloak: ## Uninstall Keycloak + PostgreSQL
+	-helm uninstall openshell-keycloak --namespace $(NS) 2>/dev/null
+	-oc delete pvc keycloak-db -n $(NS) 2>/dev/null
+	-oc delete secret keycloak-db-secret -n $(NS) 2>/dev/null
+	@echo "Keycloak cleaned up."
 
 # --- SSH secret ---
 

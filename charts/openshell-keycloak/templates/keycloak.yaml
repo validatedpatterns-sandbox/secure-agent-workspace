@@ -1,0 +1,19 @@
+apiVersion: k8s.keycloak.org/v2beta1
+kind: Keycloak
+metadata:
+  name: {{ .Values.keycloak.name }}
+spec:
+  instances: {{ .Values.keycloak.instances }}
+  http:
+    httpEnabled: true
+  ingress:
+    enabled: true
+    className: openshift-default
+    annotations:
+      route.openshift.io/termination: edge
+  {{- if .Values.keycloak.hostname }}
+  hostname:
+    hostname: {{ .Values.keycloak.hostname }}
+  {{- end }}
+  proxy:
+    headers: xforwarded

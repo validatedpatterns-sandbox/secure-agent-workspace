@@ -1,0 +1,5 @@
+# Generated SSH keys for sandbox provisioning
+.generated-ssh-keys/
+
+# Secret values (never commit)
+values-secret.yaml

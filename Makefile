@@ -3,3 +3,4 @@
 # You can add custom targets above or below the include line
 
 include Makefile-common
+include Makefile-quickstart

@@ -16,7 +16,7 @@
 #   - openshell-saw CLI installed (pip install -e cli/)
 #
 # Usage:
-#   ./scripts/test-multiuser-isolation.sh [--skip-cleanup]
+#   ./tests/test-multiuser-isolation.sh [--skip-cleanup]
 
 set -euo pipefail
 

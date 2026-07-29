@@ -1,0 +1,14 @@
+sandboxName: alice-sandbox
+
+inference:
+  provider: gemini
+  model: gemini-2.5-flash
+  secretName: gemini
+
+accessControl:
+  enabled: true
+  owner: alice
+
+route:
+  enabled: true
+  dashboard: true

@@ -43,12 +43,18 @@ Sandboxes can live in a **shared namespace** (default, scales to thousands of us
 
 ## Prerequisites
 
-- OpenShift cluster with **OpenShift Virtualization** (KubeVirt/CDI) installed
+- OpenShift cluster (4.16+) with the following **operators installed**:
+  - **OpenShift Virtualization** (KubeVirt/CDI)
+  - **Red Hat Build of Keycloak** (RHBK) operator
 - `helm` 3.x
 - `oc` logged in with cluster-admin
 - `openshell` CLI installed ([releases](https://github.com/NVIDIA/OpenShell/releases))
 - API key for your chosen inference provider (Gemini, Anthropic, OpenAI, NVIDIA, OpenRouter, or custom)
 - SSH keypair (`~/.ssh/id_ed25519`)
+
+> **Validated Pattern path:** Run `make install` from the repo root to deploy operators, Vault, ESO, and Keycloak automatically via ArgoCD.
+>
+> **Quickstart path:** Install the operators manually from OperatorHub, then run `make check-prereqs` to verify.
 
 ## User Flow
 
@@ -84,14 +90,17 @@ Users interact only via the `openshell` CLI and their gateway URL. No knowledge 
 
 ## Quick Start
 
-Builds a bootc gateway image, then clones from it for each user sandbox.
+Requires operators to be installed first (see Prerequisites). All commands run from the repo root.
 
 ```bash
+# Verify prerequisites (operators, CLI tools)
+make check-prereqs
+
 # One-time cluster setup
 make build                    # NemoClaw sandbox image
 make build-cli                # NemoClaw CLI image
 make build-gateway-image      # Bootc gateway VM image (~10 min)
-make keycloak                 # OIDC provider (or use external SSO)
+make keycloak                 # Keycloak instance + realm via RHBK operator
 
 # Per-user
 make login                    # Authenticate with OIDC
@@ -279,7 +288,7 @@ make build-cli    # CLI image
 Validates per-user access control — alice cannot access bob's gateway, and vice versa:
 
 ```bash
-scripts/test-access-control.sh
+tests/test-access-control.sh
 ```
 
 Runs 13 checks: provisions alice/bob sandboxes in a shared namespace, verifies auth proxy pods, Route configuration, and cross-user 403 blocking.
@@ -289,7 +298,7 @@ Runs 13 checks: provisions alice/bob sandboxes in a shared namespace, verifies a
 Validates namespace-per-user isolation:
 
 ```bash
-scripts/test-multiuser-isolation.sh
+tests/test-multiuser-isolation.sh
 ```
 
 Runs 14 checks across separate `saw-alice` and `saw-bob` namespaces.

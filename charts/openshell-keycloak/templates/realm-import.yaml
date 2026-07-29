@@ -1,0 +1,77 @@
+apiVersion: k8s.keycloak.org/v2beta1
+kind: KeycloakRealmImport
+metadata:
+  name: {{ .Values.keycloak.name }}-realm
+spec:
+  keycloakCRName: {{ .Values.keycloak.name }}
+  realm:
+    id: {{ .Values.keycloak.realm }}
+    realm: {{ .Values.keycloak.realm }}
+    displayName: OpenShell
+    enabled: true
+    registrationAllowed: {{ .Values.keycloak.registrationAllowed }}
+    loginWithEmailAllowed: true
+    duplicateEmailsAllowed: false
+    sslRequired: external
+    roles:
+      realm:
+        {{- range .Values.keycloak.roles }}
+        - name: {{ . | quote }}
+          composite: false
+          clientRole: false
+        {{- end }}
+    clients:
+      - clientId: {{ .Values.keycloak.clients.cli.clientId | quote }}
+        name: OpenShell CLI
+        enabled: true
+        publicClient: {{ .Values.keycloak.clients.cli.public }}
+        standardFlowEnabled: true
+        directAccessGrantsEnabled: true
+        serviceAccountsEnabled: false
+        attributes:
+          pkce.code.challenge.method: S256
+          access.token.lifespan: {{ .Values.keycloak.clients.cli.accessTokenLifespan | quote }}
+          oauth2.device.authorization.grant.enabled: "true"
+          oauth2.device.polling.interval: "5"
+        redirectUris:
+          - "http://localhost:*"
+          - "http://127.0.0.1:*"
+          - "urn:ietf:wg:oauth:2.0:oob"
+        webOrigins:
+          - "http://localhost"
+          - "http://127.0.0.1"
+        protocolMappers:
+          - name: realm-roles
+            protocol: openid-connect
+            protocolMapper: oidc-usermodel-realm-role-mapper
+            config:
+              multivalued: "true"
+              claim.name: realm_access.roles
+              jsonType.label: String
+              id.token.claim: "true"
+              access.token.claim: "true"
+              userinfo.token.claim: "true"
+          - name: audience
+            protocol: openid-connect
+            protocolMapper: oidc-audience-mapper
+            config:
+              included.client.audience: {{ .Values.keycloak.clients.cli.clientId | quote }}
+              id.token.claim: "true"
+              access.token.claim: "true"
+    users:
+      {{- range .Values.keycloak.testUsers }}
+      - username: {{ .username | quote }}
+        firstName: {{ .firstName | default (.username | title) | quote }}
+        lastName: {{ .lastName | default "User" | quote }}
+        enabled: true
+        emailVerified: true
+        email: {{ printf "%s@openshell.local" .username | quote }}
+        credentials:
+          - type: password
+            value: {{ .password | quote }}
+            temporary: false
+        realmRoles:
+          {{- range .roles }}
+          - {{ . | quote }}
+          {{- end }}
+      {{- end }}

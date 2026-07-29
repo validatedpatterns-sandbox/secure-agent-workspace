@@ -1,0 +1,238 @@
+NS             ?= openshell-agents
+SANDBOX_NAME   ?= my-sandbox
+AGENT          ?= openclaw
+PROVIDER       ?=
+MODEL          ?=
+API_KEY        ?=
+ENDPOINT_URL   ?=
+WEB_SEARCH     ?=
+GCP_SA_JSON    ?=
+OIDC_ISSUER    ?=
+OIDC_CLIENT_ID ?= openshell-cli
+OIDC_FLOW      ?= browser
+OIDC_TOKEN_DIR ?= $(HOME)/.config/openshell/oidc
+SSH_KEY_PATH   ?= .generated-ssh-keys/sandbox-ssh
+OWNER          ?=
+NAMESPACE_MODE ?= shared
+HELM_DIR       := image-builder-charts/helm/
+SANDBOX_CHART  := charts/openshell-sandbox
+KEYCLOAK_CHART := charts/openshell-keycloak
+SCRIPTS_DIR    := scripts
+GUI_PORT       ?= 18789
+
+SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
+
+.check-ssh-key:
+	@test -f "$(SSH_KEY_PATH).pub" || { \
+		echo "Error: SSH key not found at $(SSH_KEY_PATH).pub"; \
+		echo "Generate one with: make generate-keys"; \
+		echo "Or set SSH_KEY_PATH to your own key: make sandbox-create SSH_KEY_PATH=~/.ssh/my_key"; \
+		exit 1; \
+	}
+
+.check-prereqs:
+	@echo "Checking prerequisites..."
+	@command -v oc >/dev/null 2>&1 || { echo "Error: 'oc' CLI not found."; exit 1; }
+	@command -v helm >/dev/null 2>&1 || { echo "Error: 'helm' CLI not found."; exit 1; }
+	@command -v virtctl >/dev/null 2>&1 || echo "Warning: 'virtctl' not found."
+	@oc whoami >/dev/null 2>&1 || { echo "Error: Not logged in to OpenShift."; exit 1; }
+	@echo "  oc:     $$(oc version --client -o json 2>/dev/null | jq -r '.releaseClientVersion // .clientVersion.gitVersion // "ok"')"
+	@echo "  helm:   $$(helm version --short 2>/dev/null)"
+	@echo "Checking operators..."
+	@oc get csv -n openshift-cnv 2>/dev/null | grep -q kubevirt || { echo "Error: OpenShift Virtualization not installed."; exit 1; }
+	@echo "  OpenShift Virtualization: installed"
+	@oc get csv --all-namespaces 2>/dev/null | grep -q rhbk || { echo "Error: RHBK operator not installed."; exit 1; }
+	@echo "  RHBK (Keycloak): installed"
+	@if [ -f "$(SSH_KEY_PATH).pub" ]; then echo "  SSH key: $(SSH_KEY_PATH)"; \
+	else echo "  SSH key: not found. Run 'make generate-keys'."; fi
+	@echo "Prerequisites OK."
+
+.PHONY: check-prereqs generate-keys \
+        build build-logs build-cli build-cli-logs \
+        build-gateway-image build-gateway-image-logs \
+        keycloak keycloak-issuer login whoami logout teardown-keycloak \
+        sandbox-create list-sandboxes sandbox-logs sandbox-ssh ssh-secret \
+        openshell-configure-gateway tui gui test \
+        delete-sandbox delete-all status \
+        .check-ssh-key .check-prereqs
+
+check-prereqs: .check-prereqs ## Verify required operators and CLI tools
+
+generate-keys: ## Generate SSH keypair for sandbox provisioning
+	@$(SCRIPTS_DIR)/generate-keys.sh
+
+# --- NemoClaw images ---
+
+build: ## Build NemoClaw sandbox image
+	helm upgrade --install nemoclaw-imagestream $(HELM_DIR)nemoclaw-imagestream \
+		--namespace $(NS) --create-namespace
+	oc start-build nemoclaw-sandbox -n $(NS) --follow
+
+build-logs: ## Follow NemoClaw image build logs
+	oc logs -f bc/nemoclaw-sandbox -n $(NS)
+
+build-cli: ## Build NemoClaw CLI image
+	helm upgrade --install nemoclaw-cli-imagestream $(HELM_DIR)nemoclaw-cli-imagestream \
+		--namespace $(NS) --create-namespace
+	oc start-build nemoclaw-cli -n $(NS) --follow
+
+build-cli-logs: ## Follow NemoClaw CLI build logs
+	oc logs -f bc/nemoclaw-cli -n $(NS)
+
+# --- Gateway VM image ---
+
+build-gateway-image: ## Build the bootc gateway VM image
+	helm upgrade --install openshell-gateway-image $(HELM_DIR)openshell-gateway-image \
+		--namespace $(NS) --create-namespace
+	oc start-build openshell-gateway -n $(NS) --follow
+
+build-gateway-image-logs: ## Follow gateway image build logs
+	oc logs -f bc/openshell-gateway -n $(NS)
+
+# --- Keycloak / OIDC ---
+
+keycloak: ## Deploy Keycloak instance + realm via RHBK operator
+	@oc get csv --all-namespaces 2>/dev/null | grep -q rhbk || { echo "Error: RHBK operator not installed."; exit 1; }
+	@echo "Deploying Keycloak via RHBK operator..."
+	helm upgrade --install openshell-keycloak $(KEYCLOAK_CHART) \
+		--namespace $(NS) --create-namespace --timeout 10m
+	@echo "Waiting for Keycloak to be ready..."
+	@deadline=$$((SECONDS + 300)); \
+	while true; do \
+		ready=$$(oc get keycloak openshell-keycloak -n $(NS) -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null); \
+		if [ "$$ready" = "True" ]; then echo "Keycloak is ready."; break; fi; \
+		if [ $$SECONDS -gt $$deadline ]; then echo "Timed out waiting for Keycloak."; exit 1; fi; \
+		echo "  waiting for Keycloak (ready=$$ready)..."; \
+		sleep 10; \
+	done
+
+keycloak-issuer: ## Print the Keycloak OIDC issuer URL
+	@host=$$(oc get keycloak openshell-keycloak -n $(NS) -o jsonpath='{.status.externalURL}' 2>/dev/null \
+		| sed 's|^https://||;s|/$$||'); \
+	if [ -z "$${host}" ]; then \
+		host=$$(oc get route -n $(NS) -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null); \
+	fi; \
+	if [ -z "$${host}" ]; then \
+		echo "Error: Keycloak not found. Run 'make keycloak' first." >&2; \
+		exit 1; \
+	fi; \
+	echo "https://$${host}/realms/openshell"
+
+login: ## Authenticate with the OIDC provider
+	@OIDC_ISSUER=$(OIDC_ISSUER) OIDC_CLIENT_ID=$(OIDC_CLIENT_ID) \
+	OIDC_FLOW=$(OIDC_FLOW) OIDC_TOKEN_DIR=$(OIDC_TOKEN_DIR) NS=$(NS) \
+	$(SCRIPTS_DIR)/oidc-login.sh login
+
+whoami: ## Show current OIDC identity and token status
+	@OIDC_TOKEN_DIR=$(OIDC_TOKEN_DIR) $(SCRIPTS_DIR)/oidc-login.sh whoami
+
+logout: ## Revoke OIDC token and clear sandbox credentials
+	@OIDC_CLIENT_ID=$(OIDC_CLIENT_ID) OIDC_TOKEN_DIR=$(OIDC_TOKEN_DIR) \
+	$(SCRIPTS_DIR)/oidc-login.sh logout
+	@NS=$(NS) SSH_KEY_PATH=$(SSH_KEY_PATH) $(SCRIPTS_DIR)/sandbox-logout.sh
+
+teardown-keycloak: ## Uninstall Keycloak
+	helm uninstall openshell-keycloak --namespace $(NS)
+
+# --- SSH secret ---
+
+ssh-secret: ## Create the SSH private key secret for sandbox Jobs
+	oc -n $(NS) create secret generic openshell-aap-ssh \
+		--from-file=key=$(SSH_KEY_PATH) \
+		--dry-run=client -o yaml | oc apply -f -
+
+# --- Sandbox ---
+
+sandbox-create: .check-ssh-key ssh-secret ## Provision a sandbox (PROVIDER=, MODEL=, API_KEY=)
+	@NS=$(NS) SANDBOX_NAME=$(SANDBOX_NAME) SANDBOX_CHART=$(SANDBOX_CHART) \
+	SSH_PUBKEY="$(SSH_PUBKEY)" AGENT=$(AGENT) \
+	PROVIDER=$(PROVIDER) MODEL=$(MODEL) API_KEY=$(API_KEY) \
+	ENDPOINT_URL=$(ENDPOINT_URL) WEB_SEARCH=$(WEB_SEARCH) GCP_SA_JSON=$(GCP_SA_JSON) \
+	OIDC_ISSUER=$(OIDC_ISSUER) OIDC_CLIENT_ID=$(OIDC_CLIENT_ID) \
+	OIDC_TOKEN_DIR=$(OIDC_TOKEN_DIR) OWNER=$(OWNER) \
+	NAMESPACE_MODE=$(NAMESPACE_MODE) SCRIPTS_DIR=$(SCRIPTS_DIR) \
+	$(SCRIPTS_DIR)/sandbox-create.sh
+
+openshell-configure-gateway: ## Configure openshell CLI for a sandbox gateway (SANDBOX_NAME=)
+	@command -v openshell >/dev/null 2>&1 || { echo "Error: openshell CLI not found."; exit 1; }
+	@GW_URL=$$(oc get route $(SANDBOX_NAME)-gateway -n $(NS) -o jsonpath='https://{.spec.host}' 2>/dev/null); \
+	if [ -z "$$GW_URL" ]; then echo "Error: Gateway route not found for '$(SANDBOX_NAME)'."; exit 1; fi; \
+	OIDC_ISSUER="$(OIDC_ISSUER)"; \
+	if [ -z "$$OIDC_ISSUER" ]; then \
+		KC_HOST=$$(oc get keycloak openshell-keycloak -n $(NS) -o jsonpath='{.status.externalURL}' 2>/dev/null \
+			| sed 's|^https://||;s|/$$||'); \
+		if [ -z "$$KC_HOST" ]; then \
+			KC_HOST=$$(oc get route -n $(NS) -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null); \
+		fi; \
+		if [ -n "$$KC_HOST" ]; then OIDC_ISSUER="https://$$KC_HOST/realms/openshell"; fi; \
+	fi; \
+	OIDC_OPTS=""; \
+	if [ -n "$$OIDC_ISSUER" ]; then OIDC_OPTS="--oidc-issuer $$OIDC_ISSUER --oidc-client-id $(OIDC_CLIENT_ID)"; fi; \
+	echo "Registering gateway '$(SANDBOX_NAME)'..."; \
+	openshell gateway add "$$GW_URL" --name $(SANDBOX_NAME) --gateway-insecure $$OIDC_OPTS; \
+	openshell gateway select $(SANDBOX_NAME); \
+	echo "Gateway '$(SANDBOX_NAME)' configured. Endpoint: $$GW_URL"; \
+	if [ -n "$$OIDC_ISSUER" ]; then echo "Next: openshell gateway login"; fi
+
+list-sandboxes: ## List all sandboxes
+	@printf "%-20s %-12s %-10s %s\n" "NAME" "STATUS" "VM" "CREATED"
+	@helm list -n $(NS) --filter '.*' -o json 2>/dev/null \
+		| jq -r '.[] | select(.chart | startswith("openshell-sandbox")) | .name' 2>/dev/null \
+		| while read -r name; do \
+			status=$$(helm status "$$name" -n $(NS) -o json 2>/dev/null | jq -r '.info.status // "unknown"'); \
+			vm=$$(kubectl get vm "$$name" -n $(NS) -o jsonpath='{.status.printableStatus}' 2>/dev/null || echo "n/a"); \
+			created=$$(helm list -n $(NS) --filter "^$${name}$$" -o json 2>/dev/null | jq -r '.[0].updated | split(".")[0]' 2>/dev/null); \
+			printf "%-20s %-12s %-10s %s\n" "$$name" "$$status" "$$vm" "$$created"; \
+		done
+
+sandbox-logs: ## Follow sandbox setup Job logs (SANDBOX_NAME=)
+	oc -n $(NS) logs -f job/$(SANDBOX_NAME)-setup
+
+sandbox-ssh: ## SSH into a sandbox VM (SANDBOX_NAME=)
+	@ssh-keygen -R vm.$(SANDBOX_NAME).$(NS) 2>/dev/null || true
+	virtctl -n $(NS) ssh cloud-user@vm/$(SANDBOX_NAME) \
+		--identity-file="$(SSH_KEY_PATH)" \
+		--local-ssh-opts="-oStrictHostKeyChecking=no" \
+		--local-ssh-opts="-oUserKnownHostsFile=/dev/null"
+
+# --- User access ---
+
+tui: ## Launch OpenClaw TUI (SANDBOX_NAME=)
+	@ssh-keygen -R vm.$(SANDBOX_NAME).$(NS) 2>/dev/null || true
+	virtctl -n $(NS) ssh cloud-user@vm/$(SANDBOX_NAME) \
+		--identity-file="$(SSH_KEY_PATH)" \
+		--local-ssh-opts="-oStrictHostKeyChecking=no" \
+		--local-ssh-opts="-oUserKnownHostsFile=/dev/null" \
+		--local-ssh-opts="-tt" \
+		--command="ssh -o 'ProxyCommand=openshell ssh-proxy --gateway-name openshell --name $(SANDBOX_NAME) --workspace default' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -tt sandbox@openshell-$(SANDBOX_NAME).default openclaw"
+
+gui: ## Open OpenClaw web UI (SANDBOX_NAME=, GUI_PORT=18789)
+	@NS=$(NS) SANDBOX_NAME=$(SANDBOX_NAME) SSH_KEY_PATH=$(SSH_KEY_PATH) \
+	GUI_PORT=$(GUI_PORT) $(SCRIPTS_DIR)/sandbox-gui.sh
+
+# --- Test ---
+
+test: ## Run headless E2E test (auto-detects provider from ~/values-secret.yaml)
+	@$(SCRIPTS_DIR)/e2e-test.sh
+
+# --- Teardown ---
+
+delete-sandbox: ## Uninstall a sandbox (SANDBOX_NAME=)
+	helm uninstall $(SANDBOX_NAME) --namespace $(NS)
+
+delete-all: ## Uninstall everything (keycloak + imagestreams + gateway image)
+	-helm uninstall openshell-keycloak --namespace $(NS) 2>/dev/null
+	-helm uninstall openshell-gateway-image --namespace $(NS) 2>/dev/null
+	-helm uninstall nemoclaw-imagestream --namespace $(NS) 2>/dev/null
+	-helm uninstall nemoclaw-cli-imagestream --namespace $(NS) 2>/dev/null
+	@echo "Note: sandbox releases must be uninstalled individually."
+
+# --- Status ---
+
+status: ## Show status of all OpenShell resources
+	@echo "=== Helm releases ===" && helm list -n $(NS) 2>/dev/null || true
+	@echo "" && echo "=== VMs ===" && oc -n $(NS) get vm 2>/dev/null || true
+	@echo "" && echo "=== VMIs ===" && oc -n $(NS) get vmi 2>/dev/null || true
+	@echo "" && echo "=== ImageStreams ===" && oc -n $(NS) get is 2>/dev/null || true
+	@echo "" && echo "=== Builds ===" && oc -n $(NS) get builds 2>/dev/null || true
+	@echo "" && echo "=== Jobs ===" && oc -n $(NS) get jobs 2>/dev/null || true

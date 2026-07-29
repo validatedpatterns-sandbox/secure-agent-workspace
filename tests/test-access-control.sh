@@ -18,7 +18,7 @@
 #   - Golden image or snapshot available
 #
 # Usage:
-#   ./scripts/test-access-control.sh [--skip-cleanup]
+#   ./tests/test-access-control.sh [--skip-cleanup]
 
 set -euo pipefail
 

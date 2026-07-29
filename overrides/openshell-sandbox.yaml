@@ -6,7 +6,6 @@ inference:
   secretName: gemini
 
 accessControl:
-  enabled: true
   owner: alice
 
 route:

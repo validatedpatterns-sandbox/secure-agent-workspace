@@ -71,14 +71,9 @@ oidc:
   keycloakName: "openshell-keycloak"
   realm: "openshell"
 
-# Per-user access control via oauth2-proxy.
-# When enabled, an oauth2-proxy pod validates that the OIDC token's
-# preferred_username matches the configured owner before forwarding
-# requests to the gateway.
+# Sandbox owner (used for labeling and audit).
 accessControl:
-  enabled: false
   owner: ""
-  image: "docker.io/openresty/openresty:1.27.1.1-alpine"
 
 # Namespace strategy: "shared" places all sandboxes in the release namespace;
 # "perUser" expects a per-user namespace (e.g. saw-<username>).

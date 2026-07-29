@@ -8,18 +8,10 @@ metadata:
 spec:
   to:
     kind: Service
-    {{- if .Values.accessControl.enabled }}
-    name: {{ include "openshell-sandbox.fullname" . }}-auth-proxy
-    {{- else }}
     name: {{ include "openshell-sandbox.fullname" . }}-gateway
-    {{- end }}
     weight: 100
   port:
-    {{- if .Values.accessControl.enabled }}
-    targetPort: proxy
-    {{- else }}
     targetPort: dashboard
-    {{- end }}
   tls:
     termination: edge
     insecureEdgeTerminationPolicy: Redirect

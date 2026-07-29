@@ -100,7 +100,7 @@ The following diagrams are from the [NVIDIA Secure Agent Workspace OpenShift Vir
 | Golden image | Bootc (Fedora 44) + CDI | Pre-baked VM image for fast provisioning |
 | Secrets | HashiCorp Vault + External Secrets Operator | API keys for inference providers, SSH keys |
 | GitOps | ArgoCD (Validated Patterns) | Declarative cluster configuration |
-| Access control | OpenResty auth proxy + OIDC token validation | Per-user dashboard restriction |
+| Access control | Dashboard token + OIDC gateway validation | Per-user access via application-level tokens |
 
 ## Requirements
 
@@ -338,7 +338,7 @@ The system implements layered isolation:
 
 | Mode | Description |
 |---|---|
-| `shared` (default) | All sandboxes in one namespace. Scales to thousands of users. Access control via auth proxy. |
+| `shared` (default) | All sandboxes in one namespace. Scales to thousands of users. |
 | `perUser` | Each user gets `saw-<username>` namespace. Kubernetes-level resource isolation. |
 
 ### OIDC issuer resolution

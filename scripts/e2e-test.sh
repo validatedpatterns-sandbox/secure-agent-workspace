@@ -256,7 +256,6 @@ helm upgrade --install "${TEST_SANDBOX}" "${CHARTS_DIR}/openshell-sandbox" \
   --set inference.provider="${PROV}" \
   --set inference.model="${PMOD}" \
   --set inference.secretName="${PROV}" \
-  --set accessControl.enabled=true \
   --set accessControl.owner="${TEST_OWNER}" \
   --set route.enabled=true \
   --set route.dashboard=true \

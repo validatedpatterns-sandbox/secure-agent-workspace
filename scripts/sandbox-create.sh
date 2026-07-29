@@ -110,7 +110,6 @@ helm upgrade --install "${SANDBOX_NAME}" "${SANDBOX_CHART}" \
   --set inference.webSearch="${WEB_SEARCH}" \
   ${GCP_SA_JSON:+--set-file vertexSaJson="${GCP_SA_JSON}"} \
   ${OIDC_OPTS} \
-  --set accessControl.enabled=true \
   --set accessControl.owner="${OWNER}" \
   --set namespaceMode="${NAMESPACE_MODE}" \
   --set route.enabled=true --set route.dashboard=true

@@ -34,10 +34,13 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
 	@echo "Checking prerequisites..."
 	@command -v oc >/dev/null 2>&1 || { echo "Error: 'oc' CLI not found."; exit 1; }
 	@command -v helm >/dev/null 2>&1 || { echo "Error: 'helm' CLI not found."; exit 1; }
-	@command -v virtctl >/dev/null 2>&1 || echo "Warning: 'virtctl' not found."
+	@command -v virtctl >/dev/null 2>&1 || echo "Warning: 'virtctl' not found. Install it for SSH access to sandbox VMs."
+	@command -v openshell >/dev/null 2>&1 || echo "Warning: 'openshell' CLI not found. Install from https://github.com/NVIDIA/OpenShell/releases"
 	@oc whoami >/dev/null 2>&1 || { echo "Error: Not logged in to OpenShift."; exit 1; }
-	@echo "  oc:     $$(oc version --client -o json 2>/dev/null | jq -r '.releaseClientVersion // .clientVersion.gitVersion // "ok"')"
-	@echo "  helm:   $$(helm version --short 2>/dev/null)"
+	@echo "  oc:        $$(oc version --client -o json 2>/dev/null | jq -r '.releaseClientVersion // .clientVersion.gitVersion // "ok"')"
+	@echo "  helm:      $$(helm version --short 2>/dev/null)"
+	@command -v virtctl >/dev/null 2>&1 && echo "  virtctl:   $$(virtctl version --client 2>/dev/null | head -1)" || true
+	@command -v openshell >/dev/null 2>&1 && echo "  openshell: $$(openshell --version 2>/dev/null)" || true
 	@echo "Checking operators..."
 	@oc get csv -n openshift-cnv 2>/dev/null | grep -q kubevirt || { echo "Error: OpenShift Virtualization not installed."; exit 1; }
 	@echo "  OpenShift Virtualization: installed"

@@ -17,6 +17,10 @@ keycloak:
     cli:
       clientId: openshell-cli
       public: true
+      # Access token lifetime in seconds. Set high for long-running sandboxes.
+      # 86400 = 24 hours. Sandboxes run for days, so short-lived tokens cause
+      # ssh-proxy and dashboard failures.
+      accessTokenLifespan: 86400
       accessTokenLifespan: 900
 
   testUsers:

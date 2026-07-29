@@ -1,313 +1,336 @@
 # Secure Agent Workspace
 
-Helm charts for deploying per-user OpenShell + NemoClaw agent sandboxes on OpenShift Virtualization (KubeVirt) with OIDC authentication and per-user access control.
+Deploy isolated, per-user AI agent sandboxes on OpenShift Virtualization with OIDC authentication and policy-controlled access.
 
-## Architecture
+## Table of Contents
+
+- [Overview](#overview)
+- [Detailed description](#detailed-description)
+  - [Architecture diagrams](#architecture-diagrams)
+- [Requirements](#requirements)
+  - [Minimum hardware requirements](#minimum-hardware-requirements)
+  - [Minimum software requirements](#minimum-software-requirements)
+  - [Required user permissions](#required-user-permissions)
+- [Deploy](#deploy)
+  - [Prerequisites](#prerequisites)
+  - [Installation](#installation)
+  - [Validating the deployment](#validating-the-deployment)
+  - [Delete](#delete)
+- [Repository structure](#repository-structure)
+- [References](#references)
+- [Technical details](#technical-details)
+- [Tags](#tags)
+
+## Overview
+
+Secure Agent Workspace provisions dedicated KubeVirt virtual machines for each user, running NVIDIA OpenShell with NemoClaw/OpenClaw AI agents. Each sandbox is isolated at the VM level, authenticated via OIDC, and connected to the user's chosen inference provider. The platform supports both a GitOps-driven Validated Pattern deployment and a manual quickstart flow.
+
+## Detailed description
+
+Organizations adopting AI coding and knowledge agents need strong isolation guarantees: each user's agent must run in its own boundary, with auditable access to enterprise systems, controlled network egress, and centralized identity management. Traditional container-based isolation is insufficient when agents can execute arbitrary code and tool calls.
+
+This quickstart implements NVIDIA's [Secure Agent Workspace reference architecture](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html) on Red Hat OpenShift. Each user gets a dedicated Fedora 44 VM running the OpenShell gateway and an AI agent (OpenClaw, Hermes, or Deep Agents Code). The VM provides process-level and network-level isolation. OIDC authentication (via Red Hat Build of Keycloak) ensures only the sandbox owner can access their workspace. Secrets for inference providers flow through HashiCorp Vault and the External Secrets Operator, keeping API keys out of Git and helm values.
+
+The system supports multiple inference providers (Gemini, Anthropic, OpenAI, NVIDIA Build, OpenRouter, Ollama, or custom endpoints) and optional web search integration (Tavily, Brave). A bootc-based golden image pipeline pre-bakes all packages into a container image that CDI imports directly, enabling fast VM provisioning without cloud-init package installation.
+
+### Architecture diagrams
 
 ```
-                      openshell-agents (shared namespace)
-┌─────────────────────────────┐  ┌─────────────────────────────┐
-│  nemoclaw-imagestream       │  │  nemoclaw-cli-imagestream   │  Deploy once per cluster
-│  ImageStream + BuildConfig  │  │  ImageStream + BuildConfig  │  Build sandbox + CLI images
-│  Builds NemoClaw sandbox    │  │  Builds NemoClaw CLI        │
-└──────────────┬──────────────┘  └──────────────┬──────────────┘
-               │ image.sandbox override          │ CLI extracted at sandbox setup
-               ▼                                 ▼
-┌─────────────────────────────┐
-│  openshell-keycloak         │  (Optional) Local OIDC provider
-│  Keycloak Deployment +      │  for development/testing
-│  Route + Realm ConfigMap    │  Test users: developer, admin, alice, bob
-└──────────────┬──────────────┘
-               │ JWKS validation
-               ▼
-┌─────────────────────────────┐
-│  openshell-gateway-image    │  Build once per cluster
-│  ImageStream + BuildConfig  │  Bootc image (Fedora 44 + OpenShell)
-│  DataVolume + DataSource    │  CDI imports → golden image PVC
-└──────────────┬──────────────┘
-               │ sandboxes clone from golden image
-         ┌─────┼─────────────────────┐
-         ▼                     ▼                     ▼
-  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
-  │ alice sandbox    │  │ bob sandbox      │  │ carol sandbox    │
-  │ VM + Routes +    │  │ VM + Routes +    │  │ VM + Routes +    │
-  │ auth proxy +     │  │ auth proxy +     │  │ auth proxy +     │
-  │ Job + SSH secret │  │ Job + SSH secret │  │ Job + SSH secret │
-  └──────────────────┘  └──────────────────┘  └──────────────────┘
-         ▲                                              ▲
-   shared namespace (default)                 OR per-user namespaces
-   openshell-agents                              saw-alice, saw-bob
+                     OpenShift Cluster
+┌──────────────────────────────────────────────────────────┐
+│                                                          │
+│  Operators (deployed by Validated Pattern or manually):  │
+│  ┌──────────────────┐  ┌──────────────────┐             │
+│  │ OpenShift         │  │ Red Hat Build    │             │
+│  │ Virtualization    │  │ of Keycloak      │             │
+│  └──────────────────┘  └──────────────────┘             │
+│                                                          │
+│  Infrastructure (ArgoCD-managed):                        │
+│  ┌──────────┐ ┌──────────┐ ┌──────────────────────────┐ │
+│  │ Vault    │ │ ESO      │ │ Keycloak (OIDC provider) │ │
+│  └──────────┘ └──────────┘ └──────────────────────────┘ │
+│       │                              │                   │
+│       │ secrets sync                 │ JWKS validation   │
+│       ▼                              ▼                   │
+│  ┌──────────────────────────────────────────┐            │
+│  │ Golden Image (bootc)                      │            │
+│  │ Fedora 44 + OpenShell + podman + nodejs   │            │
+│  │ Built via BuildConfig → CDI DataSource    │            │
+│  └─────────────────┬────────────────────────┘            │
+│                    │ clone per user                       │
+│       ┌────────────┼────────────┐                        │
+│       ▼            ▼            ▼                        │
+│  ┌─────────┐ ┌─────────┐ ┌─────────┐                    │
+│  │ alice   │ │ bob     │ │ carol   │  Per-user VMs      │
+│  │ sandbox │ │ sandbox │ │ sandbox │  with gateway +    │
+│  │  VM     │ │  VM     │ │  VM     │  agent + routes    │
+│  └─────────┘ └─────────┘ └─────────┘                    │
+│       │            │            │                        │
+│       └────────────┼────────────┘                        │
+│                    │                                     │
+│  Routes:  TLS passthrough (gRPC) + edge (dashboard)     │
+└──────────────────────────────────────────────────────────┘
+        │
+        ▼
+   User (openshell CLI / browser)
 ```
 
-Sandboxes can live in a **shared namespace** (default, scales to thousands of users) or in **per-user namespaces** (`saw-<username>`). Each sandbox has an **auth proxy** (dashboard only) that restricts access to the owning user by validating the OIDC token's `preferred_username`.
+| Component | Technology | Purpose |
+|---|---|---|
+| VM isolation | OpenShift Virtualization (KubeVirt) | One VM per user with process and network isolation |
+| Identity | Red Hat Build of Keycloak (RHBK) | OIDC authentication, user management, SSO |
+| Agent runtime | NVIDIA OpenShell + OpenClaw/NemoClaw | AI coding and knowledge agents inside sandbox |
+| Gateway | OpenShell Gateway (gRPC over TLS) | Sandbox lifecycle, SSH proxy, inference routing |
+| Golden image | Bootc (Fedora 44) + CDI | Pre-baked VM image for fast provisioning |
+| Secrets | HashiCorp Vault + External Secrets Operator | API keys for inference providers, SSH keys |
+| GitOps | ArgoCD (Validated Patterns) | Declarative cluster configuration |
+| Access control | OpenResty auth proxy + OIDC token validation | Per-user dashboard restriction |
 
-## Prerequisites
+## Requirements
 
-- OpenShift cluster (4.16+) with the following **operators installed**:
-  - **OpenShift Virtualization** (KubeVirt/CDI)
-  - **Red Hat Build of Keycloak** (RHBK) operator
-- `helm` 3.x
-- `oc` logged in with cluster-admin
-- `openshell` CLI installed ([releases](https://github.com/NVIDIA/OpenShell/releases))
-- API key for your chosen inference provider (Gemini, Anthropic, OpenAI, NVIDIA, OpenRouter, or custom)
-- SSH keypair (`~/.ssh/id_ed25519`)
+### Minimum hardware requirements
 
-> **Validated Pattern path:** Run `make install` from the repo root to deploy operators, Vault, ESO, and Keycloak automatically via ArgoCD.
->
-> **Quickstart path:** Install the operators manually from OperatorHub, then run `make check-prereqs` to verify.
+| Resource | Per sandbox VM | Cluster overhead |
+|---|---|---|
+| CPU | 4 cores | 8 cores (operators, Keycloak, Vault) |
+| Memory | 8 GiB | 16 GiB |
+| Storage | 40 GiB (VM disk) | 50 GiB (golden image, registry) |
 
-## User Flow
+### Minimum software requirements
+
+| Software | Version |
+|---|---|
+| Red Hat OpenShift | 4.16+ |
+| OpenShift Virtualization operator | stable channel |
+| Red Hat Build of Keycloak operator | stable-v24 channel |
+| Helm CLI | 3.x |
+| oc CLI | matching cluster version |
+| openshell CLI | [latest release](https://github.com/NVIDIA/OpenShell/releases) |
+
+### Required user permissions
+
+**Cluster admin** is required for the initial deployment (operator installation, namespace creation). After setup, end users interact only via the `openshell` CLI and their OIDC credentials — no OpenShift access needed.
+
+## Deploy
+
+### Prerequisites
+
+1. An OpenShift 4.16+ cluster with the required operators installed (see Requirements)
+2. `oc` CLI logged in with cluster-admin
+3. `helm` 3.x installed
+4. An API key for at least one inference provider (Gemini, Anthropic, OpenAI, NVIDIA, OpenRouter)
+5. The `openshell` CLI installed ([releases](https://github.com/NVIDIA/OpenShell/releases))
+
+Verify prerequisites:
 
 ```bash
-# 1. Log in to OpenShift
-oc login ...
-
-# 2. Authenticate with the OIDC provider (Keycloak or external SSO)
-make login
-
-# 3. Provision a sandbox (owner auto-detected from OIDC token)
-make sandbox-create SANDBOX_NAME=my-sandbox PROVIDER=gemini MODEL=gemini-2.5-flash API_KEY=<key>
-# Prompt: "Logged in as 'alice'. Press Enter to set owner to 'alice', or type a different owner:"
-
-# 4. Configure the openshell CLI to point at the gateway
-#    Option A: via make target (auto-detects route URL and OIDC issuer)
-make openshell-configure-gateway SANDBOX_NAME=my-sandbox
-#    Option B: manually with openshell gateway add
-GATEWAY_URL=$(oc get route my-sandbox-gateway -n openshell-agents -o jsonpath='https://{.spec.host}')
-openshell gateway add "$GATEWAY_URL" --name my-sandbox --gateway-insecure \
-  --oidc-issuer https://<keycloak-host>/realms/openshell --oidc-client-id openshell-cli
-
-# 5. Authenticate with the gateway via the openshell CLI
-openshell gateway login
-
-# 6. Use your sandbox (already created during provisioning)
-openshell --gateway-insecure sandbox list
+make check-prereqs
 ```
 
-Users interact only via the `openshell` CLI and their gateway URL. No knowledge of OpenShift or Kubernetes is required after the initial setup.
+### Installation
 
-> **Note:** The gateway VM uses a self-signed TLS certificate. Pass `--gateway-insecure` to `openshell` commands, or set `export OPENSHELL_GATEWAY_INSECURE=true` in your shell profile to skip certificate verification.
+Two deployment paths are available:
 
-## Quick Start
+#### Option A: Validated Pattern (automated, GitOps)
 
-Requires operators to be installed first (see Prerequisites). All commands run from the repo root.
+Deploys everything — operators, Vault, ESO, Keycloak, secrets, and a default sandbox — via ArgoCD.
 
 ```bash
-# Verify prerequisites (operators, CLI tools)
+# 1. Clone the repository
+git clone https://github.com/validatedpatterns-sandbox/secure-agent-workspace.git
+cd secure-agent-workspace
+
+# 2. Generate SSH keys for sandbox provisioning
+make generate-keys
+
+# 3. Configure secrets
+cp values-secret.yaml.template ~/values-secret.yaml
+# Edit ~/values-secret.yaml — set at least one provider API key and SSH keys
+
+# 4. Deploy the pattern
+make install
+```
+
+#### Option B: Quickstart (manual, step-by-step)
+
+Install operators from OperatorHub first, then deploy components manually.
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/validatedpatterns-sandbox/secure-agent-workspace.git
+cd secure-agent-workspace
+
+# 2. Verify prerequisites
 make check-prereqs
 
-# One-time cluster setup
+# 3. Generate SSH keys
+make generate-keys
+
+# 4. Build images (one-time, ~10-15 min)
 make build                    # NemoClaw sandbox image
 make build-cli                # NemoClaw CLI image
-make build-gateway-image      # Bootc gateway VM image (~10 min)
-make keycloak                 # Keycloak instance + realm via RHBK operator
+make build-gateway-image      # Bootc gateway VM image
 
-# Per-user
-make login                    # Authenticate with OIDC
-make sandbox-create SANDBOX_NAME=my-sandbox PROVIDER=gemini MODEL=gemini-2.5-flash API_KEY=<key>
+# 5. Deploy Keycloak
+make keycloak
+
+# 6. Authenticate
+make login                    # Opens browser for OIDC login
+
+# 7. Create a sandbox
+make sandbox-create \
+  SANDBOX_NAME=my-sandbox \
+  PROVIDER=gemini \
+  MODEL=gemini-2.5-flash \
+  API_KEY=<your-api-key>
+
+# 8. Configure the openshell CLI
 make openshell-configure-gateway SANDBOX_NAME=my-sandbox
+
+# 9. Login to the gateway
 openshell gateway login
+
+# 10. Verify
 openshell --gateway-insecure sandbox list
 ```
 
-See `make help` for all available targets.
+> **Note:** The gateway VM uses a self-signed TLS certificate. Pass `--gateway-insecure` to `openshell` commands, or set `export OPENSHELL_GATEWAY_INSECURE=true`.
 
-## Per-User Access Control
+#### Supported inference providers
 
-Each sandbox is protected by an **auth proxy** (openresty/nginx+lua) that validates the OIDC token's `preferred_username` matches the sandbox owner. The owner is auto-detected from the OIDC token obtained via `make login`.
+| Provider | Key | Example model |
+|---|---|---|
+| Google Gemini | `gemini` | `gemini-2.5-flash` |
+| Anthropic | `anthropic` | `claude-sonnet-4-6` |
+| OpenAI | `openai` | `gpt-4o` |
+| NVIDIA Build | `build` | `meta/llama-3.3-70b-instruct` |
+| OpenRouter | `openrouter` | `anthropic/claude-sonnet-4-6` |
+| Ollama (local) | `ollama` | `llama3` |
+| Custom endpoint | `custom` | any (set `ENDPOINT_URL`) |
 
-### How It Works
-
-```
-User (openshell CLI)                    User (browser)
-  │                                       │
-  │ Authorization: Bearer <JWT>           │ Authorization: Bearer <JWT>
-  ▼                                       ▼
-OpenShift Route (TLS passthrough)       OpenShift Route (TLS edge)
-  │                                       │
-  │ gRPC/HTTP2 preserved                  ▼
-  │                                     Auth proxy (per-sandbox, openresty)
-  │                                       │ Decodes JWT, checks: preferred_username == owner
-  │                                       │ If mismatch → 403 Forbidden
-  │                                       │ If no token → 401 Unauthorized
-  ▼                                       ▼
-OpenShell Gateway (in VM)               Dashboard (in VM)
-  │ Validates OIDC token (signature, expiry, roles)
-  ▼
-Sandbox container
-```
-
-The gateway route uses TLS **passthrough** so that gRPC/HTTP2 is preserved end-to-end. The gateway validates OIDC tokens directly (signature, expiry, issuer, audience, roles). The dashboard route uses TLS **edge** termination with an auth proxy that additionally checks `preferred_username == owner` for per-user access control.
-
-- Owner is auto-detected from `make login` OIDC token
-- Admin can provision for another user: `make sandbox-create ... OWNER=alice`
-- To disable access control: pass `--set accessControl.enabled=false` in the Helm install
-
-### Access Control Values
-
-| Key | Default | Description |
-|-----|---------|-------------|
-| `accessControl.enabled` | `false` | Enable per-user access control |
-| `accessControl.owner` | `""` | Owner's `preferred_username` (from OIDC token) |
-| `accessControl.image` | `docker.io/openresty/openresty:1.27.1.1-alpine` | Auth proxy container image |
-
-## Namespace Modes
-
-Two namespace strategies are available, controlled by `NAMESPACE_MODE`:
-
-| Mode | Description |
-|------|-------------|
-| `shared` (default) | All sandboxes in one namespace (`openshell-agents`). Scales to thousands of users. Access control enforced by auth proxy. |
-| `perUser` | Each user gets `saw-<username>` namespace. Provides Kubernetes-level resource isolation. |
+### Validating the deployment
 
 ```bash
-# Shared namespace (default)
-make sandbox-create SANDBOX_NAME=my-sandbox PROVIDER=gemini ...
+# Check sandbox status
+openshell --gateway-insecure sandbox list
 
-# Per-user namespace
-make sandbox-create SANDBOX_NAME=my-sandbox PROVIDER=gemini ... NAMESPACE_MODE=perUser
+# SSH into the sandbox VM
+make sandbox-ssh SANDBOX_NAME=my-sandbox
+
+# Launch the OpenClaw TUI
+make tui SANDBOX_NAME=my-sandbox
+
+# Open the web UI
+make gui SANDBOX_NAME=my-sandbox
+
+# Run the automated E2E test
+make test
 ```
 
-## OIDC Authentication
+The `make test` target runs a fully headless E2E test: auto-detects a provider from `~/values-secret.yaml`, deploys Keycloak, fetches an OIDC token via Keycloak's ROPC grant, creates a sandbox, verifies VM health, and cleans up.
 
-The system supports any OIDC-compliant provider. For local development, a Keycloak chart is included.
-
-### With Keycloak (development)
+### Delete
 
 ```bash
-make keycloak                 # Deploy Keycloak with test users
-make login                    # Authenticate (opens browser)
-make sandbox-create ...       # Owner auto-detected from token
+# Delete a single sandbox
+make delete-sandbox SANDBOX_NAME=my-sandbox
+
+# Delete all quickstart resources (Keycloak, images, gateway image)
+make delete-all
+
+# Uninstall the validated pattern (experimental)
+make uninstall
 ```
 
-### With external OIDC provider (production)
+## Repository structure
 
-```bash
-make login OIDC_ISSUER=https://sso.corp.example.com
-make sandbox-create ...
+```
+.
+├── Makefile                          # Root Makefile (includes common + quickstart)
+├── Makefile-common                   # Validated Pattern targets (install, load-secrets, etc.)
+├── Makefile-quickstart               # Quickstart targets (build, keycloak, sandbox-create, etc.)
+├── values-global.yaml                # Pattern config (name, ArgoCD, secret loader)
+├── values-prod.yaml                  # ClusterGroup (operators, subscriptions, applications)
+├── values-secret.yaml.template       # Secrets template (inference keys, SSH keys)
+├── overrides/
+│   └── openshell-sandbox.yaml        # Default sandbox values for VP flow
+├── charts/                           # ArgoCD-managed Helm charts
+│   ├── openshell-keycloak/           # Keycloak CR + KeycloakRealmImport (RHBK operator)
+│   ├── openshell-sandbox/            # Per-user sandbox VM + gateway + agent
+│   └── pattern-secrets/              # ExternalSecrets for provider API keys + SSH
+├── image-builder-charts/             # Build-time charts (imagestreams, bootc image)
+│   └── helm/
+│       ├── nemoclaw-imagestream/     # NemoClaw sandbox image BuildConfig
+│       ├── nemoclaw-cli-imagestream/ # NemoClaw CLI image BuildConfig
+│       └── openshell-gateway-image/  # Bootc gateway VM image + golden image
+├── scripts/                          # Runtime utilities and automation
+│   ├── e2e-test.sh                   # Headless E2E test
+│   ├── sandbox-create.sh             # Sandbox provisioning logic
+│   ├── sandbox-gui.sh                # Web UI port-forward
+│   ├── sandbox-logout.sh             # Clear OIDC tokens from VMs
+│   ├── generate-keys.sh              # SSH keypair generation
+│   └── oidc-login.sh                 # Browser-based OIDC login
+├── tests/                            # Test scripts
+│   ├── test-bootc-e2e.sh             # Bootc pipeline E2E (28 checks)
+│   ├── test-oidc-templates.sh        # Helm template validation (43 checks)
+│   ├── test-access-control.sh        # Per-user access control E2E
+│   └── test-multiuser-isolation.sh   # Namespace isolation E2E
+├── cli/                              # Admin provisioning CLI (openshell-saw)
+├── pattern.sh                        # VP utility container wrapper
+└── ansible.cfg                       # VP ansible config
 ```
 
-No Keycloak deployment needed. The gateway validates tokens directly against the external provider's JWKS endpoint.
+## References
 
-### Test Users (Keycloak)
+- [NVIDIA Secure Agent Workspace Reference Design](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/)
+- [OpenShift Virtualization Reference Implementation](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html)
+- [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell)
+- [NVIDIA NemoClaw](https://github.com/NVIDIA/NemoClaw)
+- [Red Hat Validated Patterns](https://validatedpatterns.io/)
+- [Red Hat Build of Keycloak](https://docs.redhat.com/en/documentation/red_hat_build_of_keycloak/)
+
+## Technical details
+
+### Security model
+
+The system implements layered isolation:
+
+1. **VM-level isolation** — Each user gets a dedicated KubeVirt VM (one VM per user, no shared agent process space)
+2. **OIDC authentication** — Keycloak provides SSO with PKCE and device code flow support
+3. **Per-user access control** — Auth proxy validates the OIDC token's `preferred_username` matches the sandbox owner
+4. **TLS passthrough** — Gateway route preserves gRPC/HTTP2 end-to-end; the gateway validates OIDC tokens directly
+5. **Secret management** — API keys flow through Vault + ESO; the user's SSH private key never touches the cluster in plaintext
+
+### Keycloak test users
 
 | Username | Password | Roles |
-|----------|----------|-------|
+|---|---|---|
 | `developer` | `developer` | `openshell-user` |
 | `admin` | `admin` | `openshell-user`, `openshell-admin` |
 | `alice` | `alice` | `openshell-user`, `openshell-admin` |
 | `bob` | `bob` | `openshell-user`, `openshell-admin` |
 
-## Supported Inference Providers
+### Namespace modes
 
-| Provider key | Example model | Notes |
-|-------------|---------------|-------|
-| `gemini` | `gemini-2.5-flash` | Google Gemini API |
-| `anthropic` | `claude-sonnet-4-6` | Anthropic API |
-| `openai` | `gpt-4o` | OpenAI API |
-| `build` | `meta/llama-3.3-70b-instruct` | NVIDIA Build / Endpoints |
-| `openrouter` | `anthropic/claude-sonnet-4-6` | OpenRouter |
-| `ollama` | `llama3` | Local Ollama (no API key needed) |
-| `custom` | any | Custom endpoint (set `ENDPOINT_URL`) |
+| Mode | Description |
+|---|---|
+| `shared` (default) | All sandboxes in one namespace. Scales to thousands of users. Access control via auth proxy. |
+| `perUser` | Each user gets `saw-<username>` namespace. Kubernetes-level resource isolation. |
 
-## openshell-saw CLI
+### OIDC issuer resolution
 
-An admin provisioning CLI for cluster-level operations. Users interact with their sandboxes via the upstream `openshell` CLI.
+The sandbox chart resolves the OIDC issuer URL automatically:
+- **Validated Pattern flow:** Computed from `global.clusterDomain` (injected by ArgoCD)
+- **Quickstart flow:** Detected from the Keycloak route at `make sandbox-create` time
+- **Manual override:** Set `oidc.issuerUrl` explicitly
 
-```bash
-# Install
-cd cli && pip install -e .
-```
+## Tags
 
-| Command | Description |
-|---------|-------------|
-| `openshell-saw login` | Authenticate with OIDC (for provisioning) |
-| `openshell-saw whoami` | Show current identity and token status |
-| `openshell-saw sandbox create NAME --owner USER -p PROVIDER -m MODEL -k KEY` | Provision a sandbox |
-| `openshell-saw sandbox list` | List sandboxes |
-| `openshell-saw sandbox url NAME` | Show gateway and dashboard URLs |
-| `openshell-saw sandbox ssh NAME` | SSH into a sandbox VM |
-| `openshell-saw sandbox logs NAME` | Follow setup job logs |
-| `openshell-saw sandbox delete NAME` | Delete a sandbox |
-| `openshell-saw status` | Show all OpenShell resources |
-
-## Charts
-
-### openshell-sandbox (per-user)
-
-Creates a dedicated VM with inference provider, OpenClaw agent, and per-user access control.
-
-**Key values:**
-
-| Key | Default | Description |
-|-----|---------|-------------|
-| `sandboxName` | `""` (required) | DNS-safe sandbox name |
-| `sshPublicKey` | `""` (required) | User's SSH public key |
-| `sourceGoldenImage` | `openshell-gateway` | Golden image DataSource name |
-| `agent` | `openclaw` | Agent: `openclaw`, `hermes`, or `langchain-deepagents-code` |
-| `inference.provider` | `""` | Provider key |
-| `inference.model` | `""` | Model ID |
-| `inference.apiKey` | `""` | API key |
-| `accessControl.enabled` | `false` | Enable per-user restriction |
-| `accessControl.owner` | `""` | Owner's OIDC `preferred_username` |
-| `namespaceMode` | `shared` | `shared` or `perUser` |
-| `route.enabled` | `false` | Expose gateway via OpenShift Route |
-| `route.dashboard` | `false` | Expose dashboard via OpenShift Route |
-
-**What it creates:** VirtualMachine (from golden image), Service, setup Job, auth proxy (Deployment + Service + ConfigMap), Routes, ServiceAccount + RBAC.
-
-### openshell-gateway-image (bootc VM image)
-
-Builds a bootc-based gateway VM image via OpenShift BuildConfig. CDI imports the image into a golden image PVC that sandboxes clone from.
-
-```bash
-make build-gateway-image
-```
-
-### openshell-keycloak (OIDC provider)
-
-Optional Keycloak server for development. Production deployments should use an external OIDC provider.
-
-```bash
-make keycloak
-```
-
-### nemoclaw-imagestream / nemoclaw-cli-imagestream
-
-Build the NemoClaw sandbox and CLI images from the [NVIDIA/NemoClaw](https://github.com/NVIDIA/NemoClaw) repo.
-
-```bash
-make build        # sandbox image
-make build-cli    # CLI image
-```
-
-## E2E Tests
-
-### Access control test
-
-Validates per-user access control — alice cannot access bob's gateway, and vice versa:
-
-```bash
-tests/test-access-control.sh
-```
-
-Runs 13 checks: provisions alice/bob sandboxes in a shared namespace, verifies auth proxy pods, Route configuration, and cross-user 403 blocking.
-
-### Multi-user isolation test
-
-Validates namespace-per-user isolation:
-
-```bash
-tests/test-multiuser-isolation.sh
-```
-
-Runs 14 checks across separate `saw-alice` and `saw-bob` namespaces.
-
-Pass `--skip-cleanup` to keep resources for debugging.
-
-## Teardown
-
-```bash
-make delete-sandbox SANDBOX_NAME=my-sandbox   # Delete a sandbox
-make delete-all                               # Delete gateway + keycloak + images
-```
+| Field | Value |
+|---|---|
+| **Title** | Secure Agent Workspace |
+| **Description** | Deploy isolated, per-user AI agent sandboxes on OpenShift Virtualization |
+| **Industry** | Cross-industry |
+| **Product** | Red Hat OpenShift |
+| **Use case** | AI agent sandboxing, secure coding environments |
+| **Partner** | NVIDIA |

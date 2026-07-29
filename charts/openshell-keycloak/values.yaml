@@ -1,3 +1,9 @@
+postgres:
+  image: "registry.redhat.io/rhel9/postgresql-16:latest"
+  storage: 1Gi
+  database: keycloak
+  username: keycloak
+
 keycloak:
   name: openshell-keycloak
   instances: 1

@@ -1,6 +1,12 @@
 openshell:
   version: "0.0.89"
-  fedoraRelease: "44"
+
+  # ODH container images for gateway and supervisor binaries.
+  gatewayImage: "quay.io/opendatahub/odh-openshell-gateway:odh-stable"
+  supervisorImage: "quay.io/opendatahub/odh-openshell-supervisor:odh-stable"
+
+  # Public pip index for the OpenShell CLI package.
+  pipIndexUrl: "https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6-EA1/cpu-ubi9-test/simple/"
 
 build:
   baseImage: "quay.io/fedora/fedora-bootc:44"

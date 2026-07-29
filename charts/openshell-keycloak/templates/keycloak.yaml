@@ -4,6 +4,16 @@ metadata:
   name: {{ .Values.keycloak.name }}
 spec:
   instances: {{ .Values.keycloak.instances }}
+  db:
+    vendor: postgres
+    host: keycloak-db
+    usernameSecret:
+      name: keycloak-db-secret
+      key: username
+    passwordSecret:
+      name: keycloak-db-secret
+      key: password
+    database: {{ .Values.postgres.database }}
   http:
     httpEnabled: true
   ingress:

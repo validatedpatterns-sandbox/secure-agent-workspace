@@ -6,7 +6,6 @@ set -euo pipefail
 
 SANDBOX_NAME="${SANDBOX_NAME:?SANDBOX_NAME is required}"
 GATEWAY_NAME="${GATEWAY_NAME:-${SANDBOX_NAME}}"
-WORKSPACE="${WORKSPACE:-default}"
 GUI_PORT="${GUI_PORT:-18789}"
 SSH_USER="${SSH_USER:-sandbox}"
 
@@ -47,9 +46,9 @@ echo "Press Ctrl-C to stop."
 echo ""
 
 # Port-forward via openshell ssh-proxy — uses local OIDC token
-ssh -o "ProxyCommand=openshell --gateway-insecure ssh-proxy --gateway-name ${GATEWAY_NAME} --name ${SANDBOX_NAME} --workspace ${WORKSPACE}" \
+ssh -o "ProxyCommand=openshell --gateway-insecure ssh-proxy --gateway-name ${GATEWAY_NAME} --name ${SANDBOX_NAME}" \
   -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null \
   -o LogLevel=ERROR \
   -L "${GUI_PORT}:127.0.0.1:18789" \
-  -N "${SSH_USER}@openshell-${SANDBOX_NAME}.${WORKSPACE}"
+  -N "${SSH_USER}@openshell-${SANDBOX_NAME}.default"

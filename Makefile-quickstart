@@ -192,7 +192,7 @@ sandbox-logs: ## Follow sandbox setup Job logs (SANDBOX_NAME=)
 	oc -n $(NS) logs -f job/$(SANDBOX_NAME)-setup
 
 sandbox-ssh: ## SSH into a sandbox VM (SANDBOX_NAME=)
-	@ssh -o "ProxyCommand=openshell --gateway-insecure ssh-proxy --gateway-name $(SANDBOX_NAME) --name $(SANDBOX_NAME) --workspace default" \
+	@ssh -o "ProxyCommand=openshell --gateway-insecure ssh-proxy --gateway-name $(SANDBOX_NAME) --name $(SANDBOX_NAME) " \
 		-o StrictHostKeyChecking=no \
 		-o UserKnownHostsFile=/dev/null \
 		-o LogLevel=ERROR \
@@ -201,7 +201,7 @@ sandbox-ssh: ## SSH into a sandbox VM (SANDBOX_NAME=)
 # --- User access ---
 
 tui: ## Launch OpenClaw TUI (SANDBOX_NAME=)
-	@ssh -o "ProxyCommand=openshell --gateway-insecure ssh-proxy --gateway-name $(SANDBOX_NAME) --name $(SANDBOX_NAME) --workspace default" \
+	@ssh -o "ProxyCommand=openshell --gateway-insecure ssh-proxy --gateway-name $(SANDBOX_NAME) --name $(SANDBOX_NAME) " \
 		-o StrictHostKeyChecking=no \
 		-o UserKnownHostsFile=/dev/null \
 		-o LogLevel=ERROR \

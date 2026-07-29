@@ -35,6 +35,22 @@ The system supports multiple inference providers (Gemini, Anthropic, OpenAI, NVI
 
 ### Architecture diagrams
 
+The following diagrams are from the [NVIDIA Secure Agent Workspace OpenShift Virtualization Reference Implementation](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html).
+
+#### Reference Architecture
+
+![OpenShift Virtualization Reference Implementation](docs/images/openshift-reference-shape.png)
+
+#### GitOps Policy Model
+
+![GitOps Policy Model — End-to-End Policy Flow](docs/images/gitops-policy-model.png)
+
+#### Storage Layout
+
+![NFS storage layout for policy bundles and workspace persistence](docs/images/nfs-storage-layout.png)
+
+#### Implementation Overview
+
 ```
                      OpenShift Cluster
 ┌──────────────────────────────────────────────────────────┐

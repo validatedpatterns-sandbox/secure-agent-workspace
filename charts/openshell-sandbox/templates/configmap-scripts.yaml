@@ -155,7 +155,7 @@ data:
     if [[ -f /ssh-key/public_key ]]; then
       SSH_PUB="$(cat /ssh-key/public_key)"
       if [[ -n "${SSH_PUB}" ]]; then
-        echo "SSH_PUBKEY=${SSH_PUB}" >> "${WORK_DIR}/run-create.env"
+        echo "SSH_PUBKEY=\"${SSH_PUB}\"" >> "${WORK_DIR}/run-create.env"
         guest_ssh "mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '${SSH_PUB}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" || true
         echo "Injected SSH public key from secret"
       fi

@@ -2,8 +2,8 @@ openshell:
   version: "0.0.89"
 
   # ODH container images for gateway and supervisor binaries.
-  gatewayImage: "quay.io/opendatahub/odh-openshell-gateway:odh-stable"
-  supervisorImage: "quay.io/opendatahub/odh-openshell-supervisor:odh-stable"
+  gatewayImage: "quay.io/opendatahub/odh-openshell-gateway:7fb271f0ae2aaaa51a73ff279a99d1978ca5c875"
+  supervisorImage: "quay.io/opendatahub/odh-openshell-supervisor@sha256:0e5a9ae58295a5072f22bd3ea09cd083caab512fe2193e1b0a0f2d45196192b7"
 
   # Public pip index for the OpenShell CLI package.
   pipIndexUrl: "https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6-EA1/cpu-ubi9-test/simple/"

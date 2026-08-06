@@ -6,3 +6,9 @@ values-secret.yaml
 .vscode/
 .DS_Store
 jira/
+
+# local documents
+local-docs/
+
+# graphify output
+graphify-out/

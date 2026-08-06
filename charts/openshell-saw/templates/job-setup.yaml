@@ -1,5 +1,7 @@
 {{- include "openshell-sandbox.validateSecretName" .Values.sshSecret }}
 {{- include "openshell-sandbox.validateSecretName" (.Values.inference.secretName | default .Values.inference.provider) }}
+{{- include "openshell-sandbox.validateSandboxName" .Release.Name }}
+{{- with .Values.sandboxName }}{{- include "openshell-sandbox.validateSandboxName" . }}{{- end }}
 apiVersion: batch/v1
 kind: Job
 metadata:

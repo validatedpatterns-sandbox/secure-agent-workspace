@@ -10,6 +10,10 @@ set -euo pipefail
 
 NS="${NS:-openshell-agents}"
 OPENSHELL_SAW_NAME="${OPENSHELL_SAW_NAME:?OPENSHELL_SAW_NAME is required}"
+if (( ${#OPENSHELL_SAW_NAME} > 19 )); then
+  echo "ERROR: OPENSHELL_SAW_NAME '${OPENSHELL_SAW_NAME}' is ${#OPENSHELL_SAW_NAME} characters — OpenShell enforces a 19-character maximum." >&2
+  exit 1
+fi
 SAW_CHART="${SAW_CHART:?SAW_CHART is required}"
 SSH_PUBKEY="${SSH_PUBKEY:?SSH_PUBKEY is required}"
 SANDBOX_IMAGE="${SANDBOX_IMAGE:-}"

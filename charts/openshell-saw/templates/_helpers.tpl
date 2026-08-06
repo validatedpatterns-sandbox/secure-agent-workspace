@@ -56,6 +56,16 @@ Validate a Kubernetes secret name (RFC 1123 subdomain).
 {{- end }}
 
 {{/*
+Validate sandbox name does not exceed OpenShell's 19-character limit.
+OpenShell rejects names longer than 19 chars with "name exceeds maximum length".
+*/}}
+{{- define "openshell-sandbox.validateSandboxName" -}}
+{{- if gt (len .) 19 -}}
+  {{- fail (printf "sandbox name %q is %d characters — OpenShell enforces a 19-character maximum" . (len .)) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Resolve the SSH public key.
 Priority: explicit sshPublicKey > global.sshPublicKey.
 */}}

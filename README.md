@@ -266,6 +266,8 @@ openshell --gateway-insecure sandbox list
 
 You can set `OPENSHELL_SAW_NAME` once via `export` and all `openshell-saw-*` targets will use it automatically.
 
+> **Sandbox name limit:** `OPENSHELL_SAW_NAME` must be **19 characters or fewer**. OpenShell rejects longer names with "name exceeds maximum length". The Helm chart and `make openshell-saw-create` will both fail fast with a clear error if this limit is exceeded.
+
 #### Supported inference providers
 
 | Provider | Key | Example model |

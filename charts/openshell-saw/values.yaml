@@ -1,4 +1,4 @@
-# Required — must be set at install time.
+# Required — must be set at install time. Maximum 19 characters (OpenShell limit).
 sandboxName: ""
 # SSH public key for VM access. Set explicitly, or leave empty to read
 # from the 'public_key' field in the sshSecret (created by ESO/pattern-secrets).

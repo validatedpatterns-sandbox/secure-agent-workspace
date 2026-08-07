@@ -32,5 +32,13 @@ if ! podman login --get-login "${QUAY_REPO%%/*}" >/dev/null 2>&1 && \
   echo "WARN: Not authenticated to ${QUAY_REPO%%/*} — run 'podman login ${QUAY_REPO%%/*}' first" >&2
 fi
 
+VERSION_TAG="${4:-}"
+
 oc image mirror "${REGISTRY}/${NAMESPACE}/${IMAGE}:latest" \
   "${QUAY_REPO}/${IMAGE}:latest" --insecure=true
+
+if [ -n "$VERSION_TAG" ]; then
+  echo "  Tagging ${QUAY_REPO}/${IMAGE}:${VERSION_TAG}..."
+  oc image mirror "${REGISTRY}/${NAMESPACE}/${IMAGE}:latest" \
+    "${QUAY_REPO}/${IMAGE}:${VERSION_TAG}" --insecure=true
+fi

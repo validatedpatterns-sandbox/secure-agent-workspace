@@ -5,6 +5,7 @@ source:
 
 build:
   nodeImage: "node:22-trixie-slim"
+  maxOpenshellVersion: "0.0.99"
 
 output:
   imageStreamTag: "nemoclaw-cli:latest"

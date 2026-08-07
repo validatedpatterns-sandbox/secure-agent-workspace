@@ -33,7 +33,12 @@ spec:
       COPY --from=builder /opt/nemoclaw/agents/ ./agents/
       COPY --from=builder /opt/nemoclaw/scripts/ ./scripts/
       COPY --from=builder /opt/nemoclaw/nemoclaw-blueprint/ ./nemoclaw-blueprint/
+      RUN sed -i 's/max_openshell_version: "0.0.85"/max_openshell_version: "{{ .Values.build.maxOpenshellVersion | default "0.0.99" }}"/' ./nemoclaw-blueprint/blueprint.yaml
       COPY --from=builder /opt/nemoclaw/schemas/ ./schemas/
+      COPY --from=builder /opt/nemoclaw/Dockerfile ./Dockerfile
+      COPY --from=builder /opt/nemoclaw/tsconfig.runtime-preloads.json ./tsconfig.runtime-preloads.json
+      # Patch inference route parser to match both "Gateway inference:" and "Inference:" output formats
+      RUN sed -i 's|/\^Gateway inference:\\\\s\*\$/i|/^(Gateway )?[Ii]nference:\\s*$/i|' ./dist/lib/inference/config.js
       ENTRYPOINT ["node", "/opt/nemoclaw/bin/nemoclaw.js"]
   strategy:
     type: Docker

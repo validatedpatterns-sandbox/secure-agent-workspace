@@ -1,0 +1,39 @@
+{{/*
+Grants the setup Job's ServiceAccount read access to the Keycloak initial-admin
+Secret, possibly in a different namespace than this sandbox. Needed so the Job
+can register this sandbox's exact webui redirect URI onto the shared
+openshell-dashboard client via the Keycloak Admin API (Keycloak's redirect URI
+wildcard matching only supports a trailing wildcard, which can't express "any
+per-VM hostname, fixed path").
+*/}}
+{{- if .Values.dashboard.enabled }}
+{{- $kcNs := .Values.dashboard.keycloakNamespace | default .Release.Namespace }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "openshell-sandbox.fullname" . }}-keycloak-admin-read
+  namespace: {{ $kcNs }}
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["{{ .Values.oidc.keycloakName }}-initial-admin"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "openshell-sandbox.fullname" . }}-keycloak-admin-read
+  namespace: {{ $kcNs }}
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "openshell-sandbox.fullname" . }}-setup
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ include "openshell-sandbox.fullname" . }}-keycloak-admin-read
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

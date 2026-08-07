@@ -1,0 +1,18 @@
+{{- if .Values.route.webui }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ include "openshell-sandbox.fullname" . }}-webui
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+spec:
+  to:
+    kind: Service
+    name: {{ include "openshell-sandbox.fullname" . }}-gateway
+    weight: 100
+  port:
+    targetPort: webui
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+{{- end }}

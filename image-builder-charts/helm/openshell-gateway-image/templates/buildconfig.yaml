@@ -8,25 +8,11 @@ spec:
   source:
     type: Dockerfile
     dockerfile: |
-      # Extract OpenShell binaries from ODH container images
-      FROM {{ .Values.openshell.gatewayImage }} AS gateway-bin
-      FROM {{ .Values.openshell.supervisorImage }} AS supervisor-bin
-
       FROM {{ .Values.build.builderImage }} AS builder
 
       ENV LIBGUESTFS_BACKEND=direct
 
-      RUN dnf install -y libguestfs-tools-c qemu-img curl python3-pip && dnf clean all
-
-      # Download OpenShell CLI via pip
-      RUN pip3 install openshell=={{ .Values.openshell.version }} \
-            --extra-index-url {{ .Values.openshell.pipIndexUrl }} \
-            --root /build/openshell-cli-root --prefix /usr && \
-          pip3 cache purge
-
-      # Copy ODH binaries from container images
-      COPY --from=gateway-bin /usr/local/bin/openshell-gateway /build/openshell-gateway
-      COPY --from=supervisor-bin /openshell-sandbox /build/openshell-supervisor
+      RUN dnf install -y libguestfs-tools-c qemu-img curl && dnf clean all
 
       WORKDIR /build
       RUN curl -fL --retry 3 -o base.qcow2 "{{ .Values.build.fedoraCloud }}"
@@ -78,6 +64,12 @@ spec:
       USER_UID="$(id -u "${USER_NAME}")"
       USER_HOME="$(getent passwd "${USER_NAME}" | cut -d: -f6)"
 
+      # Ensure Docker is running before starting the gateway
+      if systemctl is-enabled docker.service &>/dev/null; then
+        systemctl start docker.service
+        systemctl is-active docker.service || { echo "Docker daemon failed to start" >&2; exit 1; }
+      fi
+
       systemctl start "user@${USER_UID}.service"
       for _ in $(seq 1 90); do
         if [[ -S "/run/user/${USER_UID}/bus" ]]; then break; fi
@@ -99,23 +91,39 @@ spec:
       }
 
       run_user daemon-reload
-      for unit in podman.socket openshell-gateway.service; do
-        ok=0
-        for _ in $(seq 1 15); do
-          if run_user enable --now "${unit}"; then ok=1; break; fi
-          sleep 2
-          run_user daemon-reload || true
+      # Enable gateway service; start only if the binary is already installed
+      # (it may be installed later by the setup Job)
+      if [[ -x /usr/local/bin/openshell-gateway ]]; then
+        for unit in openshell-gateway.service; do
+          ok=0
+          for _ in $(seq 1 15); do
+            if run_user enable --now "${unit}"; then ok=1; break; fi
+            sleep 2
+            run_user daemon-reload || true
+          done
+          if [[ "${ok}" -ne 1 ]]; then
+            echo "failed to enable --now ${unit} for ${USER_NAME}" >&2
+            exit 1
+          fi
         done
-        if [[ "${ok}" -ne 1 ]]; then
-          echo "failed to enable --now ${unit} for ${USER_NAME}" >&2
-          exit 1
-        fi
-      done
+      else
+        run_user enable openshell-gateway.service || true
+        echo "Gateway binary not yet installed; service enabled but not started"
+      fi
 
       sleep 3
 
       install -d -m 0755 "${USER_HOME}/.config/openshell"
       cp /etc/openshell/gateway.env "${USER_HOME}/.config/openshell/gateway.env"
+
+      # Derive Docker bridge gateway IP if GRPC_ENDPOINT is not already set
+      if ! grep -q 'OPENSHELL_GRPC_ENDPOINT' "${USER_HOME}/.config/openshell/gateway.env"; then
+        DOCKER_GW="$(docker network inspect bridge --format '{{ "{{" }}(index .IPAM.Config 0).Gateway{{ "}}" }}' 2>/dev/null || echo '172.17.0.1')"
+        cat >> "${USER_HOME}/.config/openshell/gateway.env" <<DOCKEREOF
+      OPENSHELL_GRPC_ENDPOINT=https://${DOCKER_GW}:17670
+      OPENSHELL_SSH_GATEWAY_HOST=${DOCKER_GW}
+      DOCKEREOF
+      fi
       if [[ -f /etc/openshell/gateway.toml ]]; then
         cp /etc/openshell/gateway.toml "${USER_HOME}/.config/openshell/gateway.toml"
       fi
@@ -156,7 +164,7 @@ spec:
         sudo -u "${USER_NAME}" \
           XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" \
           DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS}" \
-          podman pull "${SANDBOX_IMAGE}" || true
+          docker pull "${SANDBOX_IMAGE}" || true
       fi
 
       echo "OpenShell gateway user setup complete."
@@ -164,15 +172,14 @@ spec:
 
       # Bake system packages + OpenShell binaries into the qcow2
       RUN virt-customize -a base.qcow2 \
-            --install podman,podman-docker,curl,jq,qemu-guest-agent,openssh-clients,openssh-server \
+            --run-command 'dnf remove -y podman podman-docker containers-common 2>/dev/null; dnf clean all' \
+            --install curl,jq,qemu-guest-agent,openssh-clients,openssh-server,binutils \
             --install nodejs,cloud-init,python3-pip \
-            --copy-in /build/openshell-cli-root/usr:/  \
-            --copy-in /build/openshell-gateway:/usr/local/bin/ \
-            --copy-in /build/openshell-supervisor:/usr/local/bin/ \
-            --run-command 'chmod 755 /usr/local/bin/openshell-gateway /usr/local/bin/openshell-supervisor' \
-            --run-command 'useradd -m -G wheel cloud-user 2>/dev/null; echo "cloud-user ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/cloud-user; chmod 440 /etc/sudoers.d/cloud-user' \
+            --run-command 'dnf config-manager addrepo --from-repofile=https://download.docker.com/linux/fedora/docker-ce.repo' \
+            --install docker-ce,docker-ce-cli,containerd.io \
+            --run-command 'useradd -m -G wheel,docker cloud-user 2>/dev/null; echo "cloud-user ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/cloud-user; chmod 440 /etc/sudoers.d/cloud-user' \
             --run-command 'loginctl enable-linger cloud-user || mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/cloud-user' \
-            --run-command 'systemctl enable podman.socket' \
+            --run-command 'systemctl enable docker' \
             --mkdir /usr/lib/systemd/user \
             --copy-in /build/openshell-gateway.service:/usr/lib/systemd/user/ \
             --copy-in /build/openshell-gateway-setup.service:/etc/systemd/system/ \

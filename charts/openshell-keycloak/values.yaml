@@ -22,6 +22,20 @@ keycloak:
       # 86400 = 24 hours. Sandboxes run for days, so short-lived tokens cause
       # ssh-proxy and dashboard failures.
       accessTokenLifespan: 86400
+    dashboard:
+      clientId: openshell-dashboard
+      public: true
+      # Each sandbox VM gets its own oauth2-proxy instance behind a unique
+      # per-VM Route hostname (<sandbox>-webui-<ns>.apps.<clusterDomain>).
+      # Keycloak's redirect URI matching only supports a *trailing* wildcard —
+      # confirmed live that "https://*/oauth2/callback" is rejected outright
+      # ("Invalid parameter: redirect_uri") — so a single static entry can't
+      # cover every sandbox. Each sandbox's setup Job registers its own exact
+      # redirect URI onto this client via the Keycloak Admin API instead (see
+      # charts/openshell-saw/templates/configmap-scripts.yaml, run-setup.sh).
+      # These are just the initial (empty) values before any sandbox exists.
+      redirectUris: []
+      webOrigins: []
 
   testUsers:
     - username: developer

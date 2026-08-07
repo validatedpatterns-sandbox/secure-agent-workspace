@@ -17,6 +17,10 @@ spec:
       port: 18789
       targetPort: 18789
       protocol: TCP
+    - name: webui
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
     - name: ssh
       port: 22
       targetPort: 22

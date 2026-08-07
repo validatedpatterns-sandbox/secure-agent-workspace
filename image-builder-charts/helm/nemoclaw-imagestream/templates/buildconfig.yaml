@@ -66,6 +66,7 @@ spec:
     type: Dockerfile
     dockerfile: |
       FROM {{ (split ":" .Values.output.imageStreamTag)._0 }}-root:latest
+      RUN chown -R sandbox:sandbox /sandbox
       USER sandbox
   strategy:
     type: Docker

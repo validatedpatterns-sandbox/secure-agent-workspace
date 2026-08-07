@@ -31,9 +31,7 @@ data:
         content: |
           OPENSHELL_BIND_ADDRESS={{ .Values.openshell.bindAddress | quote }}
           OPENSHELL_SERVER_PORT=17670
-          OPENSHELL_DRIVERS=podman
-          OPENSHELL_GRPC_ENDPOINT=https://host.containers.internal:17670
-          OPENSHELL_SSH_GATEWAY_HOST=host.containers.internal
+          OPENSHELL_DRIVERS=docker
           OPENSHELL_SSH_GATEWAY_PORT=17670
           OPENSHELL_TLS_CERT=/home/cloud-user/.local/state/openshell/tls/server/tls.crt
           OPENSHELL_TLS_KEY=/home/cloud-user/.local/state/openshell/tls/server/tls.key
@@ -41,6 +39,7 @@ data:
           {{- $oidcIssuer := include "openshell-sandbox.oidcIssuerUrl" . }}
           {{- if or .Values.oidc.token $oidcIssuer }}
           OPENSHELL_CONFIG_FILE=/etc/openshell/gateway.toml
+          OPENSHELL_ENABLE_MTLS_AUTH=true
           {{- end }}
 
       {{- $oidcIssuer := include "openshell-sandbox.oidcIssuerUrl" . }}
@@ -55,9 +54,6 @@ data:
 
           [openshell.gateway.auth]
           allow_unauthenticated_users = false
-
-          [openshell.gateway.mtls_auth]
-          enabled = false
       {{- end }}
 
     runcmd:

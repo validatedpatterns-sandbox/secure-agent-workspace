@@ -22,7 +22,7 @@ data:
 
     # --- Install dependencies (in the Job Pod, not the VM) ---
     echo "Installing openssh-clients..."
-    dnf install -y --setopt=install_weak_deps=False openssh-clients
+    dnf install -y --setopt=install_weak_deps=False openssh-clients {{ if .Values.dashboard.enabled }}jq{{ end }}
 
     echo "Installing kubectl..."
     K8S_VERSION="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
@@ -278,7 +278,20 @@ data:
       if [[ -n "${REGISTRY_ROUTE}" ]]; then
         echo "Authenticating VM to image registry (${REGISTRY_ROUTE})..."
         SA_TOKEN="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
-        guest_ssh "podman login --tls-verify=false -u unused -p '${SA_TOKEN}' '${REGISTRY_ROUTE}'" || true
+        # Configure Docker daemon to trust the internal registry (self-signed cert).
+        # Merge with existing daemon.json to preserve any prior settings.
+        guest_ssh "sudo mkdir -p /etc/docker && if [ -f /etc/docker/daemon.json ]; then jq --arg r '${REGISTRY_ROUTE}' '.\"insecure-registries\" = ([.\"insecure-registries\"[]?, \$r] | unique)' /etc/docker/daemon.json | sudo tee /etc/docker/daemon.json.tmp >/dev/null && sudo mv /etc/docker/daemon.json.tmp /etc/docker/daemon.json; else echo '{\"insecure-registries\":[\"${REGISTRY_ROUTE}\"]}' | sudo tee /etc/docker/daemon.json >/dev/null; fi && sudo systemctl restart docker && sleep 3 && sudo systemctl is-active docker" || {
+          echo "ERROR: failed to configure Docker insecure-registries for ${REGISTRY_ROUTE}" >&2
+          exit 1
+        }
+        if ! guest_ssh "echo '${SA_TOKEN}' | docker login --username unused --password-stdin '${REGISTRY_ROUTE}'" 2>&1; then
+          echo "ERROR: docker login failed for ${REGISTRY_ROUTE}" >&2
+          exit 1
+        fi
+        if ! guest_ssh "echo '${SA_TOKEN}' | sudo docker login --username unused --password-stdin '${REGISTRY_ROUTE}'" 2>&1; then
+          echo "ERROR: sudo docker login failed for ${REGISTRY_ROUTE}" >&2
+          exit 1
+        fi
         BUILD_NS="{{ .Values.source.dataSourceNamespace | default .Release.Namespace }}"
         SANDBOX_IMAGE="${REGISTRY_ROUTE}/${BUILD_NS}/nemoclaw-sandbox:latest"
       fi
@@ -287,17 +300,65 @@ data:
       echo "Sandbox image: ${SANDBOX_IMAGE}"
     fi
 
+    # --- Install OpenShell gateway and supervisor binaries ---
+    GATEWAY_IMAGE="{{ .Values.openshell.gatewayImage }}"
+    SUPERVISOR_IMAGE="{{ .Values.openshell.supervisorImage }}"
+    OPENSHELL_PIP_VERSION="{{ .Values.openshell.version }}"
+    echo "Installing OpenShell binaries (gateway=${GATEWAY_IMAGE}, supervisor=${SUPERVISOR_IMAGE}, cli=${OPENSHELL_PIP_VERSION})..."
+    if ! guest_ssh "
+      docker pull '${GATEWAY_IMAGE}' && \
+      CID=\$(docker create '${GATEWAY_IMAGE}') && \
+      docker cp \${CID}:/usr/local/bin/openshell-gateway /tmp/openshell-gateway && \
+      docker rm \${CID} && \
+      sudo mv /tmp/openshell-gateway /usr/local/bin/openshell-gateway && \
+      sudo chmod 755 /usr/local/bin/openshell-gateway && \
+      echo 'gateway installed'
+    "; then
+      echo "ERROR: gateway binary install failed" >&2; exit 1
+    fi
+    if ! guest_ssh "
+      docker pull '${SUPERVISOR_IMAGE}' && \
+      CID=\$(docker create '${SUPERVISOR_IMAGE}') && \
+      docker cp \${CID}:/openshell-sandbox /tmp/openshell-supervisor && \
+      docker rm \${CID} && \
+      sudo mv /tmp/openshell-supervisor /usr/local/bin/openshell-supervisor && \
+      sudo chmod 755 /usr/local/bin/openshell-supervisor && \
+      echo 'supervisor installed'
+    "; then
+      echo "ERROR: supervisor binary install failed" >&2; exit 1
+    fi
+    if ! guest_ssh "
+      pip3 install openshell==${OPENSHELL_PIP_VERSION} \
+        {{- if .Values.openshell.pipIndexUrl }}
+        --extra-index-url {{ .Values.openshell.pipIndexUrl }} \
+        {{- end }}
+        && echo 'openshell CLI installed'
+    "; then
+      echo "ERROR: openshell CLI install failed" >&2; exit 1
+    fi
+    guest_ssh "openshell-gateway --version; openshell-supervisor --version; openshell --version"
+
+    # --- Install lsof (needed by nemoclaw for gateway listener identification) ---
+    echo "Installing lsof..."
+    guest_ssh "sudo dnf install -y lsof 2>&1 | tail -3" || echo "WARN: lsof install failed (non-fatal)"
+
+    # --- Restart gateway with new binaries ---
+    echo "Restarting gateway service..."
+    if ! guest_ssh "systemctl --user restart openshell-gateway.service && sleep 3 && systemctl --user is-active openshell-gateway.service"; then
+      echo "ERROR: gateway failed to start after binary install" >&2; exit 1
+    fi
+
     # --- SCP SA JSON + scripts ---
     echo "Copying scripts to vm/${VM_NAME}..."
     {{- if .Values.vertexSaJson }}
     guest_scp "/gcp-sa/sa.json" "/home/${SSH_USER}/vertex-sa-{{ .Values.sandboxName }}.json"
     {{- end }}
-    for script in configure-vertex-user.sh setup-nemoclaw.sh inject-user-pubkey.sh run-create.sh; do
+    for script in configure-vertex-user.sh setup-nemoclaw.sh inject-user-pubkey.sh setup-dashboard.sh run-create.sh; do
       guest_scp "${SCRIPTS_DIR}/${script}" "/home/${SSH_USER}/${script}"
     done
     cp "${SECRETS_DIR}/run-create.env" "${WORK_DIR}/run-create.env"
-    # Fetch OIDC token from Keycloak if not already provided
     source "${WORK_DIR}/run-create.env" 2>/dev/null || true
+    # Fetch OIDC token from Keycloak if not already provided
     if [[ -z "${OIDC_TOKEN:-}" && -n "${OIDC_ISSUER:-}" ]]; then
       OWNER="{{ .Values.accessControl.owner }}"
       if [[ -n "${OWNER}" ]]; then
@@ -360,6 +421,66 @@ data:
     if [[ -n "${REGISTRY_ROUTE:-}" ]]; then
       echo "NEMOCLAW_CLI_IMAGE=${REGISTRY_ROUTE}/${BUILD_NS}/nemoclaw-cli:latest" >> "${WORK_DIR}/run-create.env"
     fi
+    {{- if .Values.dashboard.enabled }}
+    # --- Resolve dashboard webui Route for oauth2-proxy redirect URL ---
+    WEBUI_ROUTE_HOST="$(kubectl get route "${VM_NAME}-webui" -n "${NS}" -o jsonpath='{.spec.host}' 2>/dev/null || true)"
+    if [[ -n "${WEBUI_ROUTE_HOST}" ]]; then
+      DASHBOARD_REDIRECT_URL="https://${WEBUI_ROUTE_HOST}/oauth2/callback"
+      echo "DASHBOARD_REDIRECT_URL=${DASHBOARD_REDIRECT_URL}" >> "${WORK_DIR}/run-create.env"
+
+      # --- Register this sandbox's exact redirect URI on the shared Keycloak
+      # client. Keycloak's redirect URI matching only supports a *trailing*
+      # wildcard, which can't express "any per-VM hostname, fixed path" — a
+      # single "https://*/oauth2/callback" entry is rejected outright
+      # ("Invalid parameter: redirect_uri"). Read-modify-write the client's
+      # redirectUris/webOrigins via the Admin API instead.
+      KC_NS="{{ .Values.dashboard.keycloakNamespace | default .Release.Namespace }}"
+      KC_ADMIN_SECRET="{{ .Values.oidc.keycloakName }}-initial-admin"
+      KC_ADMIN_USER="$(kubectl get secret "${KC_ADMIN_SECRET}" -n "${KC_NS}" -o jsonpath='{.data.username}' 2>/dev/null | base64 -d || true)"
+      KC_ADMIN_PASS="$(kubectl get secret "${KC_ADMIN_SECRET}" -n "${KC_NS}" -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true)"
+      KC_BASE="$(echo "${OIDC_ISSUER:-}" | sed 's#/realms/.*##')"
+      KC_REALM="{{ .Values.oidc.realm }}"
+      DASHBOARD_CLIENT_ID="{{ .Values.dashboard.clientId }}"
+      if [[ -n "${KC_ADMIN_USER}" && -n "${KC_BASE}" ]]; then
+        echo "Registering redirect URI on Keycloak client '${DASHBOARD_CLIENT_ID}'..."
+        KC_ADMIN_TOKEN="$(curl -sk -X POST "${KC_BASE}/realms/master/protocol/openid-connect/token" \
+          -d "grant_type=password" -d "client_id=admin-cli" \
+          -d "username=${KC_ADMIN_USER}" -d "password=${KC_ADMIN_PASS}" \
+          | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')"
+        if [[ -n "${KC_ADMIN_TOKEN}" ]]; then
+          CLIENT_UUID="$(curl -sk -H "Authorization: Bearer ${KC_ADMIN_TOKEN}" \
+            "${KC_BASE}/admin/realms/${KC_REALM}/clients?clientId=${DASHBOARD_CLIENT_ID}" \
+            | jq -r '.[0].id // empty')"
+          if [[ -n "${CLIENT_UUID}" ]]; then
+            CLIENT_JSON="$(curl -sk -H "Authorization: Bearer ${KC_ADMIN_TOKEN}" \
+              "${KC_BASE}/admin/realms/${KC_REALM}/clients/${CLIENT_UUID}")"
+            WEBUI_ORIGIN="https://${WEBUI_ROUTE_HOST}"
+            UPDATED_JSON="$(echo "${CLIENT_JSON}" | jq \
+              --arg redirect "${DASHBOARD_REDIRECT_URL}" --arg origin "${WEBUI_ORIGIN}" \
+              '.redirectUris = ((.redirectUris // []) + [$redirect] | unique) |
+               .webOrigins = ((.webOrigins // []) + [$origin] | unique)')"
+            HTTP_CODE="$(curl -sk -o /dev/null -w '%{http_code}' -X PUT \
+              -H "Authorization: Bearer ${KC_ADMIN_TOKEN}" -H "Content-Type: application/json" \
+              -d "${UPDATED_JSON}" \
+              "${KC_BASE}/admin/realms/${KC_REALM}/clients/${CLIENT_UUID}")"
+            if [[ "${HTTP_CODE}" == "204" ]]; then
+              echo "Redirect URI registered: ${DASHBOARD_REDIRECT_URL}"
+            else
+              echo "WARNING: failed to register redirect URI (HTTP ${HTTP_CODE}) — dashboard OIDC login will fail"
+            fi
+          else
+            echo "WARNING: Keycloak client '${DASHBOARD_CLIENT_ID}' not found — dashboard OIDC login will fail"
+          fi
+        else
+          echo "WARNING: could not obtain Keycloak admin token — dashboard OIDC login will fail"
+        fi
+      else
+        echo "WARNING: Keycloak admin credentials not found in ${KC_NS}/${KC_ADMIN_SECRET} — dashboard OIDC login will fail"
+      fi
+    else
+      echo "WARNING: ${VM_NAME}-webui route not found — dashboard OIDC redirect will be misconfigured"
+    fi
+    {{- end }}
     guest_scp "${WORK_DIR}/run-create.env" "/home/${SSH_USER}/run-create.env"
 
     # --- Run sandbox setup ---
@@ -450,10 +571,10 @@ data:
     if ! command -v nemoclaw &>/dev/null; then
       if [[ -n "${NEMOCLAW_CLI_IMAGE}" ]]; then
         echo "Installing nemoclaw CLI from ${NEMOCLAW_CLI_IMAGE}..."
-        CID="$(podman create "${NEMOCLAW_CLI_IMAGE}" 2>/dev/null || true)"
+        CID="$(docker create "${NEMOCLAW_CLI_IMAGE}" 2>/dev/null || true)"
         if [[ -n "${CID}" ]]; then
-          podman cp "${CID}:/opt/nemoclaw" /tmp/nemoclaw-cli
-          podman rm "${CID}" >/dev/null
+          docker cp "${CID}:/opt/nemoclaw" /tmp/nemoclaw-cli
+          docker rm "${CID}" >/dev/null
           sudo mv /tmp/nemoclaw-cli /opt/nemoclaw
           printf '#!/usr/bin/env bash\nexec node /opt/nemoclaw/bin/nemoclaw.js "$@"\n' | sudo tee /usr/local/bin/nemoclaw >/dev/null
           sudo chmod 755 /usr/local/bin/nemoclaw
@@ -466,16 +587,7 @@ data:
       fi
     fi
 
-    # --- Prerequisites for nemoclaw onboard path ---
-    ONBOARD_OK=1
-    if [[ "${ONBOARD_CLI}" == "nemoclaw" ]]; then
-      if ! command -v docker &>/dev/null; then
-        echo "Installing podman-docker..."
-        sudo dnf install -y --setopt=install_weak_deps=False podman-docker
-      fi
-    fi
-
-    # --- Write OIDC token for CLI auth (when gateway uses OIDC) ---
+    # --- Write OIDC token for external gateway auth ---
     if [[ -n "${OIDC_TOKEN:-}" ]]; then
       OIDC_TOKEN_PATH="${HOME}/.config/openshell/gateways/${GATEWAY_NAME}/oidc_token.json"
       mkdir -p "$(dirname "${OIDC_TOKEN_PATH}")"
@@ -487,165 +599,301 @@ data:
       echo "OIDC token configured for gateway auth"
     fi
 
-    # --- Create sandbox ---
+    # --- Register mTLS gateway for internal/nemoclaw use ---
+    # Use a distinct name (openshell-local) to avoid collision with any
+    # existing OIDC gateway named "openshell".
+    MTLS_GW_NAME="openshell-local"
+    openshell gateway remove "${MTLS_GW_NAME}" 2>/dev/null || true
+    if ! openshell gateway add https://127.0.0.1:17670 --name "${MTLS_GW_NAME}" --local 2>&1; then
+      echo "ERROR: failed to register mTLS gateway '${MTLS_GW_NAME}'" >&2
+      exit 1
+    fi
+    if ! openshell gateway select "${MTLS_GW_NAME}" 2>&1; then
+      echo "ERROR: failed to select mTLS gateway '${MTLS_GW_NAME}'" >&2
+      exit 1
+    fi
+    echo "mTLS gateway '${MTLS_GW_NAME}' registered and selected"
+
+    # --- Grant mTLS client access to the default workspace ---
+    # Use the OIDC gateway (which has admin access) to add the mTLS client.
+    # Fall back to the mTLS gateway if OIDC is not configured.
+    if [[ -n "${OIDC_TOKEN:-}" ]]; then
+      openshell gateway select "${GATEWAY_NAME}" >/dev/null 2>&1 || true
+      if ! openshell workspace member add --workspace default --subject openshell-client --role admin 2>&1; then
+        echo "WARN: could not grant workspace access via OIDC (client may already be a member)"
+      fi
+      openshell gateway select "${MTLS_GW_NAME}" >/dev/null 2>&1 || true
+    else
+      if ! openshell workspace member add --workspace default --subject openshell-client --role admin 2>&1; then
+        echo "WARN: could not grant workspace access (client may already be a member)"
+      fi
+    fi
+
+    # --- Run nemoclaw onboard via mTLS gateway (externally-supervised) ---
+    GATEWAY_MGMT="${HOME}/gateway-management.json"
+    STATE_DIR="${HOME}/.local/state/openshell"
+    echo "{\"version\":1,\"mode\":\"externally-supervised\",\"endpoint\":\"https://127.0.0.1:17670\",\"stateDir\":\"${STATE_DIR}\",\"supervisor\":{\"kind\":\"systemd-user\",\"serviceName\":\"openshell-gateway.service\",\"execPath\":\"/usr/local/bin/openshell-gateway\"}}" > "${GATEWAY_MGMT}"
+
+    CRED_ENV=""
+    case "${NEMOCLAW_PROVIDER}" in
+      gemini)              CRED_ENV="GEMINI_API_KEY" ;;
+      anthropic)           CRED_ENV="ANTHROPIC_API_KEY" ;;
+      openai)              CRED_ENV="OPENAI_API_KEY" ;;
+      build)               CRED_ENV="NVIDIA_INFERENCE_API_KEY" ;;
+      openrouter)          CRED_ENV="OPENROUTER_API_KEY" ;;
+      custom)              CRED_ENV="COMPATIBLE_API_KEY" ;;
+      ollama|"")           CRED_ENV="" ;;
+      *)                   CRED_ENV="COMPATIBLE_API_KEY" ;;
+    esac
+
+    ONBOARD_ENV=(
+      "NEMOCLAW_GATEWAY_MANAGEMENT=${GATEWAY_MGMT}"
+      "NEMOCLAW_GATEWAY_PORT=17670"
+      "NEMOCLAW_IGNORE_RUNTIME_RESOURCES=1"
+      "NEMOCLAW_OPENSHELL_GATEWAY_BIN=/usr/local/bin/openshell-gateway"
+      "NEMOCLAW_OPENSHELL_SANDBOX_BIN=/usr/local/bin/openshell-supervisor"
+    )
+    [[ -n "${NEMOCLAW_PROVIDER}" ]] && ONBOARD_ENV+=("NEMOCLAW_PROVIDER=${NEMOCLAW_PROVIDER}")
+    [[ -n "${NEMOCLAW_MODEL}" ]] && ONBOARD_ENV+=("NEMOCLAW_MODEL=${NEMOCLAW_MODEL}")
+    [[ -n "${NEMOCLAW_ENDPOINT_URL}" ]] && ONBOARD_ENV+=("NEMOCLAW_ENDPOINT_URL=${NEMOCLAW_ENDPOINT_URL}")
+    [[ -n "${NEMOCLAW_WEB_SEARCH_PROVIDER}" ]] && ONBOARD_ENV+=("NEMOCLAW_WEB_SEARCH_PROVIDER=${NEMOCLAW_WEB_SEARCH_PROVIDER}")
+    [[ -n "${CRED_ENV}" && -n "${NEMOCLAW_API_KEY}" ]] && ONBOARD_ENV+=("${CRED_ENV}=${NEMOCLAW_API_KEY}")
+
+    ONBOARD_OK=1
+    echo "Running nemoclaw onboard (provider=${NEMOCLAW_PROVIDER:-none}, model=${NEMOCLAW_MODEL:-default})..."
+    if ! env "${ONBOARD_ENV[@]}" nemoclaw onboard \
+        --fresh --non-interactive \
+        --name "${SANDBOX_NAME}" \
+        --agent "${NEMOCLAW_AGENT}" \
+        --yes --yes-i-accept-third-party-software 2>&1; then
+      ONBOARD_OK=0
+      echo "WARN: nemoclaw onboard failed — falling back to openshell provider create"
+    fi
+
+    # --- Fallback: configure provider if nemoclaw onboard didn't ---
+    if ! openshell provider list 2>/dev/null | grep -q inference; then
+      PROVIDER_TYPE=""
+      CRED_KEY=""
+      case "${NEMOCLAW_PROVIDER}" in
+        gemini)      PROVIDER_TYPE="google-vertex-ai"; CRED_KEY="GOOGLE_API_KEY" ;;
+        anthropic)   PROVIDER_TYPE="claude-code";      CRED_KEY="ANTHROPIC_API_KEY" ;;
+        openai)      PROVIDER_TYPE="codex";            CRED_KEY="OPENAI_API_KEY" ;;
+        build)       PROVIDER_TYPE="nvidia";           CRED_KEY="NVIDIA_API_KEY" ;;
+        ollama)      PROVIDER_TYPE="ollama";           CRED_KEY="" ;;
+        *)           PROVIDER_TYPE="nvidia";           CRED_KEY="API_KEY" ;;
+      esac
+      if [[ -n "${NEMOCLAW_PROVIDER}" && -n "${NEMOCLAW_API_KEY}" ]]; then
+        echo "Configuring inference provider on gateway (type=${PROVIDER_TYPE})..."
+        if ! openshell provider create \
+            --name inference \
+            --type "${PROVIDER_TYPE}" \
+            --credential "${CRED_KEY}=${NEMOCLAW_API_KEY}" 2>&1; then
+          echo "ERROR: could not configure provider on gateway" >&2
+          exit 1
+        fi
+      fi
+    fi
+
+    # --- Create sandbox from pre-built image ---
     CREATE_ARGS=(--name "${SANDBOX_NAME}")
     if [[ -n "${SANDBOX_IMAGE}" ]]; then
       CREATE_ARGS+=(--from "${SANDBOX_IMAGE}")
-    fi
-    if [[ -n "${PROVIDER_NAME}" ]] && openshell provider get "${PROVIDER_NAME}" >/dev/null 2>&1; then
-      CREATE_ARGS+=(--provider "${PROVIDER_NAME}")
+      echo "Pre-pulling sandbox image..."
+      sudo docker pull "${SANDBOX_IMAGE}" 2>&1 | tail -1 || true
     fi
     if ! openshell sandbox get "${SANDBOX_NAME}" >/dev/null 2>&1; then
       echo "Creating sandbox (image=${SANDBOX_IMAGE:-default}, agent=${NEMOCLAW_AGENT})..."
-      openshell sandbox create "${CREATE_ARGS[@]}" --no-tty -- sh -c "echo sandbox-ready"
+      if ! openshell sandbox create "${CREATE_ARGS[@]}" --no-tty -- sh -c "echo sandbox-ready"; then
+        echo "ERROR: sandbox creation failed" >&2
+        exit 1
+      fi
     fi
 
-    # --- Onboard: configure inference provider ---
-    echo "Running ${ONBOARD_CLI} onboard (provider=${NEMOCLAW_PROVIDER:-vertex-legacy}, model=${NEMOCLAW_MODEL:-${VERTEX_MODEL}})..."
-
-    if [[ "${ONBOARD_CLI}" == "nemoclaw" ]]; then
-      # --- nemoclaw onboard: runs on gateway VM ---
-      CRED_ENV=""
-      case "${NEMOCLAW_PROVIDER}" in
-        gemini)              CRED_ENV="GEMINI_API_KEY" ;;
-        anthropic)           CRED_ENV="ANTHROPIC_API_KEY" ;;
-        anthropicCompatible) CRED_ENV="COMPATIBLE_ANTHROPIC_API_KEY" ;;
-        openai)              CRED_ENV="OPENAI_API_KEY" ;;
-        build)               CRED_ENV="NVIDIA_INFERENCE_API_KEY" ;;
-        openrouter)          CRED_ENV="OPENROUTER_API_KEY" ;;
-        custom)              CRED_ENV="COMPATIBLE_API_KEY" ;;
-        ollama|"")           CRED_ENV="" ;;
-        *)                   CRED_ENV="COMPATIBLE_API_KEY" ;;
-      esac
-
-      ONBOARD_ENV=(
-        "NEMOCLAW_NON_INTERACTIVE=1"
-        "NEMOCLAW_YES=1"
-        "NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1"
-      )
-      [[ -n "${NEMOCLAW_PROVIDER}" ]] && ONBOARD_ENV+=("NEMOCLAW_PROVIDER=${NEMOCLAW_PROVIDER}")
-      [[ -n "${NEMOCLAW_MODEL}" ]] && ONBOARD_ENV+=("NEMOCLAW_MODEL=${NEMOCLAW_MODEL}")
-      [[ -n "${NEMOCLAW_ENDPOINT_URL}" ]] && ONBOARD_ENV+=("NEMOCLAW_ENDPOINT_URL=${NEMOCLAW_ENDPOINT_URL}")
-      [[ -n "${NEMOCLAW_WEB_SEARCH_PROVIDER}" ]] && ONBOARD_ENV+=("NEMOCLAW_WEB_SEARCH_PROVIDER=${NEMOCLAW_WEB_SEARCH_PROVIDER}")
-      [[ -n "${CRED_ENV}" && -n "${NEMOCLAW_API_KEY}" ]] && ONBOARD_ENV+=("${CRED_ENV}=${NEMOCLAW_API_KEY}")
-      ONBOARD_ENV+=("NEMOCLAW_SANDBOX_NAME=${SANDBOX_NAME}")
-
-      if ! env "${ONBOARD_ENV[@]}" \
-          nemoclaw onboard \
-            --non-interactive \
-            --name "${SANDBOX_NAME}" \
-            --agent "${NEMOCLAW_AGENT}" \
-            --yes \
-            --yes-i-accept-third-party-software; then
-        ONBOARD_OK=0
-        echo "WARN: nemoclaw onboard failed, tui may not work"
+    # --- Start openclaw gateway inside sandbox for GUI/TUI dashboard ---
+    {{- $clusterDomain := "apps.example.com" }}
+    {{- if .Values.global }}{{- if .Values.global.clusterDomain }}{{- $clusterDomain = .Values.global.clusterDomain }}{{- end }}{{- end }}
+    DASHBOARD_ROUTE="{{ include "openshell-sandbox.fullname" . }}-dashboard-{{ .Release.Namespace }}.{{ $clusterDomain }}"
+    OPENCLAW_TOKEN=$(openssl rand -hex 16)
+    echo "Starting openclaw gateway inside sandbox (token=${OPENCLAW_TOKEN:0:8}...)..."
+    openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- node -e "
+      const fs = require('fs');
+      const cfg = JSON.parse(fs.readFileSync('/sandbox/.openclaw/openclaw.json', 'utf8'));
+      if (!cfg.gateway) cfg.gateway = {};
+      if (!cfg.gateway.auth) cfg.gateway.auth = {};
+      cfg.gateway.auth.token = '${OPENCLAW_TOKEN}';
+      if (!cfg.gateway.controlUi) cfg.gateway.controlUi = {};
+      cfg.gateway.controlUi.allowedOrigins = ['https://${DASHBOARD_ROUTE}'];
+      fs.writeFileSync('/sandbox/.openclaw/openclaw.json', JSON.stringify(cfg, null, 2));
+    " 2>/dev/null || echo "WARN: could not write openclaw config"
+    openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- sh -c \
+      'nohup openclaw gateway run --bind lan --port 18789 > /tmp/openclaw-gateway.log 2>&1 &' \
+      2>/dev/null || echo "WARN: could not start openclaw gateway"
+    OPENCLAW_READY=0
+    for i in $(seq 1 10); do
+      if openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- curl -sf http://127.0.0.1:18789/health 2>/dev/null | grep -q ok; then
+        OPENCLAW_READY=1; break
       fi
-
+      echo "  waiting for openclaw gateway... (attempt $i)"
+      sleep 3
+    done
+    if [[ "${OPENCLAW_READY}" -eq 1 ]]; then
+      echo "openclaw gateway ready (dashboard token saved to config)"
     else
-      # --- openclaw onboard: runs inside the sandbox ---
-      AUTH_CHOICE=""
-      KEY_FLAG=""
-      case "${NEMOCLAW_PROVIDER}" in
-        gemini)      AUTH_CHOICE="gemini-api-key";     KEY_FLAG="--gemini-api-key" ;;
-        anthropic)   AUTH_CHOICE="apiKey";             KEY_FLAG="--anthropic-api-key" ;;
-        openai)      AUTH_CHOICE="openai-api-key";     KEY_FLAG="--openai-api-key" ;;
-        build)       AUTH_CHOICE="nvidia-api-key";     KEY_FLAG="--nvidia-api-key" ;;
-        openrouter)  AUTH_CHOICE="openrouter-api-key"; KEY_FLAG="--openrouter-api-key" ;;
-        ollama)      AUTH_CHOICE="ollama";             KEY_FLAG="" ;;
-        custom)      AUTH_CHOICE="custom-api-key";     KEY_FLAG="--custom-api-key" ;;
-        *)           AUTH_CHOICE="skip";               KEY_FLAG="" ;;
-      esac
-
-      ONBOARD_ARGS=(
-        --non-interactive
-        --accept-risk
-        --skip-channels
-        --skip-skills
-        --skip-hooks
-        --skip-search
-        --skip-ui
-        --skip-health
-        --no-install-daemon
-      )
-      [[ -n "${AUTH_CHOICE}" ]] && ONBOARD_ARGS+=(--auth-choice "${AUTH_CHOICE}")
-      [[ -n "${KEY_FLAG}" && -n "${NEMOCLAW_API_KEY}" ]] && ONBOARD_ARGS+=("${KEY_FLAG}" "${NEMOCLAW_API_KEY}")
-      if [[ "${NEMOCLAW_PROVIDER}" == "custom" ]]; then
-        [[ -n "${NEMOCLAW_ENDPOINT_URL}" ]] && ONBOARD_ARGS+=(--custom-base-url "${NEMOCLAW_ENDPOINT_URL}")
-        [[ -n "${NEMOCLAW_MODEL}" ]] && ONBOARD_ARGS+=(--custom-model-id "${NEMOCLAW_MODEL}")
-      fi
-
-      if ! openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- \
-          openclaw onboard "${ONBOARD_ARGS[@]}"; then
-        ONBOARD_OK=0
-        echo "WARN: openclaw onboard failed, tui may not work"
-      fi
-
-      if [[ "${ONBOARD_OK}" -eq 1 && -n "${NEMOCLAW_MODEL}" && "${NEMOCLAW_PROVIDER}" != "custom" ]]; then
-        BARE_MODEL="${NEMOCLAW_MODEL##*/}"
-        MODEL_PREFIX=""
-        case "${NEMOCLAW_PROVIDER}" in
-          gemini)      MODEL_PREFIX="google" ;;
-          anthropic)   MODEL_PREFIX="claude-cli" ;;
-          openai)      MODEL_PREFIX="openai" ;;
-          build)       MODEL_PREFIX="inference" ;;
-          openrouter)  MODEL_PREFIX="openrouter" ;;
-          ollama)      MODEL_PREFIX="ollama" ;;
-        esac
-        if [[ -n "${MODEL_PREFIX}" ]]; then
-          FULL_MODEL="${MODEL_PREFIX}/${BARE_MODEL}"
-        else
-          FULL_MODEL="${BARE_MODEL}"
-        fi
-        echo "Setting model to ${FULL_MODEL}..."
-        openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- \
-          openclaw models set "${FULL_MODEL}" 2>/dev/null || true
-      fi
+      echo "WARN: openclaw gateway health check failed — dashboard may not work"
     fi
 
-    # --- Extract auth token for GUI access ---
-    echo "Extracting auth token for GUI access..."
-    if [[ "${ONBOARD_OK}" -ne 1 ]]; then
-      echo "WARN: skipping auth token extraction because onboard did not complete"
-      TOKEN=""
-    elif [[ "${ONBOARD_CLI}" == "nemoclaw" ]] && command -v nemoclaw &>/dev/null; then
-      DASHBOARD_URL=$(nemoclaw sandbox dashboard-url "${SANDBOX_NAME}" 2>/dev/null | grep -o 'http[^ ]*' | tail -1)
-      TOKEN=$(echo "${DASHBOARD_URL}" | grep -o '#token=.*' | sed 's/#token=//')
-    else
-      openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- node -e "
-        const fs = require('fs');
-        const c = JSON.parse(fs.readFileSync('/sandbox/.openclaw/openclaw.json','utf8'));
-        fs.writeFileSync('/tmp/auth-token', (c.gateway && c.gateway.auth && c.gateway.auth.token) || '');
-      " || true
-      TOKEN=$(openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- cat /tmp/auth-token 2>/dev/null | tr -d '[:space:]' || true)
-    fi
-    if [[ -n "${TOKEN}" ]]; then
-      echo "${TOKEN}" > "${HOME}/.openclaw-token-${SANDBOX_NAME}"
-      echo "Auth token saved"
-    else
-      echo "WARN: could not extract auth token (make gui may not work)"
-    fi
-
-    # --- Start openclaw gateway inside sandbox ---
     if [[ "${ONBOARD_OK}" -eq 1 ]]; then
-      echo "Starting openclaw gateway inside sandbox..."
-      openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- sh -c '
-        nohup openclaw gateway run --bind lan --port 18789 --allow-unconfigured > /tmp/openclaw-gateway.log 2>&1 &
-        for i in $(seq 1 15); do
-          sleep 3
-          if curl -sf --max-time 2 http://127.0.0.1:18789/health >/dev/null 2>&1; then
-            echo "openclaw gateway ready"
-            exit 0
-          fi
-          echo "  waiting for gateway... (attempt $i)"
-        done
-        echo "WARN: gateway health check timed out"
-        cat /tmp/openclaw-gateway.log 2>/dev/null | tail -10
-      ' || echo "WARN: openclaw gateway start failed"
+      echo "setup-nemoclaw OK agent=${NEMOCLAW_AGENT} sandbox=${SANDBOX_NAME}"
     else
-      echo "WARN: skipping openclaw gateway restart (onboard did not complete)"
+      echo "setup-nemoclaw PARTIAL agent=${NEMOCLAW_AGENT} sandbox=${SANDBOX_NAME} (nemoclaw onboard failed, provider fallback used)"
     fi
 
-    echo "setup-nemoclaw OK agent=${NEMOCLAW_AGENT} sandbox=${SANDBOX_NAME}"
+  setup-dashboard.sh: |
+    #!/usr/bin/env bash
+    # Runs OpenShell Dashboard + oauth2-proxy inside the VM via docker,
+    # managed as `systemctl --user` services. Requires OIDC to be configured on
+    # the gateway (the dashboard's gRPC client has no mTLS support).
+    # This branch has no podman at all (see docs/jira/switch-podman-to-docker.md),
+    # so both containers run via docker instead of podman, unlike deployment-test.
+    set -euo pipefail
+
+    if [[ "${DASHBOARD_ENABLED:-false}" != "true" ]]; then
+      echo "Dashboard disabled, skipping."
+      exit 0
+    fi
+
+    : "${DASHBOARD_IMAGE:?}"
+    : "${DASHBOARD_PROXY_IMAGE:?}"
+    : "${DASHBOARD_COOKIE_SECRET:?}"
+    : "${DASHBOARD_REDIRECT_URL:?DASHBOARD_REDIRECT_URL not set — was the *-webui route created?}"
+    : "${OIDC_ISSUER:?dashboard requires an OIDC-configured gateway (oidc.issuerUrl)}"
+    DASHBOARD_CLIENT_ID="${DASHBOARD_CLIENT_ID:-openshell-dashboard}"
+
+    mkdir -p "${HOME}/.config/systemd/user" "${HOME}/.config/openshell"
+
+    # Copy just the CA cert (public, not sensitive — never the private key) to a
+    # dedicated, world-readable location instead of exposing the whole TLS dir,
+    # same reasoning as the rootless-podman case this was originally written
+    # for: don't expose the gateway's private key to the container's bind mount.
+    CA_SRC="${HOME}/.local/state/openshell/tls/ca.crt"
+    CA_FOR_DASHBOARD="${HOME}/.config/openshell/dashboard-gateway-ca.crt"
+    if [[ -f "${CA_SRC}" ]]; then
+      install -m 0644 "${CA_SRC}" "${CA_FOR_DASHBOARD}"
+    else
+      echo "WARN: gateway CA cert not found at ${CA_SRC}, dashboard gRPC connection will likely fail"
+    fi
+    chmod o+x "${HOME}" "${HOME}/.config" "${HOME}/.config/openshell" 2>/dev/null || true
+
+    cat > "${HOME}/.config/openshell/dashboard.env" <<ENVEOF
+    PORT=8090
+    OPENSHELL_GATEWAY_URL=grpcs://localhost:17670
+    GATEWAY_CA_CERT=/tls/ca.crt
+    AUTH_DISABLED=false
+    ADMIN_ROLE=openshell-admin
+    ENVEOF
+
+    cat > "${HOME}/.config/openshell/dashboard-proxy.env" <<ENVEOF
+    OAUTH2_PROXY_HTTP_ADDRESS=0.0.0.0:8080
+    OAUTH2_PROXY_UPSTREAMS=http://localhost:8090
+    OAUTH2_PROXY_PROVIDER=oidc
+    OAUTH2_PROXY_OIDC_ISSUER_URL=${OIDC_ISSUER}
+    OAUTH2_PROXY_CLIENT_ID=${DASHBOARD_CLIENT_ID}
+    OAUTH2_PROXY_CLIENT_SECRET_FILE=/dev/null
+    OAUTH2_PROXY_REDIRECT_URL=${DASHBOARD_REDIRECT_URL}
+    OAUTH2_PROXY_COOKIE_SECRET=${DASHBOARD_COOKIE_SECRET}
+    OAUTH2_PROXY_PASS_ACCESS_TOKEN=true
+    OAUTH2_PROXY_CODE_CHALLENGE_METHOD=S256
+    OAUTH2_PROXY_EMAIL_DOMAINS=*
+    OAUTH2_PROXY_SKIP_PROVIDER_BUTTON=true
+    OAUTH2_PROXY_COOKIE_SECURE=true
+    OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY=true
+    # oauth2-proxy rejects the id_token by default if the OIDC provider's
+    # email_verified claim is false — true for real SSO-federated Keycloak
+    # accounts (confirmed live on deployment-test: "email in id_token (...)
+    # isn't verified", HTTP 500 at /oauth2/callback), as opposed to the
+    # realm's manually created test users (alice/bob/admin/developer) which
+    # don't hit this. Relevant here since this branch's task requires a real
+    # user identity, not alice.
+    OAUTH2_PROXY_INSECURE_OIDC_ALLOW_UNVERIFIED_EMAIL=true
+    # --cookie-refresh defaults to disabled (0) — oauth2-proxy never uses the
+    # refresh token to renew an expired access token on its own, it just keeps
+    # forwarding the stale one until the gateway rejects it. Keycloak already
+    # issues a normal (non-offline) refresh token by default on every login
+    # regardless of scope — that's all --cookie-refresh needs. Do NOT add
+    # offline_access here: Keycloak only grants an *offline* token if the
+    # authenticating user has the realm's offline_access role, which
+    # federated/SSO accounts don't get by default (unlike the built-in test
+    # users) — confirmed on deployment-test this causes "not_allowed: Offline
+    # tokens not allowed for the user or client" and a 500 at /oauth2/callback
+    # for real users. See bug #13 in docs/openshell-dashboard-integration.md.
+    OAUTH2_PROXY_SCOPE=openid email profile
+    OAUTH2_PROXY_COOKIE_REFRESH=60s
+    ENVEOF
+    chmod 600 "${HOME}/.config/openshell/dashboard.env" "${HOME}/.config/openshell/dashboard-proxy.env"
+
+    # No explicit After=/Requires= on openshell-gateway.service here: the
+    # golden image's openshell-gateway.service has "After=default.target" +
+    # "WantedBy=default.target" (a self-referential pattern already present
+    # before this change). Chaining any unit's ordering through it — even
+    # indirectly via WantedBy=openshell-gateway.service — reliably produces a
+    # systemd ordering cycle at boot, silently dropping the dependent unit's
+    # start job (confirmed on deployment-test). Decoupling entirely and
+    # relying on Restart=on-failure to self-heal any startup race is far more
+    # robust than fighting that cycle.
+    cat > "${HOME}/.config/systemd/user/openshell-dashboard.service" <<UNITEOF
+    [Unit]
+    Description=OpenShell Dashboard (BFF + UI)
+
+    [Service]
+    Type=simple
+    ExecStartPre=-/usr/bin/docker rm -f openshell-dashboard
+    ExecStart=/usr/bin/docker run --rm --name openshell-dashboard --network host --env-file=%h/.config/openshell/dashboard.env -v %h/.config/openshell/dashboard-gateway-ca.crt:/tls/ca.crt:ro,Z ${DASHBOARD_IMAGE}
+    ExecStop=/usr/bin/docker stop -t 5 openshell-dashboard
+    Restart=on-failure
+    RestartSec=5s
+
+    [Install]
+    WantedBy=default.target
+    UNITEOF
+
+    cat > "${HOME}/.config/systemd/user/openshell-dashboard-proxy.service" <<UNITEOF
+    [Unit]
+    Description=OpenShell Dashboard Auth Proxy (oauth2-proxy)
+
+    [Service]
+    Type=simple
+    ExecStartPre=-/usr/bin/docker rm -f openshell-dashboard-proxy
+    ExecStart=/usr/bin/docker run --rm --name openshell-dashboard-proxy --network host --env-file=%h/.config/openshell/dashboard-proxy.env ${DASHBOARD_PROXY_IMAGE}
+    ExecStop=/usr/bin/docker stop -t 5 openshell-dashboard-proxy
+    Restart=on-failure
+    RestartSec=5s
+
+    [Install]
+    WantedBy=default.target
+    UNITEOF
+
+    systemctl --user daemon-reload
+    systemctl --user enable --now openshell-dashboard.service openshell-dashboard-proxy.service
+
+    echo "Waiting for dashboard to become ready..."
+    ok=0
+    for i in $(seq 1 15); do
+      sleep 2
+      if curl -sf --max-time 2 http://127.0.0.1:8090/api/v1/healthz >/dev/null 2>&1; then
+        ok=1
+        break
+      fi
+      echo "  waiting for dashboard... (attempt $i)"
+    done
+    if [[ "${ok}" -ne 1 ]]; then
+      echo "WARN: dashboard health check timed out"
+      docker logs openshell-dashboard 2>&1 | tail -10 || true
+      docker logs openshell-dashboard-proxy 2>&1 | tail -10 || true
+    else
+      echo "dashboard ready"
+    fi
+
+    echo "setup-dashboard OK"
 
   inject-user-pubkey.sh: |
     #!/usr/bin/env bash
@@ -690,7 +938,8 @@ data:
     chmod +x \
       "${HOME}/configure-vertex-user.sh" \
       "${HOME}/setup-nemoclaw.sh" \
-      "${HOME}/inject-user-pubkey.sh"
+      "${HOME}/inject-user-pubkey.sh" \
+      "${HOME}/setup-dashboard.sh"
 
     # Vertex AI legacy path: configure provider via openshell commands
     if [[ -n "${SA_JSON}" && -f "${SA_JSON}" ]]; then
@@ -711,7 +960,7 @@ data:
 
     SSH_PUBKEY="${SSH_PUBKEY}" SANDBOX_NAME="${SANDBOX_NAME}" "${HOME}/inject-user-pubkey.sh"
 
-    if [[ -n "${OIDC_TOKEN}" && "${OIDC_PASSTHROUGH}" == "true" ]]; then
+    if [[ -n "${OIDC_TOKEN:-}" && "${OIDC_PASSTHROUGH:-}" == "true" ]]; then
       echo "Writing OIDC token to sandbox for MCP server auth..."
       openshell sandbox exec -n "${SANDBOX_NAME}" --no-tty -- sh -c "
         mkdir -p /sandbox/.oidc
@@ -719,6 +968,11 @@ data:
         chmod 600 /sandbox/.oidc/token.json
       " || echo "WARN: could not write OIDC token to sandbox"
     fi
+
+    export DASHBOARD_ENABLED="${DASHBOARD_ENABLED:-false}" DASHBOARD_IMAGE="${DASHBOARD_IMAGE:-}"
+    export DASHBOARD_PROXY_IMAGE="${DASHBOARD_PROXY_IMAGE:-}" DASHBOARD_CLIENT_ID="${DASHBOARD_CLIENT_ID:-openshell-dashboard}"
+    export DASHBOARD_COOKIE_SECRET="${DASHBOARD_COOKIE_SECRET:-}" DASHBOARD_REDIRECT_URL="${DASHBOARD_REDIRECT_URL:-}"
+    "${HOME}/setup-dashboard.sh"
 
     if [[ -n "${SA_JSON}" && -f "${SA_JSON}" ]]; then
       shred -u "${SA_JSON}" 2>/dev/null || rm -f "${SA_JSON}"

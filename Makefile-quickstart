@@ -1,6 +1,7 @@
 NS             ?= openshell-agents
 BUILD_NS       ?= openshell-agents
 QUAY_REPO      ?= quay.io/rh-ai-quickstart
+OPENSHELL_VERSION ?= v0.0.97-rhaiv.0
 OPENSHELL_SAW_NAME ?=
 SANDBOX_IMAGE  ?=
 AGENT          ?= openclaw
@@ -99,7 +100,7 @@ build-nemoclaw: ## Build NemoClaw sandbox image and push to quay
 	oc start-build nemoclaw-sandbox-root -n $(BUILD_NS) --follow
 	oc start-build nemoclaw-sandbox -n $(BUILD_NS) --follow
 	@echo "Pushing nemoclaw-sandbox to $(QUAY_REPO)..."
-	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-sandbox $(QUAY_REPO)
+	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-sandbox $(QUAY_REPO) $(OPENSHELL_VERSION)
 
 build-nemoclaw-cli: ## Build NemoClaw CLI image and push to quay
 	-@oc delete is nemoclaw-cli -n $(BUILD_NS) 2>/dev/null
@@ -107,7 +108,7 @@ build-nemoclaw-cli: ## Build NemoClaw CLI image and push to quay
 		--namespace $(BUILD_NS) --create-namespace
 	oc start-build nemoclaw-cli -n $(BUILD_NS) --follow
 	@echo "Pushing nemoclaw-cli to $(QUAY_REPO)..."
-	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-cli $(QUAY_REPO)
+	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-cli $(QUAY_REPO) $(OPENSHELL_VERSION)
 
 # --- Gateway VM image ---
 
@@ -127,7 +128,7 @@ build-openshell-gateway: ## Build gateway VM image and push to quay
 		--namespace $(BUILD_NS) --create-namespace $$GOLDEN_FLAG
 	oc start-build openshell-gateway -n $(BUILD_NS) --follow
 	@echo "Pushing openshell-gateway to $(QUAY_REPO)..."
-	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openshell-gateway $(QUAY_REPO)
+	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openshell-gateway $(QUAY_REPO) $(OPENSHELL_VERSION)
 
 copy-images: ## Mirror pre-built images from quay to the internal registry
 	@echo "Ensuring namespace and image registry route..."
@@ -148,10 +149,11 @@ copy-images: ## Mirror pre-built images from quay to the internal registry
 	@REGISTRY=$$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null); \
 	if [ -z "$$REGISTRY" ]; then echo "Error: Image registry route not available after waiting."; exit 1; fi; \
 	for image in openshell-gateway nemoclaw-sandbox nemoclaw-cli; do \
-		echo "  Mirroring $${image}..."; \
-		oc image mirror $(QUAY_REPO)/$${image}:latest $${REGISTRY}/$(BUILD_NS)/$${image}:latest --insecure=true 2>&1 | tail -1; \
+		echo "  Mirroring $${image}:$(OPENSHELL_VERSION)..."; \
+		oc image mirror $(QUAY_REPO)/$${image}:$(OPENSHELL_VERSION) $${REGISTRY}/$(BUILD_NS)/$${image}:$(OPENSHELL_VERSION) --insecure=true 2>&1 | tail -1; \
+		oc tag $(BUILD_NS)/$${image}:$(OPENSHELL_VERSION) $(BUILD_NS)/$${image}:latest 2>/dev/null || true; \
 	done; \
-	echo "All images mirrored."
+	echo "All images mirrored (tag: $(OPENSHELL_VERSION), also tagged as :latest)."
 
 # Generate SSH keys before pattern-install. Golden image is managed by ArgoCD
 # (openshell-gateway-image app). For manual flow, run: make copy-images
@@ -222,10 +224,10 @@ openshell-saw-configure-gateway: .check-saw-name ## Configure openshell CLI for 
 	if [ -z "$$GW_URL" ]; then echo "Error: Gateway route not found for '$(OPENSHELL_SAW_NAME)'."; exit 1; fi; \
 	OIDC_ISSUER="$(OIDC_ISSUER)"; \
 	if [ -z "$$OIDC_ISSUER" ]; then \
-		KC_HOST=$$(oc get keycloak openshell-keycloak -n $(NS) -o jsonpath='{.status.externalURL}' 2>/dev/null \
+		KC_HOST=$$(oc get keycloak openshell-keycloak -n $(KEYCLOAK_NS) -o jsonpath='{.status.externalURL}' 2>/dev/null \
 			| sed 's|^https://||;s|/$$||'); \
 		if [ -z "$$KC_HOST" ]; then \
-			KC_HOST=$$(oc get route -n $(NS) -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null); \
+			KC_HOST=$$(oc get route -n $(KEYCLOAK_NS) -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null); \
 		fi; \
 		if [ -n "$$KC_HOST" ]; then OIDC_ISSUER="https://$$KC_HOST/realms/openshell"; fi; \
 	fi; \

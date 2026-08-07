@@ -54,7 +54,16 @@ openshell:
   # Keep default 0.0.0.0 for remote CLI access via route; set to 127.0.0.1
   # to restrict access to local VM context only.
   bindAddress: "0.0.0.0"
+  # OpenShell binaries installed at provisioning time (not baked into golden image).
+  # gatewayImage: "quay.io/opendatahub/odh-openshell-gateway:v0.0.96-rhaiv.0"
+  # supervisorImage: "quay.io/opendatahub/odh-openshell-supervisor:v0.0.96-rhaiv.0"
+  # version: "0.0.96+rhaiv.0"
+  # pipIndexUrl: "https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6-EA1/cpu-ubi9-test/simple/"
 
+  gatewayImage: "ghcr.io/nvidia/openshell/gateway:0.0.96"
+  supervisorImage: "ghcr.io/nvidia/openshell/supervisor:0.0.96"
+  version: "0.0.96"
+  pipIndexUrl: ""
 # Inference provider configuration.
 # Provider keys: gemini, anthropic, openai, build (NVIDIA), openrouter, ollama, custom
 inference:
@@ -98,6 +107,31 @@ route:
   enabled: true
   host: ""
   dashboard: true
+  # OpenShell Dashboard web UI (see `dashboard` below). Distinct from `dashboard`
+  # above, which is the OpenClaw in-sandbox web UI on port 18789.
+  webui: true
+
+# OpenShell Dashboard — standalone Go BFF + React admin UI for OpenShell
+# (gateways, workspaces, sandboxes, providers). Runs via docker inside the
+# sandbox VM (this branch has no podman — see docs/jira/switch-podman-to-docker.md),
+# fronted by oauth2-proxy for OIDC/PKCE auth against the
+# centralized Keycloak. Requires oidc.issuerUrl/oidc.token to be set — the
+# dashboard's gRPC client has no mTLS support, so it only works against an
+# OIDC-configured gateway.
+dashboard:
+  enabled: true
+  image: "quay.io/gkrumbach07/openshell-dashboard:latest"
+  proxyImage: "quay.io/oauth2-proxy/oauth2-proxy:v7.9.0"
+  clientId: "openshell-dashboard"
+  # Keycloak only supports a *trailing* wildcard in redirect URIs, which can't
+  # express "any hostname, fixed path" — needed since each sandbox VM gets a
+  # unique per-VM Route hostname. The setup Job registers this sandbox's exact
+  # redirect URI onto the shared client via the Keycloak Admin API instead
+  # (confirmed live: Keycloak rejects "https://*/oauth2/callback" outright).
+  # Namespace where Keycloak (and its "<keycloakName>-initial-admin" secret)
+  # is deployed. Empty = same namespace as this sandbox (the VP-path default,
+  # where openshell-keycloak and openshell-saw are co-located).
+  keycloakNamespace: ""
 
 # OIDC authentication.
 # issuerUrl can be set explicitly, or computed from global.clusterDomain

@@ -31,7 +31,7 @@ data:
         content: |
           OPENSHELL_BIND_ADDRESS={{ .Values.openshell.bindAddress | quote }}
           OPENSHELL_SERVER_PORT=17670
-          OPENSHELL_DRIVERS={{ .Values.containerRuntime }}
+          OPENSHELL_DRIVERS=docker
           OPENSHELL_SSH_GATEWAY_PORT=17670
           OPENSHELL_TLS_CERT=/home/cloud-user/.local/state/openshell/tls/server/tls.crt
           OPENSHELL_TLS_KEY=/home/cloud-user/.local/state/openshell/tls/server/tls.key

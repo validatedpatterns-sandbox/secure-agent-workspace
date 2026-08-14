@@ -66,20 +66,6 @@ OpenShell rejects names longer than 19 chars with "name exceeds maximum length".
 {{- end }}
 
 {{/*
-Resolve the golden image DataSource name.
-Priority: explicit source.dataSource > derived from containerRuntime.
-*/}}
-{{- define "openshell-sandbox.dataSourceName" -}}
-{{- if .Values.source.dataSource -}}
-{{- .Values.source.dataSource -}}
-{{- else if eq .Values.containerRuntime "docker" -}}
-openshell-gateway-docker
-{{- else -}}
-openshell-gateway
-{{- end -}}
-{{- end }}
-
-{{/*
 Resolve the SSH public key.
 Priority: explicit sshPublicKey > global.sshPublicKey.
 */}}

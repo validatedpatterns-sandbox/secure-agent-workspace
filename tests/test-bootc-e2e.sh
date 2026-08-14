@@ -343,9 +343,8 @@ check "cloud-init finished" \
 check "cloud-user exists with sudo" \
   guest_ssh "sudo whoami | grep -q root"
 
-RUNTIME="${CONTAINER_RUNTIME:-docker}"
-check "${RUNTIME} is installed" \
-  guest_ssh "${RUNTIME} --version"
+check "podman is installed" \
+  guest_ssh "podman --version"
 
 check "openshell CLI is installed" \
   guest_ssh "openshell --version"

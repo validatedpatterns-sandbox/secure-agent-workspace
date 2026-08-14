@@ -301,8 +301,7 @@ check "SSH reachable (up to 3 min)" \
 step "Verify VM health"
 
 check "openshell CLI installed"        guest_ssh "openshell --version"
-RUNTIME="$(helm get values "${SANDBOX_NAME}" -n "${NAMESPACE}" -o json 2>/dev/null | jq -r '.containerRuntime // "docker"')"
-check "${RUNTIME} installed"           guest_ssh "${RUNTIME} --version"
+check "podman installed"               guest_ssh "podman --version"
 check "nodejs installed"               guest_ssh "node --version"
 check "/etc/openshell exists"          guest_ssh "test -d /etc/openshell"
 check "gateway setup service exists"   guest_ssh "systemctl cat openshell-gateway-setup.service >/dev/null 2>&1"

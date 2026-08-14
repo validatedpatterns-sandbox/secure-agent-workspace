@@ -24,9 +24,7 @@ sshPublicKey: ""
 # The golden image is built on the cluster via make build-gateway-image
 # and imported by the openshell-gateway-image helm chart.
 source:
-  # Leave empty to auto-select from containerRuntime (openshell-gateway-docker for docker,
-  # openshell-gateway for podman). Set explicitly to override.
-  dataSource: ""
+  dataSource: openshell-gateway
   dataSourceNamespace: "openshell-agents"
   # Registry URL for golden image import. Used by the setup Job to bootstrap
   # the DataSource on first run. Defaults to the internal registry.
@@ -49,11 +47,6 @@ agent: openclaw
 
 # Onboarding CLI: openclaw (runs inside sandbox) or nemoclaw (runs on gateway VM, requires Docker)
 onboardCli: openclaw
-
-# Container runtime inside the gateway VM: docker or podman
-# docker: uses openshell-gateway-docker golden image. Required for NemoClaw onboarding.
-# podman: uses openshell-gateway golden image. For openclaw, opencode, or any external sandbox image.
-containerRuntime: docker
 
 # OpenShell gateway runtime configuration inside the sandbox VM.
 openshell:

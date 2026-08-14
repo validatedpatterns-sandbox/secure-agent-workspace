@@ -14,12 +14,6 @@ data:
     NS="{{ .Release.Namespace }}"
     SSH_USER="{{ .Values.sshUser }}"
     SSH_SECRET="{{ .Values.sshSecret }}"
-    RUNTIME="{{ .Values.containerRuntime }}"
-
-    if [[ "${RUNTIME}" == "podman" && "{{ .Values.onboardCli }}" == "nemoclaw" ]]; then
-      echo "ERROR: NemoClaw onboarding requires Docker. Set containerRuntime=docker or use onboardCli=openclaw." >&2
-      exit 1
-    fi
 
     SCRIPTS_DIR="/scripts"
     SECRETS_DIR="/secrets"
@@ -56,7 +50,7 @@ data:
     chmod 600 "${SSH_KEY}"
 
     # --- Bootstrap golden image DataSource if missing ---
-    GOLDEN_DS="{{ include "openshell-sandbox.dataSourceName" . }}"
+    GOLDEN_DS="{{ .Values.source.dataSource }}"
     GOLDEN_NS="{{ .Values.source.dataSourceNamespace | default .Release.Namespace }}"
     GOLDEN_DISK_SIZE="{{ .Values.vm.diskSize }}"
     GOLDEN_IMAGE_URL="{{ .Values.source.goldenImageURL }}"
@@ -282,28 +276,24 @@ data:
     if [[ -z "${SANDBOX_IMAGE:-}" ]]; then
       REGISTRY_ROUTE="$(kubectl get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}' 2>/dev/null || true)"
       if [[ -n "${REGISTRY_ROUTE}" ]]; then
-        if [[ "${RUNTIME}" == "docker" ]]; then
-          echo "Authenticating VM to image registry (${REGISTRY_ROUTE})..."
-          SA_TOKEN="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
-          # Configure Docker daemon to trust the internal registry (self-signed cert).
-          # Merge with existing daemon.json to preserve any prior settings.
-          guest_ssh "sudo mkdir -p /etc/docker && if [ -f /etc/docker/daemon.json ]; then jq --arg r '${REGISTRY_ROUTE}' '.\"insecure-registries\" = ([.\"insecure-registries\"[]?, \$r] | unique)' /etc/docker/daemon.json | sudo tee /etc/docker/daemon.json.tmp >/dev/null && sudo mv /etc/docker/daemon.json.tmp /etc/docker/daemon.json; else echo '{\"insecure-registries\":[\"${REGISTRY_ROUTE}\"]}' | sudo tee /etc/docker/daemon.json >/dev/null; fi && sudo systemctl restart docker && sleep 3 && sudo systemctl is-active docker" || {
-            echo "ERROR: failed to configure Docker insecure-registries for ${REGISTRY_ROUTE}" >&2
-            exit 1
-          }
-          if ! guest_ssh "echo '${SA_TOKEN}' | ${RUNTIME} login --username unused --password-stdin '${REGISTRY_ROUTE}'" 2>&1; then
-            echo "ERROR: ${RUNTIME} login failed for ${REGISTRY_ROUTE}" >&2
-            exit 1
-          fi
-          if ! guest_ssh "echo '${SA_TOKEN}' | sudo ${RUNTIME} login --username unused --password-stdin '${REGISTRY_ROUTE}'" 2>&1; then
-            echo "ERROR: sudo ${RUNTIME} login failed for ${REGISTRY_ROUTE}" >&2
-            exit 1
-          fi
-          BUILD_NS="{{ .Values.source.dataSourceNamespace | default .Release.Namespace }}"
-          SANDBOX_IMAGE="${REGISTRY_ROUTE}/${BUILD_NS}/nemoclaw-sandbox:latest"
-        else
-          echo "Podman runtime: skipping internal registry login (external images only)"
+        echo "Authenticating VM to image registry (${REGISTRY_ROUTE})..."
+        SA_TOKEN="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
+        # Configure Docker daemon to trust the internal registry (self-signed cert).
+        # Merge with existing daemon.json to preserve any prior settings.
+        guest_ssh "sudo mkdir -p /etc/docker && if [ -f /etc/docker/daemon.json ]; then jq --arg r '${REGISTRY_ROUTE}' '.\"insecure-registries\" = ([.\"insecure-registries\"[]?, \$r] | unique)' /etc/docker/daemon.json | sudo tee /etc/docker/daemon.json.tmp >/dev/null && sudo mv /etc/docker/daemon.json.tmp /etc/docker/daemon.json; else echo '{\"insecure-registries\":[\"${REGISTRY_ROUTE}\"]}' | sudo tee /etc/docker/daemon.json >/dev/null; fi && sudo systemctl restart docker && sleep 3 && sudo systemctl is-active docker" || {
+          echo "ERROR: failed to configure Docker insecure-registries for ${REGISTRY_ROUTE}" >&2
+          exit 1
+        }
+        if ! guest_ssh "echo '${SA_TOKEN}' | docker login --username unused --password-stdin '${REGISTRY_ROUTE}'" 2>&1; then
+          echo "ERROR: docker login failed for ${REGISTRY_ROUTE}" >&2
+          exit 1
         fi
+        if ! guest_ssh "echo '${SA_TOKEN}' | sudo docker login --username unused --password-stdin '${REGISTRY_ROUTE}'" 2>&1; then
+          echo "ERROR: sudo docker login failed for ${REGISTRY_ROUTE}" >&2
+          exit 1
+        fi
+        BUILD_NS="{{ .Values.source.dataSourceNamespace | default .Release.Namespace }}"
+        SANDBOX_IMAGE="${REGISTRY_ROUTE}/${BUILD_NS}/nemoclaw-sandbox:latest"
       fi
     fi
     if [[ -n "${SANDBOX_IMAGE:-}" ]]; then
@@ -316,10 +306,10 @@ data:
     OPENSHELL_PIP_VERSION="{{ .Values.openshell.version }}"
     echo "Installing OpenShell binaries (gateway=${GATEWAY_IMAGE}, supervisor=${SUPERVISOR_IMAGE}, cli=${OPENSHELL_PIP_VERSION})..."
     if ! guest_ssh "
-      ${RUNTIME} pull '${GATEWAY_IMAGE}' && \
-      CID=\$(${RUNTIME} create '${GATEWAY_IMAGE}') && \
-      ${RUNTIME} cp \${CID}:/usr/local/bin/openshell-gateway /tmp/openshell-gateway && \
-      ${RUNTIME} rm \${CID} && \
+      docker pull '${GATEWAY_IMAGE}' && \
+      CID=\$(docker create '${GATEWAY_IMAGE}') && \
+      docker cp \${CID}:/usr/local/bin/openshell-gateway /tmp/openshell-gateway && \
+      docker rm \${CID} && \
       sudo mv /tmp/openshell-gateway /usr/local/bin/openshell-gateway && \
       sudo chmod 755 /usr/local/bin/openshell-gateway && \
       echo 'gateway installed'
@@ -327,10 +317,10 @@ data:
       echo "ERROR: gateway binary install failed" >&2; exit 1
     fi
     if ! guest_ssh "
-      ${RUNTIME} pull '${SUPERVISOR_IMAGE}' && \
-      CID=\$(${RUNTIME} create '${SUPERVISOR_IMAGE}') && \
-      ${RUNTIME} cp \${CID}:/openshell-sandbox /tmp/openshell-supervisor && \
-      ${RUNTIME} rm \${CID} && \
+      docker pull '${SUPERVISOR_IMAGE}' && \
+      CID=\$(docker create '${SUPERVISOR_IMAGE}') && \
+      docker cp \${CID}:/openshell-sandbox /tmp/openshell-supervisor && \
+      docker rm \${CID} && \
       sudo mv /tmp/openshell-supervisor /usr/local/bin/openshell-supervisor && \
       sudo chmod 755 /usr/local/bin/openshell-supervisor && \
       echo 'supervisor installed'
@@ -495,7 +485,7 @@ data:
     if [[ -n "${SANDBOX_IMAGE:-}" ]]; then
       echo "SANDBOX_IMAGE=${SANDBOX_IMAGE}" >> "${WORK_DIR}/run-create.env"
     fi
-    if [[ -n "${REGISTRY_ROUTE:-}" && -n "${BUILD_NS:-}" ]]; then
+    if [[ -n "${REGISTRY_ROUTE:-}" ]]; then
       echo "NEMOCLAW_CLI_IMAGE=${REGISTRY_ROUTE}/${BUILD_NS}/nemoclaw-cli:latest" >> "${WORK_DIR}/run-create.env"
     fi
 
@@ -673,7 +663,6 @@ data:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    RUNTIME="{{ .Values.containerRuntime }}"
     SANDBOX_NAME="${SANDBOX_NAME:?}"
     GATEWAY_NAME="${OPENSHELL_GATEWAY:-openshell}"
     NEMOCLAW_AGENT="${NEMOCLAW_AGENT:-openclaw}"
@@ -684,7 +673,6 @@ data:
     NEMOCLAW_MODEL="${NEMOCLAW_MODEL:-}"
     NEMOCLAW_API_KEY="${NEMOCLAW_API_KEY:-}"
     NEMOCLAW_ENDPOINT_URL="${NEMOCLAW_ENDPOINT_URL:-}"
-    NEMOCLAW_WEB_SEARCH_ENABLED="${NEMOCLAW_WEB_SEARCH_ENABLED:-}"
     NEMOCLAW_WEB_SEARCH_PROVIDER="${NEMOCLAW_WEB_SEARCH_PROVIDER:-}"
     TAVILY_API_KEY="${TAVILY_API_KEY:-}"
     BRAVE_API_KEY="${BRAVE_API_KEY:-}"
@@ -698,10 +686,10 @@ data:
     if ! command -v nemoclaw &>/dev/null; then
       if [[ -n "${NEMOCLAW_CLI_IMAGE}" ]]; then
         echo "Installing nemoclaw CLI from ${NEMOCLAW_CLI_IMAGE}..."
-        CID="$(${RUNTIME} create "${NEMOCLAW_CLI_IMAGE}" 2>/dev/null || true)"
+        CID="$(docker create "${NEMOCLAW_CLI_IMAGE}" 2>/dev/null || true)"
         if [[ -n "${CID}" ]]; then
-          ${RUNTIME} cp "${CID}:/opt/nemoclaw" /tmp/nemoclaw-cli
-          ${RUNTIME} rm "${CID}" >/dev/null
+          docker cp "${CID}:/opt/nemoclaw" /tmp/nemoclaw-cli
+          docker rm "${CID}" >/dev/null
           sudo mv /tmp/nemoclaw-cli /opt/nemoclaw
           printf '#!/usr/bin/env bash\nexec node /opt/nemoclaw/bin/nemoclaw.js "$@"\n' | sudo tee /usr/local/bin/nemoclaw >/dev/null
           sudo chmod 755 /usr/local/bin/nemoclaw
@@ -869,7 +857,7 @@ data:
     if [[ -n "${SANDBOX_IMAGE}" ]]; then
       CREATE_ARGS+=(--from "${SANDBOX_IMAGE}")
       echo "Pre-pulling sandbox image..."
-      sudo ${RUNTIME} pull "${SANDBOX_IMAGE}" 2>&1 | tail -1 || true
+      sudo docker pull "${SANDBOX_IMAGE}" 2>&1 | tail -1 || true
     fi
     if [[ "${NEMOCLAW_WEB_SEARCH_PROVIDER}" != "none" && -n "${NEMOCLAW_WEB_SEARCH_PROVIDER}" ]]; then
       CREATE_ARGS+=(--provider "${NEMOCLAW_WEB_SEARCH_PROVIDER}")
@@ -903,8 +891,6 @@ data:
         cfg.gateway.auth.token = '${OPENCLAW_TOKEN}';
         if (!cfg.gateway.controlUi) cfg.gateway.controlUi = {};
         cfg.gateway.controlUi.allowedOrigins = ['https://${DASHBOARD_ROUTE}'];
-        if (!cfg.models) cfg.models = {};
-        cfg.models.mode = 'replace';
         fs.writeFileSync('/sandbox/.openclaw/openclaw.json', JSON.stringify(cfg, null, 2));
       " 2>/dev/null || echo "WARN: could not write openclaw config"
     # openclaw gateway reads the env section from openclaw.json on startup
@@ -933,21 +919,15 @@ data:
 
   setup-dashboard.sh: |
     #!/usr/bin/env bash
-    # Runs OpenShell Dashboard + oauth2-proxy inside the VM via the configured
-    # container runtime (docker or podman), managed as `systemctl --user` services.
-    # Requires OIDC to be configured on the gateway (the dashboard's gRPC client
-    # has no mTLS support).
+    # Runs OpenShell Dashboard + oauth2-proxy inside the VM via docker,
+    # managed as `systemctl --user` services. Requires OIDC to be configured on
+    # the gateway (the dashboard's gRPC client has no mTLS support).
+    # This branch has no podman at all (see docs/jira/switch-podman-to-docker.md),
+    # so both containers run via docker instead of podman, unlike deployment-test.
     set -euo pipefail
-
-    RUNTIME="{{ .Values.containerRuntime }}"
 
     if [[ "${DASHBOARD_ENABLED:-false}" != "true" ]]; then
       echo "Dashboard disabled, skipping."
-      exit 0
-    fi
-
-    if [[ -z "${OIDC_ISSUER:-}" ]]; then
-      echo "Dashboard skipped: oidc.issuerUrl not configured (deploy Keycloak and set oidc.issuerUrl to enable)."
       exit 0
     fi
 
@@ -955,6 +935,7 @@ data:
     : "${DASHBOARD_PROXY_IMAGE:?}"
     : "${DASHBOARD_COOKIE_SECRET:?}"
     : "${DASHBOARD_REDIRECT_URL:?DASHBOARD_REDIRECT_URL not set — was the *-webui route created?}"
+    : "${OIDC_ISSUER:?dashboard requires an OIDC-configured gateway (oidc.issuerUrl)}"
     DASHBOARD_CLIENT_ID="${DASHBOARD_CLIENT_ID:-openshell-dashboard}"
 
     mkdir -p "${HOME}/.config/systemd/user" "${HOME}/.config/openshell"
@@ -1034,9 +1015,9 @@ data:
 
     [Service]
     Type=simple
-    ExecStartPre=-/usr/bin/${RUNTIME} rm -f openshell-dashboard
-    ExecStart=/usr/bin/${RUNTIME} run --rm --name openshell-dashboard --network host --env-file=%h/.config/openshell/dashboard.env -v %h/.config/openshell/dashboard-gateway-ca.crt:/tls/ca.crt:ro,Z ${DASHBOARD_IMAGE}
-    ExecStop=/usr/bin/${RUNTIME} stop -t 5 openshell-dashboard
+    ExecStartPre=-/usr/bin/docker rm -f openshell-dashboard
+    ExecStart=/usr/bin/docker run --rm --name openshell-dashboard --network host --env-file=%h/.config/openshell/dashboard.env -v %h/.config/openshell/dashboard-gateway-ca.crt:/tls/ca.crt:ro,Z ${DASHBOARD_IMAGE}
+    ExecStop=/usr/bin/docker stop -t 5 openshell-dashboard
     Restart=on-failure
     RestartSec=5s
 
@@ -1050,9 +1031,9 @@ data:
 
     [Service]
     Type=simple
-    ExecStartPre=-/usr/bin/${RUNTIME} rm -f openshell-dashboard-proxy
-    ExecStart=/usr/bin/${RUNTIME} run --rm --name openshell-dashboard-proxy --network host --env-file=%h/.config/openshell/dashboard-proxy.env ${DASHBOARD_PROXY_IMAGE}
-    ExecStop=/usr/bin/${RUNTIME} stop -t 5 openshell-dashboard-proxy
+    ExecStartPre=-/usr/bin/docker rm -f openshell-dashboard-proxy
+    ExecStart=/usr/bin/docker run --rm --name openshell-dashboard-proxy --network host --env-file=%h/.config/openshell/dashboard-proxy.env ${DASHBOARD_PROXY_IMAGE}
+    ExecStop=/usr/bin/docker stop -t 5 openshell-dashboard-proxy
     Restart=on-failure
     RestartSec=5s
 
@@ -1075,8 +1056,8 @@ data:
     done
     if [[ "${ok}" -ne 1 ]]; then
       echo "WARN: dashboard health check timed out"
-      ${RUNTIME} logs openshell-dashboard 2>&1 | tail -10 || true
-      ${RUNTIME} logs openshell-dashboard-proxy 2>&1 | tail -10 || true
+      docker logs openshell-dashboard 2>&1 | tail -10 || true
+      docker logs openshell-dashboard-proxy 2>&1 | tail -10 || true
     else
       echo "dashboard ready"
     fi
@@ -1137,7 +1118,6 @@ data:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    RUNTIME="{{ .Values.containerRuntime }}"
     WS_BASE="${HOME}/workspaces"
     SANDBOX_IMAGE="${SANDBOX_IMAGE:-}"
     PARSE="${HOME}/parse-bom.py"
@@ -1226,7 +1206,7 @@ data:
       if [[ -n "${SB_IMAGE}" ]]; then
         CREATE_ARGS+=(--from "${SB_IMAGE}")
         echo "  Pre-pulling sandbox image..."
-        sudo ${RUNTIME} pull "${SB_IMAGE}" 2>&1 | tail -1 || true
+        sudo docker pull "${SB_IMAGE}" 2>&1 | tail -1 || true
       elif [[ -n "${SANDBOX_IMAGE}" ]]; then
         CREATE_ARGS+=(--from "${SANDBOX_IMAGE}")
       fi

@@ -1,8 +1,7 @@
-{{- $imageName := ternary "openshell-gateway-docker" "openshell-gateway" (eq .Values.containerRuntime "docker") -}}
 apiVersion: build.openshift.io/v1
 kind: BuildConfig
 metadata:
-  name: {{ $imageName }}
+  name: {{ (split ":" .Values.output.imageStreamTag)._0 }}
   labels:
     {{- include "openshell-gateway-image.labels" . | nindent 4 }}
 spec:
@@ -65,13 +64,11 @@ spec:
       USER_UID="$(id -u "${USER_NAME}")"
       USER_HOME="$(getent passwd "${USER_NAME}" | cut -d: -f6)"
 
-      # Ensure Docker is running before starting the gateway (Docker path only)
-      {{- if eq .Values.containerRuntime "docker" }}
+      # Ensure Docker is running before starting the gateway
       if systemctl is-enabled docker.service &>/dev/null; then
         systemctl start docker.service
         systemctl is-active docker.service || { echo "Docker daemon failed to start" >&2; exit 1; }
       fi
-      {{- end }}
 
       systemctl start "user@${USER_UID}.service"
       for _ in $(seq 1 90); do
@@ -94,17 +91,6 @@ spec:
       }
 
       run_user daemon-reload
-
-      {{- if ne .Values.containerRuntime "docker" }}
-      # Enable and start rootless Podman socket (user-level, persistent across reboots)
-      run_user enable podman.socket || true
-      run_user start podman.socket || true
-      for _ in $(seq 1 15); do
-        if [[ -S "/run/user/${USER_UID}/podman/podman.sock" ]]; then break; fi
-        sleep 1
-      done
-      {{- end }}
-
       # Enable gateway service; start only if the binary is already installed
       # (it may be installed later by the setup Job)
       if [[ -x /usr/local/bin/openshell-gateway ]]; then
@@ -130,21 +116,13 @@ spec:
       install -d -m 0755 "${USER_HOME}/.config/openshell"
       cp /etc/openshell/gateway.env "${USER_HOME}/.config/openshell/gateway.env"
 
-      # Derive runtime bridge gateway IP if GRPC_ENDPOINT is not already set
+      # Derive Docker bridge gateway IP if GRPC_ENDPOINT is not already set
       if ! grep -q 'OPENSHELL_GRPC_ENDPOINT' "${USER_HOME}/.config/openshell/gateway.env"; then
-        {{- if eq .Values.containerRuntime "docker" }}
-        RUNTIME_GW="$(docker network inspect bridge --format '{{ "{{" }}(index .IPAM.Config 0).Gateway{{ "}}" }}' 2>/dev/null || echo '172.17.0.1')"
-        {{- else }}
-        RUNTIME_GW="$(podman network inspect podman --format '{{ "{{" }}(index .Subnets 0).Gateway{{ "}}" }}' 2>/dev/null || echo '10.88.0.1')"
-        PODMAN_SOCK="/run/user/${USER_UID}/podman/podman.sock"
-        {{- end }}
-        cat >> "${USER_HOME}/.config/openshell/gateway.env" <<RUNTIMEEOF
-      OPENSHELL_GRPC_ENDPOINT=https://${RUNTIME_GW}:17670
-      OPENSHELL_SSH_GATEWAY_HOST=${RUNTIME_GW}
-      {{- if ne .Values.containerRuntime "docker" }}
-      OPENSHELL_PODMAN_SOCKET=${PODMAN_SOCK}
-      {{- end }}
-      RUNTIMEEOF
+        DOCKER_GW="$(docker network inspect bridge --format '{{ "{{" }}(index .IPAM.Config 0).Gateway{{ "}}" }}' 2>/dev/null || echo '172.17.0.1')"
+        cat >> "${USER_HOME}/.config/openshell/gateway.env" <<DOCKEREOF
+      OPENSHELL_GRPC_ENDPOINT=https://${DOCKER_GW}:17670
+      OPENSHELL_SSH_GATEWAY_HOST=${DOCKER_GW}
+      DOCKEREOF
       fi
       if [[ -f /etc/openshell/gateway.toml ]]; then
         cp /etc/openshell/gateway.toml "${USER_HOME}/.config/openshell/gateway.toml"
@@ -186,7 +164,7 @@ spec:
         sudo -u "${USER_NAME}" \
           XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" \
           DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS}" \
-          {{ .Values.containerRuntime }} pull "${SANDBOX_IMAGE}" || true
+          docker pull "${SANDBOX_IMAGE}" || true
       fi
 
       echo "OpenShell gateway user setup complete."
@@ -194,19 +172,14 @@ spec:
 
       # Bake system packages + OpenShell binaries into the qcow2
       RUN virt-customize -a base.qcow2 \
+            --run-command 'dnf remove -y podman podman-docker containers-common 2>/dev/null; dnf clean all' \
             --install curl,jq,qemu-guest-agent,openssh-clients,openssh-server,binutils \
             --install nodejs,cloud-init,python3-pip \
-            {{- if eq .Values.containerRuntime "docker" }}
-            --run-command 'dnf remove -y podman podman-docker containers-common 2>/dev/null; dnf clean all' \
             --run-command 'dnf config-manager addrepo --from-repofile=https://download.docker.com/linux/fedora/docker-ce.repo' \
             --install docker-ce,docker-ce-cli,containerd.io \
             --run-command 'useradd -m -G wheel,docker cloud-user 2>/dev/null; echo "cloud-user ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/cloud-user; chmod 440 /etc/sudoers.d/cloud-user' \
             --run-command 'loginctl enable-linger cloud-user || mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/cloud-user' \
             --run-command 'systemctl enable docker' \
-            {{- else }}
-            --run-command 'useradd -m -G wheel cloud-user 2>/dev/null; echo "cloud-user ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/cloud-user; chmod 440 /etc/sudoers.d/cloud-user' \
-            --run-command 'loginctl enable-linger cloud-user || mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/cloud-user' \
-            {{- end }}
             --mkdir /usr/lib/systemd/user \
             --copy-in /build/openshell-gateway.service:/usr/lib/systemd/user/ \
             --copy-in /build/openshell-gateway-setup.service:/etc/systemd/system/ \
@@ -230,7 +203,7 @@ spec:
   output:
     to:
       kind: ImageStreamTag
-      name: {{ $imageName }}:latest
+      name: {{ .Values.output.imageStreamTag }}
   resources:
     limits:
       memory: {{ .Values.build.memoryLimit }}

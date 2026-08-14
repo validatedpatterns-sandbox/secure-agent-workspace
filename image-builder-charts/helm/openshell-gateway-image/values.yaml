@@ -1,8 +1,3 @@
-# Container runtime to bake into the golden image: docker or podman
-# docker: removes Podman, installs Docker CE, tags as openshell-gateway-docker
-# podman: keeps Fedora default Podman, enables podman.socket, tags as openshell-gateway
-containerRuntime: docker
-
 openshell:
   version: "0.0.97"
   gatewayImage: "quay.io/opendatahub/odh-openshell-gateway:v0.0.97-rhaiv.0"

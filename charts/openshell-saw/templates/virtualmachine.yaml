@@ -25,7 +25,7 @@ spec:
         {{- else }}
         sourceRef:
           kind: DataSource
-          name: {{ include "openshell-sandbox.dataSourceName" . }}
+          name: {{ .Values.source.dataSource }}
           namespace: {{ .Values.source.dataSourceNamespace | default .Release.Namespace }}
         {{- end }}
         storage:

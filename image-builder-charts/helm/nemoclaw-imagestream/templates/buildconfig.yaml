@@ -1,17 +1,7 @@
-apiVersion: image.openshift.io/v1
-kind: ImageStream
-metadata:
-  name: {{ (split ":" .Values.output.imageStreamTag)._0 }}-root
-  labels:
-    {{- include "nemoclaw-imagestream.labels" . | nindent 4 }}
-spec:
-  lookupPolicy:
-    local: true
----
 apiVersion: build.openshift.io/v1
 kind: BuildConfig
 metadata:
-  name: {{ (split ":" .Values.output.imageStreamTag)._0 }}-root
+  name: {{ (split ":" .Values.output.imageStreamTag)._0 }}
   labels:
     {{- include "nemoclaw-imagestream.labels" . | nindent 4 }}
 spec:
@@ -29,6 +19,8 @@ spec:
     dockerStrategy:
       dockerfilePath: Dockerfile
       buildArgs:
+        - name: TARGETARCH
+          value: {{ .Values.build.targetArch | quote }}
         - name: BASE_IMAGE
           value: {{ .Values.build.baseImage | quote }}
         - name: NEMOCLAW_MODEL
@@ -51,31 +43,6 @@ spec:
           value: {{ .Values.build.webSearchEnabled | quote }}
         - name: NEMOCLAW_OPENCLAW_OTEL
           value: {{ .Values.build.otelEnabled | quote }}
-  output:
-    to:
-      kind: ImageStreamTag
-      name: {{ (split ":" .Values.output.imageStreamTag)._0 }}-root:latest
-  triggers: []
----
-apiVersion: build.openshift.io/v1
-kind: BuildConfig
-metadata:
-  name: {{ (split ":" .Values.output.imageStreamTag)._0 }}
-  labels:
-    {{- include "nemoclaw-imagestream.labels" . | nindent 4 }}
-spec:
-  source:
-    type: Dockerfile
-    dockerfile: |
-      FROM {{ (split ":" .Values.output.imageStreamTag)._0 }}-root:latest
-      RUN chown -R sandbox:sandbox /sandbox
-      USER sandbox
-  strategy:
-    type: Docker
-    dockerStrategy:
-      from:
-        kind: ImageStreamTag
-        name: {{ (split ":" .Values.output.imageStreamTag)._0 }}-root:latest
   output:
     to:
       kind: ImageStreamTag

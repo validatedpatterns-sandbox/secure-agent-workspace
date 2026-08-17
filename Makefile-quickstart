@@ -98,11 +98,10 @@ generate-keys: ## Generate SSH keypair for sandbox provisioning
 # --- NemoClaw images ---
 
 build-nemoclaw: ## Build NemoClaw sandbox image and push to quay (set OTEL=1 to include diagnostics-otel)
-	-@oc delete is nemoclaw-sandbox nemoclaw-sandbox-root -n $(BUILD_NS) 2>/dev/null
+	-@oc delete is nemoclaw-sandbox -n $(BUILD_NS) 2>/dev/null
 	helm upgrade --install nemoclaw-imagestream $(HELM_DIR)nemoclaw-imagestream \
 		--namespace $(BUILD_NS) --create-namespace \
 		$(if $(filter 1,$(OTEL)),--set build.otelEnabled=1)
-	oc start-build nemoclaw-sandbox-root -n $(BUILD_NS) --follow
 	oc start-build nemoclaw-sandbox -n $(BUILD_NS) --follow
 	@echo "Pushing nemoclaw-sandbox to $(QUAY_REPO)..."
 	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) nemoclaw-sandbox $(QUAY_REPO) $(OPENSHELL_VERSION)

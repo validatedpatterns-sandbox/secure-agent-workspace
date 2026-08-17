@@ -1,0 +1,107 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: saw-create-sandbox
+  namespace: {{ .Values.pipelines.namespace }}
+  labels:
+    app.kubernetes.io/part-of: openshell-rhdh
+spec:
+  params:
+    - name: sandbox-name
+      type: string
+    - name: owner
+      type: string
+    - name: provider
+      type: string
+    - name: model
+      type: string
+    - name: oidc-issuer-url
+      type: string
+      default: ""
+    - name: repo-url
+      type: string
+      default: {{ .Values.pipelines.repoUrl | default "https://github.com/validatedpatterns-sandbox/secure-agent-workspace.git" | quote }}
+    - name: repo-ref
+      type: string
+      default: {{ .Values.pipelines.repoRef | default "main" | quote }}
+  tasks:
+    - name: helm-install
+      params:
+        - name: sandbox-name
+          value: $(params.sandbox-name)
+        - name: owner
+          value: $(params.owner)
+        - name: provider
+          value: $(params.provider)
+        - name: model
+          value: $(params.model)
+        - name: oidc-issuer-url
+          value: $(params.oidc-issuer-url)
+        - name: repo-url
+          value: $(params.repo-url)
+        - name: repo-ref
+          value: $(params.repo-ref)
+      taskSpec:
+        params:
+          - name: sandbox-name
+            type: string
+          - name: owner
+            type: string
+          - name: provider
+            type: string
+          - name: model
+            type: string
+          - name: oidc-issuer-url
+            type: string
+          - name: repo-url
+            type: string
+          - name: repo-ref
+            type: string
+        steps:
+          - name: install
+            image: alpine/k8s:1.31.3
+            script: |
+              #!/bin/sh
+              set -e
+              RELEASE="saw-$(params.sandbox-name)"
+              NS="{{ .Values.pipelines.namespace }}"
+
+              echo "Cloning chart from $(params.repo-url) @ $(params.repo-ref)..."
+              apk add --no-cache git >/dev/null 2>&1
+              git clone --depth=1 --branch "$(params.repo-ref)" "$(params.repo-url)" /tmp/saw-repo
+
+              OIDC_OPTS=""
+              if [ -n "$(params.oidc-issuer-url)" ]; then
+                OIDC_OPTS="--set oidc.issuerUrl=$(params.oidc-issuer-url)"
+              fi
+
+              OPENSHELL_OPTS=""
+              {{- if .Values.openshell.gatewayImage }}
+              OPENSHELL_OPTS="$OPENSHELL_OPTS --set openshell.gatewayImage={{ .Values.openshell.gatewayImage }}"
+              {{- end }}
+              {{- if .Values.openshell.supervisorImage }}
+              OPENSHELL_OPTS="$OPENSHELL_OPTS --set openshell.supervisorImage={{ .Values.openshell.supervisorImage }}"
+              {{- end }}
+              {{- if .Values.openshell.version }}
+              OPENSHELL_OPTS="$OPENSHELL_OPTS --set openshell.version={{ .Values.openshell.version }}"
+              {{- end }}
+              {{- if .Values.openshell.pipIndexUrl }}
+              OPENSHELL_OPTS="$OPENSHELL_OPTS --set openshell.pipIndexUrl={{ .Values.openshell.pipIndexUrl }}"
+              {{- end }}
+
+              echo "Installing sandbox $(params.sandbox-name) for $(params.owner)..."
+              helm upgrade --install "$RELEASE" /tmp/saw-repo/charts/openshell-saw \
+                --namespace "$NS" \
+                --set sandboxName="$(params.sandbox-name)" \
+                --set accessControl.owner="$(params.owner)" \
+                --set inference.provider="$(params.provider)" \
+                --set inference.model="$(params.model)" \
+                --set inference.secretName="saw-$(params.sandbox-name)-inference-key" \
+                --set route.dashboard=true \
+                --set governance.enabled=false \
+                --set dashboard.enabled=false \
+                $OIDC_OPTS \
+                $OPENSHELL_OPTS \
+                --wait --timeout=10m
+
+              echo "Sandbox $(params.sandbox-name) provisioned."

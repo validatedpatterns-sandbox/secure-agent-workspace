@@ -1,0 +1,32 @@
+apiVersion: rhdh.redhat.com/v1alpha5
+kind: Backstage
+metadata:
+  name: developer-hub
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/part-of: openshell-rhdh
+spec:
+  application:
+    appConfig:
+      configMaps:
+        - name: app-config-rhdh
+    dynamicPluginsConfigMapName: dynamic-plugins-rhdh
+    extraEnvs:
+      envs:
+        - name: NODE_OPTIONS
+          value: "--no-node-snapshot"
+      secrets:
+        - name: rhdh-oidc-credentials
+        - name: rhdh-k8s-proxy-token
+    extraFiles:
+      configMaps:
+        - mountPath: /opt/app-root/src/templates
+          name: rhdh-templates
+        - mountPath: /opt/app-root/src/catalog-users
+          name: rhdh-lab-users
+        - mountPath: /opt/app-root/src/rbac
+          name: rhdh-rbac-policy
+        - mountPath: /opt/app-root/src/sandbox-entities
+          name: rhdh-sandbox-entities
+  database:
+    enableLocalDb: true

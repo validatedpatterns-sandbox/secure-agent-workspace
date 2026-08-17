@@ -86,7 +86,7 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
         keycloak keycloak-issuer login whoami logout delete-keycloak \
         openshell-saw-create openshell-saw-list openshell-saw-logs openshell-saw-ssh ssh-secret \
         openshell-saw-configure-gateway openshell-saw-tui openshell-saw-gui test \
-        openshell-saw-delete delete-all status \
+        openshell-saw-delete delete-all status deploy-rhdh delete-rhdh \
         governance-list-profiles governance-add-profile governance-remove-profile governance-create-profile governance-demo \
         .check-saw-name .check-ssh-key .check-prereqs
 
@@ -375,6 +375,58 @@ delete-all: ## Uninstall everything (keycloak + imagestreams + gateway image)
 	@echo "Note: sandbox releases must be uninstalled individually."
 
 # --- Status ---
+
+RHDH_CHART     := charts/openshell-rhdh
+RHDH_NS        ?= rhdh
+RHDH_APPS_DOMAIN ?=
+RHDH_BASE_URL  ?=
+
+RHDH_REPO_URL  ?=
+
+deploy-rhdh: ## Deploy RHDH self-service portal
+	@if [ -z "$(RHDH_APPS_DOMAIN)" ]; then \
+		RHDH_APPS_DOMAIN=$$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null); \
+	else \
+		RHDH_APPS_DOMAIN="$(RHDH_APPS_DOMAIN)"; \
+	fi; \
+	if [ -z "$(RHDH_BASE_URL)" ]; then \
+		RHDH_BASE_URL="https://backstage-developer-hub-$(RHDH_NS).$${RHDH_APPS_DOMAIN}"; \
+	else \
+		RHDH_BASE_URL="$(RHDH_BASE_URL)"; \
+	fi; \
+	KC_HOST=$$(oc get route -n keycloak-system -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null); \
+	if [ -z "$${KC_HOST}" ]; then \
+		KC_HOST=$$(oc get route -n $(NS) -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null); \
+	fi; \
+	KC_SECRET=$$(oc get secret openshell-keycloak-initial-admin -n keycloak-system -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true); \
+	REPO_OPTS=""; \
+	if [ -n "$(RHDH_REPO_URL)" ]; then \
+		REPO_OPTS="--set pipelines.repoUrl=$(RHDH_REPO_URL)"; \
+	fi; \
+	echo "Creating K8s API proxy token..."; \
+	K8S_TOKEN=$$(oc -n $(NS) create token saw-provisioner --duration=87600h); \
+	oc -n $(RHDH_NS) create secret generic rhdh-k8s-proxy-token \
+		--from-literal=K8S_API_TOKEN="$${K8S_TOKEN}" \
+		--from-literal=K8S_API_URL="https://kubernetes.default.svc" \
+		--dry-run=client -o yaml | oc apply -f - >/dev/null; \
+	echo "Deploying RHDH to namespace $(RHDH_NS)..."; \
+	echo "  Apps domain: $${RHDH_APPS_DOMAIN}"; \
+	echo "  Keycloak:    $${KC_HOST}"; \
+	helm upgrade --install openshell-rhdh $(RHDH_CHART) \
+		--namespace $(RHDH_NS) --create-namespace \
+		--set appsDomain="$${RHDH_APPS_DOMAIN}" \
+		--set baseUrl="$${RHDH_BASE_URL}" \
+		--set keycloak.host="$${KC_HOST}" \
+		--set keycloak.clientSecret="$${KC_SECRET}" \
+		--set pipelines.namespace="$(NS)" \
+		$${REPO_OPTS}
+	@echo ""
+	@echo "RHDH deployed. Access at:"
+	@echo "  $$(oc get route backstage-developer-hub -n $(RHDH_NS) -o jsonpath='https://{.spec.host}' 2>/dev/null || echo '(waiting for route...)')"
+
+delete-rhdh: ## Remove RHDH self-service portal
+	-helm uninstall openshell-rhdh --namespace $(RHDH_NS) 2>/dev/null
+	@echo "RHDH uninstalled."
 
 status: ## Show status of all OpenShell resources
 	@echo "=== Helm releases ===" && helm list -n $(NS) 2>/dev/null || true

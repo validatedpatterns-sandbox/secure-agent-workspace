@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rhdh-templates
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/part-of: openshell-rhdh
+data:
+  {{- $appsDomain := include "openshell-rhdh.appsDomain" . }}
+  {{- $keycloakHost := include "openshell-rhdh.keycloakHost" . }}
+  create-sandbox.yaml: |
+{{ .Files.Get "files/create-sandbox.yaml" | replace "__PIPELINES_NS__" .Values.pipelines.namespace | replace "__APPS_DOMAIN__" $appsDomain | replace "__RHDH_NS__" .Values.namespace | replace "__KEYCLOAK_HOST__" $keycloakHost | indent 4 }}
+  delete-sandbox.yaml: |
+{{ .Files.Get "files/delete-sandbox.yaml" | replace "__PIPELINES_NS__" .Values.pipelines.namespace | replace "__APPS_DOMAIN__" $appsDomain | replace "__RHDH_NS__" .Values.namespace | indent 4 }}
+  check-sandbox-status.yaml: |
+{{ .Files.Get "files/check-sandbox-status.yaml" | replace "__PIPELINES_NS__" .Values.pipelines.namespace | replace "__APPS_DOMAIN__" $appsDomain | indent 4 }}

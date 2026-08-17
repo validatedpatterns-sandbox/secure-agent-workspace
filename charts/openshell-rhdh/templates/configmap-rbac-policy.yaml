@@ -1,0 +1,70 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rhdh-rbac-policy
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/part-of: openshell-rhdh
+data:
+  rbac-policy.csv: |
+    # Roles
+    # role:default/sandbox-admin — full access to all sandboxes and catalog
+    # role:default/sandbox-user  — access only to own resources (conditional)
+
+    # Admin role — full catalog and scaffolder access
+    p, role:default/sandbox-admin, catalog-entity, read, allow
+    p, role:default/sandbox-admin, catalog-entity, update, allow
+    p, role:default/sandbox-admin, catalog-entity, delete, allow
+    p, role:default/sandbox-admin, catalog.entity.create, create, allow
+    p, role:default/sandbox-admin, catalog.location.create, create, allow
+    p, role:default/sandbox-admin, catalog.location.read, read, allow
+    p, role:default/sandbox-admin, catalog.location.delete, delete, allow
+    p, role:default/sandbox-admin, scaffolder-template, read, allow
+    p, role:default/sandbox-admin, scaffolder-action, use, allow
+    p, role:default/sandbox-admin, scaffolder.task.create, create, allow
+    p, role:default/sandbox-admin, scaffolder.task.read, read, allow
+    p, role:default/sandbox-admin, scaffolder.task.cancel, create, allow
+
+    # User role — scaffolder access + catalog read is conditional (see conditional policies file)
+    p, role:default/sandbox-user, catalog-entity, delete, allow
+    p, role:default/sandbox-user, catalog.entity.create, create, allow
+    p, role:default/sandbox-user, catalog.location.create, create, allow
+    p, role:default/sandbox-user, catalog.location.read, read, allow
+    p, role:default/sandbox-user, catalog.location.delete, delete, allow
+    p, role:default/sandbox-user, scaffolder-template, read, allow
+    p, role:default/sandbox-user, scaffolder-action, use, allow
+    p, role:default/sandbox-user, scaffolder.task.create, create, allow
+    p, role:default/sandbox-user, scaffolder.task.read, read, allow
+
+    # Assign admin role
+    g, user:default/admin, role:default/sandbox-admin
+
+    # Assign user role to lab users
+    g, user:default/alice, role:default/sandbox-user
+    g, user:default/bob, role:default/sandbox-user
+    g, user:default/developer, role:default/sandbox-user
+
+  rbac-conditional-policies.yaml: |
+    ---
+    result: CONDITIONAL
+    roleEntityRef: role:default/sandbox-user
+    pluginId: catalog
+    resourceType: catalog-entity
+    permissionMapping:
+      - read
+    conditions:
+      anyOf:
+        - rule: IS_ENTITY_OWNER
+          resourceType: catalog-entity
+          params:
+            claims:
+              - $currentUser
+        - rule: IS_ENTITY_KIND
+          resourceType: catalog-entity
+          params:
+            kinds:
+              - template
+              - user
+              - group
+              - system
+              - location

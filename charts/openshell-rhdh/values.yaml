@@ -1,0 +1,33 @@
+namespace: rhdh
+
+appsDomain: ""
+
+baseUrl: ""
+
+keycloak:
+  host: ""
+  realm: openshell
+  clientId: rhdh
+  clientSecret: ""
+  keycloakName: openshell-keycloak
+  keycloakNamespace: ""
+
+pipelines:
+  namespace: openshell-agents
+  repoUrl: ""
+  repoRef: main
+
+provisioner:
+  serviceAccount: saw-provisioner
+
+openshell:
+  gatewayImage: ""
+  supervisorImage: ""
+  version: ""
+  pipIndexUrl: ""
+
+# NOTE: This chart requires a pre-existing Secret 'rhdh-k8s-proxy-token' in the
+# RHDH namespace containing K8S_API_TOKEN (a long-lived token for the
+# saw-provisioner ServiceAccount) and K8S_API_URL. The quickstart path
+# creates this automatically via 'make deploy-rhdh'. For ArgoCD deployments,
+# run 'make deploy-rhdh' once after the first sync to seed the token.

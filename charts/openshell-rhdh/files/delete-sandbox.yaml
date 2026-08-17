@@ -1,0 +1,68 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: delete-saw-sandbox
+  title: Delete Agent Sandbox
+  description: Remove an existing OpenShell/OpenClaw agent sandbox you own
+  tags:
+    - openshell
+    - sandbox
+    - delete
+spec:
+  owner: infrastructure
+  type: service
+  parameters:
+    - title: Select Sandbox
+      required:
+        - name
+      properties:
+        name:
+          title: Sandbox Name
+          type: string
+          description: "Name of the sandbox to delete (must be owned by you)"
+  steps:
+    - id: verify-ownership
+      name: Verify you own this sandbox
+      action: http:backstage:request
+      input:
+        method: GET
+        path: "/catalog/entities/by-name/resource/default/saw-${{ parameters.name }}"
+        headers:
+          Content-Type: application/json
+
+    - id: start-delete-pipeline
+      name: Start sandbox deletion
+      action: http:backstage:request
+      input:
+        method: POST
+        path: /proxy/k8s-api/apis/tekton.dev/v1/namespaces/__PIPELINES_NS__/pipelineruns
+        headers:
+          Content-Type: application/json
+        body:
+          apiVersion: tekton.dev/v1
+          kind: PipelineRun
+          metadata:
+            generateName: "saw-delete-${{ parameters.name }}-"
+            namespace: __PIPELINES_NS__
+            labels:
+              app.kubernetes.io/managed-by: rhdh-scaffolder
+              openshell.io/owner: "${{ user.entity.metadata.name }}"
+              openshell.io/sandbox: "${{ parameters.name }}"
+              tekton.dev/pipeline: saw-delete-sandbox
+          spec:
+            pipelineRef:
+              name: saw-delete-sandbox
+            taskRunTemplate:
+              serviceAccountName: saw-provisioner
+            params:
+              - name: sandbox-name
+                value: "${{ parameters.name }}"
+              - name: owner
+                value: "${{ user.entity.metadata.name }}"
+
+  output:
+    text:
+      - title: Status
+        content: |
+          Sandbox **${{ parameters.name }}** deletion has been started. Cleanup typically takes 1-2 minutes.
+          The sandbox will disappear from the catalog once the pipeline completes.

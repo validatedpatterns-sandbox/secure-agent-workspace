@@ -1,0 +1,141 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: create-saw-sandbox
+  title: Create Agent Sandbox
+  description: Provision a new OpenShell/OpenClaw agent sandbox
+  tags:
+    - openshell
+    - sandbox
+    - nemoclaw
+spec:
+  owner: infrastructure
+  type: service
+  parameters:
+    - title: Sandbox Configuration
+      required:
+        - name
+        - provider
+        - model
+        - apiKey
+      properties:
+        name:
+          title: Sandbox Name
+          type: string
+          maxLength: 19
+          pattern: "^[a-z][a-z0-9-]*$"
+          description: "DNS-safe name (max 19 chars, lowercase, starts with letter)"
+        provider:
+          title: Inference Provider
+          type: string
+          enum:
+            - gemini
+            - anthropic
+            - openai
+            - nvidia
+            - openrouter
+            - ollama
+            - custom
+          default: gemini
+        model:
+          title: Model Name
+          type: string
+          default: gemini-2.0-flash
+        apiKey:
+          title: API Key
+          type: string
+          ui:field: Secret
+          description: "Inference provider API key (stored as Secret, never logged)"
+  steps:
+    - id: create-secret
+      name: Store inference API key
+      action: http:backstage:request
+      input:
+        method: POST
+        path: /proxy/k8s-api/api/v1/namespaces/__PIPELINES_NS__/secrets
+        headers:
+          Content-Type: application/json
+        body:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "saw-${{ parameters.name }}-inference-key"
+            namespace: __PIPELINES_NS__
+            labels:
+              app.kubernetes.io/managed-by: rhdh-scaffolder
+              openshell.io/owner: "${{ user.entity.metadata.name }}"
+              openshell.io/sandbox: "${{ parameters.name }}"
+          type: Opaque
+          stringData:
+            api-key: "${{ parameters.apiKey }}"
+            api_key: "${{ parameters.apiKey }}"
+            provider: "${{ parameters.provider }}"
+            model: "${{ parameters.model }}"
+
+    - id: start-pipeline
+      name: Start sandbox provisioning
+      action: http:backstage:request
+      input:
+        method: POST
+        path: /proxy/k8s-api/apis/tekton.dev/v1/namespaces/__PIPELINES_NS__/pipelineruns
+        headers:
+          Content-Type: application/json
+        body:
+          apiVersion: tekton.dev/v1
+          kind: PipelineRun
+          metadata:
+            generateName: "saw-create-${{ parameters.name }}-"
+            namespace: __PIPELINES_NS__
+            labels:
+              app.kubernetes.io/managed-by: rhdh-scaffolder
+              openshell.io/owner: "${{ user.entity.metadata.name }}"
+              openshell.io/sandbox: "${{ parameters.name }}"
+              tekton.dev/pipeline: saw-create-sandbox
+          spec:
+            pipelineRef:
+              name: saw-create-sandbox
+            taskRunTemplate:
+              serviceAccountName: saw-provisioner
+            params:
+              - name: sandbox-name
+                value: "${{ parameters.name }}"
+              - name: owner
+                value: "${{ user.entity.metadata.name }}"
+              - name: provider
+                value: "${{ parameters.provider }}"
+              - name: model
+                value: "${{ parameters.model }}"
+              - name: oidc-issuer-url
+                value: "https://__KEYCLOAK_HOST__/realms/openshell"
+
+    - id: get-current-catalog
+      name: Read current catalog
+      action: http:backstage:request
+      input:
+        method: GET
+        path: "/proxy/k8s-api/api/v1/namespaces/__RHDH_NS__/configmaps/rhdh-sandbox-entities"
+        headers:
+          Content-Type: application/json
+
+    - id: register-catalog-entity
+      name: Register sandbox in catalog
+      action: http:backstage:request
+      input:
+        method: PATCH
+        path: "/proxy/k8s-api/api/v1/namespaces/__RHDH_NS__/configmaps/rhdh-sandbox-entities"
+        headers:
+          Content-Type: application/json-patch+json
+        body:
+          - op: replace
+            path: /data/catalog.yaml
+            value: "${{ steps['get-current-catalog'].output.body.data['catalog.yaml'] }}---\napiVersion: backstage.io/v1alpha1\nkind: Resource\nmetadata:\n  name: saw-${{ parameters.name }}\n  namespace: default\n  title: \"Sandbox: ${{ parameters.name }}\"\n  description: Agent sandbox provisioned via self-service\n  annotations:\n    openshell.io/sandbox-name: \"${{ parameters.name }}\"\n    openshell.io/provider: \"${{ parameters.provider }}\"\n    openshell.io/model: \"${{ parameters.model }}\"\n    openshell.io/dashboard-url: \"https://saw-${{ parameters.name }}-dashboard-__PIPELINES_NS__.__APPS_DOMAIN__\"\n    janus-idp.io/tekton: __PIPELINES_NS__\n  links:\n    - url: \"https://saw-${{ parameters.name }}-gateway-__PIPELINES_NS__.__APPS_DOMAIN__\"\n      title: Gateway\n      icon: cloud\n    - url: \"https://saw-${{ parameters.name }}-dashboard-__PIPELINES_NS__.__APPS_DOMAIN__\"\n      title: Dashboard\n      icon: dashboard\n    - url: \"https://backstage-developer-hub-__RHDH_NS__.__APPS_DOMAIN__/create/templates/default/delete-saw-sandbox?formData=%7B%22name%22%3A%22${{ parameters.name }}%22%7D\"\n      title: Delete Sandbox\n      icon: delete\n  labels:\n    openshell.io/owner: \"${{ user.entity.metadata.name }}\"\n    openshell.io/type: sandbox\nspec:\n  type: sandbox\n  owner: \"user:default/${{ user.entity.metadata.name }}\"\n  lifecycle: production\n"
+
+  output:
+    text:
+      - title: Status
+        content: |
+          Sandbox **${{ parameters.name }}** provisioning has been started. The VM typically takes 5-8 minutes to become ready.
+
+          **Gateway:** https://saw-${{ parameters.name }}-gateway-__PIPELINES_NS__.__APPS_DOMAIN__
+
+          Your sandbox will appear in the **Catalog** under Resources within ~30 seconds.

@@ -369,12 +369,12 @@ data:
     echo "Restarting gateway service..."
     guest_ssh "systemctl --user restart openshell-gateway.service" || true
     GW_READY=0
-    for i in $(seq 1 10); do
+    for i in $(seq 1 30); do
       if guest_ssh "systemctl --user is-active openshell-gateway.service" 2>/dev/null; then
         GW_READY=1; break
       fi
       echo "  waiting for gateway... (attempt $i)"
-      sleep 3
+      sleep 5
     done
     if [[ "${GW_READY}" -ne 1 ]]; then
       echo "ERROR: gateway failed to start after binary install" >&2
@@ -1146,6 +1146,31 @@ data:
       echo "No workspace BOMs found, skipping"
       exit 0
     fi
+
+    GATEWAY_NAME="${OPENSHELL_GATEWAY:-openshell}"
+    MTLS_GW_NAME="openshell-local"
+
+    if [[ -n "${OIDC_TOKEN:-}" ]]; then
+      OIDC_TOKEN_PATH="${HOME}/.config/openshell/gateways/${GATEWAY_NAME}/oidc_token.json"
+      mkdir -p "$(dirname "${OIDC_TOKEN_PATH}")"
+      chmod 700 "$(dirname "${OIDC_TOKEN_PATH}")"
+      cat > "${OIDC_TOKEN_PATH}" <<OIDCEOF
+    {"access_token":"${OIDC_TOKEN}","issuer":"${OIDC_ISSUER:-}","client_id":"${OIDC_CLIENT_ID:-openshell-cli}"}
+    OIDCEOF
+      chmod 600 "${OIDC_TOKEN_PATH}"
+    fi
+
+    openshell gateway remove "${MTLS_GW_NAME}" 2>/dev/null || true
+    openshell gateway add https://127.0.0.1:17670 --name "${MTLS_GW_NAME}" --local 2>/dev/null || true
+
+    if [[ -n "${OIDC_TOKEN:-}" ]]; then
+      openshell gateway select "${GATEWAY_NAME}" >/dev/null 2>&1 || true
+      openshell workspace member add --workspace default \
+        --subject openshell-client --role admin 2>&1 || \
+        echo "WARN: could not pre-grant workspace access via OIDC"
+    fi
+
+    openshell gateway select "${MTLS_GW_NAME}" >/dev/null 2>&1 || true
 
     for WS_DIR in "${WS_BASE}"/*/; do
       [[ -f "${WS_DIR}/workspace.yaml" ]] || continue

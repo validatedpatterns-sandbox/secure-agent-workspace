@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rhdh-lab-users
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/part-of: openshell-rhdh
+data:
+  users.yaml: |
+    apiVersion: backstage.io/v1alpha1
+    kind: User
+    metadata:
+      name: developer
+    spec:
+      memberOf: []
+    ---
+    apiVersion: backstage.io/v1alpha1
+    kind: User
+    metadata:
+      name: admin
+    spec:
+      memberOf: []
+    ---
+    apiVersion: backstage.io/v1alpha1
+    kind: User
+    metadata:
+      name: alice
+    spec:
+      memberOf: []
+    ---
+    apiVersion: backstage.io/v1alpha1
+    kind: User
+    metadata:
+      name: bob
+    spec:
+      memberOf: []

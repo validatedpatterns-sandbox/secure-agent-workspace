@@ -1,0 +1,78 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: check-saw-sandbox-status
+  title: Check Sandbox Status
+  description: Check the provisioning status of your agent sandbox
+  tags:
+    - openshell
+    - sandbox
+    - status
+spec:
+  owner: infrastructure
+  type: service
+  parameters:
+    - title: Select Sandbox
+      required:
+        - name
+      properties:
+        name:
+          title: Sandbox Name
+          type: string
+          description: "Name of the sandbox to check"
+  steps:
+    - id: get-pipelinerun-status
+      name: Check Tekton PipelineRun
+      action: http:backstage:request
+      continueOnError: true
+      input:
+        method: GET
+        path: /proxy/k8s-api/apis/tekton.dev/v1/namespaces/__PIPELINES_NS__/pipelineruns?labelSelector=openshell.io/sandbox=${{ parameters.name }},tekton.dev/pipeline=saw-create-sandbox&limit=1
+        headers:
+          Content-Type: application/json
+
+    - id: get-vm-status
+      name: Check VM status
+      action: http:backstage:request
+      continueOnError: true
+      input:
+        method: GET
+        path: /proxy/k8s-api/apis/kubevirt.io/v1/namespaces/__PIPELINES_NS__/virtualmachines/saw-${{ parameters.name }}
+        headers:
+          Content-Type: application/json
+
+    - id: get-setup-job
+      name: Check setup job
+      action: http:backstage:request
+      continueOnError: true
+      input:
+        method: GET
+        path: /proxy/k8s-api/apis/batch/v1/namespaces/__PIPELINES_NS__/jobs/saw-${{ parameters.name }}-setup
+        headers:
+          Content-Type: application/json
+
+    - id: get-routes
+      name: Check routes
+      action: http:backstage:request
+      continueOnError: true
+      input:
+        method: GET
+        path: /proxy/k8s-api/apis/route.openshift.io/v1/namespaces/__PIPELINES_NS__/routes?labelSelector=app.kubernetes.io/instance=saw-${{ parameters.name }}
+        headers:
+          Content-Type: application/json
+
+  output:
+    text:
+      - title: Sandbox Status
+        content: |
+          **Sandbox: ${{ parameters.name }}**
+
+          **PipelineRun (helm install):** ${{ steps['get-pipelinerun-status'].output.body.items[0].status.conditions[0].reason | default('Not found') }} — ${{ steps['get-pipelinerun-status'].output.body.items[0].status.conditions[0].message | default('No PipelineRun found for this sandbox') }}
+
+          **VM:** ${{ steps['get-vm-status'].output.body.status.printableStatus | default('Not found') }}
+
+          **Setup Job:** ${{ steps['get-setup-job'].output.body.status.conditions[0].type | default('Not started') }} — succeeded: ${{ steps['get-setup-job'].output.body.status.succeeded | default('0') }}, failed: ${{ steps['get-setup-job'].output.body.status.failed | default('0') }}
+
+          **Gateway:** https://saw-${{ parameters.name }}-gateway-__PIPELINES_NS__.__APPS_DOMAIN__
+
+          **Dashboard:** https://saw-${{ parameters.name }}-dashboard-__PIPELINES_NS__.__APPS_DOMAIN__

@@ -57,6 +57,8 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
 	@echo "  helm:      $$(helm version --short 2>/dev/null)"
 	@command -v virtctl >/dev/null 2>&1 && echo "  virtctl:   $$(virtctl version --client 2>/dev/null | head -1)" || true
 	@command -v openshell >/dev/null 2>&1 && echo "  openshell: $$(openshell --version 2>/dev/null)" || true
+	@command -v openssl >/dev/null 2>&1 && echo "  openssl:   $$(openssl version 2>/dev/null)" || \
+		{ echo "Error: openssl is required (used by 'make login' for PKCE challenge generation)."; exit 1; }
 	@echo "Checking operators..."
 	@oc get csv -n openshift-cnv 2>/dev/null | grep -q kubevirt || { echo "Error: OpenShift Virtualization not installed."; exit 1; }
 	@echo "  OpenShift Virtualization: installed"
@@ -65,7 +67,29 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
 	elif oc get csv --all-namespaces 2>/dev/null | grep -q rhbk; then \
 		RHBK_NS=$$(oc get csv --all-namespaces 2>/dev/null | grep rhbk | awk '{print $$1}' | head -1); \
 		echo "Error: RHBK operator found in namespace '$${RHBK_NS}' but not in '$(NS)'."; \
-		echo "  Install it in '$(NS)': oc apply -f - <<< '{\"apiVersion\":\"operators.coreos.com/v1alpha1\",\"kind\":\"Subscription\",\"metadata\":{\"name\":\"rhbk-operator\",\"namespace\":\"$(NS)\"},\"spec\":{\"channel\":\"stable-v26\",\"name\":\"rhbk-operator\",\"source\":\"redhat-operators\",\"sourceNamespace\":\"openshift-marketplace\"}}'"; \
+		echo "  Install it in '$(NS)' by running:"; \
+		echo "    oc create namespace $(NS) --dry-run=client -o yaml | oc apply -f -"; \
+		echo "    oc apply -f - <<EOF"; \
+		echo "apiVersion: operators.coreos.com/v1"; \
+		echo "kind: OperatorGroup"; \
+		echo "metadata:"; \
+		echo "  name: $(NS)-og"; \
+		echo "  namespace: $(NS)"; \
+		echo "spec:"; \
+		echo "  targetNamespaces:"; \
+		echo "    - $(NS)"; \
+		echo "---"; \
+		echo "apiVersion: operators.coreos.com/v1alpha1"; \
+		echo "kind: Subscription"; \
+		echo "metadata:"; \
+		echo "  name: rhbk-operator"; \
+		echo "  namespace: $(NS)"; \
+		echo "spec:"; \
+		echo "  channel: stable-v26"; \
+		echo "  name: rhbk-operator"; \
+		echo "  source: redhat-operators"; \
+		echo "  sourceNamespace: openshift-marketplace"; \
+		echo "EOF"; \
 		exit 1; \
 	else \
 		echo "Error: RHBK operator not installed."; exit 1; \

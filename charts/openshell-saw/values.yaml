@@ -1,5 +1,10 @@
 # Required — must be set at install time. Maximum 19 characters (OpenShell limit).
 sandboxName: ""
+
+# Provision an application sandbox after the VM gateway is ready. Disable this
+# for gateway-only VMs whose sandboxes are managed separately.
+sandbox:
+  enabled: true
 # SSH public key for VM access. Set explicitly, or leave empty to read
 # from the 'public_key' field in the sshSecret (created by ESO/pattern-secrets).
 sshPublicKey: ""
@@ -24,6 +29,9 @@ sshPublicKey: ""
 # The golden image is built on the cluster via make build-gateway-image
 # and imported by the openshell-gateway-image helm chart.
 source:
+  # Create the golden DataVolume/DataSource when it is missing. Disable when
+  # cloning an existing DataSource from another namespace.
+  bootstrap: true
   # Leave empty to auto-select from containerRuntime (openshell-gateway-docker for docker,
   # openshell-gateway for podman). Set explicitly to override.
   dataSource: ""
@@ -64,7 +72,7 @@ openshell:
   # OpenShell binaries installed at provisioning time (not baked into golden image).
   gatewayImage: "quay.io/opendatahub/odh-openshell-gateway:v0.0.99-rhaiv.0"
   supervisorImage: "quay.io/opendatahub/odh-openshell-supervisor:v0.0.99-rhaiv.0"
-  version: "0.0.99+rhaiv.0"
+  version: "0.0.99"
   pipIndexUrl: "https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6-EA1/cpu-ubi9-test/simple/"
 
   # gatewayImage: "ghcr.io/nvidia/openshell/gateway:0.0.99"
@@ -117,6 +125,16 @@ route:
   # OpenShell Dashboard web UI (see `dashboard` below). Distinct from `dashboard`
   # above, which is the OpenClaw in-sandbox web UI on port 18789.
   webui: true
+
+# Additional ports exposed by the VM Service. These are intended for
+# sandboxed services managed separately from this chart, such as the Gmail
+# read proxy in the two-VM POC.
+service:
+  extraPorts: []
+  # - name: gmail-read
+  #   port: 18080
+  #   targetPort: 18080
+  #   protocol: TCP
 
 # OpenShell Dashboard — standalone Go BFF + React admin UI for OpenShell
 # (gateways, workspaces, sandboxes, providers). Runs via docker inside the

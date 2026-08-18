@@ -64,6 +64,7 @@ data:
       GOLDEN_IMAGE_URL="docker://image-registry.openshift-image-registry.svc:5000/${GOLDEN_NS}/${GOLDEN_DS}:latest"
     fi
 
+    {{- if .Values.source.bootstrap }}
     if [[ -n "${GOLDEN_DS}" ]]; then
       DS_EXISTS="$(kubectl get datasource "${GOLDEN_DS}" -n "${GOLDEN_NS}" -o name 2>/dev/null || true)"
       DV_PHASE="$(kubectl get dv "${GOLDEN_DS}-golden" -n "${GOLDEN_NS}" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
@@ -159,6 +160,9 @@ data:
     CLONEDV
       fi
     fi
+    {{- else }}
+    echo "Using existing DataSource ${GOLDEN_NS}/${GOLDEN_DS}; golden-image bootstrap is disabled."
+    {{- end }}
 
     # --- Wait for DataVolume provisioning ---
     DV_NAME="${VM_NAME}-root"
@@ -261,7 +265,7 @@ data:
     echo "Waiting for cloud-init to finish..."
     deadline=$((SECONDS + 600))
     while true; do
-      if guest_ssh "cloud-init status 2>/dev/null | grep -q done" 2>/dev/null; then
+      if guest_ssh "sudo cloud-init status 2>/dev/null | grep -q done" 2>/dev/null; then
         echo "Cloud-init finished."
         break
       fi
@@ -271,6 +275,14 @@ data:
       fi
       sleep 10
     done
+
+    # The Podman golden DataSource may be a minimal Fedora Cloud image. Ensure
+    # the selected runtime exists before using it to extract OpenShell binaries.
+    if [[ "${RUNTIME}" == "podman" ]]; then
+      echo "Ensuring Podman is installed in the guest..."
+      guest_ssh "command -v podman >/dev/null 2>&1 || sudo dnf install -y --setopt=install_weak_deps=False podman"
+      guest_ssh "systemctl --user enable --now podman.socket"
+    fi
 
     # --- Post-clone hygiene ---
     echo "Post-clone hygiene (hostname)..."
@@ -370,7 +382,7 @@ data:
     guest_ssh "systemctl --user restart openshell-gateway.service" || true
     GW_READY=0
     for i in $(seq 1 10); do
-      if guest_ssh "systemctl --user is-active openshell-gateway.service" 2>/dev/null; then
+      if [[ "$(guest_ssh "systemctl --user is-active openshell-gateway.service" 2>/dev/null || true)" == "active" ]]; then
         GW_READY=1; break
       fi
       echo "  waiting for gateway... (attempt $i)"
@@ -381,6 +393,11 @@ data:
       guest_ssh "journalctl --user -u openshell-gateway.service --no-pager 2>/dev/null | tail -5" || true
       exit 1
     fi
+
+    {{- if not .Values.sandbox.enabled }}
+    echo "Gateway-only setup complete on vm/${VM_NAME}; application sandbox provisioning is disabled."
+    exit 0
+    {{- end }}
 
     {{- if .Values.governance.enabled }}
     # --- Preflight: verify governance interceptor is reachable ---

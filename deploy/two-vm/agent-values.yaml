@@ -1,0 +1,29 @@
+sandboxName: saw-agent
+
+sandbox:
+  enabled: false
+
+containerRuntime: podman
+onboardCli: openclaw
+
+openshell:
+  gatewayImage: ghcr.io/nvidia/openshell/gateway:0.0.106
+  supervisorImage: ghcr.io/nvidia/openshell/supervisor:0.0.106
+  version: "0.0.106"
+  pipIndexUrl: ""
+
+vm:
+  cores: 4
+  memory: 8Gi
+  diskSize: 40Gi
+
+route:
+  enabled: false
+  dashboard: false
+  webui: false
+
+dashboard:
+  enabled: false
+
+governance:
+  enabled: false

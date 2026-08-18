@@ -25,3 +25,9 @@ spec:
       port: 22
       targetPort: 22
       protocol: TCP
+    {{- range .Values.service.extraPorts }}
+    - name: {{ .name }}
+      port: {{ .port }}
+      targetPort: {{ .targetPort | default .port }}
+      protocol: {{ .protocol | default "TCP" }}
+    {{- end }}

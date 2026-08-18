@@ -268,6 +268,32 @@ You can set `OPENSHELL_SAW_NAME` once via `export` and all `openshell-saw-*` tar
 
 > **Sandbox name limit:** `OPENSHELL_SAW_NAME` must be **19 characters or fewer**. OpenShell rejects longer names with "name exceeds maximum length". The Helm chart and `make openshell-saw-create` will both fail fast with a clear error if this limit is exceeded.
 
+#### Option C: Two-VM Gmail-read POC (experimental)
+
+Deploys one gateway-only VM for the agent plane and one for the integrations
+plane. OpenClaw and OpenAI inference run behind Gateway A; the Gmail-read proxy
+and Google OAuth refresh run behind Gateway B. The VMs communicate only through
+an internal Service protected by an inter-VM bearer and NetworkPolicy. Keycloak
+and an OAuth front door remain future work.
+
+```bash
+export NS=secure-agent-workspace-poc
+export DATA_SOURCE_NAMESPACE=openshell-agents
+export VIRTCTL=virtctl
+
+make generate-keys
+NS="$NS" DATA_SOURCE_NAMESPACE="$DATA_SOURCE_NAMESPACE" \
+  scripts/deploy-two-vm-poc.sh
+
+NS="$NS" VIRTCTL="$VIRTCTL" scripts/deploy-gmail-read-proxy.sh
+
+NS="$NS" VIRTCTL="$VIRTCTL" scripts/deploy-openclaw-sandbox.sh
+```
+
+See the [Two-VM OpenClaw and Gmail-read POC](docs/two-vm-gmail-read-poc.md)
+for pinned images, secret-safe credential setup, end-to-end verification, and
+Control UI access on local port 28789.
+
 #### Supported inference providers
 
 | Provider | Key | Example model |

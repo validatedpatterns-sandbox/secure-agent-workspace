@@ -70,6 +70,11 @@ spec:
                 - name: ssh
                   port: 22
                   protocol: TCP
+                {{- range .Values.service.extraPorts }}
+                - name: {{ .name }}
+                  port: {{ .targetPort | default .port }}
+                  protocol: {{ .protocol | default "TCP" }}
+                {{- end }}
         firmware:
           bootloader:
             efi:

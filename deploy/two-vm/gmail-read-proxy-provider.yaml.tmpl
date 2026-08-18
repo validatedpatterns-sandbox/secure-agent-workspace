@@ -1,0 +1,26 @@
+id: gmail-read-proxy
+display_name: Gmail read-only proxy transport
+description: Inter-VM bearer for gog access to the Gateway B Gmail proxy
+category: data
+inference_capable: false
+
+credentials:
+  - name: access_token
+    description: Random inter-VM bearer retained by Gateway A
+    env_vars: [GOG_ACCESS_TOKEN]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+
+discovery:
+  credentials: [access_token]
+
+endpoints:
+  - host: saw-integrations-gateway.__NAMESPACE__.svc.cluster.local
+    port: 18080
+    protocol: rest
+    enforcement: enforce
+    access: read-only
+
+binaries:
+  - /usr/local/bin/gog

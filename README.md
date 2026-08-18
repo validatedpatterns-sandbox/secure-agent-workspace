@@ -131,7 +131,7 @@ The following diagrams are from the [NVIDIA Secure Agent Workspace OpenShift Vir
 |---|---|
 | Red Hat OpenShift | 4.22+ |
 | OpenShift Virtualization operator | stable channel |
-| Red Hat Build of Keycloak operator | stable-v24 channel |
+| Red Hat Build of Keycloak operator | stable-v26 channel |
 | Helm CLI | 3.x |
 | oc CLI | matching cluster version |
 | openshell CLI | [latest release](https://github.com/NVIDIA/OpenShell/releases) |
@@ -202,7 +202,7 @@ openshell --gateway-insecure sandbox list
 
 #### Option B: Quickstart (manual, step-by-step)
 
-Install operators from OperatorHub first, then deploy components manually.
+Install operators from OperatorHub first, then deploy components manually. RHBK must be installed in the `openshell-agents` namespace.
 
 ```bash
 # 1. Clone the repository
@@ -228,35 +228,41 @@ make keycloak
 make keycloak-issuer
 curl -sk "$(make keycloak-issuer)/.well-known/openid-configuration" | python3 -m json.tool | head -5
 
-# 8. Authenticate
+# 8. Deploy governance interceptor
+helm upgrade --install governance-policy charts/governance-policy \
+  --namespace openshell-agents
+helm upgrade --install governance-interceptor charts/governance-interceptor \
+  --namespace openshell-agents
+
+# 9. Authenticate
 make login                    # Opens browser → login with alice / alice
 make whoami                   # Verify identity
 
-# 9. Create a sandbox
+# 10. Create a sandbox
 export OPENSHELL_SAW_NAME=alice-openshell-saw
 make openshell-saw-create \
   PROVIDER=gemini \
   MODEL=gemini-2.5-flash \
   API_KEY=<your-api-key>
 
-# 10. Follow setup logs (in another terminal)
+# 11. Follow setup logs (in another terminal)
 make openshell-saw-logs
 
-# 11. Check status
+# 12. Check status
 make openshell-saw-list
 make status
 
-# 12. Wait for VM to be ready
+# 13. Wait for VM to be ready
 oc get vmi -n openshell-agents
 # Wait for PHASE=Running, READY=True
 
-# 13. Configure the openshell CLI
+# 14. Configure the openshell CLI
 make openshell-saw-configure-gateway
 
-# 14. Authenticate CLI with the gateway
+# 15. Authenticate CLI with the gateway
 openshell gateway login $OPENSHELL_SAW_NAME --gateway-insecure
 
-# 15. Verify
+# 16. Verify
 openshell --gateway-insecure sandbox list
 ```
 

@@ -10,6 +10,21 @@ spec:
       image: quay.io/rh-ai-quickstart/nemoclaw-sandbox:latest
       providers:
         - nvidia
+      # Container-level GPU passthrough request (openshell sandbox create --gpu).
+      # Independent of the gateway VM's own vm.gpu.enabled (KubeVirt hostDevices) --
+      # only actually attaches a real GPU if both the VM received a passed-through
+      # device AND the container runtime is GPU-capable (NVIDIA Container Toolkit +
+      # CDI). See docs/gpu-passthrough.md.
+      #
+      # Off by default -- this sandbox is enabled by default in the bundled
+      # "data-science" profile, so shipping this as `true` would make --gpu fire on
+      # every default deployment of this pattern and fail the whole BOM verification
+      # (and thus the whole setup Job) on any cluster without real GPU passthrough --
+      # i.e. almost everyone. Flip to `true` only on a cluster that actually has
+      # vm.gpu.enabled + a real passthrough-capable GPU (see docs/gpu-passthrough.md).
+      gpu:
+        enabled: false
+        count: 1
     - name: toolbox
       type: generic
       enabled: false

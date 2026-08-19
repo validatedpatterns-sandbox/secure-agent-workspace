@@ -8,6 +8,8 @@ AGENT          ?= openclaw
 CONTAINER_RUNTIME ?= docker
 IMAGE_NAME      = $(if $(filter docker,$(CONTAINER_RUNTIME)),openshell-gateway-docker,openshell-gateway)
 GOVERNANCE_ENABLED ?= true
+GPU_ENABLED    ?= false
+GPU_COUNT      ?= 1
 PROVIDER       ?=
 MODEL          ?=
 API_KEY        ?=
@@ -72,6 +74,23 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
 	fi
 	@if [ -f "$(SSH_KEY_PATH).pub" ]; then echo "  SSH key: $(SSH_KEY_PATH)"; \
 	else echo "  SSH key: not found. Run 'make generate-keys'."; fi
+	@if [ "$(GPU_ENABLED)" = "true" ]; then \
+		echo "Checking GPU prerequisites (GPU_ENABLED=true)..."; \
+		if ! oc get csv -A 2>/dev/null | grep -qi 'gpu-operator-certified'; then \
+			echo "Warning: NVIDIA GPU Operator not found on this cluster. It (or an equivalent"; \
+			echo "  vfio-pci binding on a GPU node) is required for vm.gpu.enabled to actually"; \
+			echo "  attach a GPU. See docs/gpu-passthrough.md."; \
+		else \
+			echo "  NVIDIA GPU Operator: installed"; \
+		fi; \
+		if ! oc get hyperconverged kubevirt-hyperconverged -n openshift-cnv -o jsonpath='{.spec.permittedHostDevices}' 2>/dev/null | grep -q pciHostDevices; then \
+			echo "Warning: HyperConverged has no permittedHostDevices configured. GPU hostDevices"; \
+			echo "  passthrough will not be schedulable until charts/openshift-cnv is deployed with"; \
+			echo "  gpu.enabled=true. See docs/gpu-passthrough.md."; \
+		else \
+			echo "  HyperConverged permittedHostDevices: configured"; \
+		fi; \
+	fi
 	@echo "Checking image registry route..."
 	@if ! oc get route default-route -n openshift-image-registry >/dev/null 2>&1; then \
 		echo "  Image registry route: enabling..."; \
@@ -277,7 +296,7 @@ ssh-secret: ## Create SSH key secrets for sandbox Jobs
 
 # --- Sandbox ---
 
-openshell-saw-create: .check-saw-name .check-ssh-key ssh-secret ## Provision a sandbox (PROVIDER=, MODEL=, API_KEY=, CONTAINER_RUNTIME=docker|podman)
+openshell-saw-create: .check-saw-name .check-ssh-key ssh-secret ## Provision a sandbox (PROVIDER=, MODEL=, API_KEY=, CONTAINER_RUNTIME=docker|podman, GPU_ENABLED=true|false)
 	@NS=$(NS) OPENSHELL_SAW_NAME=$(OPENSHELL_SAW_NAME) SAW_CHART=$(SAW_CHART) \
 	SANDBOX_IMAGE=$(SANDBOX_IMAGE) SSH_PUBKEY="$(SSH_PUBKEY)" AGENT=$(AGENT) \
 	PROVIDER=$(PROVIDER) MODEL=$(MODEL) API_KEY=$(API_KEY) \
@@ -287,6 +306,7 @@ openshell-saw-create: .check-saw-name .check-ssh-key ssh-secret ## Provision a s
 	NAMESPACE_MODE=$(NAMESPACE_MODE) SCRIPTS_DIR=$(SCRIPTS_DIR) \
 	CONTAINER_RUNTIME=$(CONTAINER_RUNTIME) \
 	GOVERNANCE_ENABLED=$(GOVERNANCE_ENABLED) \
+	GPU_ENABLED=$(GPU_ENABLED) GPU_COUNT=$(GPU_COUNT) \
 	$(SCRIPTS_DIR)/openshell-saw-create.sh
 
 openshell-saw-configure-gateway: .check-saw-name ## Configure openshell CLI for a sandbox gateway

@@ -84,3 +84,29 @@ done
 # --- Post-clone hygiene ---
 echo "Post-clone hygiene (hostname)..."
 guest_ssh "sudo hostnamectl set-hostname '${VM_NAME}' || true; openshell gateway select openshell >/dev/null 2>&1 || true" || true
+
+if [[ "${VM_GPU_ENABLED:-false}" == "true" ]]; then
+  # --- GPU health check ---
+  # The golden image's nvidia-driver-setup.service builds the kernel module and generates
+  # the CDI spec on first boot (see image-builder-charts/.../buildconfig.yaml) — this can
+  # take a few minutes. This check is best-effort: it warns rather than failing the whole
+  # setup Job, since a GPU-enabled VM on hardware that doesn't actually support passthrough
+  # (see docs/gpu-passthrough.md) is a real, documented possibility, not necessarily a bug.
+  echo "GPU enabled — waiting for nvidia-smi inside the VM..."
+  gpu_ok=0
+  deadline=$((SECONDS + 300))
+  while (( SECONDS <= deadline )); do
+    if guest_ssh "nvidia-smi >/dev/null 2>&1"; then
+      gpu_ok=1
+      break
+    fi
+    sleep 10
+  done
+  if [[ "${gpu_ok}" -eq 1 ]]; then
+    echo "GPU health check passed:"
+    guest_ssh "nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader" || true
+  else
+    echo "WARNING: nvidia-smi did not succeed inside the VM after 5 minutes." >&2
+    echo "WARNING: this is expected on hardware without a real hostDevices-capable GPU passthrough path (see docs/gpu-passthrough.md); continuing setup without GPU." >&2
+  fi
+fi

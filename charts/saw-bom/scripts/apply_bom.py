@@ -49,6 +49,13 @@ class Sandbox:
     image: str = ""
     providers: list = field(default_factory=list)
     model: str = ""
+    # GPU passthrough request for this sandbox (container-level `--gpu` on
+    # `openshell sandbox create`). Independent of the gateway VM's own
+    # vm.gpu.enabled (KubeVirt hostDevices, node->VM hop) — this only controls
+    # whether *this* sandbox's container asks the driver for GPU resources.
+    # See docs/gpu-passthrough.md.
+    gpu_enabled: bool = False
+    gpu_count: int = 1
 
 
 @dataclass
@@ -181,6 +188,7 @@ def parse_profiles(profiles_dir):
             if sb_file.exists():
                 sb_data = load_yaml_file(sb_file)
                 for s in sb_data.get("spec", {}).get("sandboxes", []):
+                    gpu = s.get("gpu", {}) or {}
                     ws.sandboxes.append(Sandbox(
                         name=s["name"],
                         type=s.get("type", "generic"),
@@ -189,6 +197,8 @@ def parse_profiles(profiles_dir):
                         image=s.get("image", ""),
                         providers=s.get("providers", []),
                         model=s.get("model", ""),
+                        gpu_enabled=gpu.get("enabled", False),
+                        gpu_count=gpu.get("count", 1),
                     ))
             profile.workspaces.append(ws)
         if profile.workspaces:
@@ -424,6 +434,14 @@ class WorkspaceDeployer:
             args += ["--workspace", workspace_name]
         for prov in sandbox.providers:
             args += ["--provider", prov]
+        if sandbox.gpu_enabled:
+            # `--gpu [<COUNT>]` is a native openshell CLI flag (confirmed live against
+            # v0.0.103+rhaiv.0) — it asks the configured driver (docker/podman) to attach
+            # GPU resources to the sandbox container. Only actually works if the runtime is
+            # GPU-capable (NVIDIA Container Toolkit + CDI) and the VM itself received a
+            # passed-through GPU (vm.gpu.enabled) — a no-op request otherwise. See
+            # docs/gpu-passthrough.md.
+            args += ["--gpu", str(sandbox.gpu_count)]
         args += ["--no-tty", "--", "sh", "-c", "echo sandbox-ready"]
         rc, out, err = self.sh.run(args, check=False)
         combined = re.sub(r'\x1b\[[0-9;]*m', '',
@@ -501,6 +519,13 @@ class WorkspaceDeployer:
             cred_key = PROVIDER_CRED_MAP.get(nc_prov, "")
             if cred_key:
                 env[cred_key] = credential
+        if sandbox.gpu_enabled:
+            # Best-effort: pass GPU intent through to nemoclaw onboard in case it has its
+            # own GPU detection/tool-selection logic. NemoClaw is an upstream, closed-source
+            # binary — this repo cannot verify what (if anything) it does with these env
+            # vars. See docs/gpu-passthrough.md.
+            env["NEMOCLAW_GPU_ENABLED"] = "true"
+            env["NEMOCLAW_GPU_COUNT"] = str(sandbox.gpu_count)
         cmd = [
             "nemoclaw", "onboard",
             "--fresh", "--non-interactive",

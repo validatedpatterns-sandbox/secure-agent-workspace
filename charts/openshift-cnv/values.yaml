@@ -1,0 +1,17 @@
+# GPU passthrough support (KubeVirt hostDevices). Off by default — enabling this only makes
+# sense on bare-metal (or nested-virt/IOMMU-capable) clusters with a GPU already bound to the
+# vfio-pci driver on at least one node. See docs/gpu-passthrough.md for the full runbook,
+# including how to derive pciDeviceSelector/resourceName for a given GPU model and how the
+# node-level vfio-pci binding is expected to happen (NVIDIA GPU Operator vfio-manager, or a
+# manual driverctl/MachineConfig-based binding).
+gpu:
+  enabled: false
+  # One entry per GPU model to expose to VMs as a KubeVirt `hostDevices` resource.
+  # - pciDeviceSelector: "VENDOR:DEVICE" hex IDs, e.g. from `lspci -nnk | grep -i nvidia`
+  #   on the target node (the entry below is the real ID for the NVIDIA A10G, confirmed
+  #   live on this pattern's own test cluster: `lspci -nnk` showed
+  #   "NVIDIA Corporation GA102GL [A10G] [10de:2237]").
+  # - resourceName: must match `vm.gpu.deviceName` in charts/openshell-saw/values.yaml.
+  pciHostDevices:
+    - pciDeviceSelector: "10DE:2237"
+      resourceName: "nvidia.com/GA102GL_A10G"

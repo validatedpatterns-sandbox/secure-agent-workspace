@@ -34,6 +34,7 @@ KEYCLOAK_NS="{{ .Values.dashboard.keycloakNamespace | default .Release.Namespace
 KEYCLOAK_NAME="{{ .Values.dashboard.keycloakName | default "openshell-keycloak" }}"
 OWNER="{{ .Values.accessControl.owner | default "alice" }}"
 NEMOCLAW_CLI_IMAGE="{{ .Values.nemoclawCliImage }}"
+VM_GPU_ENABLED="{{ .Values.vm.gpu.enabled }}"
 
 if [[ "${RUNTIME}" == "podman" && "${ONBOARD_CLI}" == "nemoclaw" ]]; then
   echo "ERROR: NemoClaw onboarding requires Docker. Set containerRuntime=docker or use onboardCli=openclaw." >&2

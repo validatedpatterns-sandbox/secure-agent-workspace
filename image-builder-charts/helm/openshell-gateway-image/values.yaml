@@ -14,6 +14,23 @@ build:
   fedoraCloud: "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"
   memoryLimit: "4Gi"
 
+# NVIDIA driver + Container Toolkit, baked into the golden image for GPU-passthrough VMs
+# (see charts/openshell-saw's vm.gpu and charts/openshift-cnv's gpu values, and
+# docs/gpu-passthrough.md). Off by default — only relevant when the VM will receive a
+# passed-through GPU via KubeVirt hostDevices, which itself requires bare-metal/IOMMU-capable
+# nodes. The actual kernel module build is deferred to first boot (see the
+# nvidia-driver-setup.service baked in below), because it must be compiled against the VM's
+# *actual running kernel*, not the image builder's kernel.
+#
+# NVIDIA's CUDA/driver repos track specific Fedora releases and can lag a brand-new release
+# (like Fedora 44 at the time this was written) — verify these URLs resolve to a real repo for
+# the Fedora version in `build.fedoraCloud` above before enabling gpu.enabled, and adjust as
+# needed. See docs/gpu-passthrough.md for the verification/troubleshooting flow.
+gpu:
+  enabled: false
+  driverRepoUrl: "https://developer.download.nvidia.com/compute/cuda/repos/fedora41/x86_64/cuda-fedora41.repo"
+  containerToolkitRepoUrl: "https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo"
+
 output:
   imageStreamTag: "openshell-gateway:latest"
 

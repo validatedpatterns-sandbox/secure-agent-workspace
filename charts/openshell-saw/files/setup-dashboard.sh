@@ -103,7 +103,16 @@ WantedBy=default.target
 UNITEOF
 
 systemctl --user daemon-reload
-systemctl --user enable --now openshell-dashboard.service openshell-dashboard-proxy.service
+# `enable --now` is a no-op on an already-running unit, so it silently keeps
+# a stale container alive (with a stale env-file, e.g. an old OIDC issuer)
+# across re-runs of this script — confirmed live: after fixing oidc.issuerUrl
+# and re-running setup, the on-disk dashboard-proxy.env had the corrected
+# issuer but the *running* oauth2-proxy container was untouched and kept
+# redirecting logins to the old issuer until explicitly restarted. Always
+# restart explicitly so config changes take effect on every run, not just
+# the first.
+systemctl --user enable openshell-dashboard.service openshell-dashboard-proxy.service
+systemctl --user restart openshell-dashboard.service openshell-dashboard-proxy.service
 
 echo "Waiting for dashboard to become ready..."
 ok=0

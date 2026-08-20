@@ -60,19 +60,34 @@ spec:
         steps:
           - name: install
             image: alpine/k8s:1.31.3
+            env:
+              - name: SANDBOX_NAME
+                value: "$(params.sandbox-name)"
+              - name: OWNER
+                value: "$(params.owner)"
+              - name: PROVIDER
+                value: "$(params.provider)"
+              - name: MODEL
+                value: "$(params.model)"
+              - name: OIDC_ISSUER_URL
+                value: "$(params.oidc-issuer-url)"
+              - name: REPO_URL
+                value: "$(params.repo-url)"
+              - name: REPO_REF
+                value: "$(params.repo-ref)"
             script: |
               #!/bin/sh
               set -e
-              RELEASE="saw-$(params.sandbox-name)"
+              RELEASE="saw-${SANDBOX_NAME}"
               NS="{{ .Values.pipelines.namespace }}"
 
-              echo "Cloning chart from $(params.repo-url) @ $(params.repo-ref)..."
+              echo "Cloning chart from ${REPO_URL} @ ${REPO_REF}..."
               apk add --no-cache git >/dev/null 2>&1
-              git clone --depth=1 --branch "$(params.repo-ref)" "$(params.repo-url)" /tmp/saw-repo
+              git clone --depth=1 --branch "${REPO_REF}" "${REPO_URL}" /tmp/saw-repo
 
               OIDC_OPTS=""
-              if [ -n "$(params.oidc-issuer-url)" ]; then
-                OIDC_OPTS="--set oidc.issuerUrl=$(params.oidc-issuer-url)"
+              if [ -n "${OIDC_ISSUER_URL}" ]; then
+                OIDC_OPTS="--set oidc.issuerUrl=${OIDC_ISSUER_URL}"
               fi
 
               OPENSHELL_OPTS=""
@@ -89,14 +104,19 @@ spec:
               OPENSHELL_OPTS="$OPENSHELL_OPTS --set openshell.pipIndexUrl={{ .Values.openshell.pipIndexUrl }}"
               {{- end }}
 
-              echo "Installing sandbox $(params.sandbox-name) for $(params.owner)..."
-              helm upgrade --install "$RELEASE" /tmp/saw-repo/charts/openshell-saw \
+              if helm status "$RELEASE" -n "$NS" >/dev/null 2>&1; then
+                echo "ERROR: Sandbox ${SANDBOX_NAME} already exists. Aborting."
+                exit 1
+              fi
+
+              echo "Installing sandbox ${SANDBOX_NAME} for ${OWNER}..."
+              helm install "$RELEASE" /tmp/saw-repo/charts/openshell-saw \
                 --namespace "$NS" \
-                --set sandboxName="$(params.sandbox-name)" \
-                --set accessControl.owner="$(params.owner)" \
-                --set inference.provider="$(params.provider)" \
-                --set inference.model="$(params.model)" \
-                --set inference.secretName="saw-$(params.sandbox-name)-inference-key" \
+                --set sandboxName="${SANDBOX_NAME}" \
+                --set accessControl.owner="${OWNER}" \
+                --set inference.provider="${PROVIDER}" \
+                --set inference.model="${MODEL}" \
+                --set inference.secretName="saw-${SANDBOX_NAME}-inference-key" \
                 --set route.dashboard=true \
                 --set governance.enabled=false \
                 --set dashboard.enabled=false \
@@ -104,4 +124,4 @@ spec:
                 $OPENSHELL_OPTS \
                 --wait --timeout=10m
 
-              echo "Sandbox $(params.sandbox-name) provisioned."
+              echo "Sandbox ${SANDBOX_NAME} provisioned."

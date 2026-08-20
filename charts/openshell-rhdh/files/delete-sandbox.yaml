@@ -19,6 +19,8 @@ spec:
         name:
           title: Sandbox Name
           type: string
+          maxLength: 19
+          pattern: "^[a-z][a-z0-9-]*$"
           description: "Name of the sandbox to delete (must be owned by you)"
   steps:
     - id: verify-ownership
@@ -30,12 +32,20 @@ spec:
         headers:
           Content-Type: application/json
 
+    - id: check-ownership
+      name: Confirm ownership
+      action: debug:log
+      if: ${{ steps['verify-ownership'].output.body.spec.owner !== 'user:default/' + user.entity.metadata.name }}
+      input:
+        message: "Access denied: you do not own sandbox ${{ parameters.name }}"
+
     - id: start-delete-pipeline
       name: Start sandbox deletion
+      if: ${{ steps['verify-ownership'].output.body.spec.owner === 'user:default/' + user.entity.metadata.name }}
       action: http:backstage:request
       input:
         method: POST
-        path: /proxy/k8s-api/apis/tekton.dev/v1/namespaces/__PIPELINES_NS__/pipelineruns
+        path: /proxy/k8s-pipelines
         headers:
           Content-Type: application/json
         body:

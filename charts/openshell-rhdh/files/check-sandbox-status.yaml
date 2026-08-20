@@ -19,6 +19,8 @@ spec:
         name:
           title: Sandbox Name
           type: string
+          maxLength: 19
+          pattern: "^[a-z][a-z0-9-]*$"
           description: "Name of the sandbox to check"
   steps:
     - id: get-pipelinerun-status
@@ -27,7 +29,7 @@ spec:
       continueOnError: true
       input:
         method: GET
-        path: /proxy/k8s-api/apis/tekton.dev/v1/namespaces/__PIPELINES_NS__/pipelineruns?labelSelector=openshell.io/sandbox=${{ parameters.name }},tekton.dev/pipeline=saw-create-sandbox&limit=1
+        path: /proxy/k8s-pipelines?labelSelector=openshell.io/sandbox=${{ parameters.name }},tekton.dev/pipeline=saw-create-sandbox&limit=1
         headers:
           Content-Type: application/json
 
@@ -37,7 +39,7 @@ spec:
       continueOnError: true
       input:
         method: GET
-        path: /proxy/k8s-api/apis/kubevirt.io/v1/namespaces/__PIPELINES_NS__/virtualmachines/saw-${{ parameters.name }}
+        path: /proxy/k8s-status-vm/saw-${{ parameters.name }}
         headers:
           Content-Type: application/json
 
@@ -47,7 +49,7 @@ spec:
       continueOnError: true
       input:
         method: GET
-        path: /proxy/k8s-api/apis/batch/v1/namespaces/__PIPELINES_NS__/jobs/saw-${{ parameters.name }}-setup
+        path: /proxy/k8s-status-jobs/saw-${{ parameters.name }}-setup
         headers:
           Content-Type: application/json
 
@@ -57,7 +59,7 @@ spec:
       continueOnError: true
       input:
         method: GET
-        path: /proxy/k8s-api/apis/route.openshift.io/v1/namespaces/__PIPELINES_NS__/routes?labelSelector=app.kubernetes.io/instance=saw-${{ parameters.name }}
+        path: /proxy/k8s-status-routes?labelSelector=app.kubernetes.io/instance=saw-${{ parameters.name }}
         headers:
           Content-Type: application/json
 

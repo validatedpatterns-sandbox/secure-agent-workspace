@@ -25,8 +25,7 @@ data:
     p, role:default/sandbox-admin, scaffolder.task.read, read, allow
     p, role:default/sandbox-admin, scaffolder.task.cancel, create, allow
 
-    # User role — scaffolder access + catalog read is conditional (see conditional policies file)
-    p, role:default/sandbox-user, catalog-entity, delete, allow
+    # User role — scaffolder access + catalog read/delete are conditional (see conditional policies file)
     p, role:default/sandbox-user, catalog.entity.create, create, allow
     p, role:default/sandbox-user, catalog.location.create, create, allow
     p, role:default/sandbox-user, catalog.location.read, read, allow
@@ -68,3 +67,16 @@ data:
               - group
               - system
               - location
+    ---
+    result: CONDITIONAL
+    roleEntityRef: role:default/sandbox-user
+    pluginId: catalog
+    resourceType: catalog-entity
+    permissionMapping:
+      - delete
+    conditions:
+      rule: IS_ENTITY_OWNER
+      resourceType: catalog-entity
+      params:
+        claims:
+          - $currentUser

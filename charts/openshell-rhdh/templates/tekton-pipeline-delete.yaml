@@ -27,45 +27,61 @@ spec:
         steps:
           - name: verify-owner
             image: alpine/k8s:1.31.3
+            env:
+              - name: SANDBOX_NAME
+                value: "$(params.sandbox-name)"
+              - name: OWNER
+                value: "$(params.owner)"
             script: |
               #!/bin/sh
               set -e
-              RELEASE="saw-$(params.sandbox-name)"
+              RELEASE="saw-${SANDBOX_NAME}"
               NS="{{ .Values.pipelines.namespace }}"
 
               ACTUAL_OWNER=$(helm get values "$RELEASE" -n "$NS" -o json 2>/dev/null \
                 | python3 -c "import json,sys; print(json.load(sys.stdin).get('accessControl',{}).get('owner',''))" 2>/dev/null || echo "")
 
               if [ -z "$ACTUAL_OWNER" ]; then
-                echo "ERROR: Sandbox $(params.sandbox-name) not found"
+                echo "ERROR: Sandbox ${SANDBOX_NAME} not found"
                 exit 1
               fi
-              if [ "$ACTUAL_OWNER" != "$(params.owner)" ]; then
-                echo "ERROR: Sandbox owned by '$ACTUAL_OWNER', not '$(params.owner)'"
+              if [ "$ACTUAL_OWNER" != "${OWNER}" ]; then
+                echo "ERROR: Sandbox owned by '$ACTUAL_OWNER', not '${OWNER}'"
                 exit 1
               fi
-              echo "Owner verified: $(params.owner)"
+              echo "Owner verified: ${OWNER}"
           - name: helm-uninstall
             image: alpine/k8s:1.31.3
+            env:
+              - name: SANDBOX_NAME
+                value: "$(params.sandbox-name)"
             script: |
               #!/bin/sh
               set -e
-              RELEASE="saw-$(params.sandbox-name)"
+              RELEASE="saw-${SANDBOX_NAME}"
               NS="{{ .Values.pipelines.namespace }}"
 
-              echo "Deleting sandbox $(params.sandbox-name)..."
+              echo "Deleting sandbox ${SANDBOX_NAME}..."
               helm uninstall "$RELEASE" -n "$NS" --wait || true
 
               echo "Cleaning up resources..."
-              kubectl -n "$NS" delete pvc -l openshell.io/sandbox="$(params.sandbox-name)" --ignore-not-found
-              kubectl -n "$NS" delete secret "saw-$(params.sandbox-name)-inference-key" --ignore-not-found
+              kubectl -n "$NS" delete pvc -l openshell.io/sandbox="${SANDBOX_NAME}" --ignore-not-found
+              kubectl -n "$NS" delete secret "saw-${SANDBOX_NAME}-inference-key" --ignore-not-found
 
               echo "Removing catalog entity..."
               RHDH_NS="{{ .Values.namespace }}"
-              CATALOG=$(kubectl -n "$RHDH_NS" get configmap rhdh-sandbox-entities \
-                -o jsonpath='{.data.catalog\.yaml}' 2>/dev/null || echo "")
-              if [ -n "$CATALOG" ]; then
-                CLEANED=$(printf '%s\n' "$CATALOG" | awk -v name="saw-$(params.sandbox-name)" '
+              for attempt in 1 2 3; do
+                CM=$(kubectl -n "$RHDH_NS" get configmap rhdh-sandbox-entities -o json 2>/dev/null || echo "")
+                if [ -z "$CM" ]; then
+                  echo "Catalog ConfigMap not found, skipping."
+                  break
+                fi
+                CATALOG=$(echo "$CM" | jq -r '.data["catalog.yaml"] // ""')
+                if [ -z "$CATALOG" ]; then
+                  echo "Catalog is empty, nothing to remove."
+                  break
+                fi
+                CLEANED=$(printf '%s\n' "$CATALOG" | awk -v name="saw-${SANDBOX_NAME}" '
                   BEGIN {skip=0; buf=""}
                   /^---/ {
                     if (!skip && buf != "") print buf
@@ -75,9 +91,10 @@ spec:
                   {if (buf != "") buf=buf "\n" $0; else buf=$0}
                   END {if (!skip && buf != "") print buf}
                 ')
-                ESCAPED=$(printf '%s' "$CLEANED" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
-                kubectl -n "$RHDH_NS" patch configmap rhdh-sandbox-entities \
-                  --type=merge -p "{\"data\":{\"catalog.yaml\":$ESCAPED}}" 2>/dev/null || true
-              fi
+                echo "$CM" | jq --arg c "$CLEANED" '.data["catalog.yaml"]=$c' | \
+                  kubectl replace -f - && break
+                echo "Conflict on attempt $attempt, retrying..."
+                sleep 1
+              done
 
-              echo "Sandbox $(params.sandbox-name) deleted."
+              echo "Sandbox ${SANDBOX_NAME} deleted."

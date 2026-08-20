@@ -41,18 +41,37 @@ spec:
           title: Model Name
           type: string
           default: gemini-2.0-flash
+          pattern: "^[a-zA-Z0-9._:/-]+$"
+          maxLength: 64
         apiKey:
           title: API Key
           type: string
           ui:field: Secret
           description: "Inference provider API key (stored as Secret, never logged)"
   steps:
+    - id: check-exists
+      name: Verify sandbox does not already exist
+      action: http:backstage:request
+      input:
+        method: GET
+        path: "/catalog/entities?filter=kind=resource,metadata.name=saw-${{ parameters.name }}"
+        headers:
+          Content-Type: application/json
+
+    - id: block-if-exists
+      name: Block duplicate sandbox
+      action: debug:log
+      if: ${{ steps['check-exists'].output.body.length > 0 }}
+      input:
+        message: "Sandbox '${{ parameters.name }}' already exists. Choose a different name."
+
     - id: create-secret
       name: Store inference API key
+      if: ${{ steps['check-exists'].output.body.length === 0 }}
       action: http:backstage:request
       input:
         method: POST
-        path: /proxy/k8s-api/api/v1/namespaces/__PIPELINES_NS__/secrets
+        path: /proxy/k8s-secrets
         headers:
           Content-Type: application/json
         body:
@@ -74,10 +93,11 @@ spec:
 
     - id: start-pipeline
       name: Start sandbox provisioning
+      if: ${{ steps['check-exists'].output.body.length === 0 }}
       action: http:backstage:request
       input:
         method: POST
-        path: /proxy/k8s-api/apis/tekton.dev/v1/namespaces/__PIPELINES_NS__/pipelineruns
+        path: /proxy/k8s-pipelines
         headers:
           Content-Type: application/json
         body:
@@ -110,19 +130,21 @@ spec:
 
     - id: get-current-catalog
       name: Read current catalog
+      if: ${{ steps['check-exists'].output.body.length === 0 }}
       action: http:backstage:request
       input:
         method: GET
-        path: "/proxy/k8s-api/api/v1/namespaces/__RHDH_NS__/configmaps/rhdh-sandbox-entities"
+        path: "/proxy/k8s-catalog"
         headers:
           Content-Type: application/json
 
     - id: register-catalog-entity
       name: Register sandbox in catalog
+      if: ${{ steps['check-exists'].output.body.length === 0 }}
       action: http:backstage:request
       input:
         method: PATCH
-        path: "/proxy/k8s-api/api/v1/namespaces/__RHDH_NS__/configmaps/rhdh-sandbox-entities"
+        path: "/proxy/k8s-catalog"
         headers:
           Content-Type: application/json-patch+json
         body:

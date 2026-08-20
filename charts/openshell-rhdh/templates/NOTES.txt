@@ -1,0 +1,11 @@
+OpenShell RHDH Self-Service Portal deployed.
+
+Access RHDH at:
+  https://backstage-developer-hub-{{ .Values.namespace }}.{{ .Values.appsDomain }}
+
+Login via Keycloak OIDC (realm: {{ .Values.keycloak.realm }}).
+
+Before first use, run:
+  make deploy-rhdh
+
+This seeds the K8s backend tokens required for sandbox provisioning.

@@ -1,0 +1,114 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: saw-pipelinerun-restrict
+  labels:
+    app.kubernetes.io/part-of: openshell-rhdh
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["tekton.dev"]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pipelineruns"]
+        scope: Namespaced
+  matchConditions:
+    - name: only-pipelines-namespace
+      expression: "object.metadata.namespace == '{{ .Values.pipelines.namespace }}'"
+  validations:
+    - expression: "has(object.spec.pipelineRef) && !has(object.spec.pipelineSpec)"
+      message: "PipelineRuns must use pipelineRef, inline pipelineSpec is not allowed."
+      reason: Forbidden
+    - expression: "object.spec.pipelineRef.name in ['saw-create-sandbox', 'saw-delete-sandbox']"
+      message: "PipelineRuns may only reference saw-create-sandbox or saw-delete-sandbox pipelines."
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: saw-pipelinerun-restrict
+  labels:
+    app.kubernetes.io/part-of: openshell-rhdh
+spec:
+  policyName: saw-pipelinerun-restrict
+  validationActions:
+    - Deny
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Values.pipelines.namespace }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: saw-secret-naming
+  labels:
+    app.kubernetes.io/part-of: openshell-rhdh
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["secrets"]
+        scope: Namespaced
+  matchConditions:
+    - name: only-pipelines-namespace
+      expression: "object.metadata.namespace == '{{ .Values.pipelines.namespace }}'"
+    - name: only-rhdh-backend-sa
+      expression: "request.userInfo.username == 'system:serviceaccount:{{ .Values.namespace }}:rhdh-k8s-backend'"
+  validations:
+    - expression: "object.metadata.name.startsWith('saw-') && object.metadata.name.endsWith('-inference-key')"
+      message: "Secrets created by the RHDH backend must follow the naming convention 'saw-<name>-inference-key'."
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: saw-secret-naming
+  labels:
+    app.kubernetes.io/part-of: openshell-rhdh
+spec:
+  policyName: saw-secret-naming
+  validationActions:
+    - Deny
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Values.pipelines.namespace }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: saw-clusterrole-naming
+  labels:
+    app.kubernetes.io/part-of: openshell-rhdh
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["clusterroles", "clusterrolebindings"]
+        scope: Cluster
+  matchConditions:
+    - name: only-saw-provisioner
+      expression: "request.userInfo.username == 'system:serviceaccount:{{ .Values.pipelines.namespace }}:{{ .Values.provisioner.serviceAccount }}'"
+  validations:
+    - expression: "object.metadata.name.startsWith('saw-')"
+      message: "ClusterRoles/ClusterRoleBindings created by saw-provisioner must have names starting with 'saw-'."
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: saw-clusterrole-naming
+  labels:
+    app.kubernetes.io/part-of: openshell-rhdh
+spec:
+  policyName: saw-clusterrole-naming
+  validationActions:
+    - Deny

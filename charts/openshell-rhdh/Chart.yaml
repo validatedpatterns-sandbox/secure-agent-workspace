@@ -1,5 +1,6 @@
 apiVersion: v2
 name: openshell-rhdh
 description: Red Hat Developer Hub for OpenShell self-service sandbox provisioning
+type: application
 version: 0.1.0
 appVersion: "1.5"

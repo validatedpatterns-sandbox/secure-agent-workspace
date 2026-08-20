@@ -26,8 +26,7 @@ openshell:
   version: ""
   pipIndexUrl: ""
 
-# NOTE: This chart requires a pre-existing Secret 'rhdh-k8s-proxy-token' in the
-# RHDH namespace containing K8S_API_TOKEN (a long-lived token for the
-# saw-provisioner ServiceAccount) and K8S_API_URL. The quickstart path
-# creates this automatically via 'make deploy-rhdh'. For ArgoCD deployments,
-# run 'make deploy-rhdh' once after the first sync to seed the token.
+# NOTE: This chart requires a pre-existing Secret 'rhdh-k8s-tokens' in the
+# RHDH namespace containing K8S_API_TOKEN (for rhdh-k8s-backend SA),
+# K8S_CATALOG_TOKEN (for rhdh-catalog-proxy SA), and K8S_API_URL.
+# The quickstart path creates this via 'make deploy-rhdh'.

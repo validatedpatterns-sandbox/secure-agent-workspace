@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: pipeline-limits
+  namespace: {{ .Values.pipelines.namespace }}
+  labels:
+    app.kubernetes.io/part-of: openshell-rhdh
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: 500m
+        memory: 256Mi
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: pipeline-quota
+  namespace: {{ .Values.pipelines.namespace }}
+  labels:
+    app.kubernetes.io/part-of: openshell-rhdh
+spec:
+  hard:
+    pods: "10"
+    requests.cpu: "4"
+    requests.memory: 2Gi

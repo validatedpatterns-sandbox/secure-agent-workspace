@@ -30,6 +30,8 @@ data:
             signIn:
               resolvers:
                 - resolver: preferredUsernameMatchingUserEntityName
+                  # Required for self-service portal: allows any Keycloak user to sign in
+                  # without pre-provisioning in the catalog. Expands login surface area.
                   dangerouslyAllowSignInWithoutUserInCatalog: true
     catalog:
       locations:
@@ -55,7 +57,7 @@ data:
             - allow: [Resource]
       rules:
         - allow: [Component, System, API, Resource, Location, Template, User, Group]
-      processingInterval: { seconds: 5 }
+      processingInterval: { seconds: 30 }
     permission:
       enabled: true
       rbac:
@@ -65,12 +67,74 @@ data:
         policies-csv-file: /opt/app-root/src/rbac/rbac-policy.csv
         conditionalPoliciesFile: /opt/app-root/src/rbac/rbac-conditional-policies.yaml
         policyFileReload: true
+    kubernetes:
+      serviceLocatorMethod:
+        type: 'multiTenant'
+      clusterLocatorMethods:
+        - type: 'config'
+          clusters:
+            - name: local
+              url: ${K8S_API_URL}
+              authProvider: 'serviceAccount'
+              serviceAccountToken: ${K8S_API_TOKEN}
     proxy:
       endpoints:
-        /k8s-api:
-          target: ${K8S_API_URL}
+        /k8s-catalog:
+          target: ${K8S_API_URL}/api/v1/namespaces/{{ .Values.namespace }}/configmaps/rhdh-sandbox-entities
           changeOrigin: true
           secure: false
+          credentials: require
+          allowedMethods: ['GET', 'PATCH']
+          headers:
+            Authorization: "Bearer ${K8S_CATALOG_TOKEN}"
+          allowedHeaders:
+            - Content-Type
+        /k8s-secrets:
+          target: ${K8S_API_URL}/api/v1/namespaces/{{ .Values.pipelines.namespace }}/secrets
+          changeOrigin: true
+          secure: false
+          credentials: require
+          allowedMethods: ['POST']
+          headers:
+            Authorization: "Bearer ${K8S_API_TOKEN}"
+          allowedHeaders:
+            - Content-Type
+        /k8s-pipelines:
+          target: ${K8S_API_URL}/apis/tekton.dev/v1/namespaces/{{ .Values.pipelines.namespace }}/pipelineruns
+          changeOrigin: true
+          secure: false
+          credentials: require
+          allowedMethods: ['GET', 'POST']
+          headers:
+            Authorization: "Bearer ${K8S_API_TOKEN}"
+          allowedHeaders:
+            - Content-Type
+        /k8s-status-vm:
+          target: ${K8S_API_URL}/apis/kubevirt.io/v1/namespaces/{{ .Values.pipelines.namespace }}/virtualmachines
+          changeOrigin: true
+          secure: false
+          credentials: require
+          allowedMethods: ['GET']
+          headers:
+            Authorization: "Bearer ${K8S_API_TOKEN}"
+          allowedHeaders:
+            - Content-Type
+        /k8s-status-jobs:
+          target: ${K8S_API_URL}/apis/batch/v1/namespaces/{{ .Values.pipelines.namespace }}/jobs
+          changeOrigin: true
+          secure: false
+          credentials: require
+          allowedMethods: ['GET']
+          headers:
+            Authorization: "Bearer ${K8S_API_TOKEN}"
+          allowedHeaders:
+            - Content-Type
+        /k8s-status-routes:
+          target: ${K8S_API_URL}/apis/route.openshift.io/v1/namespaces/{{ .Values.pipelines.namespace }}/routes
+          changeOrigin: true
+          secure: false
+          credentials: require
+          allowedMethods: ['GET']
           headers:
             Authorization: "Bearer ${K8S_API_TOKEN}"
           allowedHeaders:

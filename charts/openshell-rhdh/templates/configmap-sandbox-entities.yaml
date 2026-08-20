@@ -5,5 +5,9 @@ metadata:
   namespace: {{ .Values.namespace }}
   labels:
     app.kubernetes.io/part-of: openshell-rhdh
+  annotations:
+    argocd.argoproj.io/compare-options: IgnoreExtraneous
+    argocd.argoproj.io/sync-options: Prune=false
+    helm.sh/resource-policy: keep
 data:
   catalog.yaml: ""

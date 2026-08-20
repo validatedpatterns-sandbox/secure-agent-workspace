@@ -398,34 +398,47 @@ deploy-rhdh: ## Deploy RHDH self-service portal
 	if [ -z "$${KC_HOST}" ]; then \
 		KC_HOST=$$(oc get route -n $(NS) -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null); \
 	fi; \
-	KC_SECRET=$$(oc get secret openshell-keycloak-initial-admin -n keycloak-system -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true); \
+	RHDH_CLIENT_SECRET=$$(oc get secret rhdh-oidc-credentials -n $(RHDH_NS) -o jsonpath='{.data.AUTH_OIDC_CLIENT_SECRET}' 2>/dev/null | base64 -d); \
+	if [ -z "$${RHDH_CLIENT_SECRET}" ]; then \
+		RHDH_CLIENT_SECRET=$$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 32); \
+		echo "Generated new OIDC client secret."; \
+	else \
+		echo "Reusing existing OIDC client secret."; \
+	fi; \
 	REPO_OPTS=""; \
 	if [ -n "$(RHDH_REPO_URL)" ]; then \
 		REPO_OPTS="--set pipelines.repoUrl=$(RHDH_REPO_URL)"; \
 	fi; \
-	echo "Creating K8s API proxy token..."; \
-	K8S_TOKEN=$$(oc -n $(NS) create token saw-provisioner --duration=87600h); \
-	oc -n $(RHDH_NS) create secret generic rhdh-k8s-proxy-token \
-		--from-literal=K8S_API_TOKEN="$${K8S_TOKEN}" \
-		--from-literal=K8S_API_URL="https://kubernetes.default.svc" \
-		--dry-run=client -o yaml | oc apply -f - >/dev/null; \
-	echo "Deploying RHDH to namespace $(RHDH_NS)..."; \
+	echo "Deploying RHDH chart to namespace $(RHDH_NS)..."; \
 	echo "  Apps domain: $${RHDH_APPS_DOMAIN}"; \
 	echo "  Keycloak:    $${KC_HOST}"; \
+	KC_SECRET_FILE=$$(mktemp); \
+	printf '%s' "$${RHDH_CLIENT_SECRET}" > "$${KC_SECRET_FILE}"; \
 	helm upgrade --install openshell-rhdh $(RHDH_CHART) \
 		--namespace $(RHDH_NS) --create-namespace \
 		--set appsDomain="$${RHDH_APPS_DOMAIN}" \
 		--set baseUrl="$${RHDH_BASE_URL}" \
 		--set keycloak.host="$${KC_HOST}" \
-		--set keycloak.clientSecret="$${KC_SECRET}" \
+		--set-file keycloak.clientSecret="$${KC_SECRET_FILE}" \
 		--set pipelines.namespace="$(NS)" \
-		$${REPO_OPTS}
+		$${REPO_OPTS}; \
+	rm -f "$${KC_SECRET_FILE}"; \
+	echo "Creating K8s backend tokens..."; \
+	K8S_TOKEN=$$(oc -n $(RHDH_NS) create token rhdh-k8s-backend --duration=8760h); \
+	CATALOG_TOKEN=$$(oc -n $(RHDH_NS) create token rhdh-catalog-proxy --duration=8760h); \
+	oc -n $(RHDH_NS) create secret generic rhdh-k8s-tokens \
+		--from-literal=K8S_API_TOKEN="$${K8S_TOKEN}" \
+		--from-literal=K8S_CATALOG_TOKEN="$${CATALOG_TOKEN}" \
+		--from-literal=K8S_API_URL="https://kubernetes.default.svc" \
+		--dry-run=client -o yaml | oc apply -f - >/dev/null; \
+	oc rollout restart deployment backstage-developer-hub -n $(RHDH_NS) 2>/dev/null || true
 	@echo ""
 	@echo "RHDH deployed. Access at:"
 	@echo "  $$(oc get route backstage-developer-hub -n $(RHDH_NS) -o jsonpath='https://{.spec.host}' 2>/dev/null || echo '(waiting for route...)')"
 
 delete-rhdh: ## Remove RHDH self-service portal
 	-helm uninstall openshell-rhdh --namespace $(RHDH_NS) 2>/dev/null
+	-oc -n $(RHDH_NS) delete secret rhdh-k8s-tokens --ignore-not-found 2>/dev/null
 	@echo "RHDH uninstalled."
 
 status: ## Show status of all OpenShell resources

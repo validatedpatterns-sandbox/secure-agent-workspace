@@ -17,7 +17,7 @@ spec:
           value: "--no-node-snapshot"
       secrets:
         - name: rhdh-oidc-credentials
-        - name: rhdh-k8s-proxy-token
+        - name: rhdh-k8s-tokens
     extraFiles:
       configMaps:
         - mountPath: /opt/app-root/src/templates

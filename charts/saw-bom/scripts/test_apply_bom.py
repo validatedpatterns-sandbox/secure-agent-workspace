@@ -75,6 +75,43 @@ def test_parse_profiles_basic(tmp_path):
     assert ws.sandboxes[0].providers == ["nvidia"]
 
 
+def test_parse_profiles_gpu_field_parsed(tmp_path):
+    _write_profile(
+        tmp_path,
+        providers_yaml={"spec": {"providers": [
+            {"name": "nvidia", "type": "nvidia", "nemoclawProvider": "build",
+             "credentialSecret": "inference", "credentialSecretKey": "api_key"},
+        ]}},
+        sandbox_yaml={"spec": {"sandboxes": [
+            {"name": "cuda-sandbox", "type": "nemoclaw", "enabled": True,
+             "providers": ["nvidia"], "gpu": {"enabled": True, "count": 2}},
+        ]}},
+    )
+    profiles = parse_profiles(tmp_path)
+    sb = profiles[0].workspaces[0].sandboxes[0]
+    assert sb.gpu_enabled is True
+    assert sb.gpu_count == 2
+
+
+def test_parse_profiles_gpu_field_defaults_when_absent(tmp_path):
+    # A sandbox with no `gpu:` block at all (the common case) must default
+    # to disabled — GPU is opt-in per sandbox, not implicit.
+    _write_profile(
+        tmp_path,
+        providers_yaml={"spec": {"providers": [
+            {"name": "nvidia", "type": "nvidia"},
+        ]}},
+        sandbox_yaml={"spec": {"sandboxes": [
+            {"name": "notebook", "type": "openclaw", "enabled": True,
+             "providers": ["nvidia"]},
+        ]}},
+    )
+    profiles = parse_profiles(tmp_path)
+    sb = profiles[0].workspaces[0].sandboxes[0]
+    assert sb.gpu_enabled is False
+    assert sb.gpu_count == 1
+
+
 def test_parse_profiles_skips_workspace_dir_missing_workspace_yaml(tmp_path):
     # A directory with no workspace.yaml at all should be skipped, not crash.
     bogus_dir = tmp_path / "data-science" / "not-a-workspace"

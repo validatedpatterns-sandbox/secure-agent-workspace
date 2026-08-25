@@ -57,10 +57,10 @@ Mixing `containerRuntime: podman` with `onboardCli: nemoclaw` is rejected at set
 
 ```bash
 # Docker variant — required for NemoClaw
-make build-openshell-gateway CONTAINER_RUNTIME=docker
+make build-gateway-docker
 
 # Podman variant — for openclaw/opencode
-make build-openshell-gateway CONTAINER_RUNTIME=podman
+make build-gateway-podman
 ```
 
 Each produces a separate ImageStream, DataVolume, and DataSource on the cluster.
@@ -164,3 +164,11 @@ ssh \
 - **Network namespace differences** — Docker uses `172.17.0.0/16`, Podman uses `10.88.0.0/16`. The GRPC endpoint is derived automatically at first boot.
 - **Rootless vs rooted** — Podman runs rootless (user socket at `/run/user/1000/podman/podman.sock`). Dashboard containers using `podman run` may need `--userns=keep-id` for correct UID mapping.
 - **Two images to maintain** — both golden images need rebuilds when the base Fedora version or OpenShell version changes.
+
+## GPU passthrough (optional, off by default)
+
+Both runtimes can be built with an NVIDIA driver + Container Toolkit baked in for GPU-passthrough
+VMs (`gpu.enabled: true` on the `openshell-gateway-image` chart). Docker uses `nvidia-ctk runtime
+configure --runtime=docker`; Podman uses the CDI path (`nvidia-ctk cdi generate`) exclusively, since
+Podman has no `--gpus` flag equivalent. See [docs/gpu-passthrough.md](gpu-passthrough.md) for the
+full runbook, hardware requirements, and a live-validated Podman+CDI example.

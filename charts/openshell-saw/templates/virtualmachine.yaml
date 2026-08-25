@@ -46,6 +46,13 @@ spec:
         resources:
           requests:
             memory: {{ .Values.vm.memory }}
+          {{- if .Values.vm.gpu.enabled }}
+          # KubeVirt requires an explicit memory limit (== request) on VMs that request
+          # hostDevices, so the scheduler can reason about the full resource footprint of
+          # the passthrough device alongside the guest memory.
+          limits:
+            memory: {{ .Values.vm.memory }}
+          {{- end }}
         devices:
           disks:
             - name: rootdisk
@@ -70,6 +77,17 @@ spec:
                 - name: ssh
                   port: 22
                   protocol: TCP
+          {{- if .Values.vm.gpu.enabled }}
+          # GPU passthrough via KubeVirt hostDevices. `deviceName` must match a
+          # `resourceName` in the cluster's HyperConverged permittedHostDevices.pciHostDevices
+          # list (see charts/openshift-cnv). Requires bare-metal/IOMMU-capable nodes — see
+          # docs/gpu-passthrough.md.
+          hostDevices:
+            {{- range $i := until (.Values.vm.gpu.count | int) }}
+            - deviceName: {{ $.Values.vm.gpu.deviceName }}
+              name: gpu{{ $i }}
+            {{- end }}
+          {{- end }}
         firmware:
           bootloader:
             efi:

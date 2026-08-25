@@ -195,10 +195,76 @@ spec:
       echo "OpenShell gateway user setup complete."
       SETUP
 
+      {{- if .Values.gpu.enabled }}
+      # Write the first-boot NVIDIA driver/toolkit setup script. The kernel module is
+      # installed as a dkms/akmod package at bake time (below), but its actual build
+      # against the VM's running kernel, plus CDI generation, must happen at first boot —
+      # see docs/gpu-passthrough.md for why this can't be done at image-build time.
+      RUN cat > /build/nvidia-driver-setup.sh <<'GPUSETUP'
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      echo "=== Waiting for NVIDIA kernel module (akmods/dkms build on first boot can take a few minutes) ==="
+      for _ in $(seq 1 60); do
+        if lsmod | grep -q '^nvidia '; then break; fi
+        modprobe nvidia 2>/dev/null || true
+        sleep 5
+      done
+
+      if ! lsmod | grep -q '^nvidia '; then
+        echo "WARNING: nvidia kernel module did not load after 5 minutes." >&2
+        echo "Check 'akmods --force' / 'dkms status' / 'journalctl -u akmods' on the VM." >&2
+        exit 1
+      fi
+
+      if ! command -v nvidia-smi >/dev/null 2>&1; then
+        echo "WARNING: nvidia-smi not found even though the kernel module loaded." >&2
+        exit 1
+      fi
+
+      echo "=== nvidia-smi ==="
+      nvidia-smi || { echo "WARNING: nvidia-smi failed to query the GPU." >&2; exit 1; }
+
+      echo "=== Generating CDI spec for Podman/CRI-O-style GPU injection ==="
+      mkdir -p /etc/cdi
+      nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+
+      {{- if eq .Values.containerRuntime "docker" }}
+      echo "=== Configuring Docker's nvidia container runtime ==="
+      nvidia-ctk runtime configure --runtime=docker
+      systemctl restart docker.service
+      {{- end }}
+
+      echo "GPU setup complete."
+      GPUSETUP
+
+      RUN cat > /build/nvidia-driver-setup.service <<'GPUUNIT'
+      [Unit]
+      Description=NVIDIA driver + container toolkit setup (first boot)
+      After=multi-user.target
+      ConditionPathExists=!/var/lib/nvidia-driver-setup.done
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=true
+      ExecStart=/usr/local/sbin/nvidia-driver-setup.sh
+      ExecStartPost=/usr/bin/touch /var/lib/nvidia-driver-setup.done
+      TimeoutStartSec=600
+
+      [Install]
+      WantedBy=multi-user.target
+      GPUUNIT
+      {{- end }}
+
       # Bake system packages + OpenShell binaries into the qcow2
       RUN virt-customize -a base.qcow2 \
             --install curl,jq,qemu-guest-agent,openssh-clients,openssh-server,binutils \
             --install nodejs,cloud-init,python3-pip \
+            {{- if .Values.gpu.enabled }}
+            --run-command 'dnf config-manager addrepo --from-repofile={{ .Values.gpu.driverRepoUrl }}' \
+            --run-command 'dnf config-manager addrepo --from-repofile={{ .Values.gpu.containerToolkitRepoUrl }}' \
+            --install kernel-devel,dkms,akmod-nvidia,nvidia-container-toolkit \
+            {{- end }}
             {{- if eq .Values.containerRuntime "docker" }}
             --run-command 'dnf remove -y podman podman-docker containers-common 2>/dev/null; dnf clean all' \
             --run-command 'dnf config-manager addrepo --from-repofile=https://download.docker.com/linux/fedora/docker-ce.repo' \
@@ -219,6 +285,12 @@ spec:
             --run-command 'chmod 755 /usr/local/sbin/openshell-gateway-user-setup.sh' \
             --run-command 'systemctl enable openshell-gateway-setup.service' \
             --run-command 'mkdir -p /etc/openshell && chown root:root /etc/openshell && chmod 750 /etc/openshell' \
+            {{- if .Values.gpu.enabled }}
+            --copy-in /build/nvidia-driver-setup.sh:/usr/local/sbin/ \
+            --copy-in /build/nvidia-driver-setup.service:/etc/systemd/system/ \
+            --run-command 'chmod 755 /usr/local/sbin/nvidia-driver-setup.sh' \
+            --run-command 'systemctl enable nvidia-driver-setup.service' \
+            {{- end }}
             --run-command 'cloud-init clean --logs --seed' \
             --selinux-relabel && \
           mkdir -p /output && \

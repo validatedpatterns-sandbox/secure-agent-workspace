@@ -32,6 +32,12 @@ NAMESPACE_MODE="${NAMESPACE_MODE:-shared}"
 SCRIPTS_DIR="${SCRIPTS_DIR:-scripts}"
 CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-docker}"
 GOVERNANCE_ENABLED="${GOVERNANCE_ENABLED:-true}"
+# GPU passthrough — off by default. Requires bare-metal/IOMMU-capable nodes with a GPU bound
+# to vfio-pci and a matching HyperConverged permittedHostDevices entry — see
+# docs/gpu-passthrough.md. Setting this on hardware that doesn't support it is a documented
+# no-op/warning, not a hard failure.
+GPU_ENABLED="${GPU_ENABLED:-false}"
+GPU_COUNT="${GPU_COUNT:-1}"
 
 # Validate provider
 if [[ -z "${PROVIDER}" && -z "${GCP_SA_JSON}" ]]; then
@@ -122,6 +128,7 @@ helm upgrade --install "${OPENSHELL_SAW_NAME}" "${SAW_CHART}" \
   --set namespaceMode="${NAMESPACE_MODE}" \
   --set containerRuntime="${CONTAINER_RUNTIME}" \
   --set governance.enabled="${GOVERNANCE_ENABLED}" \
+  --set vm.gpu.enabled="${GPU_ENABLED}" --set vm.gpu.count="${GPU_COUNT}" \
   --set route.enabled=true --set route.dashboard=true
 
 echo ""

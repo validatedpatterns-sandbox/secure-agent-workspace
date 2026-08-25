@@ -40,6 +40,22 @@ vm:
   cores: 4
   memory: 8Gi
   diskSize: 40Gi
+  # GPU passthrough (KubeVirt hostDevices) into the gateway VM. Requires:
+  #   1. Bare-metal (or nested-virt/IOMMU-capable) nodes — does NOT work on standard cloud VM
+  #      instance types (e.g. AWS non-.metal EC2), which don't expose an IOMMU to the guest.
+  #   2. The NVIDIA GPU Operator's vfio-manager binding vfio-pci to the GPU on a node labeled
+  #      nvidia.com/gpu.workload.config=vm-passthrough (mutually exclusive with that node's
+  #      container-mode GPU use).
+  #   3. A matching `permittedHostDevices` entry on the cluster's HyperConverged CR — see
+  #      charts/openshift-cnv/values.yaml.
+  # Off by default. See docs/gpu-passthrough.md for the full runbook and verified hardware
+  # requirements (including a live confirmation of what does NOT work).
+  gpu:
+    enabled: false
+    count: 1
+    # Must match the `resourceName` configured in the cluster's HyperConverged
+    # permittedHostDevices.pciHostDevices entry for this GPU model.
+    deviceName: "nvidia.com/GA102GL_A10G"
 
 # Sandbox container image. When empty, auto-detects from the internal registry.
 sandboxImage: ""

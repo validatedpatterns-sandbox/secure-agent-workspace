@@ -1,0 +1,21 @@
+display_name: OpenAI
+description: OpenAI API access for Codex agent
+category: other
+credentials:
+  - name: api_key
+    description: OpenAI API key
+    env_vars: [OPENAI_API_KEY]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+discovery:
+  credentials: [api_key]
+endpoints:
+  - host: api.openai.com
+    port: 443
+    protocol: rest
+    enforcement: enforce
+    access: read-write
+binaries:
+  - /usr/local/bin/codex
+  - /usr/local/bin/codex-code-mode-host

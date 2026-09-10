@@ -151,6 +151,8 @@ route:
   # OpenShell Dashboard web UI (see `dashboard` below). Distinct from `dashboard`
   # above, which is the OpenClaw in-sandbox web UI on port 18789.
   webui: true
+  # Codex app-server WebSocket endpoint (port 8089).
+  codex: false
 
 # OpenShell Dashboard — standalone Go BFF + React admin UI for OpenShell
 # (gateways, workspaces, sandboxes, providers). Runs via docker inside the

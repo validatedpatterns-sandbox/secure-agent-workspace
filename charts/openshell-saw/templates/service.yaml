@@ -25,3 +25,7 @@ spec:
       port: 22
       targetPort: 22
       protocol: TCP
+    - name: codex
+      port: 8089
+      targetPort: 8089
+      protocol: TCP

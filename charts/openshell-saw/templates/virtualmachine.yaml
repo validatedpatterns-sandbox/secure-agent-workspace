@@ -70,6 +70,9 @@ spec:
                 - name: ssh
                   port: 22
                   protocol: TCP
+                - name: codex
+                  port: 8089
+                  protocol: TCP
         firmware:
           bootloader:
             efi:

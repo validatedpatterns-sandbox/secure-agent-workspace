@@ -150,3 +150,14 @@ guest_ssh "
 " 2>&1
 
 echo "BOM profiles applied."
+
+# --- Extract Codex shared secret (if codex sandbox was created) ---
+CODEX_SECRET="$(guest_ssh 'cat /home/cloud-user/.codex-secrets/codex/ws-secret 2>/dev/null' 2>/dev/null || true)"
+if [[ -n "${CODEX_SECRET}" ]]; then
+  kubectl create secret generic "${VM_NAME}-codex-secret" \
+    --from-literal=ws-secret="${CODEX_SECRET}" \
+    --from-literal=issuer=saw-codex \
+    --from-literal=audience=codex-session \
+    -n "${NS}" --dry-run=client -o yaml | kubectl apply -f -
+  echo "Codex shared secret stored as ${VM_NAME}-codex-secret"
+fi

@@ -22,6 +22,9 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 helm.sh/chart: {{ include "openshell-sandbox.chart" . }}
 app.kubernetes.io/part-of: openshell-cnv-fedora
+{{- if .Values.accessControl.owner }}
+openshell.pattern/owner: {{ .Values.accessControl.owner | quote }}
+{{- end }}
 {{- end }}
 
 {{/*

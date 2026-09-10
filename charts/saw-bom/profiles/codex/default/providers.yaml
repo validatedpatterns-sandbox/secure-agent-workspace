@@ -1,0 +1,11 @@
+apiVersion: saw.redhat.com/v1alpha1
+kind: Providers
+metadata:
+  profile: codex
+spec:
+  providers:
+    - name: openai
+      type: codex
+      model: o3
+      credentialSecret: inference
+      credentialSecretKey: api_key

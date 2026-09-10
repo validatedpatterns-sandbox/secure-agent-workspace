@@ -207,6 +207,7 @@ PROVIDER_CRED_MAP = {
     "google-vertex-ai": "GOOGLE_API_KEY",
     "claude-code": "ANTHROPIC_API_KEY",
     "codex": "OPENAI_API_KEY",
+    "openai": "OPENAI_API_KEY",
     "nvidia": "NVIDIA_API_KEY",
     "build": "NVIDIA_INFERENCE_API_KEY",
     "brave": "BRAVE_API_KEY",
@@ -621,10 +622,30 @@ class WorkspaceDeployer:
                 time.sleep(3)
             log("WARN: openclaw gateway health check failed")
 
+    def _install_nsenter_in_container(self, sandbox_name):
+        """Copy nsenter from VM host into the sandbox container.
+
+        The OpenShell supervisor needs nsenter to create network namespaces.
+        The codex container image doesn't ship it, so we inject it via
+        docker cp before the supervisor finishes initialization.
+        """
+        log("Installing nsenter into codex container...")
+        self.sh.run([
+            "bash", "-c",
+            f"CNAME=$(sudo docker ps -a "
+            f"--filter 'name=openshell.*{sandbox_name}' "
+            f"--format '{{{{.Names}}}}' | head -1) && "
+            f"[ -n \"$CNAME\" ] && "
+            f"sudo docker cp /usr/bin/nsenter \"$CNAME:/usr/bin/nsenter\" && "
+            f"echo 'nsenter installed in '$CNAME"
+        ], check=False)
+
     def start_codex_app_server(self, sandbox_name, workspace_name="default"):
         import secrets as secrets_mod
 
         ws_args = ["--workspace", workspace_name] if workspace_name else []
+
+        self._install_nsenter_in_container(sandbox_name)
 
         if not self.sh.dry_run:
             for i in range(20):
@@ -635,6 +656,9 @@ class WorkspaceDeployer:
                 if "Ready" in clean and "Error" not in clean:
                     log(f"Sandbox '{sandbox_name}' is Ready")
                     break
+                if "Error" in clean and i < 3:
+                    log("Sandbox in Error state, retrying nsenter install...")
+                    self._install_nsenter_in_container(sandbox_name)
                 log(f"  waiting for sandbox ready... (attempt {i+1})")
                 time.sleep(5)
 
@@ -644,12 +668,32 @@ class WorkspaceDeployer:
         exec_cmd = ["openshell", "sandbox", "exec", "-n",
                      sandbox_name] + ws_args + ["--no-tty", "--"]
 
-        log("Writing Codex app-server shared secret...")
+        log("Configuring Codex (auth, model, sandbox bypass, bwrap stub)...")
         self.sh.run(
             exec_cmd + ["sh", "-c",
-                        f"mkdir -p /sandbox/.codex && "
+                        "mkdir -p /sandbox/.codex /sandbox/.local/bin && "
                         f"printf '%s' '{ws_secret}' > /sandbox/.codex/ws-secret && "
-                        f"chmod 600 /sandbox/.codex/ws-secret"],
+                        "chmod 600 /sandbox/.codex/ws-secret && "
+                        "printf '{\"auth_mode\":\"apikey\",\"OPENAI_API_KEY\":\"%s\"}' "
+                        "\"$OPENAI_API_KEY\" > /sandbox/.codex/auth.json && "
+                        "printf 'model = \"o3\"\\n"
+                        "sandbox = \"danger-full-access\"\\n"
+                        "' > /sandbox/.codex/config.toml && "
+                        "cat > /sandbox/.local/bin/bwrap << 'BWRAP'\n"
+                        "#!/bin/sh\n"
+                        "while [ $# -gt 0 ]; do\n"
+                        "  case \"$1\" in\n"
+                        "    --) shift; break ;;\n"
+                        "    --bind|--ro-bind|--dev-bind|--tmpfs|--proc|--dev"
+                        "|--dir|--symlink|--remount-ro|--setenv|--chdir) shift 2 ;;\n"
+                        "    --file|--lock-file) shift 2 ;;\n"
+                        "    -*) shift ;;\n"
+                        "    *) break ;;\n"
+                        "  esac\n"
+                        "done\n"
+                        "exec \"$@\"\n"
+                        "BWRAP\n"
+                        "chmod +x /sandbox/.local/bin/bwrap"],
             check=False)
 
         log("Starting Codex app-server...")
@@ -667,9 +711,10 @@ class WorkspaceDeployer:
         if not self.sh.dry_run:
             for i in range(10):
                 rc, _, _ = self.sh.run(
-                    exec_cmd + [
-                    "curl", "-sf", "http://127.0.0.1:8089/readyz"
-                ], check=False)
+                    exec_cmd + ["sh", "-c",
+                                "ss -tlnp src :8089 2>/dev/null | "
+                                "grep -q 8089"],
+                    check=False)
                 if rc == 0:
                     log("Codex app-server ready")
                     break
@@ -677,6 +722,17 @@ class WorkspaceDeployer:
                 time.sleep(3)
             else:
                 log("WARN: Codex app-server readyz check failed")
+
+        log("Starting port forward via openshell forward service...")
+        self.sh.run([
+            "bash", "-c",
+            f"nohup openshell forward service {sandbox_name} "
+            f"--target-port 8089 --local 0.0.0.0:8089 "
+            f"> /tmp/codex-forward.log 2>&1 </dev/null &"
+        ], check=False)
+
+        if not self.sh.dry_run:
+            time.sleep(3)
 
         log("Saving Codex shared secret to VM host...")
         self.sh.run([

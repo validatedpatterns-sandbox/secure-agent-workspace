@@ -5,6 +5,9 @@ metadata:
   name: {{ include "openshell-sandbox.fullname" . }}-codex
   labels:
     {{- include "openshell-sandbox.labels" . | nindent 4 }}
+  annotations:
+    haproxy.router.openshift.io/disable-http2: "true"
+    haproxy.router.openshift.io/timeout: 3600s
 spec:
   to:
     kind: Service

@@ -5,7 +5,7 @@ metadata:
 spec:
   providers:
     - name: openai
-      type: codex
+      type: openai
       model: o3
       credentialSecret: inference
       credentialSecretKey: api_key

@@ -9,3 +9,4 @@ spec:
       image: quay.io/aipcc/base-images/agentic/codex:latest
       providers:
         - openai
+        - github

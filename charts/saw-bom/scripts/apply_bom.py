@@ -212,6 +212,7 @@ PROVIDER_CRED_MAP = {
     "build": "NVIDIA_INFERENCE_API_KEY",
     "brave": "BRAVE_API_KEY",
     "tavily": "TAVILY_API_KEY",
+    "github": "GITHUB_TOKEN",
 }
 
 

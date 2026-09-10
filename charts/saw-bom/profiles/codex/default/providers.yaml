@@ -9,3 +9,5 @@ spec:
       model: o3
       credentialSecret: inference
       credentialSecretKey: api_key
+    - name: github
+      type: github

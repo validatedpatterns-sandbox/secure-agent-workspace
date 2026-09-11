@@ -2,6 +2,7 @@
 
 import os
 import secrets as secrets_mod
+from pathlib import Path
 
 from textual import work
 from textual.app import App, ComposeResult
@@ -73,6 +74,7 @@ class SessionsScreen(Screen):
         Binding("d", "delete_session", "Delete"),
         Binding("enter", "connect", "Connect"),
         Binding("r", "refresh", "Refresh"),
+        Binding("l", "logout", "Logout"),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -106,7 +108,7 @@ class SessionsScreen(Screen):
                 s.get("name", ""),
                 s.get("status", ""),
                 s.get("created", ""),
-                s.get("url", ""),
+                s.get("ws_url", ""),
                 key=s.get("name", ""),
             )
 
@@ -169,7 +171,7 @@ class SessionsScreen(Screen):
             self.app.exit()
             os.execvp(
                 "codex",
-                ["codex", "--remote", f"{ws_url}:443", "--remote-auth-token-env", "CODEX_TOKEN"],
+                ["codex", "--remote", ws_url, "--remote-auth-token-env", "CODEX_TOKEN"],
             )
         except Exception as e:
             self.app.notify(f"Failed to connect: {e}", severity="error")
@@ -177,6 +179,15 @@ class SessionsScreen(Screen):
     def action_refresh(self):
         self.load_sessions()
         self.app.notify("Refreshed.")
+
+    def action_logout(self):
+        token_dir = self.app.cfg["oidc"]["token_dir"]
+        token_file = Path(token_dir) / "token.json"
+        if token_file.exists():
+            token_file.unlink()
+        self.app._token = None
+        self.app.notify("Logged out.")
+        self.app.switch_screen(LoginScreen())
 
     def action_quit(self):
         self.app.exit()
@@ -234,9 +245,9 @@ class CodexSawApp(App):
     def _run_browser_login(self, issuer, client_id, token_dir):
         try:
             self._token = auth.browser_login(issuer, client_id, token_dir)
-            self.switch_screen(SessionsScreen())
+            self.call_from_thread(self.switch_screen, SessionsScreen())
         except Exception as e:
-            self.notify(f"Login failed: {e}", severity="error")
+            self.call_from_thread(self.notify, f"Login failed: {e}", severity="error")
 
     def get_client(self) -> SawCodexClient:
         token = auth.get_token(

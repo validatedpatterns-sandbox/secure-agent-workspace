@@ -115,6 +115,7 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
         openshell-saw-configure-gateway openshell-saw-tui openshell-saw-gui test \
         openshell-saw-delete sandbox-pre-delete delete-all status \
         governance-list-profiles governance-add-profile governance-remove-profile governance-create-profile governance-demo \
+        codex-setup codex-deploy-api codex-deploy-sandbox codex-delete \
         .check-saw-name .check-ssh-key .check-prereqs
 
 check-prereqs: .check-prereqs ## Verify required operators and CLI tools
@@ -522,6 +523,86 @@ governance-create-profile: ## Create a new profile from YAML (PROFILE_NAME=jira 
 
 governance-demo: .check-saw-name ## Run governance interceptor demo
 	@$(SCRIPTS_DIR)/demo-governance.sh $(OPENSHELL_SAW_NAME)
+
+# --- Codex ---
+
+codex-setup: check-prereqs generate-keys ## Full Codex setup: build images, deploy API, create sandbox
+	@echo "=== Step 1/7: Copy base images ==="
+	$(MAKE) copy-images
+	@echo ""
+	@echo "=== Step 2/7: Deploy Keycloak ==="
+	$(MAKE) keycloak
+	@echo ""
+	@echo "=== Step 3/7: Deploy governance ==="
+	helm upgrade --install governance-policy charts/governance-policy -n $(NS)
+	helm upgrade --install governance-interceptor charts/governance-interceptor -n $(NS)
+	@echo ""
+	@echo "=== Step 4/7: Build codex-openshell image ==="
+	$(MAKE) build-codex-openshell-local
+	@echo ""
+	@echo "=== Step 5/7: Build and deploy saw-codex-api ==="
+	$(MAKE) codex-deploy-api
+	@echo ""
+	@echo "=== Step 6/7: Deploy saw-bom with codex profile ==="
+	helm upgrade --install saw-bom charts/saw-bom -n $(NS) --set 'profiles={codex}'
+	@echo ""
+	@echo "=== Step 7/7: Authenticate ==="
+	$(MAKE) login
+	@echo ""
+	@echo "Codex setup complete!"
+	@echo ""
+	@echo "Create a sandbox:  make codex-deploy-sandbox OPENSHELL_SAW_NAME=mycodex"
+	@echo "Or use the TUI:    codex-saw"
+
+codex-deploy-api: build-saw-codex-api-local ## Build and deploy the saw-codex-api service
+	@OIDC_ISSUER=$$($(MAKE) -s keycloak-issuer 2>/dev/null); \
+	if [ -z "$$OIDC_ISSUER" ]; then \
+		echo "Error: Cannot detect OIDC issuer. Deploy Keycloak first: make keycloak"; \
+		exit 1; \
+	fi; \
+	echo "Deploying saw-codex-api (OIDC issuer: $$OIDC_ISSUER)..."; \
+	helm upgrade --install saw-codex-api charts/saw-codex-api \
+		--namespace $(NS) \
+		--set "oidc.issuerUrl=$$OIDC_ISSUER" \
+		--set "image=image-registry.openshift-image-registry.svc:5000/$(NS)/saw-codex-api:latest"; \
+	echo ""; \
+	echo "API URL: $$(oc get route saw-codex-api -n $(NS) -o jsonpath='https://{.spec.host}' 2>/dev/null)"; \
+	echo "Health:  $$(oc get route saw-codex-api -n $(NS) -o jsonpath='https://{.spec.host}' 2>/dev/null)/health"
+
+codex-deploy-sandbox: .check-saw-name .check-ssh-key ssh-secret ## Create a Codex sandbox VM (OPENSHELL_SAW_NAME= required)
+	@OIDC_ISSUER=$$($(MAKE) -s keycloak-issuer 2>/dev/null); \
+	OIDC_TOKEN=$$(OIDC_TOKEN_DIR="$(OIDC_TOKEN_DIR)" OIDC_CLIENT_ID="$(OIDC_CLIENT_ID)" \
+		OIDC_ISSUER="$$OIDC_ISSUER" NS="$(NS)" "$(SCRIPTS_DIR)/oidc-login.sh" token 2>/dev/null || true); \
+	if [ -z "$$OIDC_TOKEN" ]; then \
+		echo "Error: Not authenticated. Run 'make login' first."; \
+		exit 1; \
+	fi; \
+	OWNER=$$(jq -r '.access_token // empty' "$(OIDC_TOKEN_DIR)/token.json" 2>/dev/null \
+		| python3 -c "import sys,base64,json; t=sys.stdin.read().strip().split('.')[1]; t+='='*(4-len(t)%4); print(json.loads(base64.urlsafe_b64decode(t)).get('preferred_username',''))" 2>/dev/null); \
+	echo "Deploying Codex sandbox '$(OPENSHELL_SAW_NAME)' for owner '$$OWNER'..."; \
+	helm upgrade --install $(OPENSHELL_SAW_NAME) $(SAW_CHART) \
+		--namespace $(NS) \
+		--set sandboxName=$(OPENSHELL_SAW_NAME) \
+		--set "sshPublicKey=$(SSH_PUBKEY)" \
+		--set agent=codex \
+		--set containerRuntime=docker \
+		--set route.enabled=true \
+		--set route.codex=true \
+		--set route.dashboard=true \
+		--set "accessControl.owner=$$OWNER" \
+		--set "oidc.issuerUrl=$$OIDC_ISSUER" \
+		--set "oidc.clientId=$(OIDC_CLIENT_ID)" \
+		--set-string "oidc.token=$$OIDC_TOKEN" \
+		--set governance.enabled=true \
+		--set internalRegistry.allowAnonymousPull=true; \
+	echo ""; \
+	echo "Monitor: make openshell-saw-logs OPENSHELL_SAW_NAME=$(OPENSHELL_SAW_NAME)"; \
+	echo "TUI:     codex-saw"
+
+codex-delete: .check-saw-name ## Delete a Codex sandbox and clean up secrets
+	helm uninstall $(OPENSHELL_SAW_NAME) -n $(NS) 2>/dev/null || true
+	oc delete secret $(OPENSHELL_SAW_NAME)-cloudinit $(OPENSHELL_SAW_NAME)-codex-secret -n $(NS) 2>/dev/null || true
+	@echo "Codex sandbox '$(OPENSHELL_SAW_NAME)' deleted."
 
 # --- Test ---
 

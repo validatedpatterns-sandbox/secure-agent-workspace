@@ -1,0 +1,9 @@
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: {{ (split ":" .Values.output.imageStreamTag)._0 }}
+  labels:
+    {{- include "saw-codex-api-image.labels" . | nindent 4 }}
+spec:
+  lookupPolicy:
+    local: true

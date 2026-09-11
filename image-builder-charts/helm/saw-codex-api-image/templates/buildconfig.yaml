@@ -1,0 +1,22 @@
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: {{ (split ":" .Values.output.imageStreamTag)._0 }}
+  labels:
+    {{- include "saw-codex-api-image.labels" . | nindent 4 }}
+spec:
+  source:
+    type: Binary
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+      forcePull: true
+  output:
+    to:
+      kind: ImageStreamTag
+      name: {{ .Values.output.imageStreamTag }}
+  resources:
+    limits:
+      memory: 2Gi
+  triggers: []

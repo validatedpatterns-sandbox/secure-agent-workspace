@@ -149,7 +149,7 @@ def get_vm_owner(name: str) -> str | None:
         return None
 
 
-def helm_install(name: str, owner: str, oidc_token: str) -> bool:
+def helm_install(name: str, owner: str) -> bool:
     ns = config.MANAGED_NAMESPACE
     cmd = [
         "helm", "upgrade", "--install", name, config.SAW_CHART_PATH,
@@ -163,9 +163,9 @@ def helm_install(name: str, owner: str, oidc_token: str) -> bool:
         "--set", f"accessControl.owner={owner}",
         "--set", "governance.enabled=true",
         "--set", "internalRegistry.allowAnonymousPull=true",
+        "--set", f"oidc.issuerUrl={config.OIDC_ISSUER_URL}",
+        "--set", "oidc.clientId=openshell-cli",
     ]
-    if oidc_token:
-        cmd += ["--set-string", f"oidc.token={oidc_token}"]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:

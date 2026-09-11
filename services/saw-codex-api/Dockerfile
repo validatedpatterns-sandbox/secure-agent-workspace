@@ -7,8 +7,8 @@ USER 1001
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . /app
+COPY . /app/saw_codex_api
 WORKDIR /app
 
 EXPOSE 8080
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "saw_codex_api.app:app", "--host", "0.0.0.0", "--port", "8080"]

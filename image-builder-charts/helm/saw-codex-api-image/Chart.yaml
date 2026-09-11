@@ -1,0 +1,12 @@
+apiVersion: v2
+name: saw-codex-api-image
+description: Builds the saw-codex-api service image via OpenShift BuildConfig and stores it in an ImageStream
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - codex
+  - saw-codex-api
+  - openshift
+  - imagestream
+  - buildconfig

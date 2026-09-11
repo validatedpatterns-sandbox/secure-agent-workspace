@@ -1,0 +1,32 @@
+# Container image for the saw-codex-api service.
+# Default: internal registry (built via make build-saw-codex-api-local).
+image: "image-registry.openshift-image-registry.svc.cluster.local:5000/openshell-agents/saw-codex-api:latest"
+imagePullPolicy: IfNotPresent
+
+replicas: 1
+
+# OIDC configuration — validates user tokens against Keycloak.
+oidc:
+  issuerUrl: ""
+  clientId: "openshell-cli"
+
+# Namespace where Codex VMs are managed.
+managedNamespace: "openshell-agents"
+
+# Path to the openshell-saw Helm chart inside the container.
+# The chart is not bundled in the image; helm install uses --repo or
+# a mounted path. For now, the API calls helm with the chart from
+# the cluster (the ServiceAccount has helm RBAC).
+sawChartPath: "/charts/openshell-saw"
+
+# Route configuration.
+route:
+  enabled: true
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 256Mi

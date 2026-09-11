@@ -1,6 +1,7 @@
 """saw-codex-api — REST API for managing Codex sessions on SAW."""
 
 import asyncio
+import re
 import time
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -21,6 +22,18 @@ from .k8s import (
 )
 
 app = FastAPI(title="saw-codex-api", version="0.1.0")
+
+_SAFE_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,18}$")
+
+
+def _validate_name(name: str) -> str:
+    if not _SAFE_NAME_RE.match(name):
+        raise HTTPException(
+            status_code=400,
+            detail="Name must be 1-19 lowercase alphanumeric chars or hyphens, "
+            "starting with a letter",
+        )
+    return name
 
 
 class SessionResponse(BaseModel):
@@ -72,22 +85,17 @@ async def list_sessions(username: str = Depends(get_current_user)):
 async def create_session(
     body: CreateRequest, username: str = Depends(get_current_user)
 ):
-    name = body.name
-    if len(name) > 19:
-        raise HTTPException(
-            status_code=400,
-            detail="Name must be 19 characters or fewer (OpenShell limit)",
-        )
+    name = _validate_name(body.name)
 
-    # Fire-and-forget: helm install runs in background
     asyncio.get_event_loop().run_in_executor(
-        None, helm_install, name, username, ""
+        None, helm_install, name, username
     )
     return CreateResponse(name=name, status="creating")
 
 
 @app.delete("/sessions/{name}", status_code=204)
 async def delete_session(name: str, username: str = Depends(get_current_user)):
+    _validate_name(name)
     owner = await asyncio.to_thread(get_vm_owner, name)
     if owner is None:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -103,6 +111,7 @@ async def delete_session(name: str, username: str = Depends(get_current_user)):
 async def connect_session(
     name: str, username: str = Depends(get_current_user)
 ):
+    _validate_name(name)
     owner = await asyncio.to_thread(get_vm_owner, name)
     if owner is None:
         raise HTTPException(status_code=404, detail="Session not found")

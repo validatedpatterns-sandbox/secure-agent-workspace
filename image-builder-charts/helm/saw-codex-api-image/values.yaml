@@ -1,0 +1,5 @@
+build:
+  baseImage: "registry.access.redhat.com/ubi9/python-312:latest"
+
+output:
+  imageStreamTag: "saw-codex-api:latest"

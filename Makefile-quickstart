@@ -108,6 +108,7 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
 .PHONY: check-prereqs generate-keys \
         build-nemoclaw build-nemoclaw-cli build-openclaw-openshell build-openclaw-openshell-local \
         build-codex-openshell build-codex-openshell-local \
+        build-saw-codex-api build-saw-codex-api-local \
         build-gateway-docker build-gateway-podman copy-images \
         keycloak keycloak-issuer login whoami logout delete-keycloak \
         openshell-saw-create openshell-saw-list openshell-saw-logs openshell-saw-ssh ssh-secret \
@@ -163,6 +164,17 @@ build-codex-openshell-local: ## Build the codex-openshell sandbox image into thi
 		--namespace $(BUILD_NS) --create-namespace
 	oc start-build codex-openshell -n $(BUILD_NS) --follow
 	@echo "Built into image-registry.openshift-image-registry.svc.cluster.local:5000/$(BUILD_NS)/codex-openshell:latest"
+
+build-saw-codex-api: build-saw-codex-api-local ## Build the saw-codex-api service image and push to quay
+	@echo "Pushing saw-codex-api to $(QUAY_REPO)..."
+	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) saw-codex-api $(QUAY_REPO) $(OPENSHELL_VERSION)
+
+build-saw-codex-api-local: ## Build the saw-codex-api service image into this cluster's internal registry only
+	-@oc delete is saw-codex-api -n $(BUILD_NS) 2>/dev/null
+	helm upgrade --install saw-codex-api-image $(HELM_DIR)saw-codex-api-image \
+		--namespace $(BUILD_NS) --create-namespace
+	oc start-build saw-codex-api --from-dir=services/saw-codex-api -n $(BUILD_NS) --follow
+	@echo "Built into image-registry.openshift-image-registry.svc.cluster.local:5000/$(BUILD_NS)/saw-codex-api:latest"
 
 # --- Governance interceptor image ---
 

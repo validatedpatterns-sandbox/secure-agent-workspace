@@ -1,0 +1,18 @@
+{{- if .Values.route.enabled }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ include "saw-codex-api.fullname" . }}
+  labels:
+    {{- include "saw-codex-api.labels" . | nindent 4 }}
+spec:
+  to:
+    kind: Service
+    name: {{ include "saw-codex-api.fullname" . }}
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+{{- end }}

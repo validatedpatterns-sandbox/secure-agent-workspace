@@ -610,7 +610,8 @@ codex-configure-client: ## Generate ~/.config/codex-saw/config.yaml from the clu
 		exit 1; \
 	fi; \
 	mkdir -p ~/.config/codex-saw; \
-	printf 'api_url: %s\noidc:\n  client_id: openshell-cli\n  flow: browser\n  token_dir: ~/.config/codex-saw/oidc\n' "$$API_URL" \
+	OIDC_ISSUER=$$($(MAKE) -s keycloak-issuer 2>/dev/null); \
+	printf 'api_url: %s\noidc:\n  issuer_url: %s\n  client_id: openshell-cli\n  token_dir: ~/.config/codex-saw/oidc\n' "$$API_URL" "$$OIDC_ISSUER" \
 		> ~/.config/codex-saw/config.yaml; \
 	echo "Config written to ~/.config/codex-saw/config.yaml"; \
 	echo "  API URL: $$API_URL"; \

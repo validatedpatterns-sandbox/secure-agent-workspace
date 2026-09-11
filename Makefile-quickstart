@@ -115,7 +115,7 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
         openshell-saw-configure-gateway openshell-saw-tui openshell-saw-gui test \
         openshell-saw-delete sandbox-pre-delete delete-all status \
         governance-list-profiles governance-add-profile governance-remove-profile governance-create-profile governance-demo \
-        codex-setup codex-deploy-api codex-deploy-sandbox codex-delete \
+        codex-setup codex-deploy-api codex-deploy-sandbox codex-configure-client codex-delete \
         .check-saw-name .check-ssh-key .check-prereqs
 
 check-prereqs: .check-prereqs ## Verify required operators and CLI tools
@@ -549,6 +549,10 @@ codex-setup: check-prereqs generate-keys ## Full Codex setup: build images, depl
 	@echo "=== Step 7/7: Authenticate ==="
 	$(MAKE) login
 	@echo ""
+	@echo ""
+	@echo "=== Configure client ==="
+	$(MAKE) codex-configure-client
+	@echo ""
 	@echo "Codex setup complete!"
 	@echo ""
 	@echo "Create a sandbox:  make codex-deploy-sandbox OPENSHELL_SAW_NAME=mycodex"
@@ -598,6 +602,21 @@ codex-deploy-sandbox: .check-saw-name .check-ssh-key ssh-secret ## Create a Code
 	echo ""; \
 	echo "Monitor: make openshell-saw-logs OPENSHELL_SAW_NAME=$(OPENSHELL_SAW_NAME)"; \
 	echo "TUI:     codex-saw"
+
+codex-configure-client: ## Generate ~/.config/codex-saw/config.yaml from the cluster
+	@API_URL=$$(oc get route saw-codex-api -n $(NS) -o jsonpath='https://{.spec.host}' 2>/dev/null); \
+	if [ -z "$$API_URL" ]; then \
+		echo "Error: saw-codex-api route not found. Deploy it first: make codex-deploy-api"; \
+		exit 1; \
+	fi; \
+	mkdir -p ~/.config/codex-saw; \
+	printf 'api_url: %s\noidc:\n  client_id: openshell-cli\n  flow: browser\n  token_dir: ~/.config/codex-saw/oidc\n' "$$API_URL" \
+		> ~/.config/codex-saw/config.yaml; \
+	echo "Config written to ~/.config/codex-saw/config.yaml"; \
+	echo "  API URL: $$API_URL"; \
+	echo ""; \
+	echo "Install the TUI: cd cli && pip3 install -e '.[codex]'"; \
+	echo "Run:             codex-saw"
 
 codex-delete: .check-saw-name ## Delete a Codex sandbox and clean up secrets
 	helm uninstall $(OPENSHELL_SAW_NAME) -n $(NS) 2>/dev/null || true

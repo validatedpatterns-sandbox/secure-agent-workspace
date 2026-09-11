@@ -705,12 +705,25 @@ class WorkspaceDeployer:
             else:
                 log("WARN: Codex app-server readyz check failed")
 
-        log("Starting port forward via openshell forward service...")
+        log("Installing codex port-forward as systemd service...")
         self.sh.run([
             "bash", "-c",
-            f"nohup openshell forward service {sandbox_name} "
-            f"--target-port 8089 --local 0.0.0.0:8089 "
-            f"> /tmp/codex-forward.log 2>&1 </dev/null &"
+            f"mkdir -p ~/.config/systemd/user && "
+            f"cat > ~/.config/systemd/user/codex-forward.service << 'EOF'\n"
+            f"[Unit]\n"
+            f"Description=Codex WebSocket port forward\n"
+            f"After=openshell-gateway.service\n"
+            f"[Service]\n"
+            f"ExecStart=/home/cloud-user/.local/bin/openshell-real "
+            f"forward service {sandbox_name} "
+            f"--target-port 8089 --local 0.0.0.0:8089\n"
+            f"Restart=always\n"
+            f"RestartSec=5\n"
+            f"[Install]\n"
+            f"WantedBy=default.target\n"
+            f"EOF\n"
+            f"systemctl --user daemon-reload && "
+            f"systemctl --user enable --now codex-forward.service"
         ], check=False)
 
         if not self.sh.dry_run:

@@ -87,6 +87,14 @@ async def create_session(
 ):
     name = _validate_name(body.name)
 
+    existing = await asyncio.to_thread(list_user_vms, username)
+    if len(existing) >= config.MAX_SESSIONS_PER_USER:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Session limit reached ({config.MAX_SESSIONS_PER_USER}). "
+            "Delete an existing session first.",
+        )
+
     asyncio.get_event_loop().run_in_executor(
         None, helm_install, name, username
     )

@@ -158,28 +158,21 @@ class SessionsScreen(Screen):
         row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
         name = row_key.value if hasattr(row_key, "value") else str(row_key)
         if name:
-            self.connect_session(name)
+            self._fetch_and_connect(name)
 
     @work(thread=True)
-    def connect_session(self, name: str):
+    def _fetch_and_connect(self, name: str):
         self.app.notify(f"Connecting to '{name}'...")
         try:
             client = self.app.get_client()
             info = client.get_connection_info(name)
-            ws_url = info["ws_url"]
-            token = info["token"]
-            os.environ["CODEX_TOKEN"] = token
-
-            with self.app.suspend():
-                subprocess.run(
-                    ["codex", "--remote", ws_url,
-                     "--remote-auth-token-env", "CODEX_TOKEN"],
-                )
-
-            self.app.notify("Returned from Codex session.")
-            self.load_sessions()
+            self.app.call_from_thread(
+                self.app._launch_codex, info["ws_url"], info["token"]
+            )
         except Exception as e:
-            self.app.notify(f"Failed to connect: {e}", severity="error")
+            self.app.call_from_thread(
+                self.app.notify, f"Failed to connect: {e}", severity="error"
+            )
 
     def action_refresh(self):
         self.load_sessions()
@@ -253,6 +246,14 @@ class CodexSawApp(App):
             self.call_from_thread(self.switch_screen, SessionsScreen())
         except Exception as e:
             self.call_from_thread(self.notify, f"Login failed: {e}", severity="error")
+
+    def _launch_codex(self, ws_url: str, token: str):
+        os.environ["CODEX_TOKEN"] = token
+        with self.suspend():
+            subprocess.run(
+                ["codex", "--remote", ws_url,
+                 "--remote-auth-token-env", "CODEX_TOKEN"],
+            )
 
     def get_client(self) -> SawCodexClient:
         token = auth.get_token(

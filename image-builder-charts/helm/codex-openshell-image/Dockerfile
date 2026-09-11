@@ -11,7 +11,6 @@ FROM quay.io/aipcc/base-images/agentic/codex:latest
 
 USER 0
 
-COPY --from=tools /usr/bin/curl /usr/bin/curl
 COPY --from=tools /usr/bin/python3 /usr/bin/python3
 COPY --from=tools /usr/bin/nsenter /usr/bin/nsenter
 COPY --from=tools /usr/sbin/ip /usr/sbin/ip
@@ -20,9 +19,6 @@ COPY --from=tools /usr/sbin/nft /usr/sbin/nft
 # Python shared libraries
 COPY --from=tools /usr/lib64/libpython3.9.so* /usr/lib64/
 COPY --from=tools /usr/lib64/python3.9/ /usr/lib64/python3.9/
-
-# Curl shared libraries
-COPY --from=tools /usr/lib64/libcurl.so* /usr/lib64/
 
 # bwrap no-op stub (OpenShell provides sandboxing)
 RUN printf '#!/bin/sh\n\

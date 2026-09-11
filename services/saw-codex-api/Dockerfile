@@ -1,7 +1,9 @@
 FROM registry.access.redhat.com/ubi9/python-312:latest
 
 USER 0
-RUN dnf install -y --setopt=install_weak_deps=False helm && dnf clean all
+RUN curl -fsSL https://get.helm.sh/helm-v3.17.3-linux-amd64.tar.gz \
+    | tar -xz -C /usr/local/bin --strip-components=1 linux-amd64/helm \
+    && chmod +x /usr/local/bin/helm
 USER 1001
 
 COPY requirements.txt .

@@ -15,6 +15,7 @@ dependencies = [
 
 [project.scripts]
 openshell-saw = "openshell_saw.cli:main"
+codex-saw = "codex_saw.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -23,6 +24,10 @@ where = ["src"]
 openshell_saw = ["charts/**/*"]
 
 [project.optional-dependencies]
+codex = [
+    "textual>=0.79",
+    "httpx>=0.27",
+]
 dev = [
     "pytest>=7.0",
     "ruff>=0.4",

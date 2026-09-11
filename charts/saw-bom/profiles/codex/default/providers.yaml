@@ -6,8 +6,9 @@ spec:
   providers:
     - name: openai
       type: openai
-      model: o3
+      model: gpt-5.6-terra
       credentialSecret: inference
       credentialSecretKey: api_key
     - name: github
       type: github
+      credentialValue: anonymous

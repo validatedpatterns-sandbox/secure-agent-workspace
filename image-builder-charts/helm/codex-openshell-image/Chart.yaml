@@ -1,0 +1,13 @@
+apiVersion: v2
+name: codex-openshell-image
+description: Builds the codex-openshell sandbox image via OpenShift BuildConfig and stores it in an ImageStream
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - codex
+  - openshell
+  - sandbox
+  - openshift
+  - imagestream
+  - buildconfig

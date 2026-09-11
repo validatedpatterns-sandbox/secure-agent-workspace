@@ -1,0 +1,6 @@
+build:
+  baseImage: "quay.io/aipcc/base-images/agentic/codex:latest"
+  toolsImage: "registry.access.redhat.com/ubi9/ubi-minimal:latest"
+
+output:
+  imageStreamTag: "codex-openshell:latest"

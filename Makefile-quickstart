@@ -107,6 +107,7 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
 
 .PHONY: check-prereqs generate-keys \
         build-nemoclaw build-nemoclaw-cli build-openclaw-openshell build-openclaw-openshell-local \
+        build-codex-openshell build-codex-openshell-local \
         build-gateway-docker build-gateway-podman copy-images \
         keycloak keycloak-issuer login whoami logout delete-keycloak \
         openshell-saw-create openshell-saw-list openshell-saw-logs openshell-saw-ssh ssh-secret \
@@ -151,6 +152,17 @@ build-openclaw-openshell-local: ## Build the openclaw-openshell sandbox image in
 	@echo "Built into image-registry.openshift-image-registry.svc.cluster.local:5000/$(BUILD_NS)/openclaw-openshell:latest"
 	@echo "Point a BOM profile's sandbox image at that path and enable internalRegistry.allowAnonymousPull"
 	@echo "(see charts/openshell-saw/values.yaml) if you don't have quay push access."
+
+build-codex-openshell: build-codex-openshell-local ## Build the codex-openshell sandbox image and push to quay
+	@echo "Pushing codex-openshell to $(QUAY_REPO)..."
+	@$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) codex-openshell $(QUAY_REPO) $(OPENSHELL_VERSION)
+
+build-codex-openshell-local: ## Build the codex-openshell sandbox image into this cluster's internal registry only
+	-@oc delete is codex-openshell -n $(BUILD_NS) 2>/dev/null
+	helm upgrade --install codex-openshell-image $(HELM_DIR)codex-openshell-image \
+		--namespace $(BUILD_NS) --create-namespace
+	oc start-build codex-openshell -n $(BUILD_NS) --follow
+	@echo "Built into image-registry.openshift-image-registry.svc.cluster.local:5000/$(BUILD_NS)/codex-openshell:latest"
 
 # --- Governance interceptor image ---
 

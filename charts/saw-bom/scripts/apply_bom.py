@@ -37,6 +37,7 @@ class Provider:
     nemoclaw_provider: str = ""
     credential_secret: str = ""
     credential_secret_key: str = "api_key"
+    credential_value: str = ""
     model: str = ""
 
 
@@ -175,6 +176,7 @@ def parse_profiles(profiles_dir):
                         nemoclaw_provider=p.get("nemoclawProvider", ""),
                         credential_secret=p.get("credentialSecret", ""),
                         credential_secret_key=p.get("credentialSecretKey", "api_key"),
+                        credential_value=p.get("credentialValue", ""),
                         model=p.get("model", ""),
                     ))
             sb_file = ws_entry / "sandbox.yaml"
@@ -217,6 +219,8 @@ PROVIDER_CRED_MAP = {
 
 
 def resolve_credential(provider):
+    if provider.credential_value:
+        return provider.credential_value
     env_var = f"PROV_{provider.name}_KEY".replace("-", "_").upper()
     val = os.environ.get(env_var)
     if val:
@@ -623,30 +627,10 @@ class WorkspaceDeployer:
                 time.sleep(3)
             log("WARN: openclaw gateway health check failed")
 
-    def _install_nsenter_in_container(self, sandbox_name):
-        """Copy nsenter from VM host into the sandbox container.
-
-        The OpenShell supervisor needs nsenter to create network namespaces.
-        The codex container image doesn't ship it, so we inject it via
-        docker cp before the supervisor finishes initialization.
-        """
-        log("Installing nsenter into codex container...")
-        self.sh.run([
-            "bash", "-c",
-            f"CNAME=$(sudo docker ps -a "
-            f"--filter 'name=openshell.*{sandbox_name}' "
-            f"--format '{{{{.Names}}}}' | head -1) && "
-            f"[ -n \"$CNAME\" ] && "
-            f"sudo docker cp /usr/bin/nsenter \"$CNAME:/usr/bin/nsenter\" && "
-            f"echo 'nsenter installed in '$CNAME"
-        ], check=False)
-
     def start_codex_app_server(self, sandbox_name, workspace_name="default"):
         import secrets as secrets_mod
 
         ws_args = ["--workspace", workspace_name] if workspace_name else []
-
-        self._install_nsenter_in_container(sandbox_name)
 
         if not self.sh.dry_run:
             for i in range(20):
@@ -657,9 +641,6 @@ class WorkspaceDeployer:
                 if "Ready" in clean and "Error" not in clean:
                     log(f"Sandbox '{sandbox_name}' is Ready")
                     break
-                if "Error" in clean and i < 3:
-                    log("Sandbox in Error state, retrying nsenter install...")
-                    self._install_nsenter_in_container(sandbox_name)
                 log(f"  waiting for sandbox ready... (attempt {i+1})")
                 time.sleep(5)
 
@@ -677,7 +658,7 @@ class WorkspaceDeployer:
                         "chmod 600 /sandbox/.codex/ws-secret && "
                         "printf '{\"auth_mode\":\"apikey\",\"OPENAI_API_KEY\":\"%s\"}' "
                         "\"$OPENAI_API_KEY\" > /sandbox/.codex/auth.json && "
-                        "printf 'model = \"o3\"\\n"
+                        "printf 'model = \"gpt-5.6-terra\"\\n"
                         "sandbox = \"danger-full-access\"\\n"
                         "' > /sandbox/.codex/config.toml && "
                         "cat > /sandbox/.local/bin/bwrap << 'BWRAP'\n"

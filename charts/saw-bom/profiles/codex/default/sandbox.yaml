@@ -6,7 +6,7 @@ spec:
     - name: codex
       type: codex
       enabled: true
-      image: quay.io/aipcc/base-images/agentic/codex:latest
+      image: image-registry.openshift-image-registry.svc.cluster.local:5000/openshell-agents/codex-openshell:latest
       providers:
         - openai
         - github

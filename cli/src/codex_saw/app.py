@@ -135,7 +135,7 @@ class SessionsScreen(Screen):
         if table.row_count == 0:
             return
         row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
-        name = str(row_key)
+        name = row_key.value if hasattr(row_key, "value") else str(row_key)
         if name:
             self.delete_session(name)
 
@@ -155,7 +155,7 @@ class SessionsScreen(Screen):
         if table.row_count == 0:
             return
         row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
-        name = str(row_key)
+        name = row_key.value if hasattr(row_key, "value") else str(row_key)
         if name:
             self.connect_session(name)
 

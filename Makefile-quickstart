@@ -174,7 +174,13 @@ build-saw-codex-api-local: ## Build the saw-codex-api service image into this cl
 	-@oc delete is saw-codex-api -n $(BUILD_NS) 2>/dev/null
 	helm upgrade --install saw-codex-api-image $(HELM_DIR)saw-codex-api-image \
 		--namespace $(BUILD_NS) --create-namespace
-	oc start-build saw-codex-api --from-dir=services/saw-codex-api -n $(BUILD_NS) --follow
+	@echo "Preparing build context..."
+	@rm -rf /tmp/saw-codex-api-build && mkdir -p /tmp/saw-codex-api-build/saw_codex_api /tmp/saw-codex-api-build/charts
+	@cp services/saw-codex-api/*.py services/saw-codex-api/requirements.txt /tmp/saw-codex-api-build/saw_codex_api/
+	@cp services/saw-codex-api/Dockerfile /tmp/saw-codex-api-build/
+	@cp -r charts/openshell-saw /tmp/saw-codex-api-build/charts/
+	oc start-build saw-codex-api --from-dir=/tmp/saw-codex-api-build -n $(BUILD_NS) --follow
+	@rm -rf /tmp/saw-codex-api-build
 	@echo "Built into image-registry.openshift-image-registry.svc.cluster.local:5000/$(BUILD_NS)/saw-codex-api:latest"
 
 # --- Governance interceptor image ---

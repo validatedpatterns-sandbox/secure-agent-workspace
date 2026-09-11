@@ -6,10 +6,11 @@ RUN curl -fsSL https://get.helm.sh/helm-v3.17.3-linux-amd64.tar.gz \
     && chmod +x /usr/local/bin/helm
 USER 1001
 
-COPY requirements.txt .
+COPY saw_codex_api/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . /app/saw_codex_api
+COPY saw_codex_api/ /app/saw_codex_api
+COPY charts/ /app/charts/
 WORKDIR /app
 
 EXPOSE 8080

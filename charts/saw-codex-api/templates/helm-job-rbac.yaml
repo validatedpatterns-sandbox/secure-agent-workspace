@@ -1,0 +1,86 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.controller.serviceAccount }}
+  labels:
+    {{- include "saw-codex-api.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "saw-codex-api.fullname" . }}-controller
+  labels:
+    {{- include "saw-codex-api.labels" . | nindent 4 }}
+rules:
+  # CodexSession CRs
+  - apiGroups: ["saw.redhat.com"]
+    resources: ["codexsessions", "codexsessions/status"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  # kopf needs CRD discovery
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch"]
+  # kopf events
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create"]
+  # All core resources the SAW chart creates/manages
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets", "services", "serviceaccounts",
+                "pods", "persistentvolumeclaims"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
+  # OpenShift Routes
+  - apiGroups: ["route.openshift.io"]
+    resources: ["routes"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
+  # KubeVirt VMs + subresources
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachines", "virtualmachineinstances"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachines/start", "virtualmachines/stop"]
+    verbs: ["update"]
+  - apiGroups: ["subresources.kubevirt.io"]
+    resources: ["virtualmachines/portforward"]
+    verbs: ["get"]
+  # CDI DataVolumes
+  - apiGroups: ["cdi.kubevirt.io"]
+    resources: ["datavolumes", "datasources"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
+  # RBAC (chart creates Roles, RoleBindings, ClusterRoles, ClusterRoleBindings)
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
+  # SCC for setup Jobs
+  - apiGroups: ["security.openshift.io"]
+    resources: ["securitycontextconstraints"]
+    resourceNames: ["anyuid"]
+    verbs: ["use"]
+  # ConsoleCLIDownloads (for virtctl)
+  - apiGroups: ["console.openshift.io"]
+    resources: ["consoleclidownloads"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "saw-codex-api.fullname" . }}-controller
+  labels:
+    {{- include "saw-codex-api.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.controller.serviceAccount }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "saw-codex-api.fullname" . }}-controller

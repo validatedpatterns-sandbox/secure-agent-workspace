@@ -17,11 +17,17 @@ managedNamespace: "openshell-agents"
 # The chart is not bundled in the image; helm install uses --repo or
 # a mounted path. For now, the API calls helm with the chart from
 # the cluster (the ServiceAccount has helm RBAC).
-sawChartPath: "/charts/openshell-saw"
+sawChartPath: "/app/charts/openshell-saw"
 
 # Route configuration.
 route:
   enabled: true
+
+# Controller configuration — the kopf controller watches CodexSession CRs
+# and runs helm install/uninstall with a privileged ServiceAccount.
+controller:
+  serviceAccount: "codex-session-controller"
+  maxSessionsPerUser: 3
 
 resources:
   limits:

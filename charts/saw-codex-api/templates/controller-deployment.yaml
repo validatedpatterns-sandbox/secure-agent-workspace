@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "saw-codex-api.fullname" . }}-controller
+  labels:
+    {{- include "saw-codex-api.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "saw-codex-api.fullname" . }}-controller
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "saw-codex-api.fullname" . }}-controller
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      serviceAccountName: {{ .Values.controller.serviceAccount }}
+      containers:
+        - name: controller
+          image: {{ .Values.image }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          command: ["kopf", "run", "--standalone", "--liveness=http://0.0.0.0:8081/healthz", "/app/saw_codex_api/controller.py"]
+          env:
+            - name: MANAGED_NAMESPACE
+              value: {{ .Values.managedNamespace | quote }}
+            - name: SAW_CHART_PATH
+              value: {{ .Values.sawChartPath | quote }}
+            - name: OIDC_ISSUER_URL
+              value: {{ .Values.oidc.issuerUrl | quote }}
+            - name: MAX_SESSIONS_PER_USER
+              value: {{ .Values.controller.maxSessionsPerUser | quote }}
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 10
+            periodSeconds: 30

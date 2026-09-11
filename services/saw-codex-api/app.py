@@ -4,7 +4,7 @@ import asyncio
 import re
 import time
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from jose import jwt as jose_jwt
 from pydantic import BaseModel
 
@@ -13,10 +13,10 @@ from .auth import get_current_user
 from .k8s import (
     ConnectionInfo,
     Session,
+    create_session_cr,
+    delete_session_cr,
     get_codex_secret,
     get_vm_owner,
-    helm_install,
-    helm_uninstall,
     list_user_vms,
     _get_route_url,
 )
@@ -83,7 +83,9 @@ async def list_sessions(username: str = Depends(get_current_user)):
 
 @app.post("/sessions", response_model=CreateResponse, status_code=202)
 async def create_session(
-    body: CreateRequest, username: str = Depends(get_current_user)
+    request: Request,
+    body: CreateRequest,
+    username: str = Depends(get_current_user),
 ):
     name = _validate_name(body.name)
 
@@ -95,9 +97,10 @@ async def create_session(
             "Delete an existing session first.",
         )
 
-    asyncio.get_event_loop().run_in_executor(
-        None, helm_install, name, username
-    )
+    oidc_token = request.headers.get("authorization", "")[7:]
+    ok = await asyncio.to_thread(create_session_cr, name, username, oidc_token)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to create session")
     return CreateResponse(name=name, status="creating")
 
 
@@ -110,7 +113,7 @@ async def delete_session(name: str, username: str = Depends(get_current_user)):
     if owner != username:
         raise HTTPException(status_code=403, detail="Not your session")
 
-    ok = await asyncio.to_thread(helm_uninstall, name)
+    ok = await asyncio.to_thread(delete_session_cr, name)
     if not ok:
         raise HTTPException(status_code=500, detail="Failed to delete session")
 
@@ -139,6 +142,23 @@ async def connect_session(
     if not ws_url:
         raise HTTPException(
             status_code=503, detail="Session not ready — route not available"
+        )
+
+    import httpx
+    try:
+        host = ws_url.replace("wss://", "").replace(":443", "")
+        r = await asyncio.to_thread(
+            lambda: httpx.get(f"https://{host}/readyz", timeout=5, verify=False)
+        )
+        if r.status_code != 200:
+            raise HTTPException(
+                status_code=503,
+                detail="Session not ready — Codex app-server not responding",
+            )
+    except httpx.RequestError:
+        raise HTTPException(
+            status_code=503,
+            detail="Session not ready — Codex app-server not reachable",
         )
 
     now = int(time.time())

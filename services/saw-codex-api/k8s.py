@@ -48,6 +48,30 @@ def list_user_vms(username: str) -> list[Session]:
     _ensure_api()
     ns = config.MANAGED_NAMESPACE
     custom = client.CustomObjectsApi()
+    v1 = client.CoreV1Api()
+
+    sessions = []
+
+    try:
+        crs = custom.list_namespaced_custom_object(
+            group="saw.redhat.com",
+            version="v1alpha1",
+            namespace=ns,
+            plural="codexsessions",
+        )
+    except client.ApiException:
+        crs = {"items": []}
+
+    cr_map = {}
+    for cr in crs.get("items", []):
+        owner = cr.get("spec", {}).get("owner", "")
+        if owner == username:
+            name = cr.get("spec", {}).get("name", cr["metadata"]["name"])
+            if cr["metadata"].get("deletionTimestamp"):
+                phase = "deleting"
+            else:
+                phase = cr.get("status", {}).get("phase", "Creating").lower()
+            cr_map[name] = phase
 
     try:
         vms = custom.list_namespaced_custom_object(
@@ -57,35 +81,23 @@ def list_user_vms(username: str) -> list[Session]:
             plural="virtualmachines",
             label_selector=f"openshell.pattern/owner={username}",
         )
-    except client.ApiException as e:
-        logger.error("Failed to list VMs: %s", e)
-        return []
+    except client.ApiException:
+        vms = {"items": []}
 
-    sessions = []
-    v1 = client.CoreV1Api()
     for vm in vms.get("items", []):
         name = vm["metadata"]["name"]
         created = vm["metadata"].get("creationTimestamp", "")
-        printable = (
-            vm.get("status", {}).get("printableStatus", "Unknown")
-        )
 
-        status_map = {
-            "Running": "running",
-            "Stopped": "stopped",
-            "Starting": "creating",
-            "Provisioning": "creating",
-            "WaitingForVolumeBinding": "creating",
-        }
-        status = status_map.get(printable, "error" if "Error" in printable else "creating")
+        status = cr_map.pop(name, "unmanaged")
 
         ws_url = _get_route_url(name, ns)
 
+        has_secret = False
         try:
             v1.read_namespaced_secret(f"{name}-codex-secret", ns)
             has_secret = True
         except client.ApiException:
-            has_secret = False
+            pass
 
         sessions.append(Session(
             name=name,
@@ -94,6 +106,12 @@ def list_user_vms(username: str) -> list[Session]:
             owner=username,
             ws_url=ws_url,
             has_secret=has_secret,
+        ))
+
+    for name, status in cr_map.items():
+        sessions.append(Session(
+            name=name, status=status, created="", owner=username,
+            ws_url=None, has_secret=False,
         ))
 
     return sessions
@@ -149,36 +167,45 @@ def get_vm_owner(name: str) -> str | None:
         return None
 
 
-def helm_install(name: str, owner: str) -> bool:
-    ns = config.MANAGED_NAMESPACE
-    cmd = [
-        "helm", "upgrade", "--install", name, config.SAW_CHART_PATH,
-        "--namespace", ns,
-        "--set", f"sandboxName={name}",
-        "--set", "agent=codex",
-        "--set", "containerRuntime=docker",
-        "--set", "route.enabled=true",
-        "--set", "route.codex=true",
-        "--set", "route.dashboard=true",
-        "--set", f"accessControl.owner={owner}",
-        "--set", "governance.enabled=true",
-        "--set", "internalRegistry.allowAnonymousPull=true",
-        "--set", f"oidc.issuerUrl={config.OIDC_ISSUER_URL}",
-        "--set", "oidc.clientId=openshell-cli",
-    ]
+def create_session_cr(name: str, owner: str, oidc_token: str = "") -> bool:
+    """Create a CodexSession CR. The controller handles provisioning."""
+    _ensure_api()
+    custom = client.CustomObjectsApi()
+    spec = {"name": name, "owner": owner}
+    if oidc_token:
+        spec["oidcToken"] = oidc_token
+    try:
+        custom.create_namespaced_custom_object(
+            group="saw.redhat.com",
+            version="v1alpha1",
+            namespace=config.MANAGED_NAMESPACE,
+            plural="codexsessions",
+            body={
+                "apiVersion": "saw.redhat.com/v1alpha1",
+                "kind": "CodexSession",
+                "metadata": {"name": name},
+                "spec": spec,
+            },
+        )
+        return True
+    except client.ApiException as e:
+        logger.error("Failed to create CodexSession: %s", e)
+        return False
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        logger.error("helm install failed: %s", result.stderr)
-    return result.returncode == 0
 
-
-def helm_uninstall(name: str) -> bool:
-    cmd = [
-        "helm", "uninstall", name,
-        "--namespace", config.MANAGED_NAMESPACE,
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        logger.error("helm uninstall failed: %s", result.stderr)
-    return result.returncode == 0
+def delete_session_cr(name: str) -> bool:
+    """Delete a CodexSession CR. The controller handles teardown."""
+    _ensure_api()
+    custom = client.CustomObjectsApi()
+    try:
+        custom.delete_namespaced_custom_object(
+            group="saw.redhat.com",
+            version="v1alpha1",
+            namespace=config.MANAGED_NAMESPACE,
+            plural="codexsessions",
+            name=name,
+        )
+        return True
+    except client.ApiException as e:
+        logger.error("Failed to delete CodexSession: %s", e)
+        return False

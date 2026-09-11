@@ -2,6 +2,7 @@
 
 import os
 import secrets as secrets_mod
+import subprocess
 from pathlib import Path
 
 from textual import work
@@ -168,11 +169,15 @@ class SessionsScreen(Screen):
             ws_url = info["ws_url"]
             token = info["token"]
             os.environ["CODEX_TOKEN"] = token
-            self.app.exit()
-            os.execvp(
-                "codex",
-                ["codex", "--remote", ws_url, "--remote-auth-token-env", "CODEX_TOKEN"],
-            )
+
+            with self.app.suspend():
+                subprocess.run(
+                    ["codex", "--remote", ws_url,
+                     "--remote-auth-token-env", "CODEX_TOKEN"],
+                )
+
+            self.app.notify("Returned from Codex session.")
+            self.load_sessions()
         except Exception as e:
             self.app.notify(f"Failed to connect: {e}", severity="error")
 

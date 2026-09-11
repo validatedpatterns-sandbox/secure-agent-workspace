@@ -129,6 +129,7 @@ def browser_login(issuer, client_id, token_dir, callback_port=8400):
         "state": state,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
+        "prompt": "login",
     }
     auth_url = f"{auth_endpoint}?{urllib.parse.urlencode(params)}"
     webbrowser.open(auth_url)

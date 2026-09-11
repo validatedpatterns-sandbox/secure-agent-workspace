@@ -5,6 +5,8 @@ import secrets as secrets_mod
 import subprocess
 from pathlib import Path
 
+import httpx
+
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -93,7 +95,7 @@ class SessionsScreen(Screen):
         self.load_sessions()
         self.set_interval(10, self.load_sessions)
 
-    @work(thread=True)
+    @work(thread=True, exclusive=True)
     def load_sessions(self):
         try:
             client = self.app.get_client()
@@ -102,16 +104,21 @@ class SessionsScreen(Screen):
             self.app.notify(f"Failed to load sessions: {e}", severity="error")
             return
 
-        table = self.query_one("#sessions-table", DataTable)
-        table.clear()
-        for s in sessions:
-            table.add_row(
-                s.get("name", ""),
-                s.get("status", ""),
-                s.get("created", ""),
-                s.get("ws_url", ""),
-                key=s.get("name", ""),
-            )
+        def update_table():
+            table = self.query_one("#sessions-table", DataTable)
+            table.clear()
+            for s in sessions:
+                if not s.get("ws_url"):
+                    continue
+                table.add_row(
+                    s.get("name", ""),
+                    s.get("status", ""),
+                    s.get("created", ""),
+                    s.get("ws_url", ""),
+                    key=s.get("name", ""),
+                )
+
+        self.app.call_from_thread(update_table)
 
     def action_new_session(self):
         def on_result(name: str | None):
@@ -151,14 +158,30 @@ class SessionsScreen(Screen):
         except Exception as e:
             self.app.notify(f"Failed to delete session: {e}", severity="error")
 
-    def action_connect(self):
+    def _get_selected_session(self):
         table = self.query_one("#sessions-table", DataTable)
         if table.row_count == 0:
-            return
+            return None, None
         row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
         name = row_key.value if hasattr(row_key, "value") else str(row_key)
+        row = table.get_row(row_key)
+        status = str(row[1]) if len(row) > 1 else ""
+        return name, status
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected):
+        name = event.row_key.value if hasattr(event.row_key, "value") else str(event.row_key)
+        row = self.query_one("#sessions-table", DataTable).get_row(event.row_key)
+        status = str(row[1]) if len(row) > 1 else ""
+        if status not in ("running", "unmanaged"):
+            return
         if name:
             self._fetch_and_connect(name)
+
+    def action_connect(self):
+        name, status = self._get_selected_session()
+        if not name or status not in ("running", "unmanaged"):
+            return
+        self._fetch_and_connect(name)
 
     @work(thread=True)
     def _fetch_and_connect(self, name: str):
@@ -169,6 +192,16 @@ class SessionsScreen(Screen):
             self.app.call_from_thread(
                 self.app._launch_codex, info["ws_url"], info["token"]
             )
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 503:
+                detail = e.response.json().get("detail", "not ready")
+                self.app.call_from_thread(
+                    self.app.notify, f"Session not ready: {detail}", severity="warning"
+                )
+            else:
+                self.app.call_from_thread(
+                    self.app.notify, f"Failed to connect: {e}", severity="error"
+                )
         except Exception as e:
             self.app.call_from_thread(
                 self.app.notify, f"Failed to connect: {e}", severity="error"
@@ -250,6 +283,7 @@ class CodexSawApp(App):
     def _launch_codex(self, ws_url: str, token: str):
         os.environ["CODEX_TOKEN"] = token
         with self.suspend():
+            os.system("clear")
             subprocess.run(
                 ["codex", "--remote", ws_url,
                  "--remote-auth-token-env", "CODEX_TOKEN"],

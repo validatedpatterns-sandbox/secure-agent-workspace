@@ -89,14 +89,22 @@ class SessionsScreen(Screen):
         Binding("d", "delete_session", "Delete"),
         Binding("enter", "connect", "Connect"),
         Binding("r", "refresh", "Refresh"),
+        Binding("slash", "search", "Search"),
+        Binding("s", "sort", "Sort"),
         Binding("l", "logout", "Logout"),
         Binding("q", "quit", "Quit"),
     ]
+
+    _filter: str = ""
+    _sort_by: str = "created"
+    _sort_reverse: bool = True
+    _all_sessions: list = []
 
     def compose(self) -> ComposeResult:
         username = auth.get_username(self.app.cfg["oidc"]["token_dir"]) or "unknown"
         yield Header()
         yield Static(f"  Logged in as [bold]{username}[/bold]", id="user-info")
+        yield Input(placeholder="Type to filter by name...", id="search-input")
         yield DataTable(id="sessions-table")
         yield Footer()
 
@@ -104,33 +112,69 @@ class SessionsScreen(Screen):
         table = self.query_one("#sessions-table", DataTable)
         table.add_columns("NAME", "STATUS", "CREATED", "URL")
         table.cursor_type = "row"
+        self.query_one("#search-input", Input).display = False
         self.load_sessions()
         self.set_interval(10, self.load_sessions)
+
+    def action_search(self):
+        search = self.query_one("#search-input", Input)
+        search.display = not search.display
+        if search.display:
+            search.focus()
+            search.value = self._filter
+        else:
+            self._filter = ""
+            self._render_table()
+
+    def on_input_changed(self, event: Input.Changed):
+        if event.input.id == "search-input":
+            self._filter = event.value.strip().lower()
+            self._render_table()
+
+    def action_sort(self):
+        if self._sort_by == "created":
+            self._sort_by = "name"
+            self._sort_reverse = False
+        else:
+            self._sort_by = "created"
+            self._sort_reverse = True
+        self.app.notify(f"Sorted by {self._sort_by}")
+        self._render_table()
 
     @work(thread=True, exclusive=True)
     def load_sessions(self):
         try:
             client = self.app.get_client()
-            sessions = client.list_sessions()
+            self._all_sessions = client.list_sessions()
         except Exception as e:
             self.app.notify(f"Failed to load sessions: {e}", severity="error")
             return
 
-        def update_table():
-            table = self.query_one("#sessions-table", DataTable)
-            table.clear()
-            for s in sessions:
-                if not s.get("ws_url"):
-                    continue
-                table.add_row(
-                    s.get("name", ""),
-                    s.get("status", ""),
-                    _to_local_time(s.get("created", "")),
-                    s.get("ws_url", ""),
-                    key=s.get("name", ""),
-                )
+        self.app.call_from_thread(self._render_table)
 
-        self.app.call_from_thread(update_table)
+    def _render_table(self):
+        table = self.query_one("#sessions-table", DataTable)
+        table.clear()
+
+        filtered = [
+            s for s in self._all_sessions
+            if s.get("ws_url")
+            and (not self._filter or self._filter in s.get("name", "").lower())
+        ]
+
+        filtered.sort(
+            key=lambda s: s.get(self._sort_by, ""),
+            reverse=self._sort_reverse,
+        )
+
+        for s in filtered:
+            table.add_row(
+                s.get("name", ""),
+                s.get("status", ""),
+                _to_local_time(s.get("created", "")),
+                s.get("ws_url", ""),
+                key=s.get("name", ""),
+            )
 
     def action_new_session(self):
         def on_result(name: str | None):
@@ -258,6 +302,11 @@ class CodexSawApp(App):
         border: solid green;
         padding: 1 2;
         background: $surface;
+    }
+    #search-input {
+        height: 1;
+        margin: 0 0 0 0;
+        dock: top;
     }
     """
 

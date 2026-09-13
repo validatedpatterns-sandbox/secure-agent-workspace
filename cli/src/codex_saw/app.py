@@ -366,7 +366,8 @@ class CodexSawApp(App):
             os.system("clear")
             subprocess.run(
                 ["codex", "--remote", ws_url,
-                 "--remote-auth-token-env", "CODEX_TOKEN"],
+                 "--remote-auth-token-env", "CODEX_TOKEN",
+                 "resume", "--last"],
             )
 
     def get_client(self) -> SawCodexClient:

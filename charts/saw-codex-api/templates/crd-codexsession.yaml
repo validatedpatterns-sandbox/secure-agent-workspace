@@ -28,8 +28,6 @@ spec:
                   pattern: "^[a-z][a-z0-9-]*$"
                 owner:
                   type: string
-                oidcToken:
-                  type: string
             status:
               type: object
               properties:

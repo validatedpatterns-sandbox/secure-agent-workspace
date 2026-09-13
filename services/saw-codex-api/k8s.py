@@ -168,12 +168,23 @@ def get_vm_owner(name: str) -> str | None:
 
 
 def create_session_cr(name: str, owner: str, oidc_token: str = "") -> bool:
-    """Create a CodexSession CR. The controller handles provisioning."""
+    """Create a CodexSession CR and a short-lived OIDC token Secret."""
     _ensure_api()
     custom = client.CustomObjectsApi()
-    spec = {"name": name, "owner": owner}
+    v1 = client.CoreV1Api()
+
     if oidc_token:
-        spec["oidcToken"] = oidc_token
+        try:
+            v1.create_namespaced_secret(
+                config.MANAGED_NAMESPACE,
+                client.V1Secret(
+                    metadata=client.V1ObjectMeta(name=f"{name}-oidc-token"),
+                    string_data={"token": oidc_token},
+                ),
+            )
+        except client.ApiException as e:
+            logger.warning("Failed to create OIDC token secret: %s", e)
+
     try:
         custom.create_namespaced_custom_object(
             group="saw.redhat.com",
@@ -184,7 +195,7 @@ def create_session_cr(name: str, owner: str, oidc_token: str = "") -> bool:
                 "apiVersion": "saw.redhat.com/v1alpha1",
                 "kind": "CodexSession",
                 "metadata": {"name": name},
-                "spec": spec,
+                "spec": {"name": name, "owner": owner},
             },
         )
         return True

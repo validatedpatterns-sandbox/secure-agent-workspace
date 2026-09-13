@@ -5,6 +5,59 @@ metadata:
   labels:
     {{- include "saw-codex-api.labels" . | nindent 4 }}
 ---
+# Namespace-scoped Role for resources managed by helm within the release namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "saw-codex-api.fullname" . }}-controller
+  labels:
+    {{- include "saw-codex-api.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets", "services", "serviceaccounts",
+                "pods", "persistentvolumeclaims"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
+  - apiGroups: ["route.openshift.io"]
+    resources: ["routes"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachines", "virtualmachineinstances"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachines/start", "virtualmachines/stop"]
+    verbs: ["update"]
+  - apiGroups: ["subresources.kubevirt.io"]
+    resources: ["virtualmachines/portforward"]
+    verbs: ["get"]
+  - apiGroups: ["cdi.kubevirt.io"]
+    resources: ["datavolumes", "datasources"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "saw-codex-api.fullname" . }}-controller
+  labels:
+    {{- include "saw-codex-api.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.controller.serviceAccount }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "saw-codex-api.fullname" . }}-controller
+---
+# Cluster-scoped ClusterRole — only for resources that must be cluster-wide.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -27,38 +80,9 @@ rules:
   - apiGroups: ["events.k8s.io"]
     resources: ["events"]
     verbs: ["create"]
-  # All core resources the SAW chart creates/manages
-  - apiGroups: [""]
-    resources: ["configmaps", "secrets", "services", "serviceaccounts",
-                "pods", "persistentvolumeclaims"]
-    verbs: ["create", "delete", "get", "list", "patch", "update"]
-  - apiGroups: ["apps"]
-    resources: ["deployments"]
-    verbs: ["create", "delete", "get", "list", "patch", "update"]
-  - apiGroups: ["batch"]
-    resources: ["jobs"]
-    verbs: ["create", "delete", "get", "list", "patch", "update"]
-  # OpenShift Routes
-  - apiGroups: ["route.openshift.io"]
-    resources: ["routes"]
-    verbs: ["create", "delete", "get", "list", "patch", "update"]
-  # KubeVirt VMs + subresources
-  - apiGroups: ["kubevirt.io"]
-    resources: ["virtualmachines", "virtualmachineinstances"]
-    verbs: ["create", "delete", "get", "list", "patch", "update"]
-  - apiGroups: ["kubevirt.io"]
-    resources: ["virtualmachines/start", "virtualmachines/stop"]
-    verbs: ["update"]
-  - apiGroups: ["subresources.kubevirt.io"]
-    resources: ["virtualmachines/portforward"]
-    verbs: ["get"]
-  # CDI DataVolumes
-  - apiGroups: ["cdi.kubevirt.io"]
-    resources: ["datavolumes", "datasources"]
-    verbs: ["create", "delete", "get", "list", "patch", "update"]
-  # RBAC (chart creates Roles, RoleBindings, ClusterRoles, ClusterRoleBindings)
+  # SAW chart creates ClusterRoles and ClusterRoleBindings per sandbox
   - apiGroups: ["rbac.authorization.k8s.io"]
-    resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+    resources: ["clusterroles", "clusterrolebindings"]
     verbs: ["create", "delete", "get", "list", "patch", "update"]
   # SCC for setup Jobs
   - apiGroups: ["security.openshift.io"]

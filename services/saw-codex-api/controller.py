@@ -70,7 +70,21 @@ def on_create(spec, meta, namespace, **_):
     except client.ApiException:
         logger.warning("SSH public key secret not found")
 
-    oidc_token = spec.get("oidcToken", "")
+    oidc_token = ""
+    try:
+        import base64 as b64
+        token_secret = v1.read_namespaced_secret(
+            f"{session_name}-oidc-token", MANAGED_NAMESPACE
+        )
+        oidc_token = b64.b64decode(
+            token_secret.data.get("token", "")
+        ).decode().strip()
+        v1.delete_namespaced_secret(
+            f"{session_name}-oidc-token", MANAGED_NAMESPACE
+        )
+        logger.info("OIDC token secret consumed and deleted for %s", session_name)
+    except client.ApiException:
+        logger.info("No OIDC token secret for %s, continuing without", session_name)
 
     cmd = [
         "helm", "upgrade", "--install", session_name, SAW_CHART_PATH,

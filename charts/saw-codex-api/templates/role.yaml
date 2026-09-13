@@ -13,10 +13,10 @@ rules:
   - apiGroups: ["route.openshift.io"]
     resources: ["routes"]
     verbs: ["get", "list"]
-  # Read codex-secret for JWT minting
+  # Read codex-secret for JWT minting; create short-lived OIDC token secrets
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get"]
+    verbs: ["get", "create"]
   # Create/delete/list CodexSession CRs
   - apiGroups: ["saw.redhat.com"]
     resources: ["codexsessions"]

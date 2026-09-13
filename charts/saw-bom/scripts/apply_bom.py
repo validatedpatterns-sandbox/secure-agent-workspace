@@ -628,7 +628,6 @@ class WorkspaceDeployer:
             log("WARN: openclaw gateway health check failed")
 
     def start_codex_app_server(self, sandbox_name, workspace_name="default"):
-        import secrets as secrets_mod
 
         ws_args = ["--workspace", workspace_name] if workspace_name else []
 
@@ -646,16 +645,28 @@ class WorkspaceDeployer:
 
         self.chown_sandbox_home(sandbox_name)
 
-        ws_secret = secrets_mod.token_hex(32)
         exec_cmd = ["openshell", "sandbox", "exec", "-n",
                      sandbox_name] + ws_args + ["--no-tty", "--"]
+
+        log("Generating shared secret inside sandbox...")
+        self.sh.run(
+            exec_cmd + ["sh", "-c",
+                        "mkdir -p /sandbox/.codex && "
+                        "python3 -c 'import secrets; "
+                        "print(secrets.token_hex(32), end=\"\")' "
+                        "> /sandbox/.codex/ws-secret && "
+                        "chmod 600 /sandbox/.codex/ws-secret"],
+            check=False)
+
+        rc, ws_secret, _ = self.sh.run(
+            exec_cmd + ["cat", "/sandbox/.codex/ws-secret"],
+            check=False)
+        ws_secret = re.sub(r'\x1b\[[0-9;]*m', '', ws_secret or "").strip()
 
         log("Configuring Codex (auth, model, sandbox bypass, bwrap stub)...")
         self.sh.run(
             exec_cmd + ["sh", "-c",
-                        "mkdir -p /sandbox/.codex /sandbox/.local/bin && "
-                        f"printf '%s' '{ws_secret}' > /sandbox/.codex/ws-secret && "
-                        "chmod 600 /sandbox/.codex/ws-secret && "
+                        "mkdir -p /sandbox/.local/bin && "
                         "printf '{\"auth_mode\":\"apikey\",\"OPENAI_API_KEY\":\"%s\"}' "
                         "\"$OPENAI_API_KEY\" > /sandbox/.codex/auth.json && "
                         "printf 'model = \"gpt-5.6-terra\"\\n"
@@ -730,12 +741,14 @@ class WorkspaceDeployer:
             time.sleep(3)
 
         log("Saving Codex shared secret to VM host...")
+        secret_dir = f"/home/cloud-user/.codex-secrets/{sandbox_name}"
+        secret_path = f"{secret_dir}/ws-secret"
         self.sh.run([
             "bash", "-c",
-            f"mkdir -p /home/cloud-user/.codex-secrets/{sandbox_name} && "
-            f"printf '%s' '{ws_secret}' "
-            f"> /home/cloud-user/.codex-secrets/{sandbox_name}/ws-secret && "
-            f"chmod 600 /home/cloud-user/.codex-secrets/{sandbox_name}/ws-secret"
+            f"mkdir -p {secret_dir} && chmod 700 {secret_dir} && "
+            f"openshell sandbox exec -n {sandbox_name} --no-tty -- "
+            f"cat /sandbox/.codex/ws-secret > {secret_path} && "
+            f"chmod 600 {secret_path}"
         ], check=False)
 
 

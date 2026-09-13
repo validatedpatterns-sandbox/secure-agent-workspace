@@ -1,12 +1,19 @@
 """OIDC token validation against Keycloak JWKS."""
 
 import time
+from dataclasses import dataclass
 
 import httpx
 from fastapi import HTTPException, Request
 from jose import JWTError, jwt
 
 from . import config
+
+
+@dataclass
+class UserInfo:
+    sub: str
+    username: str
 
 _jwks_cache: dict | None = None
 _jwks_fetched_at: float = 0.0
@@ -30,8 +37,8 @@ async def _fetch_jwks() -> dict:
         return _jwks_cache
 
 
-async def get_current_user(request: Request) -> str:
-    """Extract and validate the Bearer token, return the username."""
+async def get_current_user(request: Request) -> UserInfo:
+    """Extract and validate the Bearer token, return user info."""
     auth_header = request.headers.get("authorization", "")
     if not auth_header.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Missing Bearer token")
@@ -59,10 +66,11 @@ async def get_current_user(request: Request) -> str:
             issuer=config.OIDC_ISSUER_URL,
             options={"verify_at_hash": False},
         )
-        username = payload.get("preferred_username") or payload.get("sub")
-        if not username:
-            raise HTTPException(status_code=401, detail="No username in token")
-        return username
+        sub = payload.get("sub")
+        if not sub:
+            raise HTTPException(status_code=401, detail="No sub claim in token")
+        username = payload.get("preferred_username") or sub
+        return UserInfo(sub=sub, username=username)
 
     except JWTError as e:
         raise HTTPException(status_code=401, detail=f"Invalid token: {e}") from e

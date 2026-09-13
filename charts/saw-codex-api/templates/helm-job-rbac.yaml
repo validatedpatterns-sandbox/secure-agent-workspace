@@ -93,6 +93,11 @@ rules:
   - apiGroups: ["console.openshift.io"]
     resources: ["consoleclidownloads"]
     verbs: ["get"]
+  # SAW chart's registry-reader ClusterRole needs this permission
+  - apiGroups: ["route.openshift.io"]
+    resources: ["routes"]
+    resourceNames: ["default-route"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

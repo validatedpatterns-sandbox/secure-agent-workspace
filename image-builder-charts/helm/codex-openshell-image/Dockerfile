@@ -11,6 +11,7 @@ FROM quay.io/aipcc/base-images/agentic/codex:latest
 
 USER 0
 
+COPY --from=tools /usr/bin/curl /usr/bin/curl
 COPY --from=tools /usr/bin/python3 /usr/bin/python3
 COPY --from=tools /usr/bin/nsenter /usr/bin/nsenter
 COPY --from=tools /usr/sbin/ip /usr/sbin/ip

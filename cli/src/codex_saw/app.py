@@ -174,6 +174,15 @@ class SessionsScreen(Screen):
 
     def _render_table(self):
         table = self.query_one("#sessions-table", DataTable)
+
+        # Remember current selection
+        selected_key = None
+        try:
+            row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
+            selected_key = row_key.value if hasattr(row_key, "value") else str(row_key)
+        except Exception:
+            pass
+
         table.clear()
 
         filtered = [
@@ -187,14 +196,21 @@ class SessionsScreen(Screen):
             reverse=self._sort_reverse,
         )
 
-        for s in filtered:
+        restore_row = None
+        for i, s in enumerate(filtered):
+            name = s.get("name", "")
+            if name == selected_key:
+                restore_row = i
             table.add_row(
-                s.get("name", ""),
+                name,
                 s.get("status", ""),
                 _to_local_time(s.get("created", "")),
                 s.get("ws_url", ""),
                 key=s.get("name", ""),
             )
+
+        if restore_row is not None and restore_row < table.row_count:
+            table.move_cursor(row=restore_row)
 
     def action_new_session(self):
         def on_result(name: str | None):

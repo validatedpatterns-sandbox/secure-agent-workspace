@@ -3,6 +3,7 @@
 import os
 import secrets as secrets_mod
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -23,6 +24,17 @@ from textual.widgets import (
 
 from . import auth, config
 from .api_client import SawCodexClient
+
+
+def _to_local_time(iso_str: str) -> str:
+    if not iso_str:
+        return ""
+    try:
+        utc = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        local = utc.astimezone()
+        return local.strftime("%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        return iso_str
 
 
 class LoginScreen(Screen):
@@ -113,7 +125,7 @@ class SessionsScreen(Screen):
                 table.add_row(
                     s.get("name", ""),
                     s.get("status", ""),
-                    s.get("created", ""),
+                    _to_local_time(s.get("created", "")),
                     s.get("ws_url", ""),
                     key=s.get("name", ""),
                 )

@@ -113,23 +113,43 @@ class SessionsScreen(Screen):
         table.add_columns("NAME", "STATUS", "CREATED", "URL")
         table.cursor_type = "row"
         self.query_one("#search-input", Input).display = False
+        table.focus()
         self.load_sessions()
         self.set_interval(10, self.load_sessions)
 
     def action_search(self):
         search = self.query_one("#search-input", Input)
-        search.display = not search.display
         if search.display:
-            search.focus()
-            search.value = self._filter
+            self._close_search()
         else:
-            self._filter = ""
-            self._render_table()
+            search.display = True
+            search.value = self._filter
+            search.focus()
+
+    def _close_search(self):
+        search = self.query_one("#search-input", Input)
+        search.display = False
+        self._filter = ""
+        self._render_table()
+        self.query_one("#sessions-table", DataTable).focus()
 
     def on_input_changed(self, event: Input.Changed):
         if event.input.id == "search-input":
             self._filter = event.value.strip().lower()
             self._render_table()
+
+    def on_input_submitted(self, event: Input.Submitted):
+        if event.input.id == "search-input":
+            search = self.query_one("#search-input", Input)
+            search.display = False
+            self.query_one("#sessions-table", DataTable).focus()
+
+    def on_key(self, event) -> None:
+        search = self.query_one("#search-input", Input)
+        if search.display and event.key == "escape":
+            self._close_search()
+            event.prevent_default()
+            event.stop()
 
     def action_sort(self):
         if self._sort_by == "created":
@@ -304,9 +324,8 @@ class CodexSawApp(App):
         background: $surface;
     }
     #search-input {
-        height: 1;
-        margin: 0 0 0 0;
-        dock: top;
+        height: 3;
+        margin: 0 0 1 0;
     }
     """
 

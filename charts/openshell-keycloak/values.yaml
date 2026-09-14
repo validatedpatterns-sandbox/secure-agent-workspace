@@ -34,8 +34,10 @@ keycloak:
       # redirect URI onto this client via the Keycloak Admin API instead (see
       # charts/openshell-saw/templates/configmap-scripts.yaml, run-setup.sh).
       # These are just the initial (empty) values before any sandbox exists.
-      redirectUris: []
-      webOrigins: []
+      redirectUris:
+        - "http://localhost:8080/oauth2/callback"
+      webOrigins:
+        - "http://localhost:8080"
 
   testUsers:
     - username: developer

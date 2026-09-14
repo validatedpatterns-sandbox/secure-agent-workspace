@@ -533,28 +533,44 @@ governance-demo: .check-saw-name ## Run governance interceptor demo
 # --- Codex ---
 
 codex-setup: check-prereqs generate-keys ## Full Codex setup: build images, deploy API, create sandbox
-	@echo "=== Step 1/7: Copy base images ==="
+	@echo "=== Step 1/9: Copy base images ==="
 	$(MAKE) copy-images
 	@echo ""
-	@echo "=== Step 2/7: Deploy Keycloak ==="
+	@echo "=== Step 2/9: Deploy Keycloak ==="
 	$(MAKE) keycloak
 	@echo ""
-	@echo "=== Step 3/7: Deploy governance ==="
+	@echo "=== Step 3/9: Deploy governance ==="
 	helm upgrade --install governance-policy charts/governance-policy -n $(NS)
 	helm upgrade --install governance-interceptor charts/governance-interceptor -n $(NS)
 	@echo ""
-	@echo "=== Step 4/7: Build codex-openshell image ==="
+	@echo "=== Step 4/9: Build codex-openshell image ==="
 	$(MAKE) build-codex-openshell-local
 	@echo ""
-	@echo "=== Step 5/7: Build and deploy saw-codex-api ==="
+	@echo "=== Step 5/9: Build and deploy saw-codex-api ==="
 	$(MAKE) codex-deploy-api
 	@echo ""
-	@echo "=== Step 6/7: Deploy saw-bom with codex profile ==="
+	@echo "=== Step 6/9: Create SSH secrets ==="
+	$(MAKE) ssh-secret
+	@echo ""
+	@echo "=== Step 7/9: Deploy saw-bom with codex profile ==="
 	helm upgrade --install saw-bom charts/saw-bom -n $(NS) --set 'profiles={codex}'
 	@echo ""
-	@echo "=== Step 7/7: Authenticate ==="
+	@echo "=== Step 8/9: Authenticate ==="
 	$(MAKE) login
 	@echo ""
+	@echo "=== Step 9/9: Check inference secret ==="
+	@if ! oc get secret inference -n $(NS) >/dev/null 2>&1; then \
+		echo ""; \
+		echo "  WARNING: Inference secret not found. Create it now:"; \
+		echo ""; \
+		echo "    kubectl create secret generic inference -n $(NS) \\"; \
+		echo "      --from-literal=provider=openai \\"; \
+		echo "      --from-literal=model=gpt-5.6-terra \\"; \
+		echo "      --from-literal=api_key=sk-YOUR-OPENAI-KEY"; \
+		echo ""; \
+	else \
+		echo "  Inference secret already exists."; \
+	fi
 	@echo ""
 	@echo "=== Configure client ==="
 	$(MAKE) codex-configure-client
@@ -579,35 +595,36 @@ codex-deploy-api: build-saw-codex-api-local ## Build and deploy the saw-codex-ap
 	echo "API URL: $$(oc get route saw-codex-api -n $(NS) -o jsonpath='https://{.spec.host}' 2>/dev/null)"; \
 	echo "Health:  $$(oc get route saw-codex-api -n $(NS) -o jsonpath='https://{.spec.host}' 2>/dev/null)/health"
 
-codex-deploy-sandbox: .check-saw-name .check-ssh-key ssh-secret ## Create a Codex sandbox VM (OPENSHELL_SAW_NAME= required)
-	@OIDC_ISSUER=$$($(MAKE) -s keycloak-issuer 2>/dev/null); \
-	OIDC_TOKEN=$$(OIDC_TOKEN_DIR="$(OIDC_TOKEN_DIR)" OIDC_CLIENT_ID="$(OIDC_CLIENT_ID)" \
-		OIDC_ISSUER="$$OIDC_ISSUER" NS="$(NS)" "$(SCRIPTS_DIR)/oidc-login.sh" token 2>/dev/null || true); \
+codex-deploy-sandbox: .check-saw-name ## Create a Codex sandbox VM via CodexSession CR (OPENSHELL_SAW_NAME= required)
+	@OIDC_TOKEN=$$(OIDC_TOKEN_DIR="$(OIDC_TOKEN_DIR)" OIDC_CLIENT_ID="$(OIDC_CLIENT_ID)" \
+		NS="$(NS)" "$(SCRIPTS_DIR)/oidc-login.sh" token 2>/dev/null || true); \
 	if [ -z "$$OIDC_TOKEN" ]; then \
 		echo "Error: Not authenticated. Run 'make login' first."; \
 		exit 1; \
 	fi; \
-	OWNER=$$(jq -r '.access_token // empty' "$(OIDC_TOKEN_DIR)/token.json" 2>/dev/null \
+	SUB=$$(jq -r '.access_token // empty' "$(OIDC_TOKEN_DIR)/token.json" 2>/dev/null \
+		| python3 -c "import sys,base64,json; t=sys.stdin.read().strip().split('.')[1]; t+='='*(4-len(t)%4); print(json.loads(base64.urlsafe_b64decode(t)).get('sub',''))" 2>/dev/null); \
+	USERNAME=$$(jq -r '.access_token // empty' "$(OIDC_TOKEN_DIR)/token.json" 2>/dev/null \
 		| python3 -c "import sys,base64,json; t=sys.stdin.read().strip().split('.')[1]; t+='='*(4-len(t)%4); print(json.loads(base64.urlsafe_b64decode(t)).get('preferred_username',''))" 2>/dev/null); \
-	echo "Deploying Codex sandbox '$(OPENSHELL_SAW_NAME)' for owner '$$OWNER'..."; \
-	helm upgrade --install $(OPENSHELL_SAW_NAME) $(SAW_CHART) \
-		--namespace $(NS) \
-		--set sandboxName=$(OPENSHELL_SAW_NAME) \
-		--set "sshPublicKey=$(SSH_PUBKEY)" \
-		--set agent=codex \
-		--set containerRuntime=docker \
-		--set route.enabled=true \
-		--set route.codex=true \
-		--set route.dashboard=true \
-		--set "accessControl.owner=$$OWNER" \
-		--set "oidc.issuerUrl=$$OIDC_ISSUER" \
-		--set "oidc.clientId=$(OIDC_CLIENT_ID)" \
-		--set-string "oidc.token=$$OIDC_TOKEN" \
-		--set governance.enabled=true \
-		--set internalRegistry.allowAnonymousPull=true; \
-	echo ""; \
-	echo "Monitor: make openshell-saw-logs OPENSHELL_SAW_NAME=$(OPENSHELL_SAW_NAME)"; \
-	echo "TUI:     codex-saw"
+	echo "Creating Codex sandbox '$(OPENSHELL_SAW_NAME)' for $$USERNAME ($$SUB)..."; \
+	oc create secret generic "$(OPENSHELL_SAW_NAME)-oidc-token" \
+		--from-literal=token="$$OIDC_TOKEN" \
+		-n $(NS) --dry-run=client -o yaml | oc apply -f - 2>/dev/null; \
+	oc apply -f - <<CREOF; \
+	apiVersion: saw.redhat.com/v1alpha1\n\
+	kind: CodexSession\n\
+	metadata:\n\
+	  name: $(OPENSHELL_SAW_NAME)\n\
+	  namespace: $(NS)\n\
+	spec:\n\
+	  name: $(OPENSHELL_SAW_NAME)\n\
+	  owner: $$SUB\n\
+	CREOF
+	@echo ""
+	@echo "Session '$(OPENSHELL_SAW_NAME)' created. The controller will provision the VM."
+	@echo ""
+	@echo "Monitor: oc get codexsession $(OPENSHELL_SAW_NAME) -n $(NS)"
+	@echo "TUI:     codex-saw"
 
 codex-configure-client: ## Generate ~/.config/codex-saw/config.yaml from the cluster
 	@API_URL=$$(oc get route saw-codex-api -n $(NS) -o jsonpath='https://{.spec.host}' 2>/dev/null); \
@@ -625,10 +642,12 @@ codex-configure-client: ## Generate ~/.config/codex-saw/config.yaml from the clu
 	echo "Install the TUI: cd cli && pip3 install -e '.[codex]'"; \
 	echo "Run:             codex-saw"
 
-codex-delete: .check-saw-name ## Delete a Codex sandbox and clean up secrets
-	helm uninstall $(OPENSHELL_SAW_NAME) -n $(NS) 2>/dev/null || true
-	oc delete secret $(OPENSHELL_SAW_NAME)-cloudinit $(OPENSHELL_SAW_NAME)-codex-secret -n $(NS) 2>/dev/null || true
-	@echo "Codex sandbox '$(OPENSHELL_SAW_NAME)' deleted."
+codex-delete: .check-saw-name ## Delete a Codex sandbox via CodexSession CR (controller handles cleanup)
+	@echo "Deleting Codex sandbox '$(OPENSHELL_SAW_NAME)'..."
+	oc delete codexsession $(OPENSHELL_SAW_NAME) -n $(NS)
+	@echo "Session '$(OPENSHELL_SAW_NAME)' deletion in progress."
+	@echo "The controller will run helm uninstall and clean up secrets."
+	@echo "Monitor: oc get codexsession -n $(NS)"
 
 # --- Test ---
 

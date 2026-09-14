@@ -25,7 +25,7 @@ spec:
               protocol: TCP
           env:
             - name: OIDC_ISSUER_URL
-              value: {{ .Values.oidc.issuerUrl | quote }}
+              value: {{ include "saw-codex-api.oidcIssuerUrl" . | quote }}
             - name: OIDC_CLIENT_ID
               value: {{ .Values.oidc.clientId | quote }}
             - name: MANAGED_NAMESPACE

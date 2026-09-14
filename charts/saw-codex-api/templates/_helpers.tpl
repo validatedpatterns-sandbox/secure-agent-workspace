@@ -19,3 +19,17 @@ app.kubernetes.io/part-of: openshell-cnv-fedora
 app.kubernetes.io/name: {{ include "saw-codex-api.fullname" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
+
+{{/*
+Resolve the OIDC issuer URL.
+Priority: explicit oidc.issuerUrl > computed from global.clusterDomain.
+*/}}
+{{- define "saw-codex-api.oidcIssuerUrl" -}}
+{{- if .Values.oidc.issuerUrl -}}
+  {{- .Values.oidc.issuerUrl -}}
+{{- else if .Values.global -}}
+  {{- if .Values.global.clusterDomain -}}
+    {{- printf "https://openshell-keycloak-ingress-%s.apps.%s/realms/openshell" .Release.Namespace .Values.global.clusterDomain -}}
+  {{- end -}}
+{{- end -}}
+{{- end }}

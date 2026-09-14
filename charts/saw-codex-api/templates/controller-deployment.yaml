@@ -29,7 +29,7 @@ spec:
             - name: SAW_CHART_PATH
               value: {{ .Values.sawChartPath | quote }}
             - name: OIDC_ISSUER_URL
-              value: {{ .Values.oidc.issuerUrl | quote }}
+              value: {{ include "saw-codex-api.oidcIssuerUrl" . | quote }}
             - name: MAX_SESSIONS_PER_USER
               value: {{ .Values.controller.maxSessionsPerUser | quote }}
           resources:

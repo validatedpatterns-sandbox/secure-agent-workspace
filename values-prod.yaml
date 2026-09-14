@@ -83,6 +83,13 @@ clusterGroup:
       name: saw-bom
       namespace: openshell-agents
       path: charts/saw-bom
+      overrides:
+        - name: profiles
+          value: '{data-science,codex}'
+    saw-codex-api:
+      name: saw-codex-api
+      namespace: openshell-agents
+      path: charts/saw-codex-api
     openshell-saw:
       name: openshell-saw
       namespace: openshell-agents

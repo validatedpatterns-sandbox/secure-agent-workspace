@@ -1,0 +1,100 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: saw-delete-sandbox
+  namespace: {{ .Values.pipelines.namespace }}
+  labels:
+    app.kubernetes.io/part-of: openshell-rhdh
+spec:
+  params:
+    - name: sandbox-name
+      type: string
+    - name: owner
+      type: string
+  tasks:
+    - name: verify-and-delete
+      params:
+        - name: sandbox-name
+          value: $(params.sandbox-name)
+        - name: owner
+          value: $(params.owner)
+      taskSpec:
+        params:
+          - name: sandbox-name
+            type: string
+          - name: owner
+            type: string
+        steps:
+          - name: verify-owner
+            image: alpine/k8s:1.31.3
+            env:
+              - name: SANDBOX_NAME
+                value: "$(params.sandbox-name)"
+              - name: OWNER
+                value: "$(params.owner)"
+            script: |
+              #!/bin/sh
+              set -e
+              RELEASE="saw-${SANDBOX_NAME}"
+              NS="{{ .Values.pipelines.namespace }}"
+
+              ACTUAL_OWNER=$(helm get values "$RELEASE" -n "$NS" -o json 2>/dev/null \
+                | python3 -c "import json,sys; print(json.load(sys.stdin).get('accessControl',{}).get('owner',''))" 2>/dev/null || echo "")
+
+              if [ -z "$ACTUAL_OWNER" ]; then
+                echo "ERROR: Sandbox ${SANDBOX_NAME} not found"
+                exit 1
+              fi
+              if [ "$ACTUAL_OWNER" != "${OWNER}" ]; then
+                echo "ERROR: Sandbox owned by '$ACTUAL_OWNER', not '${OWNER}'"
+                exit 1
+              fi
+              echo "Owner verified: ${OWNER}"
+          - name: helm-uninstall
+            image: alpine/k8s:1.31.3
+            env:
+              - name: SANDBOX_NAME
+                value: "$(params.sandbox-name)"
+            script: |
+              #!/bin/sh
+              set -e
+              RELEASE="saw-${SANDBOX_NAME}"
+              NS="{{ .Values.pipelines.namespace }}"
+
+              echo "Deleting sandbox ${SANDBOX_NAME}..."
+              helm uninstall "$RELEASE" -n "$NS" --wait || true
+
+              echo "Cleaning up resources..."
+              kubectl -n "$NS" delete pvc -l openshell.io/sandbox="${SANDBOX_NAME}" --ignore-not-found
+              kubectl -n "$NS" delete secret "saw-${SANDBOX_NAME}-inference-key" --ignore-not-found
+
+              echo "Removing catalog entity..."
+              RHDH_NS="{{ .Values.namespace }}"
+              for attempt in 1 2 3; do
+                CM=$(kubectl -n "$RHDH_NS" get configmap rhdh-sandbox-entities -o json 2>/dev/null || echo "")
+                if [ -z "$CM" ]; then
+                  echo "Catalog ConfigMap not found, skipping."
+                  break
+                fi
+                CATALOG=$(echo "$CM" | jq -r '.data["catalog.yaml"] // ""')
+                if [ -z "$CATALOG" ]; then
+                  echo "Catalog is empty, nothing to remove."
+                  break
+                fi
+                CLEANED=$(printf '%s\n' "$CATALOG" | awk -v name="saw-${SANDBOX_NAME}" '
+                  BEGIN {skip=0; buf=""}
+                  /^---/ {
+                    if (!skip && buf != "") print buf
+                    buf="---"; skip=0; next
+                  }
+                  /^  name: / {if ($2 == name) skip=1}
+                  {if (buf != "") buf=buf "\n" $0; else buf=$0}
+                  END {if (!skip && buf != "") print buf}
+                ')
+                echo "$CM" | jq --arg c "$CLEANED" '.data["catalog.yaml"]=$c' | \
+                  kubectl replace -f - && break
+                echo "Conflict on attempt $attempt, retrying..."
+                sleep 1
+              done
+
+              echo "Sandbox ${SANDBOX_NAME} deleted."

@@ -63,6 +63,18 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
 	@echo "Checking operators..."
 	@oc get csv -n openshift-cnv 2>/dev/null | grep -q kubevirt || { echo "Error: OpenShift Virtualization not installed."; exit 1; }
 	@echo "  OpenShift Virtualization: installed"
+	@if ! oc get hyperconverged kubevirt-hyperconverged -n openshift-cnv >/dev/null 2>&1; then \
+		echo "  HyperConverged CR: creating..."; \
+		oc apply -f - <<< '{"apiVersion":"hco.kubevirt.io/v1beta1","kind":"HyperConverged","metadata":{"name":"kubevirt-hyperconverged","namespace":"openshift-cnv"},"spec":{}}' >/dev/null 2>&1; \
+		echo "  HyperConverged CR: created (waiting for it to become available)"; \
+		for i in $$(seq 1 40); do \
+			AVAIL=$$(oc get hyperconverged kubevirt-hyperconverged -n openshift-cnv -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null); \
+			if [ "$$AVAIL" = "True" ]; then echo "  HyperConverged: ready"; break; fi; \
+			sleep 15; \
+		done; \
+	else \
+		echo "  HyperConverged CR: exists"; \
+	fi
 	@if oc get csv -n $(NS) 2>/dev/null | grep -q rhbk; then \
 		echo "  RHBK (Keycloak): installed in $(NS)"; \
 	elif oc get csv --all-namespaces 2>/dev/null | grep -q rhbk; then \

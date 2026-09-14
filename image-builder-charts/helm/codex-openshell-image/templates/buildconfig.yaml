@@ -28,6 +28,10 @@ spec:
     type: Docker
     dockerStrategy:
       forcePull: true
+      {{- if .Values.build.pullSecret }}
+      pullSecret:
+        name: {{ .Values.build.pullSecret }}
+      {{- end }}
   output:
     to:
       kind: ImageStreamTag

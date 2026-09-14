@@ -297,6 +297,84 @@ You can set `OPENSHELL_SAW_NAME` once via `export` and all `openshell-saw-*` tar
 
 > **Sandbox name limit:** `OPENSHELL_SAW_NAME` must be **19 characters or fewer**. OpenShell rejects longer names with "name exceeds maximum length". The Helm chart and `make openshell-saw-create` will both fail fast with a clear error if this limit is exceeded.
 
+### Codex Agent Quickstart
+
+Run OpenAI's Codex coding agent inside a sandboxed VM managed by OpenShell.
+Users connect from their local `codex --remote` CLI via a terminal UI (`codex-saw`).
+
+#### Prerequisites
+
+- Complete the base quickstart above (operators, Keycloak, governance)
+- An OpenAI API key
+
+#### Setup (one command)
+
+```bash
+make codex-setup
+```
+
+This deploys: codex-openshell sandbox image, `saw-codex-api` REST service,
+`saw-bom` with the codex profile, Keycloak authentication, governance policies,
+and generates the client configuration.
+
+#### Create the inference secret
+
+```bash
+kubectl create secret generic inference -n openshell-agents \
+  --from-literal=provider=openai \
+  --from-literal=model=gpt-5.6-terra \
+  --from-literal=api_key=sk-YOUR-OPENAI-KEY
+```
+
+#### Install the TUI client
+
+```bash
+cd cli && pip3 install -e '.[codex]'
+```
+
+#### Launch the TUI
+
+```bash
+codex-saw
+```
+
+Keybindings:
+- **n** — Create new sandbox
+- **Enter** — Connect to sandbox (resumes last session)
+- **d** — Delete sandbox
+- **/** — Search/filter by name
+- **s** — Toggle sort (newest first / alphabetical)
+- **l** — Logout
+- **q** — Quit
+
+#### Architecture
+
+Each user gets an isolated KubeVirt VM running OpenShell with a Codex
+sandbox inside. The `saw-codex-api` service manages session lifecycle
+via a Kubernetes controller (CodexSession CRD). Users authenticate via
+OIDC (Keycloak) and never need cluster access.
+
+```
+codex-saw TUI → saw-codex-api (OIDC auth) → CodexSession CR
+  → Controller (helm install) → KubeVirt VM → OpenShell sandbox
+    → codex app-server (WebSocket) → user connects via codex --remote
+```
+
+#### Makefile targets
+
+| Target | Description |
+|--------|-------------|
+| `make codex-setup` | Full end-to-end deployment |
+| `make codex-deploy-sandbox OPENSHELL_SAW_NAME=...` | Create a sandbox via CR |
+| `make codex-delete OPENSHELL_SAW_NAME=...` | Delete a sandbox via CR |
+| `make codex-configure-client` | Generate `~/.config/codex-saw/config.yaml` |
+| `make build-codex-openshell-local` | Rebuild the sandbox container image |
+| `make build-saw-codex-api-local` | Rebuild the API service image |
+
+> **Note:** Sessions created via `make codex-deploy-sandbox` and sessions
+> created via the TUI are equivalent — both use the CodexSession CRD and
+> controller.
+
 #### Supported inference providers
 
 | Provider | Key | Example model |

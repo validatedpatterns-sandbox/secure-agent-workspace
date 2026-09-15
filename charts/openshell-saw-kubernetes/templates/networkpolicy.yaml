@@ -31,11 +31,15 @@ spec:
           protocol: TCP
         - port: 8080
           protocol: TCP
-    # From agent pods (supervisor relay callback)
+        - port: 8081
+          protocol: TCP
+    # From agent pods and provisioning Job (supervisor relay + health check)
     - from:
         - podSelector: {}
       ports:
         - port: 8080
+          protocol: TCP
+        - port: 8081
           protocol: TCP
 ---
 # Allow ingress to agent pods from the gateway pod only.

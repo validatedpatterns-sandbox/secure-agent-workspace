@@ -156,7 +156,7 @@ def list_user_vms(username: str) -> list[Session]:
             if sess_ns:
                 ws_url = _get_route_url(name, sess_ns)
                 try:
-                    v1.read_namespaced_secret("codex-ws-secret", sess_ns)
+                    v1.read_namespaced_secret(f"{name}-codex-secret", sess_ns)
                     has_secret = True
                 except client.ApiException:
                     pass
@@ -176,7 +176,8 @@ def list_user_vms(username: str) -> list[Session]:
 
 def _get_route_url(name: str, namespace: str) -> str | None:
     custom = client.CustomObjectsApi()
-    route_name = f"{name}-codex"
+    # K8s sessions use short route name "codex", VM sessions use "{name}-codex"
+    route_name = "codex" if namespace.startswith("saw-") else f"{name}-codex"
     try:
         route = custom.get_namespaced_custom_object(
             group="route.openshift.io",
@@ -205,7 +206,9 @@ def get_codex_secret(name: str, namespace: str | None = None) -> str | None:
     if namespace and namespace != config.MANAGED_NAMESPACE:
         # K8s backend: secret is in session namespace
         try:
-            secret = v1.read_namespaced_secret("codex-ws-secret", namespace)
+            secret = v1.read_namespaced_secret(
+                f"{name}-codex-secret", namespace
+            )
             encoded = secret.data.get("ws-secret", "")
             return base64.b64decode(encoded).decode() if encoded else None
         except client.ApiException:
@@ -283,8 +286,7 @@ def create_session_cr(
             logger.warning("Failed to create OIDC token secret: %s", e)
 
     spec = {"name": name, "owner": owner}
-    if backend != "vm":
-        spec["runtime"] = {"backend": backend}
+    spec["runtime"] = {"backend": backend}
 
     try:
         custom.create_namespaced_custom_object(

@@ -81,7 +81,16 @@ class CreateSessionScreen(ModalScreen[tuple | None]):
             yield Static("Press [bold]Enter[/bold] to create, [bold]Escape[/bold] to cancel")
 
     def on_input_submitted(self, event: Input.Submitted):
-        name = event.value.strip()
+        self._submit()
+
+    def on_key(self, event):
+        if event.key == "enter" and not isinstance(self.focused, Input):
+            event.prevent_default()
+            event.stop()
+            self._submit()
+
+    def _submit(self):
+        name = self.query_one("#session-name", Input).value.strip()
         if name:
             radio = self.query_one("#backend-select", RadioSet)
             backend = "kubernetes" if radio.pressed_index == 0 else "vm"

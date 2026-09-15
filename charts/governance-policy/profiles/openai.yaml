@@ -1,6 +1,6 @@
 display_name: OpenAI
 description: OpenAI API access for Codex agent
-provider_type: codex
+provider_type: openai
 category: other
 credentials:
   - name: api_key

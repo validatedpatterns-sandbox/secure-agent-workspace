@@ -9,13 +9,13 @@ data:
     #!/bin/bash
     set -euo pipefail
 
-    GATEWAY="https://{{ include "openshell-k8s.fullname" . }}-gateway.{{ .Release.Namespace }}.svc:8080"
+    GATEWAY="http://{{ include "openshell-k8s.fullname" . }}-gateway.{{ .Release.Namespace }}.svc:8080"
+    HEALTH="http://{{ include "openshell-k8s.fullname" . }}-gateway.{{ .Release.Namespace }}.svc:8081"
     SANDBOX_IMAGE="{{ .Values.sandboxImage }}"
 
     echo "=== Waiting for gateway ==="
     for i in $(seq 1 30); do
-      if wget -q --spider --no-check-certificate "${GATEWAY/https/http}/../:8081/healthz" 2>/dev/null || \
-         curl -skf "$(echo $GATEWAY | sed 's|:8080|:8081|')/healthz" 2>/dev/null; then
+      if curl -sf "${HEALTH}/healthz" 2>/dev/null; then
         echo "Gateway ready"
         break
       fi
@@ -24,38 +24,27 @@ data:
     done
 
     echo "=== Registering gateway ==="
-    openshell gateway add "$GATEWAY" --name session --gateway-insecure 2>&1 || true
+    openshell gateway add "$GATEWAY" --name session 2>&1 || true
 
-    echo "=== Authenticating ==="
-    # Use OIDC token if available
-    if [ -f /etc/oidc/token ]; then
-      OIDC_TOKEN=$(cat /etc/oidc/token)
-      GW_DIR="$HOME/.config/openshell/gateways/session"
-      mkdir -p "$GW_DIR"
-      python3 -c "
-    import json
-    gt = {'access_token': '$OIDC_TOKEN', 'issuer': '{{ include "openshell-k8s.oidcIssuerUrl" . }}', 'client_id': '{{ .Values.oidc.clientId }}'}
-    json.dump(gt, open('$GW_DIR/oidc_token.json','w'))
-    " 2>/dev/null && echo "OIDC token configured" || echo "WARN: OIDC token setup failed"
-    fi
+    echo "=== Enabling providers v2 ==="
+    openshell --gateway session settings set --global --key providers_v2_enabled --value true --yes 2>&1 || true
 
     echo "=== Creating workspace ==="
-    openshell --gateway session --gateway-insecure workspace member add \
+    openshell --gateway session workspace member add \
       --workspace default --subject openshell-client --role admin 2>&1 || true
 
     echo "=== Creating provider: openai ==="
-    # Read the API key from the inference secret if mounted
     OPENAI_KEY=""
     if [ -f /etc/inference/api_key ]; then
       OPENAI_KEY=$(cat /etc/inference/api_key)
     fi
     if [ -n "$OPENAI_KEY" ]; then
-      openshell --gateway session --gateway-insecure \
+      openshell --gateway session \
         provider create --name openai --type openai --credential "OPENAI_API_KEY=$OPENAI_KEY" 2>&1 || true
     fi
 
     echo "=== Creating provider: github ==="
-    openshell --gateway session --gateway-insecure \
+    openshell --gateway session \
       provider create --name github --type github --credential "GITHUB_TOKEN=anonymous" 2>&1 || true
 
     echo "=== Creating sandbox ==="
@@ -63,7 +52,7 @@ data:
     [ -n "$OPENAI_KEY" ] && PROVIDER_ARGS="$PROVIDER_ARGS --provider openai"
     PROVIDER_ARGS="$PROVIDER_ARGS --provider github"
 
-    openshell --gateway session --gateway-insecure \
+    openshell --gateway session \
       sandbox create --name codex \
       --from "$SANDBOX_IMAGE" \
       $PROVIDER_ARGS \
@@ -71,7 +60,7 @@ data:
 
     # Wait for sandbox Ready
     for i in $(seq 1 40); do
-      STATUS=$(openshell --gateway session --gateway-insecure sandbox list 2>&1 | grep codex | grep -o "Ready" || true)
+      STATUS=$(openshell --gateway session sandbox list 2>&1 | grep codex | grep -o "Ready" || true)
       if [ "$STATUS" = "Ready" ]; then
         echo "Sandbox ready"
         break
@@ -81,13 +70,13 @@ data:
     done
 
     echo "=== Configuring Codex ==="
-    EXEC="openshell --gateway session --gateway-insecure sandbox exec -n codex --no-tty --"
+    EXEC="openshell --gateway session sandbox exec -n codex --no-tty --"
 
     # Generate ws-secret inside sandbox
     $EXEC sh -c 'mkdir -p /sandbox/.codex && python3 -c "import secrets; print(secrets.token_hex(32), end=str())" > /sandbox/.codex/ws-secret && chmod 600 /sandbox/.codex/ws-secret' 2>&1
 
     # Write config
-    $EXEC sh -c 'echo "{\"auth_mode\":\"apikey\",\"OPENAI_API_KEY\":\"proxy-managed\"}" > /sandbox/.codex/auth.json' 2>&1
+    $EXEC sh -c 'printf "{\"auth_mode\":\"apikey\",\"OPENAI_API_KEY\":\"%s\"}" "$OPENAI_API_KEY" > /sandbox/.codex/auth.json' 2>&1
     $EXEC sh -c 'printf "model = \"gpt-5.6-terra\"\nsandbox = \"danger-full-access\"\n" > /sandbox/.codex/config.toml' 2>&1
 
     # Create bwrap stub

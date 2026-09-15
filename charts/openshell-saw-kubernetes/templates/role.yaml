@@ -24,7 +24,7 @@ rules:
   # Events for debugging
   - apiGroups: [""]
     resources: ["events"]
-    verbs: ["create"]
+    verbs: ["create", "get", "list", "watch"]
   # PVCs for workspace
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]

@@ -2,7 +2,7 @@
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
-  name: {{ include "openshell-k8s.fullname" . }}-codex
+  name: codex
   labels:
     {{- include "openshell-k8s.labels" . | nindent 4 }}
   annotations:

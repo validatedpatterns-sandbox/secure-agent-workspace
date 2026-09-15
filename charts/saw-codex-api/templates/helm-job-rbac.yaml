@@ -76,10 +76,10 @@ rules:
   - apiGroups: ["apiextensions.k8s.io"]
     resources: ["customresourcedefinitions"]
     verbs: ["get", "list", "watch"]
-  # kopf events
+  # kopf events + K8s chart Role escalation (events list/watch)
   - apiGroups: [""]
     resources: ["events"]
-    verbs: ["create", "patch"]
+    verbs: ["create", "get", "list", "watch", "patch"]
   - apiGroups: ["events.k8s.io"]
     resources: ["events"]
     verbs: ["create"]
@@ -101,6 +101,11 @@ rules:
     resources: ["routes"]
     resourceNames: ["default-route"]
     verbs: ["get"]
+  # K8s backend: bind system:image-puller to session SAs (RBAC escalation)
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    resourceNames: ["system:image-puller"]
+    verbs: ["bind"]
   # K8s backend: manage session namespaces
   - apiGroups: [""]
     resources: ["namespaces"]
@@ -108,7 +113,7 @@ rules:
   # K8s backend: manage secrets/configmaps in session namespaces
   - apiGroups: [""]
     resources: ["secrets", "configmaps"]
-    verbs: ["create", "delete", "get", "list"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
   # K8s backend: read Agent Sandbox CRs
   - apiGroups: ["agents.x-k8s.io"]
     resources: ["sandboxes"]
@@ -128,7 +133,8 @@ rules:
     verbs: ["use"]
   # K8s backend: all resources the session chart creates (RBAC escalation check)
   - apiGroups: [""]
-    resources: ["services", "serviceaccounts", "pods", "pods/log", "persistentvolumeclaims"]
+    resources: ["services", "serviceaccounts", "serviceaccounts/token",
+                "pods", "pods/log", "persistentvolumeclaims"]
     verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
   - apiGroups: ["apps"]
     resources: ["statefulsets"]
@@ -151,6 +157,14 @@ rules:
   - apiGroups: ["authentication.k8s.io"]
     resources: ["tokenreviews"]
     verbs: ["create"]
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["subjectaccessreviews"]
+    verbs: ["create"]
+  # K8s backend: bind system:auth-delegator to gateway SA
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    resourceNames: ["system:auth-delegator"]
+    verbs: ["bind"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

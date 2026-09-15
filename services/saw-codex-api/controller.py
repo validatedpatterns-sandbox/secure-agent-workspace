@@ -357,21 +357,64 @@ def _create_kubernetes(spec, meta, namespace):
             raise
 
     # 2. Copy governance ConfigMaps
-    for cm_name in ["governance-policy", "governance-profiles"]:
+    gov_copies = [
+        ("governance-interceptor-policy", "governance-policy"),
+        ("governance-interceptor-profiles", "governance-profiles"),
+    ]
+    for src_name, dst_name in gov_copies:
         try:
-            src = v1.read_namespaced_config_map(cm_name, MANAGED_NAMESPACE)
+            src = v1.read_namespaced_config_map(src_name, MANAGED_NAMESPACE)
             v1.create_namespaced_config_map(
                 session_ns,
                 client.V1ConfigMap(
-                    metadata=client.V1ObjectMeta(name=cm_name),
+                    metadata=client.V1ObjectMeta(name=dst_name),
                     data=src.data,
                 ),
             )
         except client.ApiException as e:
             if e.status != 409:
-                logger.warning("Failed to copy ConfigMap %s: %s", cm_name, e)
+                logger.warning("Failed to copy ConfigMap %s→%s: %s", src_name, dst_name, e)
 
-    # 3. Generate TLS certs
+    # 2b. Copy inference secret (API keys for providers)
+    try:
+        inf_secret = v1.read_namespaced_secret("inference", MANAGED_NAMESPACE)
+        _create_secret(v1, session_ns, "inference", {
+            k: b64.b64decode(v) for k, v in (inf_secret.data or {}).items()
+        })
+    except client.ApiException:
+        logger.info("No inference secret to copy for %s", session_name)
+
+    # 2c. Grant API SA read access in session namespace
+    try:
+        rbac.create_namespaced_role(session_ns, {
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "Role",
+            "metadata": {"name": "saw-codex-api-reader"},
+            "rules": [
+                {"apiGroups": [""], "resources": ["secrets"], "verbs": ["get"]},
+                {"apiGroups": ["route.openshift.io"], "resources": ["routes"], "verbs": ["get"]},
+            ],
+        })
+        rbac.create_namespaced_role_binding(session_ns, {
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "RoleBinding",
+            "metadata": {"name": "saw-codex-api-reader"},
+            "subjects": [{"kind": "ServiceAccount", "name": "saw-codex-api",
+                          "namespace": MANAGED_NAMESPACE}],
+            "roleRef": {"apiGroup": "rbac.authorization.k8s.io",
+                        "kind": "Role", "name": "saw-codex-api-reader"},
+        })
+    except client.ApiException as e:
+        if e.status != 409:
+            logger.warning("Failed to create API reader RBAC in %s: %s", session_ns, e)
+
+    # 3. Create image-puller RoleBinding in MANAGED_NAMESPACE
+    _create_image_puller_binding(rbac, session_name, session_ns)
+
+    # 4. Create SCC bindings (cluster-scoped)
+    _create_scc_bindings(rbac, session_name, session_ns)
+
+    # 5. Generate TLS certs
     pki = _generate_session_pki(session_name, session_ns)
     _create_secret(v1, session_ns, f"{session_name}-tls", {
         "tls.crt": pki["server_cert"],
@@ -386,23 +429,22 @@ def _create_kubernetes(spec, meta, namespace):
         "ca.crt": pki["ca_cert"],
     })
 
-    # 4. Generate JWT keys
+    # 6. Generate JWT keys
     jwt_keys = _generate_jwt_keys()
     _create_secret(v1, session_ns, f"{session_name}-jwt-keys", jwt_keys)
 
-    # 5. Generate codex WebSocket secret
-    ws_secret = secrets_mod.token_hex(32)
-    _create_secret(v1, session_ns, "codex-ws-secret", {
-        "ws-secret": ws_secret.encode(),
+    # 6b. Generate credential encryption key (base64-encoded 32 random bytes)
+    _create_secret(v1, session_ns, f"{session_name}-credential-key", {
+        "key": b64.b64encode(secrets_mod.token_bytes(32)).decode(),
     })
 
-    # 6. Store OIDC token in session namespace (ephemeral)
+    # 7. Store OIDC token in session namespace (ephemeral)
     if oidc_token:
-        _create_secret(v1, session_ns, "oidc-token", {
+        _create_secret(v1, session_ns, f"{session_name}-oidc-token", {
             "token": oidc_token.encode(),
         })
 
-    # 7. Helm install
+    # 8. Helm install
     _set_status(cr_name, namespace, "Creating",
                 "Running helm install", backend="kubernetes", sess_ns=session_ns)
 
@@ -460,6 +502,21 @@ def _delete_kubernetes(spec, meta, namespace):
         if "not found" not in msg.lower():
             logger.error("K8s helm uninstall failed for %s: %s", session_name, msg)
             raise kopf.TemporaryError(f"helm uninstall failed: {msg}", delay=15)
+
+    # Clean up cluster-scoped resources (not cascade-deleted with namespace)
+    rbac = client.RbacAuthorizationV1Api()
+    for name in [f"scc-anyuid-{session_ns}", f"scc-privileged-{session_ns}",
+                  f"auth-delegator-{session_ns}"]:
+        try:
+            rbac.delete_cluster_role_binding(name)
+        except client.ApiException:
+            pass
+    try:
+        rbac.delete_namespaced_role_binding(
+            f"image-puller-{session_ns}", MANAGED_NAMESPACE
+        )
+    except client.ApiException:
+        pass
 
     # Delete the session namespace (cascade deletes all resources)
     v1 = client.CoreV1Api()
@@ -530,7 +587,7 @@ def _check_k8s_status(spec, meta, namespace):
         route = custom.get_namespaced_custom_object(
             group="route.openshift.io", version="v1",
             namespace=session_ns,
-            plural="routes", name=f"{session_name}-codex",
+            plural="routes", name="codex",
         )
         host = route.get("spec", {}).get("host", "")
         if host:
@@ -551,6 +608,67 @@ def _check_k8s_status(spec, meta, namespace):
 
     _set_status(cr_name, namespace, phase, msg,
                 backend="kubernetes", sess_ns=session_ns)
+
+
+# ---------------------------------------------------------------------------
+# RBAC helpers for K8s backend
+# ---------------------------------------------------------------------------
+
+def _create_image_puller_binding(rbac, session_name: str, session_ns: str):
+    """Create a RoleBinding in MANAGED_NAMESPACE granting image-puller to session SAs."""
+    binding_name = f"image-puller-{session_ns}"
+    body = {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "RoleBinding",
+        "metadata": {"name": binding_name},
+        "subjects": [
+            {"kind": "ServiceAccount", "name": sa, "namespace": session_ns}
+            for sa in ["default", f"{session_name}-gateway", f"{session_name}-sandbox"]
+        ],
+        "roleRef": {
+            "apiGroup": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": "system:image-puller",
+        },
+    }
+    try:
+        rbac.create_namespaced_role_binding(MANAGED_NAMESPACE, body)
+        logger.info("Created image-puller RoleBinding %s", binding_name)
+    except client.ApiException as e:
+        if e.status != 409:
+            logger.warning("Failed to create image-puller binding: %s", e)
+
+
+def _create_scc_bindings(rbac, session_name: str, session_ns: str):
+    """Create ClusterRoleBindings for SCC access and auth delegation."""
+    bindings = [
+        (f"scc-anyuid-{session_ns}", f"{session_name}-gateway",
+         "system:openshift:scc:anyuid"),
+        (f"scc-privileged-{session_ns}", f"{session_name}-sandbox",
+         "system:openshift:scc:privileged"),
+        (f"auth-delegator-{session_ns}", f"{session_name}-gateway",
+         "system:auth-delegator"),
+    ]
+    for binding_name, sa_name, role_name in bindings:
+        body = {
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "ClusterRoleBinding",
+            "metadata": {"name": binding_name},
+            "subjects": [
+                {"kind": "ServiceAccount", "name": sa_name, "namespace": session_ns},
+            ],
+            "roleRef": {
+                "apiGroup": "rbac.authorization.k8s.io",
+                "kind": "ClusterRole",
+                "name": role_name,
+            },
+        }
+        try:
+            rbac.create_cluster_role_binding(body)
+            logger.info("Created SCC binding %s", binding_name)
+        except client.ApiException as e:
+            if e.status != 409:
+                logger.warning("Failed to create SCC binding %s: %s", binding_name, e)
 
 
 # ---------------------------------------------------------------------------

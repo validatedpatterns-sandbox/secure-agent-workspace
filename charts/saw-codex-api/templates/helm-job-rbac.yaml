@@ -41,6 +41,9 @@ rules:
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["roles", "rolebindings"]
     verbs: ["create", "delete", "get", "list", "patch", "update"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -123,6 +126,31 @@ rules:
     resources: ["securitycontextconstraints"]
     resourceNames: ["anyuid", "privileged"]
     verbs: ["use"]
+  # K8s backend: all resources the session chart creates (RBAC escalation check)
+  - apiGroups: [""]
+    resources: ["services", "serviceaccounts", "pods", "pods/log", "persistentvolumeclaims"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
+  - apiGroups: ["route.openshift.io"]
+    resources: ["routes"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["create", "delete", "get", "list", "watch", "patch", "update"]
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

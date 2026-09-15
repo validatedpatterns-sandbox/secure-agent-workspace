@@ -2,6 +2,7 @@
 
 import base64 as b64
 import datetime
+import ipaddress
 import logging
 import os
 import secrets as secrets_mod
@@ -140,15 +141,6 @@ def _generate_session_pki(session_name: str, session_ns: str) -> dict:
         x509.DNSName(f"{session_name}-gateway"),
         x509.DNSName(f"{session_name}-gateway.{session_ns}.svc"),
         x509.DNSName(f"{session_name}-gateway.{session_ns}.svc.cluster.local"),
-        x509.IPAddress(type("", (), {"packed": b"\x7f\x00\x00\x01"})()),
-    ]
-    # Use ipaddress module properly
-    import ipaddress
-    server_sans_clean = [
-        x509.DNSName("localhost"),
-        x509.DNSName(f"{session_name}-gateway"),
-        x509.DNSName(f"{session_name}-gateway.{session_ns}.svc"),
-        x509.DNSName(f"{session_name}-gateway.{session_ns}.svc.cluster.local"),
         x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")),
     ]
     server_cert = (
@@ -159,7 +151,7 @@ def _generate_session_pki(session_name: str, session_ns: str) -> dict:
         .serial_number(x509.random_serial_number())
         .not_valid_before(now)
         .not_valid_after(now + validity)
-        .add_extension(x509.SubjectAlternativeName(server_sans_clean), critical=False)
+        .add_extension(x509.SubjectAlternativeName(server_sans), critical=False)
         .sign(ca_key, hashes.SHA256())
     )
 
@@ -204,7 +196,7 @@ def _generate_jwt_keys() -> dict:
     )
     public_pem = private_key.public_key().public_bytes(
         serialization.Encoding.PEM,
-        serialization.SubjectPublicKeyInfo,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
     )
     kid = secrets_mod.token_hex(8)
     return {"signing.pem": signing_pem, "public.pem": public_pem, "kid": kid.encode()}
@@ -381,14 +373,14 @@ def _create_kubernetes(spec, meta, namespace):
 
     # 3. Generate TLS certs
     pki = _generate_session_pki(session_name, session_ns)
-    _create_secret(v1, session_ns, "gateway-tls", {
+    _create_secret(v1, session_ns, f"{session_name}-tls", {
         "tls.crt": pki["server_cert"],
         "tls.key": pki["server_key"],
     }, secret_type="kubernetes.io/tls")
-    _create_secret(v1, session_ns, "gateway-client-ca", {
+    _create_secret(v1, session_ns, f"{session_name}-client-ca", {
         "ca.crt": pki["ca_cert"],
     })
-    _create_secret(v1, session_ns, "gateway-client-tls", {
+    _create_secret(v1, session_ns, f"{session_name}-client-tls", {
         "tls.crt": pki["client_cert"],
         "tls.key": pki["client_key"],
         "ca.crt": pki["ca_cert"],
@@ -396,7 +388,7 @@ def _create_kubernetes(spec, meta, namespace):
 
     # 4. Generate JWT keys
     jwt_keys = _generate_jwt_keys()
-    _create_secret(v1, session_ns, "gateway-jwt-keys", jwt_keys)
+    _create_secret(v1, session_ns, f"{session_name}-jwt-keys", jwt_keys)
 
     # 5. Generate codex WebSocket secret
     ws_secret = secrets_mod.token_hex(32)

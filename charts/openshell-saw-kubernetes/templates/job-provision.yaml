@@ -1,0 +1,165 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "openshell-k8s.fullname" . }}-provision-script
+  labels:
+    {{- include "openshell-k8s.labels" . | nindent 4 }}
+data:
+  provision.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    GATEWAY="https://{{ include "openshell-k8s.fullname" . }}-gateway.{{ .Release.Namespace }}.svc:8080"
+    SANDBOX_IMAGE="{{ .Values.sandboxImage }}"
+
+    echo "=== Waiting for gateway ==="
+    for i in $(seq 1 30); do
+      if wget -q --spider --no-check-certificate "${GATEWAY/https/http}/../:8081/healthz" 2>/dev/null || \
+         curl -skf "$(echo $GATEWAY | sed 's|:8080|:8081|')/healthz" 2>/dev/null; then
+        echo "Gateway ready"
+        break
+      fi
+      echo "  waiting... (attempt $i)"
+      sleep 5
+    done
+
+    echo "=== Registering gateway ==="
+    openshell gateway add "$GATEWAY" --name session --gateway-insecure 2>&1 || true
+
+    echo "=== Authenticating ==="
+    # Use OIDC token if available
+    if [ -f /etc/oidc/token ]; then
+      OIDC_TOKEN=$(cat /etc/oidc/token)
+      GW_DIR="$HOME/.config/openshell/gateways/session"
+      mkdir -p "$GW_DIR"
+      python3 -c "
+    import json
+    gt = {'access_token': '$OIDC_TOKEN', 'issuer': '{{ include "openshell-k8s.oidcIssuerUrl" . }}', 'client_id': '{{ .Values.oidc.clientId }}'}
+    json.dump(gt, open('$GW_DIR/oidc_token.json','w'))
+    " 2>/dev/null && echo "OIDC token configured" || echo "WARN: OIDC token setup failed"
+    fi
+
+    echo "=== Creating workspace ==="
+    openshell --gateway session --gateway-insecure workspace member add \
+      --workspace default --subject openshell-client --role admin 2>&1 || true
+
+    echo "=== Creating provider: openai ==="
+    # Read the API key from the inference secret if mounted
+    OPENAI_KEY=""
+    if [ -f /etc/inference/api_key ]; then
+      OPENAI_KEY=$(cat /etc/inference/api_key)
+    fi
+    if [ -n "$OPENAI_KEY" ]; then
+      openshell --gateway session --gateway-insecure \
+        provider create --name openai --type openai --credential "OPENAI_API_KEY=$OPENAI_KEY" 2>&1 || true
+    fi
+
+    echo "=== Creating provider: github ==="
+    openshell --gateway session --gateway-insecure \
+      provider create --name github --type github --credential "GITHUB_TOKEN=anonymous" 2>&1 || true
+
+    echo "=== Creating sandbox ==="
+    PROVIDER_ARGS=""
+    [ -n "$OPENAI_KEY" ] && PROVIDER_ARGS="$PROVIDER_ARGS --provider openai"
+    PROVIDER_ARGS="$PROVIDER_ARGS --provider github"
+
+    openshell --gateway session --gateway-insecure \
+      sandbox create --name codex \
+      --from "$SANDBOX_IMAGE" \
+      $PROVIDER_ARGS \
+      --keep --no-tty -- sleep 3600 2>&1 &
+
+    # Wait for sandbox Ready
+    for i in $(seq 1 40); do
+      STATUS=$(openshell --gateway session --gateway-insecure sandbox list 2>&1 | grep codex | grep -o "Ready" || true)
+      if [ "$STATUS" = "Ready" ]; then
+        echo "Sandbox ready"
+        break
+      fi
+      echo "  waiting for sandbox... (attempt $i)"
+      sleep 5
+    done
+
+    echo "=== Configuring Codex ==="
+    EXEC="openshell --gateway session --gateway-insecure sandbox exec -n codex --no-tty --"
+
+    # Generate ws-secret inside sandbox
+    $EXEC sh -c 'mkdir -p /sandbox/.codex && python3 -c "import secrets; print(secrets.token_hex(32), end=str())" > /sandbox/.codex/ws-secret && chmod 600 /sandbox/.codex/ws-secret' 2>&1
+
+    # Write config
+    $EXEC sh -c 'echo "{\"auth_mode\":\"apikey\",\"OPENAI_API_KEY\":\"proxy-managed\"}" > /sandbox/.codex/auth.json' 2>&1
+    $EXEC sh -c 'printf "model = \"gpt-5.6-terra\"\nsandbox = \"danger-full-access\"\n" > /sandbox/.codex/config.toml' 2>&1
+
+    # Create bwrap stub
+    $EXEC sh -c 'mkdir -p /sandbox/.local/bin && cat > /sandbox/.local/bin/bwrap << "BWRAP"
+    #!/bin/sh
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --) shift; break ;;
+        --bind|--ro-bind|--dev-bind|--tmpfs|--proc|--dev|--dir|--symlink|--remount-ro|--setenv|--chdir) shift 2 ;;
+        --file|--lock-file) shift 2 ;;
+        -*) shift ;;
+        *) break ;;
+      esac
+    done
+    exec "$@"
+    BWRAP
+    chmod +x /sandbox/.local/bin/bwrap' 2>&1
+
+    echo "=== Starting Codex app-server ==="
+    $EXEC sh -c 'nohup codex app-server --listen ws://0.0.0.0:8089 --ws-auth signed-bearer-token --ws-shared-secret-file /sandbox/.codex/ws-secret --ws-issuer saw-codex --ws-audience codex-session > /tmp/codex-app-server.log 2>&1 &' 2>&1
+    sleep 5
+    $EXEC sh -c 'cat /tmp/codex-app-server.log' 2>&1
+
+    echo "=== Reading ws-secret ==="
+    WS_SECRET=$($EXEC cat /sandbox/.codex/ws-secret 2>&1 | grep -v "TLS certificate")
+    echo "Secret: ${WS_SECRET:0:8}..."
+
+    # Save the ws-secret as a K8s secret for the API to read
+    kubectl create secret generic {{ include "openshell-k8s.fullname" . }}-codex-secret \
+      --from-literal=ws-secret="$WS_SECRET" \
+      --from-literal=issuer=saw-codex \
+      --from-literal=audience=codex-session \
+      -n {{ .Release.Namespace }} --dry-run=client -o yaml | kubectl apply -f - 2>&1
+
+    echo "=== Provisioning complete ==="
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "openshell-k8s.fullname" . }}-provision
+  labels:
+    {{- include "openshell-k8s.labels" . | nindent 4 }}
+spec:
+  backoffLimit: {{ .Values.provision.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.provision.activeDeadlineSeconds }}
+  template:
+    spec:
+      serviceAccountName: {{ include "openshell-k8s.gatewaySA" . }}
+      restartPolicy: Never
+      containers:
+        - name: provision
+          image: {{ .Values.provision.jobImage }}
+          command: ["bash", "/scripts/provision.sh"]
+          volumeMounts:
+            - name: provision-script
+              mountPath: /scripts
+              readOnly: true
+            - name: oidc-token
+              mountPath: /etc/oidc
+              readOnly: true
+            - name: inference-secret
+              mountPath: /etc/inference
+              readOnly: true
+      volumes:
+        - name: provision-script
+          configMap:
+            name: {{ include "openshell-k8s.fullname" . }}-provision-script
+        - name: oidc-token
+          secret:
+            secretName: {{ include "openshell-k8s.fullname" . }}-oidc-token
+            optional: true
+        - name: inference-secret
+          secret:
+            secretName: inference
+            optional: true

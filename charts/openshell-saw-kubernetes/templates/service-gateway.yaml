@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "openshell-k8s.fullname" . }}-gateway
+  labels:
+    {{- include "openshell-k8s.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "openshell-k8s.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+  ports:
+    - name: grpc
+      port: 8080
+      targetPort: grpc
+      protocol: TCP
+    - name: health
+      port: 8081
+      targetPort: health
+      protocol: TCP

@@ -8,6 +8,7 @@ AGENT          ?= openclaw
 CONTAINER_RUNTIME ?= docker
 IMAGE_NAME      = $(if $(filter docker,$(CONTAINER_RUNTIME)),openshell-gateway-docker,openshell-gateway)
 GOVERNANCE_ENABLED ?= true
+BACKEND        ?= kubernetes
 PROVIDER       ?=
 MODEL          ?=
 API_KEY        ?=
@@ -128,6 +129,7 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
         openshell-saw-delete sandbox-pre-delete delete-all status \
         governance-list-profiles governance-add-profile governance-remove-profile governance-create-profile governance-demo \
         codex-setup codex-deploy-api codex-deploy-sandbox codex-configure-client codex-delete \
+        codex-install-sandbox-controller \
         .check-saw-name .check-ssh-key .check-prereqs
 
 check-prereqs: .check-prereqs ## Verify required operators and CLI tools
@@ -545,32 +547,35 @@ governance-demo: .check-saw-name ## Run governance interceptor demo
 # --- Codex ---
 
 codex-setup: check-prereqs generate-keys ## Full Codex setup: build images, deploy API, create sandbox
-	@echo "=== Step 1/9: Copy base images ==="
+	@echo "=== Step 1/10: Copy base images ==="
 	$(MAKE) copy-images
 	@echo ""
-	@echo "=== Step 2/9: Deploy Keycloak ==="
+	@echo "=== Step 2/10: Deploy Keycloak ==="
 	$(MAKE) keycloak
 	@echo ""
-	@echo "=== Step 3/9: Deploy governance ==="
+	@echo "=== Step 3/10: Deploy governance ==="
 	helm upgrade --install governance-policy charts/governance-policy -n $(NS)
 	helm upgrade --install governance-interceptor charts/governance-interceptor -n $(NS)
 	@echo ""
-	@echo "=== Step 4/9: Build codex-openshell image ==="
+	@echo "=== Step 4/10: Install Agent Sandbox controller ==="
+	$(MAKE) codex-install-sandbox-controller
+	@echo ""
+	@echo "=== Step 5/10: Build codex-openshell image ==="
 	$(MAKE) build-codex-openshell-local
 	@echo ""
-	@echo "=== Step 5/9: Build and deploy saw-codex-api ==="
+	@echo "=== Step 6/10: Build and deploy saw-codex-api ==="
 	$(MAKE) codex-deploy-api
 	@echo ""
-	@echo "=== Step 6/9: Create SSH secrets ==="
+	@echo "=== Step 7/10: Create SSH secrets ==="
 	$(MAKE) ssh-secret
 	@echo ""
-	@echo "=== Step 7/9: Deploy saw-bom with codex profile ==="
+	@echo "=== Step 8/10: Deploy saw-bom with codex profile ==="
 	helm upgrade --install saw-bom charts/saw-bom -n $(NS) --set 'profiles={codex}'
 	@echo ""
-	@echo "=== Step 8/9: Authenticate ==="
+	@echo "=== Step 9/10: Authenticate ==="
 	$(MAKE) login
 	@echo ""
-	@echo "=== Step 9/9: Check inference secret ==="
+	@echo "=== Step 10/10: Check inference secret ==="
 	@if ! oc get secret inference -n $(NS) >/dev/null 2>&1; then \
 		echo ""; \
 		echo "  WARNING: Inference secret not found. Create it now:"; \
@@ -607,7 +612,22 @@ codex-deploy-api: build-saw-codex-api-local ## Build and deploy the saw-codex-ap
 	echo "API URL: $$(oc get route saw-codex-api -n $(NS) -o jsonpath='https://{.spec.host}' 2>/dev/null)"; \
 	echo "Health:  $$(oc get route saw-codex-api -n $(NS) -o jsonpath='https://{.spec.host}' 2>/dev/null)/health"
 
-codex-deploy-sandbox: .check-saw-name ## Create a Codex sandbox VM via CodexSession CR (OPENSHELL_SAW_NAME= required)
+codex-install-sandbox-controller: ## Install Agent Sandbox controller v1.0.2 (required for K8s backend)
+	@if oc get crd sandboxes.agents.x-k8s.io >/dev/null 2>&1; then \
+		echo "Agent Sandbox controller already installed."; \
+	else \
+		echo "Installing Agent Sandbox controller v1.0.2..."; \
+		kubectl apply -f charts/agent-sandbox/files/sandbox.yaml; \
+		echo "Waiting for controller..."; \
+		for i in $$(seq 1 30); do \
+			if oc get pods -n agent-sandbox-system --no-headers 2>/dev/null | grep -q Running; then \
+				echo "Agent Sandbox controller ready."; break; \
+			fi; \
+			sleep 5; \
+		done; \
+	fi
+
+codex-deploy-sandbox: .check-saw-name ## Create a Codex sandbox via CodexSession CR (OPENSHELL_SAW_NAME=, BACKEND=kubernetes|vm)
 	@OIDC_TOKEN=$$(OIDC_TOKEN_DIR="$(OIDC_TOKEN_DIR)" OIDC_CLIENT_ID="$(OIDC_CLIENT_ID)" \
 		NS="$(NS)" "$(SCRIPTS_DIR)/oidc-login.sh" token 2>/dev/null || true); \
 	if [ -z "$$OIDC_TOKEN" ]; then \
@@ -618,7 +638,7 @@ codex-deploy-sandbox: .check-saw-name ## Create a Codex sandbox VM via CodexSess
 		| python3 -c "import sys,base64,json; t=sys.stdin.read().strip().split('.')[1]; t+='='*(4-len(t)%4); print(json.loads(base64.urlsafe_b64decode(t)).get('sub',''))" 2>/dev/null); \
 	USERNAME=$$(jq -r '.access_token // empty' "$(OIDC_TOKEN_DIR)/token.json" 2>/dev/null \
 		| python3 -c "import sys,base64,json; t=sys.stdin.read().strip().split('.')[1]; t+='='*(4-len(t)%4); print(json.loads(base64.urlsafe_b64decode(t)).get('preferred_username',''))" 2>/dev/null); \
-	echo "Creating Codex sandbox '$(OPENSHELL_SAW_NAME)' for $$USERNAME ($$SUB)..."; \
+	echo "Creating Codex sandbox '$(OPENSHELL_SAW_NAME)' ($(BACKEND)) for $$USERNAME ($$SUB)..."; \
 	oc create secret generic "$(OPENSHELL_SAW_NAME)-oidc-token" \
 		--from-literal=token="$$OIDC_TOKEN" \
 		-n $(NS) --dry-run=client -o yaml | oc apply -f - 2>/dev/null; \
@@ -631,9 +651,11 @@ codex-deploy-sandbox: .check-saw-name ## Create a Codex sandbox VM via CodexSess
 	spec:\n\
 	  name: $(OPENSHELL_SAW_NAME)\n\
 	  owner: $$SUB\n\
+	  runtime:\n\
+	    backend: $(BACKEND)\n\
 	CREOF
 	@echo ""
-	@echo "Session '$(OPENSHELL_SAW_NAME)' created. The controller will provision the VM."
+	@echo "Session '$(OPENSHELL_SAW_NAME)' created ($(BACKEND)). The controller will provision it."
 	@echo ""
 	@echo "Monitor: oc get codexsession $(OPENSHELL_SAW_NAME) -n $(NS)"
 	@echo "TUI:     codex-saw"

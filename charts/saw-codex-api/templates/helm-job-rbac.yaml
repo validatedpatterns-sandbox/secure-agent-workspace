@@ -98,6 +98,31 @@ rules:
     resources: ["routes"]
     resourceNames: ["default-route"]
     verbs: ["get"]
+  # K8s backend: manage session namespaces
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["create", "delete", "get", "list"]
+  # K8s backend: manage secrets/configmaps in session namespaces
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps"]
+    verbs: ["create", "delete", "get", "list"]
+  # K8s backend: read Agent Sandbox CRs
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["get", "list"]
+  # K8s backend: manage StatefulSets in session namespaces
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get", "list"]
+  # K8s backend: manage routes in session namespaces
+  - apiGroups: ["route.openshift.io"]
+    resources: ["routes"]
+    verbs: ["get", "list"]
+  # K8s backend: SCC for privileged sandbox SA
+  - apiGroups: ["security.openshift.io"]
+    resources: ["securitycontextconstraints"]
+    resourceNames: ["anyuid", "privileged"]
+    verbs: ["use"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

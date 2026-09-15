@@ -1,0 +1,21 @@
+{{- if .Values.route.codex.enabled }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ include "openshell-k8s.fullname" . }}-codex
+  labels:
+    {{- include "openshell-k8s.labels" . | nindent 4 }}
+  annotations:
+    haproxy.router.openshift.io/disable-http2: "true"
+    haproxy.router.openshift.io/timeout: 3600s
+spec:
+  to:
+    kind: Service
+    name: {{ include "openshell-k8s.fullname" . }}-codex
+    weight: 100
+  port:
+    targetPort: codex-ws
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+{{- end }}

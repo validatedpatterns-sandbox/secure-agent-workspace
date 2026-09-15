@@ -1,0 +1,85 @@
+# Per-session OpenShell gateway with Kubernetes driver for Codex sandbox.
+# Each session gets its own namespace, gateway, and sandbox pod.
+
+# Session identity — set by the controller, not the user.
+sessionName: ""
+owner: ""
+
+# Gateway image (OpenShell v0.0.116).
+image:
+  repository: ghcr.io/nvidia/openshell/gateway
+  tag: "0.0.116"
+  pullPolicy: IfNotPresent
+
+# Supervisor image — injected into the agent pod by the K8s driver.
+supervisor:
+  image:
+    repository: ghcr.io/nvidia/openshell/supervisor
+    tag: "0.0.116"
+
+# Codex sandbox container image (built via make build-codex-openshell-local).
+sandboxImage: "image-registry.openshift-image-registry.svc.cluster.local:5000/openshell-agents/codex-openshell:latest"
+sandboxImagePullPolicy: IfNotPresent
+
+# OIDC authentication — validates user tokens against Keycloak.
+oidc:
+  issuerUrl: ""
+  clientId: "openshell-cli"
+
+# Governance interceptor sidecar — runs in the gateway pod on localhost.
+governance:
+  interceptorImage: "quay.io/rh-ai-quickstart/governance-interceptor:latest"
+  port: 18081
+  failurePolicy: "fail_closed"
+  timeout: "500ms"
+
+# Codex WebSocket forward sidecar.
+forward:
+  port: 8089
+
+# Routes for external access.
+route:
+  codex:
+    enabled: true
+  gateway:
+    enabled: true
+
+# Provisioning Job — configures the sandbox via the OpenShell API.
+provision:
+  jobImage: "image-registry.openshift-image-registry.svc.cluster.local:5000/openshell-agents/saw-codex-api:latest"
+  backoffLimit: 2
+  activeDeadlineSeconds: 300
+
+# Workspace PVC for sandbox data (/sandbox).
+workspace:
+  size: 10Gi
+  storageClass: ""
+
+# Gateway data PVC (SQLite, keys).
+gatewayData:
+  size: 1Gi
+  storageClass: ""
+
+# Resource limits.
+resources:
+  gateway:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  forward:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 128Mi
+  interceptor:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi

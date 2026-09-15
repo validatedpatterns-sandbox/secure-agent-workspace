@@ -1,0 +1,38 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "openshell-k8s.fullname" . }}-gateway
+  labels:
+    {{- include "openshell-k8s.labels" . | nindent 4 }}
+rules:
+  # Manage Agent Sandbox CRs
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["create", "delete", "get", "list", "watch", "patch", "update"]
+  # Watch pods created by the sandbox controller
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  # Manage secrets for credentials and bootstrap
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get", "list", "delete", "patch"]
+  # Read config
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list"]
+  # Events for debugging
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create"]
+  # PVCs for workspace
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["create", "get", "list", "delete"]
+  # ServiceAccounts for sandbox bootstrap
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    verbs: ["create"]

@@ -1,0 +1,14 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "openshell-k8s.fullname" . }}-gateway
+  labels:
+    {{- include "openshell-k8s.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "openshell-k8s.gatewaySA" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "openshell-k8s.fullname" . }}-gateway

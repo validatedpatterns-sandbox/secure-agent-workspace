@@ -1,0 +1,174 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "openshell-k8s.fullname" . }}-gateway
+  labels:
+    {{- include "openshell-k8s.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  replicas: 1
+  serviceName: {{ include "openshell-k8s.fullname" . }}-gateway
+  selector:
+    matchLabels:
+      {{- include "openshell-k8s.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: gateway
+  template:
+    metadata:
+      labels:
+        {{- include "openshell-k8s.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: gateway
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap-gateway.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "openshell-k8s.gatewaySA" . }}
+      securityContext:
+        fsGroup: 1000
+      containers:
+        # --- OpenShell Gateway ---
+        - name: openshell-gateway
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsUser: 1000
+          ports:
+            - name: grpc
+              containerPort: 8080
+              protocol: TCP
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          env:
+            - name: OPENSHELL_CONFIG_FILE
+              value: /etc/openshell/gateway.toml
+            - name: OPENSHELL_GATEWAY_CREDENTIAL_KEY_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "openshell-k8s.fullname" . }}-credential-key
+                  key: key
+                  optional: true
+          volumeMounts:
+            - name: gateway-config
+              mountPath: /etc/openshell
+              readOnly: true
+            - name: tls-cert
+              mountPath: /etc/openshell-tls/server
+              readOnly: true
+            - name: tls-client-ca
+              mountPath: /etc/openshell-tls/client-ca
+              readOnly: true
+            - name: jwt-keys
+              mountPath: /etc/openshell-jwt
+              readOnly: true
+            - name: gateway-data
+              mountPath: /var/lib/openshell
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources.gateway | nindent 12 }}
+
+        # --- Codex WebSocket Forward Sidecar ---
+        - name: codex-forward
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsUser: 1000
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for gateway to be ready..."
+              until wget -q --spider --no-check-certificate https://localhost:8081/healthz 2>/dev/null; do
+                sleep 2
+              done
+              echo "Gateway ready. Starting forward..."
+              exec openshell \
+                --gateway-endpoint https://localhost:8080 \
+                --gateway-insecure \
+                forward service codex \
+                --target-port {{ .Values.forward.port }} \
+                --local 0.0.0.0:{{ .Values.forward.port }}
+          ports:
+            - name: codex-ws
+              containerPort: {{ .Values.forward.port }}
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.resources.forward | nindent 12 }}
+
+        # --- Governance Interceptor Sidecar ---
+        - name: governance-interceptor
+          image: {{ .Values.governance.interceptorImage }}
+          imagePullPolicy: Always
+          args:
+            - --listen
+            - "0.0.0.0:{{ .Values.governance.port }}"
+            - --policy
+            - /config/policy/policy.yaml
+            - --profiles
+            - /config/profiles
+            - --gateway-endpoint
+            - "https://localhost:8080"
+          ports:
+            - name: governance
+              containerPort: {{ .Values.governance.port }}
+              protocol: TCP
+          startupProbe:
+            tcpSocket:
+              port: {{ .Values.governance.port }}
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 5
+          volumeMounts:
+            - name: governance-policy
+              mountPath: /config/policy
+              readOnly: true
+            - name: governance-profiles
+              mountPath: /config/profiles
+              readOnly: true
+          resources:
+            {{- toYaml .Values.resources.interceptor | nindent 12 }}
+
+      volumes:
+        - name: gateway-config
+          configMap:
+            name: {{ include "openshell-k8s.fullname" . }}-gateway-config
+        - name: tls-cert
+          secret:
+            secretName: {{ include "openshell-k8s.fullname" . }}-tls
+        - name: tls-client-ca
+          secret:
+            secretName: {{ include "openshell-k8s.fullname" . }}-client-ca
+        - name: jwt-keys
+          secret:
+            secretName: {{ include "openshell-k8s.fullname" . }}-jwt-keys
+        - name: governance-policy
+          configMap:
+            name: {{ include "openshell-k8s.fullname" . }}-governance-policy
+            optional: true
+        - name: governance-profiles
+          configMap:
+            name: {{ include "openshell-k8s.fullname" . }}-governance-profiles
+            optional: true
+  volumeClaimTemplates:
+    - metadata:
+        name: gateway-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.gatewayData.storageClass }}
+        storageClassName: {{ .Values.gatewayData.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.gatewayData.size }}

@@ -1,0 +1,58 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "openshell-k8s.fullname" . }}-default-deny
+  labels:
+    {{- include "openshell-k8s.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress: []
+---
+# Allow ingress to the gateway pod from the OpenShift router and agent pods.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "openshell-k8s.fullname" . }}-gateway-ingress
+  labels:
+    {{- include "openshell-k8s.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "openshell-k8s.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: gateway
+  policyTypes:
+    - Ingress
+  ingress:
+    # From the OpenShift router (codex WebSocket + gateway gRPC)
+    - ports:
+        - port: {{ .Values.forward.port }}
+          protocol: TCP
+        - port: 8080
+          protocol: TCP
+    # From agent pods (supervisor relay callback)
+    - from:
+        - podSelector: {}
+      ports:
+        - port: 8080
+          protocol: TCP
+---
+# Allow ingress to agent pods from the gateway pod only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "openshell-k8s.fullname" . }}-agent-ingress
+  labels:
+    {{- include "openshell-k8s.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "openshell-k8s.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: gateway

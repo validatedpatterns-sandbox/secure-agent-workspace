@@ -19,6 +19,8 @@ from textual.widgets import (
     Header,
     Input,
     Label,
+    RadioButton,
+    RadioSet,
     Static,
 )
 
@@ -62,7 +64,7 @@ class LoginScreen(Screen):
         self.app.exit()
 
 
-class CreateSessionScreen(ModalScreen[str | None]):
+class CreateSessionScreen(ModalScreen[tuple | None]):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
     ]
@@ -72,12 +74,18 @@ class CreateSessionScreen(ModalScreen[str | None]):
         with Vertical(id="create-dialog"):
             yield Label("Create new Codex session")
             yield Input(value=default_name, placeholder="Session name", id="session-name")
+            yield Label("Backend:")
+            with RadioSet(id="backend-select"):
+                yield RadioButton("Container", value=True, id="backend-k8s")
+                yield RadioButton("VM", id="backend-vm")
             yield Static("Press [bold]Enter[/bold] to create, [bold]Escape[/bold] to cancel")
 
     def on_input_submitted(self, event: Input.Submitted):
         name = event.value.strip()
         if name:
-            self.dismiss(name)
+            radio = self.query_one("#backend-select", RadioSet)
+            backend = "kubernetes" if radio.pressed_index == 0 else "vm"
+            self.dismiss((name, backend))
 
     def action_cancel(self):
         self.dismiss(None)
@@ -110,7 +118,7 @@ class SessionsScreen(Screen):
 
     def on_mount(self):
         table = self.query_one("#sessions-table", DataTable)
-        table.add_columns("NAME", "STATUS", "CREATED", "URL")
+        table.add_columns("NAME", "STATUS", "BACKEND", "CREATED", "URL")
         table.cursor_type = "row"
         self.query_one("#search-input", Input).display = False
         table.focus()
@@ -201,9 +209,12 @@ class SessionsScreen(Screen):
             name = s.get("name", "")
             if name == selected_key:
                 restore_row = i
+            raw_backend = s.get("backend", "vm")
+            backend_label = "k8s" if raw_backend == "kubernetes" else raw_backend
             table.add_row(
                 name,
                 s.get("status", ""),
+                backend_label,
                 _to_local_time(s.get("created", "")),
                 s.get("ws_url", ""),
                 key=s.get("name", ""),
@@ -213,18 +224,19 @@ class SessionsScreen(Screen):
             table.move_cursor(row=restore_row)
 
     def action_new_session(self):
-        def on_result(name: str | None):
-            if name:
-                self.create_session(name)
+        def on_result(result: tuple | None):
+            if result:
+                name, backend = result
+                self.create_session(name, backend)
 
         self.app.push_screen(CreateSessionScreen(), callback=on_result)
 
     @work(thread=True)
-    def create_session(self, name: str):
-        self.app.notify(f"Creating session '{name}'...")
+    def create_session(self, name: str, backend: str = "kubernetes"):
+        self.app.notify(f"Creating session '{name}' ({backend})...")
         try:
             client = self.app.get_client()
-            client.create_session(name)
+            client.create_session(name, backend=backend)
             self.app.notify(f"Session '{name}' created.")
             self.load_sessions()
         except Exception as e:
@@ -334,7 +346,7 @@ class CodexSawApp(App):
     }
     #create-dialog {
         width: 50;
-        height: 10;
+        height: 16;
         border: solid green;
         padding: 1 2;
         background: $surface;

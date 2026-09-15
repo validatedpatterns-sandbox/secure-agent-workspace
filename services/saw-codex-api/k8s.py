@@ -1,11 +1,9 @@
-"""Kubernetes operations for managing Codex VM sessions."""
+"""Kubernetes operations for managing Codex sessions."""
 
 from __future__ import annotations
 
 import base64
-import json
 import logging
-import subprocess
 from dataclasses import dataclass
 
 from kubernetes import client, config as k8s_config
@@ -35,6 +33,7 @@ class Session:
     owner: str
     ws_url: str | None
     has_secret: bool
+    backend: str
 
 
 @dataclass
@@ -42,6 +41,35 @@ class ConnectionInfo:
     ws_url: str
     token: str
     expires_in: int
+
+
+def _get_session_cr(name: str) -> dict | None:
+    """Read a CodexSession CR by name."""
+    _ensure_api()
+    custom = client.CustomObjectsApi()
+    try:
+        return custom.get_namespaced_custom_object(
+            group="saw.redhat.com",
+            version="v1alpha1",
+            namespace=config.MANAGED_NAMESPACE,
+            plural="codexsessions",
+            name=name,
+        )
+    except client.ApiException:
+        return None
+
+
+def _session_namespace(cr: dict) -> str | None:
+    """Get the session namespace from a CR (k8s backend only)."""
+    return cr.get("status", {}).get("namespace")
+
+
+def _session_backend(cr: dict) -> str:
+    """Get the resolved backend from a CR."""
+    return (
+        cr.get("status", {}).get("backend")
+        or cr.get("spec", {}).get("runtime", {}).get("backend", "vm")
+    )
 
 
 def list_user_vms(username: str) -> list[Session]:
@@ -63,6 +91,7 @@ def list_user_vms(username: str) -> list[Session]:
         crs = {"items": []}
 
     cr_map = {}
+    cr_details = {}
     for cr in crs.get("items", []):
         owner = cr.get("spec", {}).get("owner", "")
         if owner == username:
@@ -72,7 +101,9 @@ def list_user_vms(username: str) -> list[Session]:
             else:
                 phase = cr.get("status", {}).get("phase", "Creating").lower()
             cr_map[name] = phase
+            cr_details[name] = cr
 
+    # VM sessions: look up VMs in the managed namespace
     try:
         vms = custom.list_namespaced_custom_object(
             group="kubevirt.io",
@@ -89,6 +120,8 @@ def list_user_vms(username: str) -> list[Session]:
         created = vm["metadata"].get("creationTimestamp", "")
 
         status = cr_map.pop(name, "unmanaged")
+        cr = cr_details.pop(name, None)
+        backend = _session_backend(cr) if cr else "vm"
 
         ws_url = _get_route_url(name, ns)
 
@@ -106,12 +139,36 @@ def list_user_vms(username: str) -> list[Session]:
             owner=username,
             ws_url=ws_url,
             has_secret=has_secret,
+            backend=backend,
         ))
 
+    # Remaining CRs without VMs (k8s backend sessions or pending VM sessions)
     for name, status in cr_map.items():
+        cr = cr_details.get(name)
+        backend = _session_backend(cr) if cr else "kubernetes"
+        created = ""
+        ws_url = None
+        has_secret = False
+
+        if cr and backend == "kubernetes":
+            created = cr.get("metadata", {}).get("creationTimestamp", "")
+            sess_ns = _session_namespace(cr)
+            if sess_ns:
+                ws_url = _get_route_url(name, sess_ns)
+                try:
+                    v1.read_namespaced_secret("codex-ws-secret", sess_ns)
+                    has_secret = True
+                except client.ApiException:
+                    pass
+
         sessions.append(Session(
-            name=name, status=status, created="", owner=username,
-            ws_url=None, has_secret=False,
+            name=name,
+            status=status,
+            created=created,
+            owner=username,
+            ws_url=ws_url,
+            has_secret=has_secret,
+            backend=backend,
         ))
 
     return sessions
@@ -136,9 +193,25 @@ def _get_route_url(name: str, namespace: str) -> str | None:
     return None
 
 
-def get_codex_secret(name: str) -> str | None:
+def get_codex_secret(name: str, namespace: str | None = None) -> str | None:
+    """Read the codex WebSocket shared secret.
+
+    For VM sessions the secret is in the managed namespace as <name>-codex-secret.
+    For K8s sessions the secret is in the session namespace as codex-ws-secret.
+    """
     _ensure_api()
     v1 = client.CoreV1Api()
+
+    if namespace and namespace != config.MANAGED_NAMESPACE:
+        # K8s backend: secret is in session namespace
+        try:
+            secret = v1.read_namespaced_secret("codex-ws-secret", namespace)
+            encoded = secret.data.get("ws-secret", "")
+            return base64.b64decode(encoded).decode() if encoded else None
+        except client.ApiException:
+            pass
+
+    # VM backend: secret is in managed namespace
     try:
         secret = v1.read_namespaced_secret(
             f"{name}-codex-secret", config.MANAGED_NAMESPACE
@@ -149,8 +222,16 @@ def get_codex_secret(name: str) -> str | None:
         return None
 
 
-def get_vm_owner(name: str) -> str | None:
+def get_session_owner(name: str) -> str | None:
+    """Get the owner of a session from the CR or VM label."""
     _ensure_api()
+
+    # First try the CR
+    cr = _get_session_cr(name)
+    if cr:
+        return cr.get("spec", {}).get("owner")
+
+    # Fallback: try VM label (unmanaged sessions)
     custom = client.CustomObjectsApi()
     try:
         vm = custom.get_namespaced_custom_object(
@@ -167,11 +248,27 @@ def get_vm_owner(name: str) -> str | None:
         return None
 
 
-def create_session_cr(name: str, owner: str, oidc_token: str = "") -> bool:
+def get_session_info(name: str) -> tuple[str | None, str | None, str | None]:
+    """Return (owner, backend, namespace) for a session."""
+    cr = _get_session_cr(name)
+    if cr:
+        owner = cr.get("spec", {}).get("owner")
+        backend = _session_backend(cr)
+        sess_ns = _session_namespace(cr)
+        return owner, backend, sess_ns
+    return None, None, None
+
+
+def create_session_cr(
+    name: str, owner: str, oidc_token: str = "", backend: str = ""
+) -> bool:
     """Create a CodexSession CR and a short-lived OIDC token Secret."""
     _ensure_api()
     custom = client.CustomObjectsApi()
     v1 = client.CoreV1Api()
+
+    if not backend:
+        backend = config.DEFAULT_BACKEND
 
     if oidc_token:
         try:
@@ -185,6 +282,10 @@ def create_session_cr(name: str, owner: str, oidc_token: str = "") -> bool:
         except client.ApiException as e:
             logger.warning("Failed to create OIDC token secret: %s", e)
 
+    spec = {"name": name, "owner": owner}
+    if backend != "vm":
+        spec["runtime"] = {"backend": backend}
+
     try:
         custom.create_namespaced_custom_object(
             group="saw.redhat.com",
@@ -195,7 +296,7 @@ def create_session_cr(name: str, owner: str, oidc_token: str = "") -> bool:
                 "apiVersion": "saw.redhat.com/v1alpha1",
                 "kind": "CodexSession",
                 "metadata": {"name": name},
-                "spec": {"name": name, "owner": owner},
+                "spec": spec,
             },
         )
         return True

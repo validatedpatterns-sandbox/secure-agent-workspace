@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "openshell-k8s.fullname" . }}-codex
+  labels:
+    {{- include "openshell-k8s.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "openshell-k8s.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+  ports:
+    - name: codex-ws
+      port: {{ .Values.forward.port }}
+      targetPort: codex-ws
+      protocol: TCP

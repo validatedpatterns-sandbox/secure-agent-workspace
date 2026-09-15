@@ -28,13 +28,27 @@ spec:
                   pattern: "^[a-z][a-z0-9-]*$"
                 owner:
                   type: string
+                runtime:
+                  type: object
+                  properties:
+                    backend:
+                      type: string
+                      enum: ["vm", "kubernetes"]
+                desiredState:
+                  type: string
+                  enum: ["Running", "Stopped"]
+                  default: "Running"
             status:
               type: object
               properties:
                 phase:
                   type: string
-                  enum: [Creating, Running, Stopping, Deleting, Error]
+                  enum: [Creating, Running, Stopped, Stopping, Deleting, Error]
                 message:
+                  type: string
+                backend:
+                  type: string
+                namespace:
                   type: string
       subresources:
         status: {}
@@ -45,6 +59,9 @@ spec:
         - name: Phase
           type: string
           jsonPath: .status.phase
+        - name: Backend
+          type: string
+          jsonPath: .status.backend
         - name: Age
           type: date
           jsonPath: .metadata.creationTimestamp

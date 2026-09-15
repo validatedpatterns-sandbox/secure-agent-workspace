@@ -90,6 +90,10 @@ clusterGroup:
       name: saw-codex-api
       namespace: openshell-agents
       path: charts/saw-codex-api
+    agent-sandbox:
+      name: agent-sandbox
+      namespace: agent-sandbox-system
+      path: charts/agent-sandbox
     openshell-saw:
       name: openshell-saw
       namespace: openshell-agents

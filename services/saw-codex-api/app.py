@@ -16,12 +16,13 @@ from .k8s import (
     create_session_cr,
     delete_session_cr,
     get_codex_secret,
-    get_vm_owner,
+    get_session_info,
+    get_session_owner,
     list_user_vms,
     _get_route_url,
 )
 
-app = FastAPI(title="saw-codex-api", version="0.1.0")
+app = FastAPI(title="saw-codex-api", version="0.2.0")
 
 _SAFE_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,18}$")
 
@@ -43,6 +44,7 @@ class SessionResponse(BaseModel):
     owner: str
     ws_url: str | None
     has_secret: bool
+    backend: str
 
 
 class ConnectResponse(BaseModel):
@@ -53,11 +55,13 @@ class ConnectResponse(BaseModel):
 
 class CreateRequest(BaseModel):
     name: str
+    backend: str = ""
 
 
 class CreateResponse(BaseModel):
     name: str
     status: str
+    backend: str
 
 
 @app.get("/health")
@@ -76,6 +80,7 @@ async def list_sessions(user: UserInfo = Depends(get_current_user)):
             owner=s.owner,
             ws_url=s.ws_url,
             has_secret=s.has_secret,
+            backend=s.backend,
         )
         for s in sessions
     ]
@@ -88,6 +93,13 @@ async def create_session(
     user: UserInfo = Depends(get_current_user),
 ):
     name = _validate_name(body.name)
+    backend = body.backend or config.DEFAULT_BACKEND
+
+    if backend not in ("vm", "kubernetes"):
+        raise HTTPException(
+            status_code=400,
+            detail="Backend must be 'vm' or 'kubernetes'",
+        )
 
     existing = await asyncio.to_thread(list_user_vms, user.sub)
     if len(existing) >= config.MAX_SESSIONS_PER_USER:
@@ -98,16 +110,18 @@ async def create_session(
         )
 
     oidc_token = request.headers.get("authorization", "")[7:]
-    ok = await asyncio.to_thread(create_session_cr, name, user.sub, oidc_token)
+    ok = await asyncio.to_thread(
+        create_session_cr, name, user.sub, oidc_token, backend
+    )
     if not ok:
         raise HTTPException(status_code=500, detail="Failed to create session")
-    return CreateResponse(name=name, status="creating")
+    return CreateResponse(name=name, status="creating", backend=backend)
 
 
 @app.delete("/sessions/{name}", status_code=204)
 async def delete_session(name: str, user: UserInfo = Depends(get_current_user)):
     _validate_name(name)
-    owner = await asyncio.to_thread(get_vm_owner, name)
+    owner = await asyncio.to_thread(get_session_owner, name)
     if owner is None:
         raise HTTPException(status_code=404, detail="Session not found")
     if owner != user.sub:
@@ -123,22 +137,22 @@ async def connect_session(
     name: str, user: UserInfo = Depends(get_current_user)
 ):
     _validate_name(name)
-    owner = await asyncio.to_thread(get_vm_owner, name)
+    owner, backend, sess_ns = await asyncio.to_thread(get_session_info, name)
     if owner is None:
         raise HTTPException(status_code=404, detail="Session not found")
     if owner != user.sub:
         raise HTTPException(status_code=403, detail="Not your session")
 
-    ws_secret = await asyncio.to_thread(get_codex_secret, name)
+    ws_secret = await asyncio.to_thread(get_codex_secret, name, sess_ns)
     if not ws_secret:
         raise HTTPException(
             status_code=503,
             detail="Session not ready — codex secret not yet available",
         )
 
-    ws_url = await asyncio.to_thread(
-        _get_route_url, name, config.MANAGED_NAMESPACE
-    )
+    # Determine the namespace where the route lives
+    route_ns = sess_ns if (backend == "kubernetes" and sess_ns) else config.MANAGED_NAMESPACE
+    ws_url = await asyncio.to_thread(_get_route_url, name, route_ns)
     if not ws_url:
         raise HTTPException(
             status_code=503, detail="Session not ready — route not available"

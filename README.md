@@ -347,17 +347,35 @@ Keybindings:
 - **l** — Logout
 - **q** — Quit
 
+#### Backend selection
+
+New sessions default to **Container** backend (Kubernetes pods, ~12s provisioning).
+Select **VM** in the create dialog for KubeVirt-based isolation (~5 min provisioning).
+
+The Container backend requires the Agent Sandbox controller:
+```bash
+make codex-install-sandbox-controller
+```
+This is included automatically in `make codex-setup`.
+
 #### Architecture
 
-Each user gets an isolated KubeVirt VM running OpenShell with a Codex
-sandbox inside. The `saw-codex-api` service manages session lifecycle
-via a Kubernetes controller (CodexSession CRD). Users authenticate via
-OIDC (Keycloak) and never need cluster access.
+Each user gets an isolated OpenShell sandbox with a Codex agent inside.
+Two backends are supported:
+
+- **Container** (default): dedicated OpenShell gateway pod + agent pod per session (~12s, ~1 CPU / 1GB)
+- **VM**: KubeVirt VM with Docker-managed sandbox (~5 min, 4 CPU / 8GB)
+
+The `saw-codex-api` service manages session lifecycle via a Kubernetes
+controller (CodexSession CRD). Users authenticate via OIDC (Keycloak)
+and never need cluster access.
 
 ```
 codex-saw TUI → saw-codex-api (OIDC auth) → CodexSession CR
-  → Controller (helm install) → KubeVirt VM → OpenShell sandbox
-    → codex app-server (WebSocket) → user connects via codex --remote
+  → Controller dispatches by backend:
+    Container: gateway pod + agent pod in dedicated namespace
+    VM:        KubeVirt VM with OpenShell inside
+  → codex app-server (WebSocket) → user connects via codex --remote
 ```
 
 #### Makefile targets

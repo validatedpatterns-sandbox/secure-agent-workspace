@@ -18,10 +18,10 @@ class SawCodexClient:
         r.raise_for_status()
         return r.json()
 
-    def create_session(self, name: str) -> dict:
+    def create_session(self, name: str, backend: str = "kubernetes") -> dict:
         r = httpx.post(
             f"{self.api_url}/sessions",
-            json={"name": name},
+            json={"name": name, "backend": backend},
             headers=self.headers,
             timeout=60,
             verify=False,

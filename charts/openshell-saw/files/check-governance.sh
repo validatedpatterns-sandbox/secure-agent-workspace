@@ -12,12 +12,14 @@ if [[ "${GOVERNANCE_ENABLED}" == "true" ]]; then
     # required the journalctl grep (C) to pass, or the whole setup Job would
     # exit 1 despite the interceptor being genuinely reachable. Split into
     # explicit branches instead.
-    if curl -sf --max-time 5 "${GOVERNANCE_ENDPOINT}" >/dev/null 2>&1; then
-      INTERCEPTOR_READY=1
-      break
-    fi
-    if guest_ssh "openshell-gateway --version" >/dev/null 2>&1 && \
-       guest_ssh "journalctl --user -u openshell-gateway.service --no-pager 2>/dev/null | grep -q 'interceptors initialized'"; then
+    # The interceptor speaks gRPC — curl rejects the HTTP/0.9 response on
+    # recent versions. Use a bash TCP socket check: if the port accepts
+    # connections, the interceptor is up.
+    _ep="${GOVERNANCE_ENDPOINT#*//}"   # strip scheme
+    _ep="${_ep%%/*}"                   # strip path
+    _ihost="${_ep%:*}"
+    _iport="${_ep##*:}"
+    if timeout 5 bash -c "</dev/tcp/${_ihost}/${_iport}" 2>/dev/null; then
       INTERCEPTOR_READY=1
       break
     fi

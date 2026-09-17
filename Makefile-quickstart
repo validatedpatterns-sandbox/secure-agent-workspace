@@ -267,8 +267,27 @@ pre-uninstall:
 	oc delete vm,dv,job --all -n $(NS) --wait=false --ignore-not-found=true
 	@echo "Waiting for VMIs to terminate..."
 	oc wait --for=delete vmi --all -n $(NS) --timeout=120s
-	oc delete hyperconverged --all -n openshift-cnv --wait=false --ignore-not-found=true
+	@echo "Removing HyperConverged CR (must be fully gone before OLM reinstall to avoid schema conflicts)..."
+	-oc delete hyperconverged --all -n openshift-cnv --ignore-not-found=true --wait=false 2>/dev/null
+	@for hc in $$(oc get hyperconverged -n openshift-cnv -o name 2>/dev/null); do \
+		oc patch $$hc -n openshift-cnv --type=json \
+			-p='[{"op":"remove","path":"/metadata/finalizers"}]' 2>/dev/null || true; \
+	done
+	-oc wait --for=delete hyperconverged --all -n openshift-cnv --timeout=60s 2>/dev/null || true
 	$(MAKE) clean-stale-operators
+	@echo "Pre-uninstall: removing ArgoCD app finalizers and disabling auto-sync to prevent hub-deletion deadlock..."
+	@for app in $$(oc get applications.argoproj.io -n vp-gitops --no-headers -o name 2>/dev/null); do \
+		oc patch $$app -n vp-gitops --type=json \
+			-p='[{"op":"remove","path":"/metadata/finalizers"},{"op":"remove","path":"/spec/syncPolicy"}]' \
+			2>/dev/null || \
+		oc patch $$app -n vp-gitops --type=json \
+			-p='[{"op":"remove","path":"/metadata/finalizers"}]' 2>/dev/null || true; \
+	done
+	-oc delete applications.argoproj.io --all -n vp-gitops --wait=true --timeout=30s --ignore-not-found=true 2>/dev/null || \
+		oc delete applications.argoproj.io --all -n vp-gitops --wait=false --ignore-not-found=true 2>/dev/null
+	@echo "Pre-uninstall: removing ESO webhook configs to prevent namespace termination deadlock..."
+	-oc delete validatingwebhookconfiguration external-secrets-webhook --ignore-not-found=true 2>/dev/null
+	-oc delete mutatingwebhookconfiguration external-secrets-webhook --ignore-not-found=true 2>/dev/null
 
 # Generate SSH keys before install. No deletions — safe to run repeatedly.
 pattern-install: generate-keys
@@ -286,6 +305,18 @@ uninstall: pre-uninstall ## Uninstall the pattern (with pre-cleanup)
 	fi
 	@echo "Cleaning OLM state for openshift-cnv to prevent stale InstallPlan on reinstall..."
 	oc delete subscription,csv,installplan --all -n openshift-cnv --wait=false --ignore-not-found=true
+	@echo "Ensuring $(NS) namespace is fully gone (ESO webhook can block termination)..."
+	-oc delete validatingwebhookconfiguration external-secrets-webhook --ignore-not-found=true 2>/dev/null
+	-oc delete mutatingwebhookconfiguration external-secrets-webhook --ignore-not-found=true 2>/dev/null
+	@if oc get namespace $(NS) >/dev/null 2>&1; then \
+		kubectl proxy --port=8099 >/dev/null 2>&1 & PROXY_PID=$$!; sleep 3; \
+		curl -sk -H "Content-Type: application/json" -X PUT \
+		  http://localhost:8099/api/v1/namespaces/$(NS)/finalize \
+		  -d "{\"apiVersion\":\"v1\",\"kind\":\"Namespace\",\"metadata\":{\"name\":\"$(NS)\"},\"spec\":{\"finalizers\":[]}}" \
+		  >/dev/null 2>&1 || true; \
+		sleep 2; kill $$PROXY_PID 2>/dev/null || true; \
+		oc wait --for=delete namespace/$(NS) --timeout=60s 2>/dev/null || true; \
+	fi
 
 # Clean up a single sandbox's heavy resources before uninstall to prevent
 # finalizer hangs. VMs and DataVolumes take time to terminate and block

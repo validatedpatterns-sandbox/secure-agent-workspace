@@ -1,0 +1,11 @@
+apiVersion: saw.redhat.com/v1alpha1
+kind: Sandboxes
+metadata: {}
+spec:
+  sandboxes:
+    - name: notebook
+      type: openclaw
+      enabled: true
+      image: quay.io/rh-ai-quickstart/openclaw-openshell:latest
+      providers:
+        - openai

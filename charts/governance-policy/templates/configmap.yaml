@@ -22,4 +22,20 @@ data:
   {{ base $path }}: |
 {{ $.Files.Get $path | indent 4 }}
 {{- end }}
+{{- if .Values.customEndpointHost }}
+  openai.yaml: |
+    display_name: Custom vLLM / OpenAI-compatible Endpoint
+    description: Self-hosted vLLM or any OpenAI-compatible inference endpoint
+    provider_type: openai
+    endpoints:
+      - host: {{ .Values.customEndpointHost }}
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-write
+    binaries:
+      - /usr/local/bin/node
+      - /usr/bin/curl
+    inference_capable: false
+{{- end }}
 {{- end }}

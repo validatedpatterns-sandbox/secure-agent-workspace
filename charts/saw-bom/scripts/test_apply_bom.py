@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from apply_bom import (  # noqa: E402
     Provider,
     Sandbox,
+    Shell,
     Workspace,
     check_provider_type_mismatch,
     find_provider,
@@ -213,6 +214,168 @@ def test_resolve_configured_type_none_when_unset(monkeypatch):
     monkeypatch.delenv("PROV_NVIDIA_TYPE", raising=False)
     p = Provider(name="nvidia", type="nvidia")
     assert resolve_configured_type(p) is None
+
+
+# ---------------------------------------------------------------------------
+# Provider.url — custom endpoint URL propagation
+# ---------------------------------------------------------------------------
+
+def test_provider_url_defaults_to_empty():
+    p = Provider(name="custom", type="custom")
+    assert p.url == ""
+
+
+def test_parse_profiles_reads_url_from_yaml(tmp_path):
+    _write_profile(
+        tmp_path,
+        providers_yaml={"spec": {"providers": [
+            {"name": "custom", "type": "custom",
+             "credentialSecret": "inference", "credentialSecretKey": "api_key",
+             "url": "https://vllm.example.com/v1"},
+        ]}},
+    )
+    profiles = parse_profiles(tmp_path)
+    p = profiles[0].workspaces[0].providers[0]
+    assert p.url == "https://vllm.example.com/v1"
+
+
+def test_parse_profiles_reads_url_from_env_when_urlsecretkey_declared(monkeypatch, tmp_path):
+    monkeypatch.setenv("PROV_CUSTOM_URL", "https://env-vllm.example.com/v1")
+    _write_profile(
+        tmp_path,
+        providers_yaml={"spec": {"providers": [
+            {"name": "custom", "type": "custom",
+             "credentialSecret": "inference", "credentialSecretKey": "api_key",
+             "urlSecretKey": "url"},
+        ]}},
+    )
+    profiles = parse_profiles(tmp_path)
+    p = profiles[0].workspaces[0].providers[0]
+    assert p.url == "https://env-vllm.example.com/v1"
+
+
+def test_parse_profiles_no_url_from_env_without_urlsecretkey(monkeypatch, tmp_path):
+    # Providers without urlSecretKey must NOT pick up PROV_{name}_URL even if
+    # the env var is set — prevents the vLLM URL leaking onto nvidia providers.
+    monkeypatch.setenv("PROV_NVIDIA_URL", "https://should-not-apply.example.com/v1")
+    _write_profile(
+        tmp_path,
+        providers_yaml={"spec": {"providers": [
+            {"name": "nvidia", "type": "nvidia",
+             "credentialSecret": "inference", "credentialSecretKey": "api_key"},
+        ]}},
+    )
+    profiles = parse_profiles(tmp_path)
+    p = profiles[0].workspaces[0].providers[0]
+    assert p.url == ""
+
+
+def test_parse_profiles_yaml_url_takes_precedence_over_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("PROV_CUSTOM_URL", "https://env-vllm.example.com/v1")
+    _write_profile(
+        tmp_path,
+        providers_yaml={"spec": {"providers": [
+            {"name": "custom", "type": "custom",
+             "credentialSecret": "inference", "credentialSecretKey": "api_key",
+             "urlSecretKey": "url",
+             "url": "https://yaml-vllm.example.com/v1"},
+        ]}},
+    )
+    profiles = parse_profiles(tmp_path)
+    p = profiles[0].workspaces[0].providers[0]
+    assert p.url == "https://yaml-vllm.example.com/v1"
+
+
+def test_create_provider_includes_config_base_url_when_url_set():
+    commands = []
+
+    class FakeShell:
+        dry_run = False
+        def run(self, cmd, **_):
+            commands.append(cmd)
+            return 0, "", ""
+
+    from apply_bom import GatewaySetup, WorkspaceDeployer
+    sh = FakeShell()
+    gw = GatewaySetup(sh, "openshell", "openshell-local")
+    deployer = WorkspaceDeployer(sh, gw)
+
+    p = Provider(name="custom", type="custom", url="https://vllm.example.com/v1")
+    deployer.create_provider(p, credential="tok123")
+
+    assert commands, "expected at least one command"
+    cmd = commands[0]
+    assert "--config" in cmd
+    idx = cmd.index("--config")
+    assert cmd[idx + 1] == "base_url=https://vllm.example.com/v1"
+
+
+def test_create_provider_omits_config_when_url_empty():
+    commands = []
+
+    class FakeShell:
+        dry_run = False
+        def run(self, cmd, **_):
+            commands.append(cmd)
+            return 0, "", ""
+
+    from apply_bom import GatewaySetup, WorkspaceDeployer
+    sh = FakeShell()
+    gw = GatewaySetup(sh, "openshell", "openshell-local")
+    deployer = WorkspaceDeployer(sh, gw)
+
+    p = Provider(name="nvidia", type="nvidia")
+    deployer.create_provider(p, credential="apikey")
+
+    cmd = commands[0]
+    assert "--config" not in cmd
+
+
+def test_onboard_nemoclaw_sets_inference_base_url_when_url_set():
+    envs_captured = []
+
+    class FakeShell:
+        dry_run = False
+        def run(self, cmd, env=None, **_):
+            envs_captured.append(env or {})
+            return 0, "", ""
+
+    from apply_bom import GatewaySetup, WorkspaceDeployer
+    sh = FakeShell()
+    gw = GatewaySetup(sh, "openshell", "openshell-local")
+    deployer = WorkspaceDeployer(sh, gw)
+
+    p = Provider(name="custom", type="custom", url="https://vllm.example.com/v1")
+    sb = Sandbox(name="test-sb", type="nemoclaw", agent="openclaw")
+    deployer.onboard_nemoclaw(sb, p, credential="tok")
+
+    assert any("NEMOCLAW_INFERENCE_BASE_URL" in e for e in envs_captured), (
+        "expected NEMOCLAW_INFERENCE_BASE_URL in env passed to nemoclaw onboard"
+    )
+    for e in envs_captured:
+        if "NEMOCLAW_INFERENCE_BASE_URL" in e:
+            assert e["NEMOCLAW_INFERENCE_BASE_URL"] == "https://vllm.example.com/v1"
+
+
+def test_onboard_nemoclaw_omits_inference_base_url_when_url_empty():
+    envs_captured = []
+
+    class FakeShell:
+        dry_run = False
+        def run(self, cmd, env=None, **_):
+            envs_captured.append(env or {})
+            return 0, "", ""
+
+    from apply_bom import GatewaySetup, WorkspaceDeployer
+    sh = FakeShell()
+    gw = GatewaySetup(sh, "openshell", "openshell-local")
+    deployer = WorkspaceDeployer(sh, gw)
+
+    p = Provider(name="nvidia", type="nvidia")
+    sb = Sandbox(name="test-sb", type="nemoclaw", agent="openclaw")
+    deployer.onboard_nemoclaw(sb, p, credential="apikey")
+
+    assert all("NEMOCLAW_INFERENCE_BASE_URL" not in e for e in envs_captured)
 
 
 if __name__ == "__main__":

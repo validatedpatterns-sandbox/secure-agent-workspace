@@ -39,6 +39,7 @@ class Provider:
     credential_secret: str = ""
     credential_secret_key: str = "api_key"
     model: str = ""
+    url: str = ""
 
 
 @dataclass
@@ -169,14 +170,24 @@ def parse_profiles(profiles_dir):
             if prov_file.exists():
                 prov_data = load_yaml_file(prov_file)
                 for p in prov_data.get("spec", {}).get("providers", []):
+                    pname = p["name"]
+                    # URL comes from the env var only when urlSecretKey was
+                    # declared in providers.yaml — setup-bom-profiles.sh sets
+                    # PROV_{NAME}_URL only for providers with urlSecretKey,
+                    # preventing the URL from leaking to unrelated providers.
+                    url_env = f"PROV_{pname}_URL".replace("-", "_").upper()
+                    url = (p.get("url", "") or
+                           (os.environ.get(url_env, "")
+                            if p.get("urlSecretKey") else ""))
                     ws.providers.append(Provider(
-                        name=p["name"],
+                        name=pname,
                         type=p["type"],
                         enabled=p.get("enabled", True),
                         nemoclaw_provider=p.get("nemoclawProvider", ""),
                         credential_secret=p.get("credentialSecret", ""),
                         credential_secret_key=p.get("credentialSecretKey", "api_key"),
                         model=p.get("model", ""),
+                        url=url,
                     ))
             sb_file = ws_entry / "sandbox.yaml"
             if sb_file.exists():
@@ -212,6 +223,7 @@ PROVIDER_CRED_MAP = {
     "build": "NVIDIA_INFERENCE_API_KEY",
     "brave": "BRAVE_API_KEY",
     "tavily": "TAVILY_API_KEY",
+    "openai": "API_KEY",
 }
 
 
@@ -395,6 +407,8 @@ class WorkspaceDeployer:
             args += ["--credential", f"{cred_key}={credential}"]
         else:
             args += ["--from-existing"]
+        if provider.url:
+            args += ["--config", f"base_url={provider.url}"]
         self.sh.run(args, check=False)
 
     def create_sandbox_generic(self, sandbox, workspace_name="default"):
@@ -517,6 +531,8 @@ class WorkspaceDeployer:
         }
         if sandbox.model or provider.model:
             env["NEMOCLAW_MODEL"] = sandbox.model or provider.model
+        if provider.url:
+            env["NEMOCLAW_INFERENCE_BASE_URL"] = provider.url
         if credential:
             env["NEMOCLAW_PROVIDER_KEY"] = credential
             cred_key = PROVIDER_CRED_MAP.get(nc_prov, "")
@@ -535,7 +551,8 @@ class WorkspaceDeployer:
     def start_openclaw_gateway(self, sandbox_name, dashboard_route,
                                workspace_name="default",
                                provider_id="nvidia",
-                               model_id="nvidia/nemotron-3-super-120b-a12b"):
+                               model_id="nvidia/nemotron-3-super-120b-a12b",
+                               provider_base_url="https://inference.local/v1"):
         import secrets as secrets_mod
 
         ws_args = ["--workspace", workspace_name] if workspace_name else []
@@ -574,7 +591,7 @@ class WorkspaceDeployer:
                         f"--non-interactive --accept-risk "
                         f"--mode local "
                         f"--auth-choice custom-api-key "
-                        f'--custom-base-url "https://inference.local/v1" '
+                        f'--custom-base-url "{provider_base_url}" '
                         f"--custom-provider-id {provider_id} "
                         f'--custom-model-id "{model_id}" '
                         f"--custom-compatibility openai "
@@ -634,7 +651,8 @@ class WorkspaceDeployer:
                         f"ExecStart=/bin/bash -c 'PATH=$PATH:/home/{user}/.local/bin"
                         f" openshell sandbox exec -n {sandbox_name}"
                         f" {ws_flag} --no-tty -- sleep infinity'\n"
-                        f"Restart=always\nRestartSec=5\n\n"
+                        f"Restart=always\nRestartSec=5\n"
+                        f"StartLimitIntervalSec=300\nStartLimitBurst=10\n\n"
                         f"[Install]\nWantedBy=multi-user.target\n"
                     )
                     encoded = base64.b64encode(svc.encode()).decode()
@@ -696,8 +714,15 @@ class Verifier:
                         self.passed -= 1
                         self.failed += 1
 
+                skipped_providers = set()
                 for prov in ws.providers:
                     if not prov.enabled:
+                        continue
+                    mismatch = check_provider_type_mismatch(prov)
+                    if mismatch:
+                        log(f"SKIP  provider '{prov.name}' in '{ws.name}' "
+                            f"(type mismatch — was not created)")
+                        skipped_providers.add(prov.name)
                         continue
                     self.check(
                         f"provider '{prov.name}' in '{ws.name}'",
@@ -706,6 +731,13 @@ class Verifier:
 
                 for sb in ws.sandboxes:
                     if not sb.enabled:
+                        continue
+                    # Skip sandboxes whose only providers were type-mismatch
+                    # skipped — the sandbox couldn't be created without them.
+                    if sb.providers and all(
+                            p in skipped_providers for p in sb.providers):
+                        log(f"SKIP  sandbox '{sb.name}' in '{ws.name}' "
+                            f"(all providers were skipped)")
                         continue
                     self.check(
                         f"sandbox '{sb.name}' in '{ws.name}'",
@@ -717,6 +749,8 @@ class Verifier:
                             ["openshell", "sandbox", "provider",
                              "list", sb.name] + ws_flag)
                         for prov_name in sb.providers:
+                            if prov_name in skipped_providers:
+                                continue
                             if prov_name in (out or ""):
                                 log(f"  PASS  '{sb.name}' "
                                     f"has provider '{prov_name}'")
@@ -867,22 +901,26 @@ def main():
                     deployer.create_sandbox_generic(sb, ws.name)
                     prov_id = prov.type if prov else "nvidia"
                     model = sb.model or (prov.model if prov else "")
+                    base_url = prov.url if prov else ""
                     deployer.start_openclaw_gateway(
                         sb.name, args.dashboard_route or "",
                         workspace_name=ws.name,
                         provider_id=prov_id,
-                        model_id=model or "nvidia/nemotron-3-super-120b-a12b")
+                        model_id=model or "nvidia/nemotron-3-super-120b-a12b",
+                        provider_base_url=base_url or "https://inference.local/v1")
 
                 elif sb.type == "openclaw":
                     deployer.create_sandbox_generic(sb, ws.name)
                     prov = find_provider(ws, sb.providers)
                     prov_id = prov.type if prov else "nvidia"
                     model = sb.model or (prov.model if prov else "")
+                    base_url = prov.url if prov else ""
                     deployer.start_openclaw_gateway(
                         sb.name, args.dashboard_route or "",
                         workspace_name=ws.name,
                         provider_id=prov_id,
-                        model_id=model or "nvidia/nemotron-3-super-120b-a12b")
+                        model_id=model or "nvidia/nemotron-3-super-120b-a12b",
+                        provider_base_url=base_url or "https://inference.local/v1")
 
                 else:
                     # Generic: just create the sandbox

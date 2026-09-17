@@ -12,7 +12,7 @@ keycloak:
   hostname: ""
 
   realm: openshell
-  registrationAllowed: true
+  registrationAllowed: false
 
   clients:
     cli:
@@ -22,6 +22,11 @@ keycloak:
       # 86400 = 24 hours. Sandboxes run for days, so short-lived tokens cause
       # ssh-proxy and dashboard failures.
       accessTokenLifespan: 86400
+    rhdh:
+      clientId: rhdh
+      clientSecret: ""
+      redirectUris: []
+      webOrigins: []
     dashboard:
       clientId: openshell-dashboard
       public: true

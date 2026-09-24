@@ -57,7 +57,7 @@ data:
             - allow: [Resource]
       rules:
         - allow: [Component, System, API, Resource, Location, Template, User, Group]
-      processingInterval: { seconds: 30 }
+      processingInterval: { seconds: {{ .Values.catalog.processingInterval | default 30 }} }
     permission:
       enabled: true
       rbac:

@@ -17,6 +17,9 @@ pipelines:
   repoUrl: ""
   repoRef: main
 
+catalog:
+  processingInterval: 30
+
 provisioner:
   serviceAccount: saw-provisioner
 

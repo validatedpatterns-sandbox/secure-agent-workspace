@@ -538,7 +538,12 @@ deploy-rhdh: ## Deploy RHDH self-service portal
 	fi; \
 	KC_HOST=$$(oc get route -n keycloak-system -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null); \
 	if [ -z "$${KC_HOST}" ]; then \
-		KC_HOST=$$(oc get route -n $(NS) -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null); \
+		KC_HOST=$$(oc get route -n $(NS) -l app=keycloak -o jsonpath='{.items[0].spec.host}'); \
+	fi; \
+	if [ -z "$${KC_HOST}" ]; then \
+		echo "ERROR: Keycloak route not found in keycloak-system or $(NS) namespaces."; \
+		echo "       Deploy Keycloak first: make deploy-keycloak"; \
+		exit 1; \
 	fi; \
 	RHDH_CLIENT_SECRET=$$(oc get secret rhdh-oidc-credentials -n $(RHDH_NS) -o jsonpath='{.data.AUTH_OIDC_CLIENT_SECRET}' 2>/dev/null | base64 -d); \
 	if [ -z "$${RHDH_CLIENT_SECRET}" ]; then \

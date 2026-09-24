@@ -75,6 +75,8 @@ clusterGroup:
       name: governance-policy
       namespace: openshell-agents
       path: charts/governance-policy
+      extraValueFiles:
+        - /overrides/governance-policy.yaml
     governance-interceptor:
       name: governance-interceptor
       namespace: openshell-agents

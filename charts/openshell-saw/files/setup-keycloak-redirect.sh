@@ -7,8 +7,8 @@
 guest_scp "${SCRIPTS_DIR}/setup-dashboard.sh" "/home/${SSH_USER}/setup-dashboard.sh"
 WEBUI_ROUTE_HOST="$(kubectl get route "${VM_NAME}-webui" -n "${NS}" -o jsonpath='{.spec.host}' 2>/dev/null || true)"
 if [[ -z "${WEBUI_ROUTE_HOST}" ]]; then
-  echo "WARNING: ${VM_NAME}-webui route not found — skipping dashboard setup"
-  return 0 2>/dev/null || true
+  echo "ERROR: ${VM_NAME}-webui route not found" >&2
+  exit 1
 fi
 
 DASHBOARD_REDIRECT_URL="https://${WEBUI_ROUTE_HOST}/oauth2/callback"
@@ -71,4 +71,4 @@ guest_ssh "
   export DASHBOARD_REDIRECT_URL=${DASHBOARD_REDIRECT_URL}
   export DASHBOARD_INSECURE_SKIP_TLS='${DASHBOARD_INSECURE_SKIP_TLS}'
   bash /home/${SSH_USER}/setup-dashboard.sh
-" 2>&1 || echo "WARN: dashboard setup failed"
+" 2>&1 || { echo "ERROR: dashboard setup failed" >&2; exit 1; }

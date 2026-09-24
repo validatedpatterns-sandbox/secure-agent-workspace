@@ -76,21 +76,48 @@ for file in ${BOM_MOUNT}/*; do
             type_env_var="$(echo "PROV_${cur_name}_TYPE" | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
             echo "${type_env_var}=$(cat "${ppath}")" >> "${BOM_ENV}"
           fi
+          # Only write PROV_{name}_URL when the provider explicitly declares
+          # urlSecretKey — prevents propagating vLLM URLs to unrelated providers
+          # (e.g. nvidia) that happen to share the same credential secret.
+          if [[ -n "${cur_url_key:-}" ]]; then
+            upath="/ws-secrets/${cur_secret}/${cur_url_key}"
+            if [[ -f "${upath}" ]]; then
+              url_val="$(cat "${upath}")"
+              if [[ -n "${url_val}" ]]; then
+                url_env_var="$(echo "PROV_${cur_name}_URL" | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
+                printf '%s=%q\n' "${url_env_var}" "${url_val}" >> "${BOM_ENV}"
+              fi
+            fi
+          fi
+          if [[ -n "${cur_model_key:-}" ]]; then
+            mpath="/ws-secrets/${cur_secret}/${cur_model_key}"
+            if [[ -s "${mpath}" ]]; then
+              model_env_var="$(echo "PROV_${cur_name}_MODEL" | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
+              printf '%s=%q\n' "${model_env_var}" "$(cat "${mpath}")" >> "${BOM_ENV}"
+            else
+              echo "ERROR: model for provider '${cur_name}' missing at ${mpath}" >&2
+              return 1
+            fi
+          fi
         else
           echo "  WARNING: credential for provider '${cur_name}' not found at ${spath} — is '${cur_secret}' listed in additionalProviderSecrets (openshell-saw values) or is it the primary inference.secretName?"
         fi
       fi
     }
-    cur_name="" ; cur_secret="" ; cur_key=""
+    cur_name="" ; cur_secret="" ; cur_key="" ; cur_url_key="" ; cur_model_key=""
     while IFS= read -r line; do
       if echo "${line}" | grep -q '^\s*- name:'; then
         _flush_prov
         cur_name="$(echo "${line}" | sed 's/.*name: *//' | tr -d '"' | tr -d "'")"
-        cur_secret="" ; cur_key=""
+        cur_secret="" ; cur_key="" ; cur_url_key="" ; cur_model_key=""
       elif echo "${line}" | grep -q 'credentialSecretKey:'; then
         cur_key="$(echo "${line}" | sed 's/.*credentialSecretKey: *//' | tr -d '"' | tr -d "'")"
       elif echo "${line}" | grep -q 'credentialSecret:'; then
         cur_secret="$(echo "${line}" | sed 's/.*credentialSecret: *//' | tr -d '"' | tr -d "'")"
+      elif echo "${line}" | grep -q 'urlSecretKey:'; then
+        cur_url_key="$(echo "${line}" | sed 's/.*urlSecretKey: *//' | tr -d '"' | tr -d "'")"
+      elif echo "${line}" | grep -q 'modelSecretKey:'; then
+        cur_model_key="$(echo "${line}" | sed 's/.*modelSecretKey: *//' | tr -d '"' | tr -d "'")"
       fi
     done < "$file"
     _flush_prov

@@ -2,3 +2,8 @@
 # To add a new provider, drop a YAML file in profiles/ and push.
 # The interceptor picks up changes automatically via file watcher.
 enabled: true
+
+# Set to the hostname of a custom vLLM / OpenAI-compatible endpoint to
+# enable the "custom" provider profile. Leave empty to omit the profile.
+# Example: vllm-predictor-default.vllm-test.svc.cluster.local
+customEndpointHost: ""

@@ -84,6 +84,49 @@ if [[ "${ALLOW_ANONYMOUS_PULL:-false}" == "true" ]]; then
   fi
 fi
 
+# --- Pre-populate the supervisor cache on every gateway start ---
+# Transfer files instead of embedding shell code in a systemd command over SSH.
+# Load after route-san.conf, whose ExecStartPre= resets earlier startup commands.
+guest_scp "${SCRIPTS_DIR}/prepopulate-supervisor-cache.sh" "/tmp/prepopulate-supervisor-cache.sh"
+guest_ssh "sudo install -m 755 /tmp/prepopulate-supervisor-cache.sh /usr/local/bin/openshell-prepopulate-cache"
+cat > "${WORK_DIR}/zz-prepopulate-cache.conf" <<UNITEOF
+[Service]
+ExecStartPre=/usr/local/bin/openshell-prepopulate-cache ${RUNTIME}
+UNITEOF
+guest_scp "${WORK_DIR}/zz-prepopulate-cache.conf" "/tmp/zz-prepopulate-cache.conf"
+guest_ssh 'mkdir -p "$HOME/.config/systemd/user/openshell-gateway.service.d" && install -m 644 /tmp/zz-prepopulate-cache.conf "$HOME/.config/systemd/user/openshell-gateway.service.d/zz-prepopulate-cache.conf" && rm -f "$HOME/.config/systemd/user/openshell-gateway.service.d/prepopulate-cache.conf" && systemctl --user daemon-reload'
+
+# Docker's 1500-byte default exceeds some OpenShift VM uplinks (e.g. 1400).
+# Network administration belongs in the system manager, not a sudo command
+# inside the gateway's user manager (which may run in a user namespace).
+guest_ssh 'rm -f "$HOME/.config/systemd/user/openshell-gateway.service.d/zz-docker-mtu.conf"'
+if [[ "${RUNTIME}" == "docker" ]]; then
+  guest_scp "${SCRIPTS_DIR}/configure-docker-mtu.sh" "/tmp/configure-docker-mtu.sh"
+  guest_ssh "sudo install -m 755 /tmp/configure-docker-mtu.sh /usr/local/bin/openshell-configure-docker-mtu"
+  MTU_USER_UID="$(guest_ssh 'id -u')"
+  [[ "${MTU_USER_UID}" =~ ^[0-9]+$ ]] || { echo "ERROR: could not determine gateway user UID"; exit 1; }
+  cat > "${WORK_DIR}/openshell-docker-mtu.service" <<UNITEOF
+[Unit]
+Description=Configure OpenShell Docker network MTU
+Requires=docker.service
+After=docker.service network-online.target
+Before=user@${MTU_USER_UID}.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/openshell-configure-docker-mtu
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+  guest_scp "${WORK_DIR}/openshell-docker-mtu.service" "/tmp/openshell-docker-mtu.service"
+  guest_ssh 'sudo install -m 644 /tmp/openshell-docker-mtu.service /etc/systemd/system/openshell-docker-mtu.service && sudo systemctl daemon-reload && sudo systemctl enable openshell-docker-mtu.service && sudo systemctl restart openshell-docker-mtu.service'
+else
+  guest_ssh 'if test -f /etc/systemd/system/openshell-docker-mtu.service; then sudo systemctl disable --now openshell-docker-mtu.service; fi'
+fi
+
 # --- Patch OIDC issuer ---
 source "${SECRETS_DIR}/run-create.env" 2>/dev/null || true
 if [[ -n "${OIDC_ISSUER:-}" ]]; then

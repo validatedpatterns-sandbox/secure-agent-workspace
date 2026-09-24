@@ -307,6 +307,8 @@ You can set `OPENSHELL_SAW_NAME` once via `export` and all `openshell-saw-*` tar
 | Ollama (local) | `ollama` | `llama3` |
 | Custom endpoint | `custom` | any (set `ENDPOINT_URL`) |
 
+For self-hosted vLLM or Ollama configuration, automatic provider creation, compatibility, readiness checks, and troubleshooting, see **[Custom vLLM / OpenAI-compatible Endpoint](docs/custom-inference-provider.md)**.
+
 ### Validating the deployment
 
 ```bash
@@ -363,6 +365,12 @@ make delete-all
 # Uninstall the validated pattern (experimental)
 ./pattern.sh make uninstall
 ```
+
+`UNINSTALL_TIMEOUT_SECONDS` (default `600`) bounds the uninstall playbook/watcher,
+with up to seven additional seconds for process cleanup. Pre/post-cleanup use
+separate bounded resource waits. Namespace and HyperConverged finalizers are
+preserved; a stuck deletion fails with diagnostics instead of forcing completion.
+See [deployment recovery notes](docs/custom-inference-provider.md#troubleshooting-and-upgrades).
 
 ## Repository structure
 

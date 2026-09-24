@@ -13,8 +13,8 @@ if [[ "${DASHBOARD_ENABLED:-false}" != "true" ]]; then
 fi
 
 if [[ -z "${OIDC_ISSUER:-}" ]]; then
-  echo "Dashboard skipped: oidc.issuerUrl not configured (deploy Keycloak and set oidc.issuerUrl to enable)."
-  exit 0
+  echo "ERROR: enabled dashboard requires oidc.issuerUrl" >&2
+  exit 1
 fi
 
 : "${DASHBOARD_IMAGE:?}"
@@ -23,7 +23,12 @@ fi
 : "${DASHBOARD_REDIRECT_URL:?DASHBOARD_REDIRECT_URL not set — was the *-webui route created?}"
 DASHBOARD_CLIENT_ID="${DASHBOARD_CLIENT_ID:-openshell-dashboard}"
 
-mkdir -p "${HOME}/.config/systemd/user" "${HOME}/.config/openshell"
+# Replace only dashboard-owned unit entries, never follow a baked-in unit symlink.
+UNIT_DIR="${HOME}/.config/systemd/user"
+sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" "${UNIT_DIR}"
+mkdir -p "${HOME}/.config/openshell"
+UNIT_TMP="$(mktemp -d)"
+trap 'rm -rf "${UNIT_TMP}"' EXIT
 
 # Copy just the CA cert (public, not sensitive — never the private key) to a
 # dedicated, world-readable location instead of exposing the whole TLS dir.
@@ -70,7 +75,7 @@ OAUTH2_PROXY_COOKIE_REFRESH=60s
 ENVEOF
 chmod 600 "${HOME}/.config/openshell/dashboard.env" "${HOME}/.config/openshell/dashboard-proxy.env"
 
-cat > "${HOME}/.config/systemd/user/openshell-dashboard.service" <<UNITEOF
+cat > "${UNIT_TMP}/openshell-dashboard.service" <<UNITEOF
 [Unit]
 Description=OpenShell Dashboard (BFF + UI)
 
@@ -86,7 +91,7 @@ RestartSec=5s
 WantedBy=default.target
 UNITEOF
 
-cat > "${HOME}/.config/systemd/user/openshell-dashboard-proxy.service" <<UNITEOF
+cat > "${UNIT_TMP}/openshell-dashboard-proxy.service" <<UNITEOF
 [Unit]
 Description=OpenShell Dashboard Auth Proxy (oauth2-proxy)
 
@@ -102,6 +107,11 @@ RestartSec=5s
 WantedBy=default.target
 UNITEOF
 
+for unit in openshell-dashboard.service openshell-dashboard-proxy.service; do
+  staged="$(mktemp "${UNIT_DIR}/.dashboard-unit.XXXXXX")"
+  sudo install -m 0644 -o "$(id -u)" -g "$(id -g)" "${UNIT_TMP}/${unit}" "${staged}"
+  sudo mv -Tf "${staged}" "${UNIT_DIR}/${unit}"
+done
 systemctl --user daemon-reload
 # `enable --now` is a no-op on an already-running unit, so it silently keeps
 # a stale container alive (with a stale env-file, e.g. an old OIDC issuer)
@@ -116,18 +126,22 @@ systemctl --user restart openshell-dashboard.service openshell-dashboard-proxy.s
 
 echo "Waiting for dashboard to become ready..."
 ok=0
-for i in $(seq 1 15); do
+deadline=$((SECONDS + 120))
+while (( SECONDS < deadline )); do
   sleep 2
-  if curl -sf --max-time 2 http://127.0.0.1:8090/api/v1/healthz >/dev/null 2>&1; then
+  if systemctl --user is-active --quiet openshell-dashboard.service openshell-dashboard-proxy.service &&
+     curl -sf --max-time 2 http://127.0.0.1:8080/ping >/dev/null 2>&1 &&
+     curl -sf --max-time 2 http://127.0.0.1:8090/api/v1/healthz >/dev/null 2>&1; then
     ok=1
     break
   fi
-  echo "  waiting for dashboard... (attempt $i)"
+  echo "  waiting for dashboard..."
 done
 if [[ "${ok}" -ne 1 ]]; then
-  echo "WARN: dashboard health check timed out"
+  echo "ERROR: dashboard health check timed out"
   ${RUNTIME} logs openshell-dashboard 2>&1 | tail -10 || true
   ${RUNTIME} logs openshell-dashboard-proxy 2>&1 | tail -10 || true
+  exit 1
 else
   echo "dashboard ready"
 fi

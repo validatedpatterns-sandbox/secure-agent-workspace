@@ -6,6 +6,7 @@ accessControl:
 job:
   waitForSecrets: true
   backoffLimit: 5
+  activeDeadlineSeconds: 3600
 
 nemoclawCliImage: "quay.io/rh-ai-quickstart/nemoclaw-cli:latest"
 

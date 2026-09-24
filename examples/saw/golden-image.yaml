@@ -1,0 +1,12 @@
+# Replace this placeholder with the approved immutable VM disk image digest.
+# Do not use an unqualified build candidate or an OpenShell component image.
+apiVersion: saw.redhat.com/v1alpha1
+kind: SawGoldenImage
+metadata:
+  name: saw-release-1
+spec:
+  namespace: saw-images
+  registryURL: docker://quay.io/example/saw-vm@sha256:<qualified-digest>
+  # For a private registry, set this to a pull Secret already in saw-images.
+  # registrySecret: saw-image-pull
+  diskSizeGi: 40

@@ -1,0 +1,18 @@
+# Example release only, not a permanently required OpenShell version.
+# Digests are the observed Linux/amd64 payloads, not a release qualification.
+apiVersion: saw.redhat.com/v1alpha1
+kind: InstallerBOM
+metadata:
+  name: saw-example-2026-09
+spec:
+  installerVersion: 0.2.0
+  openshell:
+    cli:
+      version: 0.0.116-rhaiv.0
+      image: quay.io/opendatahub/odh-openshell-cli@sha256:ffd6c5e163180aba4f19d445a23906856bd9b7a24710aa134484f2b2ee7a8f17
+    gateway:
+      version: 0.0.116-rhaiv.0
+      image: quay.io/opendatahub/odh-openshell-gateway@sha256:456650bc420ff3bda27e81c13bea3ebad721b6a00d8541251f48ec999f92af6d
+    supervisor:
+      version: 0.0.116-rhaiv.0
+      image: quay.io/opendatahub/odh-openshell-supervisor@sha256:6c56ca2495ee10a77773b154cefd7309ebcab071962ea069ac349a3d9ec8c55a

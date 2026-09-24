@@ -1,3 +1,9 @@
 # Active profiles to deploy on this SAW instance.
 profiles:
   - data-science
+
+# Opt in for the autonomous controller path. Keep legacy defaults while that
+# path is implemented; data-only ConfigMaps must not run the old setup Job.
+delivery:
+  mode: legacy # legacy | data
+  configMapName: saw-bom-profiles

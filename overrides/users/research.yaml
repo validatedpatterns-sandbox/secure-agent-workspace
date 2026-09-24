@@ -1,0 +1,15 @@
+# One user enrollment. Copy this file per user; do not put Vault values here.
+sawUser:
+  # SAW instance name. It participates in the generated namespace identity.
+  name: research
+  # Stable OIDC subject, never an email address or mutable display name.
+  subject: ""
+  username: alice
+  credentials: []
+  instance:
+    workspaces: []
+  guest:
+    enabled: true
+    cores: 4
+    memoryGi: 8
+    runStrategy: Halted

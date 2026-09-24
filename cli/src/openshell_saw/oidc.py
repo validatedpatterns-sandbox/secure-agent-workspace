@@ -66,12 +66,15 @@ def auto_detect_issuer(issuer, namespace, token_dir, client_id, shared_namespace
 
     # Step 2: from Keycloak CR status (RHBK operator)
     r = kube.run(
-        ["oc", "get", "keycloak", "openshell-keycloak", "-n", lookup_ns,
-         "-o", "jsonpath={.status.externalURL}"],
+        ["oc", "get", "keycloak", "-n", lookup_ns,
+         "-o", "jsonpath={.items[0].status.externalURL}"],
         capture=True, check=False,
     )
     if r.returncode == 0 and r.stdout.strip():
-        return f"{r.stdout.strip()}/realms/openshell"
+        detected = r.stdout.strip().rstrip("/")
+        if not detected.startswith(("http://", "https://")):
+            detected = f"https://{detected}"
+        return f"{detected}/realms/saw"
 
     # Step 3: from saved token file
     tf = _token_file(token_dir)
@@ -92,7 +95,7 @@ def auto_detect_issuer(issuer, namespace, token_dir, client_id, shared_namespace
         capture=True, check=False,
     )
     if r.returncode == 0 and r.stdout.strip():
-        return f"https://{r.stdout.strip()}/realms/openshell"
+        return f"https://{r.stdout.strip()}/realms/saw"
 
     return None
 

@@ -2,6 +2,13 @@ apiVersion: saw.redhat.com/v1alpha1
 kind: Workspace
 metadata:
   name: cuda-dev
+  profile: data-science
   description: "CUDA development workspace with NVIDIA inference"
 spec:
   enabled: true
+  members:
+    - subjectRef: instanceOwner
+      role: admin
+  inference:
+    provider: nvidia
+    model: nvidia/nemotron-3-super-120b-a12b

@@ -1,0 +1,35 @@
+[Unit]
+Description=SAW guest-local configuration reconciler
+After=network-online.target cloud-final.service saw-guest-mounts.service
+Requires=saw-guest-mounts.service
+Wants=network-online.target
+ConditionPathExists=/etc/saw/guest.json
+
+[Service]
+Type=simple
+User=root
+UMask=0077
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH=/opt/saw/guest
+ExecStart=/usr/bin/python3 -m saw_guest
+Restart=on-failure
+RestartSec=10
+StateDirectory=saw/reconciler
+StateDirectoryMode=0700
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=tmpfs
+# Keep /home and /root hidden, but allow Unix socket access to the rootless
+# user manager. The bind is read-only; per-user runtime directories stay 0700.
+BindReadOnlyPaths=/run/user
+PrivateTmp=true
+LimitCORE=0
+MemoryMax=512M
+# The verified release may access local container sockets. Its write paths
+# and SELinux policy need qualification; do not widen this to the entire root FS.
+ReadWritePaths=/var/lib/saw
+
+[Install]
+# cloud-final is ordered after multi-user.target on the image. Attaching this
+# After=cloud-final service to multi-user.target would create an ordering cycle.
+WantedBy=cloud-init.target

@@ -1,0 +1,83 @@
+{{- if and .Values.sawBlueprint.enabled .Values.sawBlueprint.applicationSet.enabled }}
+{{- $cfg := .Values.sawBlueprint }}
+{{- $set := $cfg.applicationSet }}
+{{- if or (not $set.repoURL) (not $set.targetRevision) }}{{ fail "applicationSet.repoURL and applicationSet.targetRevision are required when enabled" }}{{ end }}
+{{- if eq (len $cfg.tenants) 0 }}{{ fail "applicationSet requires at least one Git-defined tenant enrollment" }}{{ end }}
+{{- $seen := dict }}
+{{- $seenVaultPrefixes := dict }}
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: saw-tenants
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-20"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - list:
+        elements:
+        {{- range $tenant := $cfg.tenants }}
+        {{- $identityInput := dict "issuer" $cfg.platform.issuer "subject" $tenant.subject "name" $tenant.name }}
+        {{- $ns := include "saw-blueprint.namespace" $identityInput }}
+        {{- $identity := include "saw-blueprint.identity" $identityInput }}
+        {{- $matches := list }}
+        {{- range $image := $cfg.goldenImages }}
+        {{- if eq $image.name $tenant.goldenImageRef }}{{ $matches = append $matches $image }}{{ end }}
+        {{- end }}
+        {{- if ne (len $matches) 1 }}{{ fail "goldenImageRef must match exactly one approved golden image" }}{{ end }}
+        {{- $sourceImage := first $matches }}
+        {{- $image := dict "namespace" $cfg.imageNamespace "dataSource" (include "saw-blueprint.imageName" $sourceImage) "diskSizeGi" $sourceImage.diskSizeGi }}
+        {{- with $sourceImage.storageClass }}{{- $_ := set $image "storageClassName" . }}{{- end }}
+        {{- $releaseName := $tenant.installerReleaseRef | default $cfg.installer.defaultRelease }}
+        {{- $releaseMatches := list }}
+        {{- range $release := $cfg.installer.releases }}{{- if eq $release.name $releaseName }}{{ $releaseMatches = append $releaseMatches $release }}{{ end }}{{- end }}
+        {{- if ne (len $releaseMatches) 1 }}{{ fail "tenant installer release must match exactly one configured global release" }}{{ end }}
+        {{- if hasKey $seen $ns }}{{ fail "duplicate tenant enrollment" }}{{ end }}
+        {{- $_ := set $seen $ns true }}
+        {{- $username := $tenant.username }}
+        {{- $vaultPrefix := $tenant.vaultPrefix | default (printf "%s/%s" (trimSuffix "/" $cfg.platform.vault.prefix) $username) }}
+        {{- if hasKey $seenVaultPrefixes $vaultPrefix }}{{ fail "each tenant must use a unique Vault prefix" }}{{ end }}
+        {{- $_ := set $seenVaultPrefixes $vaultPrefix true }}
+          - name: {{ printf "saw-%s" ($identity | trunc 24) | quote }}
+            namespace: {{ $ns | quote }}
+            platform: {{ $cfg.platform | toJson | quote }}
+            tenant: {{ $tenant | toJson | quote }}
+            image: {{ $image | toJson | quote }}
+            instance: {{ $tenant.instance | default dict | toJson | quote }}
+            installerRelease: {{ first $releaseMatches | toJson | quote }}
+            profileConfigMaps: {{ $tenant.profileConfigMaps | default list | toJson | quote }}
+            guest: {{ $tenant.guest | default dict | toJson | quote }}
+        {{- end }}
+  template:
+    metadata:
+      name: '{{`{{ .name }}`}}'
+      labels:
+        app.kubernetes.io/part-of: openshell-saw
+    spec:
+      project: {{ $set.project | quote }}
+      source:
+        repoURL: {{ $set.repoURL | quote }}
+        targetRevision: {{ $set.targetRevision | quote }}
+        path: {{ $set.tenantChartPath | quote }}
+        helm:
+          values: |
+            openshellSaw:
+              platform: {{`{{ .platform }}`}}
+              tenant: {{`{{ .tenant }}`}}
+              image: {{`{{ .image }}`}}
+              instance: {{`{{ .instance }}`}}
+              installerRelease: {{`{{ .installerRelease }}`}}
+              profileConfigMaps: {{`{{ .profileConfigMaps }}`}}
+              guest: {{`{{ .guest }}`}}
+      destination:
+        server: {{ $set.destinationServer | quote }}
+        namespace: '{{`{{ .namespace }}`}}'
+      syncPolicy:
+        automated:
+          prune: false
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+{{- end }}

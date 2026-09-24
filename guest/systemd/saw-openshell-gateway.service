@@ -1,0 +1,24 @@
+[Unit]
+Description=SAW installer-owned local OpenShell gateway
+After=network-online.target
+ConditionPathExists=/etc/saw/guest.json
+ConditionPathExists=/var/lib/saw/gateway/bootstrap.json
+
+[Service]
+Type=simple
+User=cloud-user
+Group=cloud-user
+UMask=0077
+ExecStartPre=+/usr/bin/python3 -I /opt/saw/guest/saw_guest/release_exec.py --guest-gateway-check
+ExecStart=/usr/bin/python3 -I /opt/saw/guest/saw_guest/release_exec.py --guest-gateway-run
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=30
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindReadOnlyPaths=/run/user
+PrivateTmp=true
+LimitCORE=0
+ReadWritePaths=/var/lib/saw/gateway/state
+# Not enabled independently: the guest validates enrollment before starting it.

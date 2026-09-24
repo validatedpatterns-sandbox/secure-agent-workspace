@@ -1,0 +1,19 @@
+{{- with .Values.sawTenant.enrollment }}
+{{- $enrollment := . }}
+{{- $owner := required "SawEnrollment.spec.owner is required" $enrollment.spec.owner }}
+{{- $namespace := include "saw-tenant.namespace" $enrollment }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $namespace }}
+  labels:
+    app.kubernetes.io/managed-by: argocd
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+    saw.redhat.com/enrollment-identity: {{ include "saw-tenant.identity" $enrollment | quote }}
+    saw.redhat.com/owner-subject: {{ required "SawEnrollment.spec.owner.subject is required" $owner.subject | quote }}
+    saw.redhat.com/owner-issuer: {{ required "SawEnrollment.spec.owner.issuer is required" $owner.issuer | quote }}
+{{- end }}

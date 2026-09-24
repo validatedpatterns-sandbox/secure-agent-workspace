@@ -1,0 +1,62 @@
+{{- if .Values.sawBlueprint.enabled }}
+{{- $cfg := .Values.sawBlueprint }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $cfg.imageNamespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-30"
+    {{- include "saw-blueprint.retain" . | nindent 4 }}
+{{- $seen := dict }}
+{{- range $image := $cfg.goldenImages }}
+{{- $name := include "saw-blueprint.imageName" $image }}
+{{- if hasKey $seen $name }}{{ fail "duplicate golden image definition" }}{{ end }}
+{{- $_ := set $seen $name true }}
+---
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata:
+  name: {{ $name }}
+  namespace: {{ $cfg.imageNamespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+    {{- include "saw-blueprint.retain" . | nindent 4 }}
+    saw.redhat.com/import-identity: {{ $image | toRawJson | sha256sum | quote }}
+    saw.redhat.com/source-digest: {{ last (splitList "@" $image.registryURL) | quote }}
+    cdi.kubevirt.io/storage.bind.immediate.requested: "true"
+spec:
+  source:
+    registry:
+      url: {{ $image.registryURL | quote }}
+      pullMethod: pod
+      {{- with $image.registrySecret }}
+      secretRef: {{ . }}
+      {{- end }}
+      {{- with $image.caConfigMap }}
+      certConfigMap: {{ . }}
+      {{- end }}
+  storage:
+    accessModes: [ReadWriteOnce]
+    {{- with $image.storageClass }}
+    storageClassName: {{ . }}
+    {{- end }}
+    resources:
+      requests:
+        storage: {{ printf "%vGi" $image.diskSizeGi }}
+---
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataSource
+metadata:
+  name: {{ $name }}
+  namespace: {{ $cfg.imageNamespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+    {{- include "saw-blueprint.retain" . | nindent 4 }}
+    saw.redhat.com/import-identity: {{ $image | toRawJson | sha256sum | quote }}
+spec:
+  source:
+    pvc:
+      name: {{ $name }}
+      namespace: {{ $cfg.imageNamespace }}
+{{- end }}
+{{- end }}

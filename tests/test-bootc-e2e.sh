@@ -222,11 +222,11 @@ check "Keycloak is Ready (up to 5 min)" \
 OIDC_ISSUER=""
 KC_URL=$(oc get keycloak openshell-keycloak -n "${NS}" -o jsonpath='{.status.externalURL}' 2>/dev/null || true)
 if [[ -n "${KC_URL}" ]]; then
-  OIDC_ISSUER="${KC_URL}/realms/openshell"
+  OIDC_ISSUER="${KC_URL}/realms/${KEYCLOAK_REALM:-saw}"
 else
   KC_HOST=$(oc get route -n "${NS}" -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null || true)
   if [[ -n "${KC_HOST}" ]]; then
-    OIDC_ISSUER="https://${KC_HOST}/realms/openshell"
+    OIDC_ISSUER="https://${KC_HOST}/realms/${KEYCLOAK_REALM:-saw}"
   fi
 fi
 echo "  OIDC issuer: ${OIDC_ISSUER:-not detected}"

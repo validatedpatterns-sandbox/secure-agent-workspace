@@ -1,90 +1,95 @@
+{{- if .Values.openshellSaw.tenant.name }}
+{{- $cfg := .Values.openshellSaw }}
+{{- $ns := include "openshell-saw.namespace" $cfg }}
+{{- $i := $cfg.instance }}
+{{- $g := $cfg.guest }}
+{{- $r := $cfg.installerRelease }}
+{{- $p := $cfg.profileConfigMaps }}
+{{- if and $g.enabled $i $r }}
+{{- $providerSecrets := dict }}
+{{- $credentials := $cfg.tenant.credentials }}
+{{- if hasKey $cfg "providerCredentials" }}{{- $credentials = $cfg.providerCredentials }}{{- end }}
+{{- range $selection := $i.workspaces }}
+  {{- range $bindingName, $binding := ($selection.credentialBindings | default dict) }}
+    {{- $ref := $binding.secretRef | default dict }}
+    {{- $refName := $ref.name | default "" }}
+    {{- $secretKey := $ref.key | default "" }}
+    {{- $matches := list }}
+    {{- range $credential := $credentials }}
+      {{- if or (eq $credential.name $bindingName) (eq $credential.name $refName) (eq $credential.remoteKey $refName) }}
+        {{- $matches = append $matches $credential }}
+      {{- end }}
+    {{- end }}
+    {{- if ne (len $matches) 1 }}
+      {{- fail "credential binding must resolve to exactly one tenant.credentials entry" }}
+    {{- end }}
+    {{- $credential := first $matches }}
+    {{- if not (has $secretKey $credential.keys) }}
+      {{- fail "credential binding key must be declared in tenant.credentials.keys" }}
+    {{- end }}
+    {{- $secretName := $credential.remoteKey }}
+    {{- $keys := get $providerSecrets $secretName | default (list) }}
+    {{- if not (has $secretKey $keys) }}{{- $keys = append $keys $secretKey }}{{- end }}
+    {{- $_ := set $providerSecrets $secretName $keys }}
+  {{- end }}
+{{- end }}
+{{- $secrets := keys $providerSecrets | sortAlpha }}
+{{- $profiles := list }}
+{{- range $cm := $p }}{{- $profiles = append $profiles $cm.name }}{{- end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: saw-guest, namespace: {{ $ns }}}
+automountServiceAccountToken: false
+---
 apiVersion: kubevirt.io/v1
 kind: VirtualMachine
-metadata:
-  name: {{ include "openshell-sandbox.fullname" . }}
-  labels:
-    {{- include "openshell-sandbox.labels" . | nindent 4 }}
-    openshell.pattern/role: gateway
+metadata: {name: {{ $cfg.tenant.name }}, namespace: {{ $ns }}, annotations: {argocd.argoproj.io/sync-options: Prune=false,Delete=false, argocd.argoproj.io/sync-wave: "10"}}
 spec:
-  runStrategy: Always
-  dataVolumeTemplates:
-    - metadata:
-        name: {{ include "openshell-sandbox.fullname" . }}-root
-        annotations:
-          cdi.kubevirt.io/storage.bind.immediate.requested: "true"
-      spec:
-        {{- if .Values.source.registryURL }}
-        source:
-          registry:
-            url: {{ .Values.source.registryURL | quote }}
-            pullMethod: node
-        {{- else if .Values.source.httpURL }}
-        source:
-          http:
-            url: {{ .Values.source.httpURL | quote }}
-        {{- else }}
-        sourceRef:
-          kind: DataSource
-          name: {{ include "openshell-sandbox.dataSourceName" . }}
-          namespace: {{ .Values.source.dataSourceNamespace | default .Release.Namespace }}
-        {{- end }}
-        storage:
-          accessModes:
-            - ReadWriteOnce
-          resources:
-            requests:
-              storage: {{ .Values.vm.diskSize }}
+  runStrategy: {{ required "guest.runStrategy is required" $g.runStrategy }}
   template:
-    metadata:
-      labels:
-        {{- include "openshell-sandbox.labels" . | nindent 8 }}
-        openshell.pattern/role: gateway
     spec:
+      serviceAccountName: saw-guest
       domain:
-        cpu:
-          cores: {{ .Values.vm.cores }}
-        resources:
-          requests:
-            memory: {{ .Values.vm.memory }}
+        cpu: {cores: {{ required "guest.cores is required" $g.cores }}}
+        resources: {requests: {memory: {{ printf "%vGi" (required "guest.memoryGi is required" $g.memoryGi) }}}}
         devices:
-          disks:
-            - name: rootdisk
-              disk:
-                bus: virtio
-            - name: cloudinitdisk
-              disk:
-                bus: virtio
-          interfaces:
-            - name: default
-              masquerade: {}
-              ports:
-                - name: gateway
-                  port: 17670
-                  protocol: TCP
-                - name: dashboard
-                  port: 18789
-                  protocol: TCP
-                - name: webui
-                  port: 8080
-                  protocol: TCP
-                - name: ssh
-                  port: 22
-                  protocol: TCP
-        firmware:
-          bootloader:
-            efi:
-              secureBoot: false
-        features:
-          acpi: {}
-          smm: {}
-      networks:
-        - name: default
-          pod: {}
+          autoattachPodInterface: true
+          interfaces: [{name: default, masquerade: {}}]
+          disks: [{name: rootdisk, disk: {bus: virtio}}, {name: cloudinit, disk: {bus: virtio}}]
+          filesystems:
+            - {name: saw-intent, virtiofs: {}}
+            - {name: saw-installer-bom, virtiofs: {}}
+            {{- range $n, $_ := $p }}
+            - {name: saw-profile-{{ $n }}, virtiofs: {}}
+            {{- end }}{{- range $n, $_ := $secrets }}
+            - {name: saw-secret-{{ $n }}, virtiofs: {}}
+            {{- end }}
+      networks: [{name: default, pod: {}}]
       volumes:
-        - name: rootdisk
-          dataVolume:
-            name: {{ include "openshell-sandbox.fullname" . }}-root
-        - name: cloudinitdisk
+        - {name: rootdisk, dataVolume: {name: saw-root}}
+        - name: cloudinit
           cloudInitNoCloud:
-            secretRef:
-              name: {{ include "openshell-sandbox.fullname" . }}-cloudinit
+            userData: |-
+              #cloud-config
+              {{- with $g.sshPublicKey }}
+              ssh_authorized_keys:
+                - {{ . | quote }}
+              {{- end }}
+              write_files:
+                - path: /etc/saw/guest.json
+                  owner: root:root
+                  permissions: '0600'
+                  content: |
+                    {{ dict "namespace" $ns "instance" $cfg.tenant.name "enrollmentIdentity" (include "openshell-saw.identity" $cfg) "ownerSubject" $cfg.tenant.subject "profileConfigMaps" $profiles "providerSecrets" $providerSecrets "oidcIssuer" $cfg.platform.issuer "oidcAudience" "openshell-cli" | toJson | nindent 20 }}
+              {{- with $g.sshPublicKey }}
+              runcmd:
+                - [systemctl, enable, --now, sshd.service]
+              {{- end }}
+        - {name: saw-intent, configMap: {name: {{ printf "%s-intent" $cfg.tenant.name }}}}
+        - {name: saw-installer-bom, configMap: {name: {{ printf "%s-installer" $cfg.tenant.name }}}}
+        {{- range $n, $cm := $p }}
+        - {name: saw-profile-{{ $n }}, configMap: {name: {{ $cm.name }}}}
+        {{- end }}{{- range $n, $name := $secrets }}
+        - {name: saw-secret-{{ $n }}, secret: {secretName: {{ $name }}}}
+        {{- end }}
+{{- end }}{{- end }}

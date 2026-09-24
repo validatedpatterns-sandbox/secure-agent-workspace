@@ -1,0 +1,20 @@
+[Unit]
+Description=Read-only SAW virtiofs mounts
+After=cloud-final.service
+ConditionPathExists=/etc/saw/guest.json
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+UMask=0077
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH=/opt/saw/guest
+ExecStart=/bin/sh -c 'for attempt in $(seq 1 15); do /usr/bin/python3 -m saw_guest.mounts && exit 0; sleep 2; done; exit 1'
+# Mounts must be in the host namespace, not a private ExecStartPre namespace.
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_FOWNER
+LimitCORE=0
+
+[Install]
+WantedBy=cloud-init.target

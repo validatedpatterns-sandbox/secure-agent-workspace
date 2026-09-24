@@ -24,7 +24,10 @@ NAMESPACE_MODE ?= shared
 HELM_DIR       := image-builder-charts/helm/
 SAW_CHART  := charts/openshell-saw
 KEYCLOAK_CHART := charts/openshell-keycloak
-KEYCLOAK_NS    ?= $(NS)
+KEYCLOAK_NS    ?= keycloak
+KEYCLOAK_REALM ?= saw
+KEYCLOAK_CLIENT_ID ?= openshell-cli
+KEYCLOAK_NAME ?=
 SCRIPTS_DIR    := scripts
 GUI_PORT       ?= 18789
 WORKSPACE      ?= default
@@ -112,7 +115,7 @@ SSH_PUBKEY = $(shell cat "$(SSH_KEY_PATH).pub" 2>/dev/null)
 	echo "  Image registry route: enabled"
 	@echo "Prerequisites OK."
 
-.PHONY: check-prereqs generate-keys \
+.PHONY: check-prereqs generate-keys configure-keycloak \
         build-nemoclaw build-nemoclaw-cli build-openclaw-openshell build-openclaw-openshell-local \
         build-gateway-docker build-gateway-podman copy-images \
         keycloak keycloak-issuer login whoami logout delete-keycloak \
@@ -307,11 +310,15 @@ sandbox-pre-delete: .check-saw-name
 # --- Keycloak / OIDC ---
 
 keycloak: ## Deploy Keycloak instance + realm via RHBK operator
-	@KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_CHART=$(KEYCLOAK_CHART) \
+	@KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_REALM=$(KEYCLOAK_REALM) KEYCLOAK_CHART=$(KEYCLOAK_CHART) \
 	$(SCRIPTS_DIR)/deploy-keycloak.sh
 
 keycloak-issuer: ## Print the Keycloak OIDC issuer URL
-	@host=$$(oc get keycloak openshell-keycloak -n $(KEYCLOAK_NS) -o jsonpath='{.status.externalURL}' 2>/dev/null \
+	@resource="$(KEYCLOAK_NAME)"; \
+	if [ -z "$${resource}" ]; then \
+		resource=$$(oc get keycloak -n $(KEYCLOAK_NS) -o custom-columns=NAME:.metadata.name --no-headers 2>/dev/null | head -n 1); \
+	fi; \
+	host=$$(oc get keycloak "$${resource}" -n $(KEYCLOAK_NS) -o jsonpath='{.status.externalURL}' 2>/dev/null \
 		| sed 's|^https://||;s|/$$||'); \
 	if [ -z "$${host}" ]; then \
 		host=$$(oc get route -n $(KEYCLOAK_NS) -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null); \
@@ -320,7 +327,11 @@ keycloak-issuer: ## Print the Keycloak OIDC issuer URL
 		echo "Error: Keycloak not found. Run 'make keycloak' first." >&2; \
 		exit 1; \
 	fi; \
-	echo "https://$${host}/realms/openshell"
+	echo "https://$${host}/realms/$(KEYCLOAK_REALM)"
+
+configure-keycloak: ## Configure the SAW realm, OIDC client, and client Secret
+	@KEYCLOAK_NS="$(KEYCLOAK_NS)" KEYCLOAK_REALM="$(KEYCLOAK_REALM)" KEYCLOAK_NAME="$(KEYCLOAK_NAME)" \
+	$(SCRIPTS_DIR)/configure-saw-keycloak.sh
 
 login: ## Authenticate with the OIDC provider
 	@OIDC_ISSUER=$(OIDC_ISSUER) OIDC_CLIENT_ID=$(OIDC_CLIENT_ID) \
@@ -376,7 +387,7 @@ openshell-saw-configure-gateway: .check-saw-name ## Configure openshell CLI for 
 		if [ -z "$$KC_HOST" ]; then \
 			KC_HOST=$$(oc get route -n $(KEYCLOAK_NS) -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null); \
 		fi; \
-		if [ -n "$$KC_HOST" ]; then OIDC_ISSUER="https://$$KC_HOST/realms/openshell"; fi; \
+		if [ -n "$$KC_HOST" ]; then OIDC_ISSUER="https://$$KC_HOST/realms/$(KEYCLOAK_REALM)"; fi; \
 	fi; \
 	OIDC_OPTS=""; \
 	if [ -n "$$OIDC_ISSUER" ]; then OIDC_OPTS="--oidc-issuer $$OIDC_ISSUER --oidc-client-id $(OIDC_CLIENT_ID)"; fi; \

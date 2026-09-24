@@ -1,0 +1,47 @@
+{{- if .Values.sawBlueprint.enabled }}
+{{- $cfg := .Values.sawBlueprint }}
+{{- if or (not $cfg.deployerServiceAccount.name) (not $cfg.deployerServiceAccount.namespace) }}{{ fail "deployerServiceAccount is required for shared image clone access" }}{{ end }}
+{{- range $tenant := $cfg.tenants }}
+{{- $identityInput := dict "issuer" $cfg.platform.issuer "subject" $tenant.subject "name" $tenant.name }}
+{{- $identity := include "saw-blueprint.identity" $identityInput }}
+{{- $matches := list }}
+{{- range $image := $cfg.goldenImages }}
+{{- if eq $image.name $tenant.goldenImageRef }}{{ $matches = append $matches $image }}{{ end }}
+{{- end }}
+{{- if ne (len $matches) 1 }}{{ fail "goldenImageRef must match exactly one approved golden image" }}{{ end }}
+{{- $sourceName := include "saw-blueprint.imageName" (first $matches) }}
+{{- $cloneRole := printf "saw-clone-%s" ($identity | trunc 24) }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $cloneRole }}
+  namespace: {{ $cfg.imageNamespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-20"
+rules:
+  - apiGroups: [cdi.kubevirt.io]
+    resources: [datasources]
+    resourceNames: [{{ $sourceName | quote }}]
+    verbs: [get]
+  - apiGroups: [cdi.kubevirt.io]
+    resources: [datavolumes/source]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $cloneRole }}
+  namespace: {{ $cfg.imageNamespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-20"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $cloneRole }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $cfg.deployerServiceAccount.name }}
+    namespace: {{ $cfg.deployerServiceAccount.namespace }}
+{{- end }}
+{{- end }}

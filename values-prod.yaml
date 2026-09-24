@@ -1,6 +1,7 @@
 clusterGroup:
   name: prod
   namespaces:
+    saw-system:
     external-secrets:
     external-secrets-operator:
       operatorGroup: true
@@ -49,6 +50,15 @@ clusterGroup:
       namespace: redhat-ods-operator
       channel: fast
   applications:
+    saw-blueprint:
+      name: saw-blueprint
+      namespace: saw-system
+      path: charts/saw-blueprint
+      # GitOps consumes the reviewed blueprint override below. Manual Helm
+      # user provisioning uses config/saw-platform.yaml and its ConfigMap;
+      # that local file is intentionally not an Argo value file.
+      extraValueFiles:
+        - /overrides/saw-blueprint.yaml
     openshift-external-secrets:
       name: openshift-external-secrets
       namespace: external-secrets
@@ -83,9 +93,3 @@ clusterGroup:
       name: saw-bom
       namespace: openshell-agents
       path: charts/saw-bom
-    openshell-saw:
-      name: openshell-saw
-      namespace: openshell-agents
-      path: charts/openshell-saw
-      extraValueFiles:
-        - /overrides/openshell-saw.yaml

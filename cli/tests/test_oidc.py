@@ -57,7 +57,7 @@ class TestAutoDetectIssuer:
                 returncode=0, stdout="keycloak.apps.cluster.example.com"
             )
             result = oidc.auto_detect_issuer(None, "ns", "/nonexistent", "client")
-        assert result == "https://keycloak.apps.cluster.example.com/realms/openshell"
+        assert result == "https://keycloak.apps.cluster.example.com/realms/saw"
 
     def test_none_when_nothing_found(self):
         with (

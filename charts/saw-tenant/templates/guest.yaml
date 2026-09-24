@@ -1,0 +1,101 @@
+{{- with .Values.sawTenant.enrollment }}
+{{- $enrollment := . }}
+{{- $guest := $.Values.sawTenant.guest }}
+{{- if $guest.enabled }}
+{{- $instance := required "guest requires sawTenant.instance" $.Values.sawTenant.instance }}
+{{- $bom := required "guest requires sawTenant.installerBOM" $.Values.sawTenant.installerBOM }}
+{{- $namespace := include "saw-tenant.namespace" $enrollment }}
+{{- $identity := include "saw-tenant.identity" $enrollment }}
+{{- $profiles := $.Values.sawTenant.profileConfigMaps }}
+{{- $profileNames := list }}
+{{- range $profile := $profiles }}
+{{- $profileNames = append $profileNames $profile.name }}
+{{- end }}
+{{- $providers := dict }}
+{{- range $credential := $enrollment.spec.credentials }}
+{{- $_ := set $providers (printf "saw-provider-%s" $credential.name) (keys $credential.properties | sortAlpha) }}
+{{- end }}
+{{- $settings := dict "namespace" $namespace "instance" $instance.metadata.name "enrollmentIdentity" $identity "ownerSubject" $enrollment.spec.owner.subject "profileConfigMaps" $profileNames "providerSecrets" $providers }}
+{{- $cloudConfig := dict "write_files" (list (dict "path" "/etc/saw/guest.json" "owner" "root:root" "permissions" "0600" "content" ($settings | toJson))) "runcmd" (list (list "systemctl" "enable" "saw-guest.service") (list "systemctl" "--no-block" "start" "saw-guest.service")) }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: saw-guest
+  namespace: {{ $namespace }}
+automountServiceAccountToken: false
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: {{ $instance.metadata.name }}
+  namespace: {{ $namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "10"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+    saw.redhat.com/enrollment-identity: {{ $identity | quote }}
+spec:
+  runStrategy: {{ required "guest.runStrategy is required" $guest.runStrategy }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: saw-guest
+        saw.redhat.com/instance: {{ $instance.metadata.name }}
+    spec:
+      serviceAccountName: saw-guest
+      domain:
+        cpu:
+          cores: {{ required "guest.cores is required" $guest.cores }}
+        resources:
+          requests:
+            memory: {{ printf "%vGi" (required "guest.memoryGi is required" $guest.memoryGi) }}
+        devices:
+          autoattachPodInterface: true
+          disks:
+            - name: rootdisk
+              disk: {bus: virtio}
+            - name: cloudinit
+              disk: {bus: virtio}
+          filesystems:
+            - name: saw-intent
+              virtiofs: {}
+            - name: saw-installer-bom
+              virtiofs: {}
+            {{- range $i, $profile := $profiles }}
+            - name: saw-profile-{{ $i }}
+              virtiofs: {}
+            {{- end }}
+            {{- range $i, $secret := keys $providers | sortAlpha }}
+            - name: saw-secret-{{ $i }}
+              virtiofs: {}
+            {{- end }}
+          interfaces:
+            - name: default
+              masquerade: {}
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        - name: rootdisk
+          dataVolume: {name: saw-root}
+        - name: cloudinit
+          cloudInitNoCloud:
+            userData: |
+              #cloud-config
+              {{- $cloudConfig | toYaml | nindent 14 }}
+        # ConfigMap and Secret projection volumes are read-only; no Kubernetes
+        # service-account token volume is mounted in this VM.
+        - name: saw-intent
+          configMap: {name: {{ printf "%s-intent" $instance.metadata.name }}}
+        - name: saw-installer-bom
+          configMap: {name: {{ printf "%s-installer" $instance.metadata.name }}}
+        {{- range $i, $profile := $profiles }}
+        - name: saw-profile-{{ $i }}
+          configMap: {name: {{ $profile.name }}}
+        {{- end }}
+        {{- range $i, $secret := keys $providers | sortAlpha }}
+        - name: saw-secret-{{ $i }}
+          secret: {secretName: {{ $secret }}}
+        {{- end }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,43 @@
+# This chart is consumed directly by the pattern's Argo CD Application.
+# No CLI, generated manifests, config-management plugin or setup Job is needed.
+sawBlueprint:
+  enabled: false
+  imageNamespace: saw-images
+  # The actual Argo destination-cluster apply identity, NOT repo-server.
+  # Set explicitly when enabling; no guessed broad service-account grant.
+  deployerServiceAccount:
+    name: ""
+    namespace: ""
+  # When enabled, Git-reviewed tenant entries become one Argo CD Application
+  # apiece. The parent application continues to own only shared image sources.
+  applicationSet:
+    enabled: false
+    repoURL: ""
+    targetRevision: ""
+    destinationServer: https://kubernetes.default.svc
+    project: default
+    tenantChartPath: charts/openshell-saw
+  # Platform trust material is configured once. ApplicationSet passes this
+  # public CA bundle to every tenant chart, which creates a namespace-local
+  # ConfigMap for its SecretStore. It must not be fetched through ESO: ESO
+  # needs it before it can establish TLS to Vault.
+  # The platform connection is shared by all tenants. Each tenant chart creates
+  # a local CA ConfigMap and SecretStore from this data.
+  platform:
+    issuer: ""
+    vault:
+      server: ""
+      mount: secret
+      prefix: saw/users
+      authMount: kubernetes
+      audience: vault
+      caBundle: ""
+  installer:
+    # Every tenant inherits this immutable release unless it explicitly selects
+    # another entry from releases (for example, a canary).
+    defaultRelease: ""
+    releases: [] # {name, bundleRef, bundleDigest, bom: InstallerBOM}
+  goldenImages: [] # {name, registryURL, diskSizeGi, storageClass?, registrySecret?, caConfigMap?}
+  # tenants: [{name, subject, username, credentials, goldenImageRef, instance,
+  #            profileConfigMaps, guest?, installerReleaseRef?}]
+  tenants: []

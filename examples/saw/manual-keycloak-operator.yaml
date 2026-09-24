@@ -1,0 +1,26 @@
+# Optional bundled OIDC provider for SAW. Do not apply this when using an
+# external OIDC provider.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openshell-agents
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: openshell-agents
+  namespace: openshell-agents
+spec:
+  targetNamespaces:
+    - openshell-agents
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: rhbk-operator
+  namespace: openshell-agents
+spec:
+  channel: stable-v26
+  name: rhbk-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace

@@ -1,0 +1,14 @@
+{{- if .Values.sawBlueprint.enabled }}
+{{- $installer := .Values.sawBlueprint.installer }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: saw-installer-releases
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+data:
+  default-release: {{ $installer.defaultRelease | quote }}
+  releases.yaml: |-
+    {{- toYaml $installer.releases | nindent 4 }}
+{{- end }}

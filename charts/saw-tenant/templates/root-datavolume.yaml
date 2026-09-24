@@ -1,0 +1,29 @@
+{{- with .Values.sawTenant.enrollment }}
+{{- $enrollment := . }}
+{{- $image := required "sawTenant.image is required" $.Values.sawTenant.image }}
+{{- $namespace := include "saw-tenant.namespace" $enrollment }}
+---
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata:
+  name: saw-root
+  namespace: {{ $namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+    # Avoid a CDI/VM sync-wave deadlock for WaitForFirstConsumer storage classes.
+    cdi.kubevirt.io/storage.bind.immediate.requested: "true"
+spec:
+  sourceRef:
+    kind: DataSource
+    name: {{ required "sawTenant.image.dataSource is required" $image.dataSource }}
+    namespace: {{ required "sawTenant.image.namespace is required" $image.namespace }}
+  storage:
+    accessModes: [ReadWriteOnce]
+    {{- with $image.storageClass }}
+    storageClassName: {{ . }}
+    {{- end }}
+    resources:
+      requests:
+        storage: {{ printf "%vGi" (required "sawTenant.image.diskSizeGi is required" $image.diskSizeGi) }}
+{{- end }}

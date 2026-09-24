@@ -5,7 +5,7 @@ spec:
   sandboxes:
     - name: cuda-sandbox
       type: nemoclaw
-      enabled: true
+      enabled: false
       agent: openclaw
       image: quay.io/rh-ai-quickstart/nemoclaw-sandbox:latest
       providers:

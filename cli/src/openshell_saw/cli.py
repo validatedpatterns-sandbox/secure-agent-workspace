@@ -3,11 +3,15 @@
 Users interact with their sandboxes via the upstream 'openshell' CLI.
 This tool is for provisioning, teardown, and cluster-level operations."""
 
+import json
 import subprocess
 
 import click
+import yaml
 
 from . import config, helm, kube, oidc
+from .blueprints import ValidationError, load_document, render_enrollment, render_image
+from .profiles import profile_fingerprint, resolve_profiles
 
 
 @click.group()
@@ -27,6 +31,65 @@ def main(ctx, namespace, shared_namespace, ssh_key):
 
     ctx.ensure_object(dict)
     ctx.obj["cfg"] = cfg
+
+
+@main.group()
+def blueprint():
+    """Render autonomous SAW infrastructure inputs offline (no cluster writes)."""
+
+
+def _blueprint_input(stream):
+    # Bounded read; parser reports errors without echoing potentially sensitive YAML.
+    return load_document(stream.read(512 * 1024 + 1))
+
+
+@blueprint.command("render-tenant")
+@click.option("--config", "input_file", type=click.File("r"), required=True)
+@click.option("--part", type=click.Choice(["tenant", "clone-access", "root", "vault"]),
+              default="tenant", show_default=True)
+def blueprint_render_tenant(input_file, part):
+    """Render enrollment manifests, or the platform-admin Vault role/policy JSON."""
+    try:
+        result = render_enrollment(_blueprint_input(input_file), part)
+    except ValidationError as exc:
+        raise click.ClickException(str(exc)) from None
+    if part == "vault":
+        click.echo(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        click.echo(yaml.safe_dump_all(result, sort_keys=False), nl=False)
+
+
+@blueprint.command("render-image")
+@click.option("--config", "input_file", type=click.File("r"), required=True)
+def blueprint_render_image(input_file):
+    """Render a digest-addressed shared image import (does not qualify/pull it)."""
+    try:
+        result = render_image(_blueprint_input(input_file))
+    except ValidationError as exc:
+        raise click.ClickException(str(exc)) from None
+    click.echo(yaml.safe_dump_all(result, sort_keys=False), nl=False)
+
+
+@blueprint.command("profile-plan")
+@click.option("--instance", type=click.File("r"), required=True)
+@click.option("--profile-configmaps", type=click.File("r"), required=True,
+              help="A local v1/List snapshot containing profile ConfigMaps, never Secrets.")
+@click.option("--namespace", required=True)
+def blueprint_profile_plan(instance, profile_configmaps, namespace):
+    """Expand profile references and Secret selectors; no credentials are fetched."""
+    try:
+        intent, cms = _blueprint_input(instance), _blueprint_input(profile_configmaps)
+        if (intent.get("apiVersion") != "saw.redhat.com/v1alpha1"
+                or intent.get("kind") != "SawInstance" or not isinstance(intent.get("spec"), dict)
+                or "workspaces" not in intent["spec"]):
+            raise ValidationError("expected a SawInstance with spec.workspaces")
+        if cms.get("apiVersion") != "v1" or cms.get("kind") != "List":
+            raise ValidationError("profile-configmaps must be a v1/List snapshot")
+        resolved = resolve_profiles(intent["spec"]["workspaces"], cms.get("items"), namespace)
+    except ValidationError as exc:
+        raise click.ClickException(str(exc)) from None
+    click.echo(json.dumps({"profileFingerprint": profile_fingerprint(resolved),
+                           "workspaces": resolved}, indent=2, sort_keys=True))
 
 
 # --- OIDC commands (for provisioning — users authenticate via 'openshell login') ---

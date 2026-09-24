@@ -5,3 +5,10 @@ metadata:
   # Set a custom name to create an additional workspace.
   name: default
   description: "Data science workspace with Gemini inference and web search"
+spec:
+  members:
+    - subjectRef: instanceOwner
+      role: admin
+  inference:
+    provider: nvidia
+    model: nvidia/nemotron-3-super-120b-a12b

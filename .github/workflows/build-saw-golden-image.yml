@@ -1,0 +1,218 @@
+name: Build SAW golden VM image
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_name:
+        description: "Release name; must match metadata.name in the selected BOM"
+        required: true
+        type: string
+      bom:
+        description: "InstallerBOM path"
+        required: true
+        default: examples/saw/installer-bom.yaml
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: saw-golden-image-${{ inputs.release_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.variant.name }} golden image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: saw-golden-image
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - name: production
+            ssh: false
+            suffix: ""
+          - name: development-ssh
+            ssh: true
+            suffix: "-ssh"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: python -m pip install --disable-pip-version-check pyyaml
+
+      - name: Validate selected BOM
+        id: release
+        env:
+          RELEASE: ${{ inputs.release_name }}
+          BOM: ${{ inputs.bom }}
+        run: |
+          set -euo pipefail
+          test -f "$BOM"
+          bom_name="$(python -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))["metadata"]["name"])' "$BOM")"
+          test "$bom_name" = "$RELEASE" || {
+            echo "BOM metadata.name ($bom_name) must match release name ($RELEASE)." >&2
+            exit 1
+          }
+          echo "bom=$BOM" >> "$GITHUB_OUTPUT"
+          echo "release=$RELEASE" >> "$GITHUB_OUTPUT"
+
+      - name: Generate allowlisted image build context
+        env:
+          BOM: ${{ steps.release.outputs.bom }}
+          SSH_ENABLED: ${{ matrix.variant.ssh }}
+          RELEASE_PUBLIC_KEY: ${{ secrets.SAW_RELEASE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_PUBLIC_KEY" || {
+            echo 'Set the SAW_RELEASE_PUBLIC_KEY environment secret to the release verification public key.' >&2
+            exit 1
+          }
+          key_file="$RUNNER_TEMP/release-signing-public-key.pem"
+          printf '%s\n' "$RELEASE_PUBLIC_KEY" > "$key_file"
+          args=(
+            --installer-bom "$BOM"
+            --output "$RUNNER_TEMP/saw-image-context"
+            --release-public-key "$key_file"
+          )
+          if [ "$SSH_ENABLED" = true ]; then
+            args+=(--enable-ssh)
+          fi
+          python tools/saw/build_image_context.py "${args[@]}"
+
+      - name: Prepare host-native VM image build
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | \
+            sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y \
+            libguestfs-tools qemu-utils qemu-system-x86 curl
+          sudo chmod +r /boot/vmlinuz-* 2>/dev/null || true
+          sudo update-guestfs-appliance 2>/dev/null || true
+
+      - name: Cache Fedora Cloud base image
+        id: fedora-cache
+        uses: actions/cache@v4
+        with:
+          path: fedora-base.qcow2
+          key: fedora-cloud-44-1.7-x86_64
+
+      - name: Download Fedora Cloud base image
+        if: steps.fedora-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            --output fedora-base.qcow2 \
+            https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2
+
+      - name: Verify Fedora Cloud base image
+        run: echo '28680fe5b371a5a82ebf43a31926e086a168e59949d03969c5093e7071f90b7f  fedora-base.qcow2' | sha256sum --check
+
+      - name: Customize QCOW2 on the GitHub host
+        env:
+          BOM: ${{ steps.release.outputs.bom }}
+          SSH_ENABLED: ${{ matrix.variant.ssh }}
+        run: |
+          set -euo pipefail
+          guest="$RUNNER_TEMP/guest-root"
+          cp fedora-base.qcow2 "$RUNNER_TEMP/base.qcow2"
+          sudo mkdir -p "$guest"
+          sudo guestmount -a "$RUNNER_TEMP/base.qcow2" -i --rw "$guest"
+          cleanup() {
+            sudo umount "$guest/dev/pts" "$guest/dev" "$guest/sys" "$guest/proc" 2>/dev/null || true
+            sudo guestunmount "$guest" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          sudo mount -t proc proc "$guest/proc"
+          sudo mount -t sysfs sys "$guest/sys"
+          sudo mount --bind /dev "$guest/dev"
+          sudo mount --bind /dev/pts "$guest/dev/pts"
+          echo 'nameserver 8.8.8.8' | sudo tee "$guest/etc/resolv.conf" >/dev/null
+
+          packages=(
+            podman shadow-utils slirp4netns passt fuse-overlayfs python3 \
+            python3-pyyaml cloud-init qemu-guest-agent openssl
+          )
+          if [ "$SSH_ENABLED" = true ]; then
+            packages+=(openssh-server)
+          fi
+          sudo chroot "$guest" dnf install -y "${packages[@]}"
+          sudo cp "$RUNNER_TEMP/saw-image-context/guest.tar.gz" "$guest/opt/guest.tar.gz"
+          sudo cp "$RUNNER_TEMP/saw-image-context/customize.sh" "$guest/opt/customize.sh"
+          sudo cp "$RUNNER_TEMP/saw-image-context/release-signing-public-key.pem" \
+            "$guest/etc/release-signing-public-key.pem"
+          sudo chmod 0755 "$guest/opt/customize.sh"
+          sudo chroot "$guest" /opt/customize.sh
+          if [ "$SSH_ENABLED" = true ]; then
+            sudo cp "$RUNNER_TEMP/saw-image-context/enable-ssh.sh" "$guest/opt/enable-ssh.sh"
+            sudo chmod 0755 "$guest/opt/enable-ssh.sh"
+            sudo chroot "$guest" /opt/enable-ssh.sh
+          fi
+          sudo touch "$guest/.autorelabel"
+
+          cleanup
+          trap - EXIT
+          while sudo fuser "$RUNNER_TEMP/base.qcow2" >/dev/null 2>&1; do sleep 1; done
+          qemu-img convert -c -O qcow2 "$RUNNER_TEMP/base.qcow2" "$RUNNER_TEMP/disk.qcow2"
+
+      - name: Build and push golden image to GHCR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_OWNER: ${{ github.repository_owner }}
+          RELEASE: ${{ steps.release.outputs.release }}
+        run: |
+          set -euo pipefail
+          owner="$(printf '%s' "$GH_OWNER" | tr '[:upper:]' '[:lower:]')"
+          image="ghcr.io/${owner}/saw-golden-image:${RELEASE}${{ matrix.variant.suffix }}"
+          oci_context="$RUNNER_TEMP/oci-context"
+          mkdir -p "$oci_context"
+          cp "$RUNNER_TEMP/disk.qcow2" "$oci_context/disk.qcow2"
+          printf '%s\n' 'FROM scratch' 'COPY disk.qcow2 /disk/disk.qcow2' > "$oci_context/Dockerfile"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io \
+            --username "$GITHUB_ACTOR" --password-stdin
+          docker buildx build \
+            --file "$oci_context/Dockerfile" \
+            --tag "$image" \
+            --push \
+            --provenance=false \
+            --metadata-file "$RUNNER_TEMP/image-metadata.json" \
+            "$oci_context" 2>&1 | tee "$RUNNER_TEMP/image-build.log"
+          digest="$(python - "$RUNNER_TEMP/image-metadata.json" <<'PY'
+          import json, sys
+          print(json.load(open(sys.argv[1]))['containerimage.digest'])
+          PY
+          )"
+          image_ref="ghcr.io/${owner}/saw-golden-image@${digest}"
+          {
+            echo "release=$RELEASE"
+            echo "variant=${{ matrix.variant.name }}"
+            echo "imageRef=$image_ref"
+            echo "imageDigest=$digest"
+            echo "registryURL=docker://$image_ref"
+          } | tee "$RUNNER_TEMP/saw-golden-image-release.txt"
+
+      - name: Upload candidate metadata
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
+        with:
+          name: saw-golden-image-${{ steps.release.outputs.release }}-${{ matrix.variant.name }}
+          path: |
+            ${{ runner.temp }}/saw-golden-image-release.txt
+            ${{ runner.temp }}/image-build.log
+            ${{ runner.temp }}/saw-image-context/build-inputs.json
+
+      - name: Print promotion instructions
+        run: |
+          echo "The ${{ matrix.variant.name }} image is in GHCR. Complete smoke, scan, signature, and approval gates before use."
+          echo "The workflow intentionally does not create the production CDI DataSource."

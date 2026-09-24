@@ -1,0 +1,75 @@
+{{- with .Values.sawTenant.enrollment }}
+{{- $enrollment := . }}
+{{- $spec := $enrollment.spec }}
+{{- $vault := $spec.vault }}
+{{- $namespace := include "saw-tenant.namespace" $enrollment }}
+{{- $identity := include "saw-tenant.identity" $enrollment }}
+{{- $vaultPath := printf "%s/%s/providers" $vault.prefix $identity }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: saw-vault-reader
+  namespace: {{ $namespace }}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $vault.caConfigMap }}
+  namespace: {{ $namespace }}
+data:
+  ca.crt: {{ required "sawTenant.vaultCA is required" $.Values.sawTenant.vaultCA | quote }}
+---
+apiVersion: external-secrets.io/v1
+kind: SecretStore
+metadata:
+  name: saw-user-vault
+  namespace: {{ $namespace }}
+spec:
+  provider:
+    vault:
+      server: {{ $vault.server | quote }}
+      path: {{ $vault.mount | quote }}
+      version: v2
+      caProvider:
+        type: ConfigMap
+        name: {{ $vault.caConfigMap }}
+        key: ca.crt
+      auth:
+        kubernetes:
+          mountPath: {{ $vault.authMount | quote }}
+          role: {{ $namespace | quote }}
+          serviceAccountRef:
+            name: saw-vault-reader
+            audiences: [{{ $vault.audience | quote }}]
+{{- range $credential := $spec.credentials }}
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: saw-provider-{{ $credential.name }}
+  namespace: {{ $namespace }}
+spec:
+  refreshPolicy: Periodic
+  refreshInterval: 1m
+  secretStoreRef:
+    name: saw-user-vault
+    kind: SecretStore
+  target:
+    name: saw-provider-{{ $credential.name }}
+    creationPolicy: Owner
+    deletionPolicy: Retain
+    template:
+      engineVersion: v2
+      mergePolicy: Replace
+      type: Opaque
+      data:
+        {{- range $key, $property := $credential.properties }}
+        {{ $key }}: {{ printf "{{ .%s }}" $property | quote }}
+        {{- end }}
+  dataFrom:
+    - extract:
+        key: {{ printf "%s/%s" $vaultPath $credential.remoteKey | quote }}
+{{- end }}
+{{- end }}

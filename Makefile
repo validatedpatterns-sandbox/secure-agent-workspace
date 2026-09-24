@@ -4,3 +4,4 @@
 
 include Makefile-common
 include Makefile-quickstart
+include Makefile-saw

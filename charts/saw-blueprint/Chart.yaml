@@ -1,0 +1,6 @@
+apiVersion: v2
+name: saw-blueprint
+description: Argo-managed SAW tenant, Vault/ESO and shared golden-image foundation
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

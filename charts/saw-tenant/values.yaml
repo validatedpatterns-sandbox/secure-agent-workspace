@@ -1,0 +1,8 @@
+sawTenant:
+  enrollment: {}
+  # Public CA material for the enrollment's Vault endpoint; never a Vault token.
+  vaultCA: ""
+  instance: {}
+  installerBOM: {}
+  profileConfigMaps: []
+  guest: {}

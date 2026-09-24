@@ -11,7 +11,7 @@ keycloak:
 
   hostname: ""
 
-  realm: openshell
+  realm: saw
   registrationAllowed: true
 
   clients:

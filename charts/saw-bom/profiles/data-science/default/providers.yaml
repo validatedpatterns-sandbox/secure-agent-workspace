@@ -1,16 +1,13 @@
 apiVersion: saw.redhat.com/v1alpha1
 kind: Providers
 metadata:
+  name: default
   profile: data-science
 spec:
   providers:
     - name: nvidia
       type: nvidia
-      nemoclawProvider: build
-      model: nvidia/nemotron-3-super-120b-a12b
-      credentialSecret: inference
-      credentialSecretKey: api_key
+      credentialRef: nvidia
     - name: brave
       type: brave
-      credentialSecret: web-search
-      credentialSecretKey: api_key
+      credentialRef: brave

@@ -1,0 +1,19 @@
+{{- if .Values.openshellSaw.tenant.name }}{{- $cfg := .Values.openshellSaw }}{{- $ns := include "openshell-saw.namespace" $cfg }}{{- $instance := $cfg.instance }}{{- range $p := $cfg.profileConfigMaps }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: {{ $p.name }}, namespace: {{ $ns }}}
+data: {{ $p.data | toYaml | nindent 2 }}
+{{- end }}{{- if $instance }}{{- $instanceDoc := dict "apiVersion" "saw.redhat.com/v1alpha1" "kind" "SawInstance" "metadata" (dict "name" $cfg.tenant.name) "spec" (dict "ownerSubject" $cfg.tenant.subject "workspaces" $instance.workspaces) }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: {{ printf "%s-intent" $cfg.tenant.name }}, namespace: {{ $ns }}}
+data: {instance.yaml: {{ toYaml $instanceDoc | quote }}}
+{{- end }}{{- with $cfg.installerRelease }}{{- if not $instance }}{{ fail "installer release requires instance" }}{{ end }}{{- $bomDoc := dict "apiVersion" "saw.redhat.com/v1alpha1" "kind" "InstallerBOM" "metadata" (dict "name" .name) "spec" .bom }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: {{ printf "%s-installer" $cfg.tenant.name }}, namespace: {{ $ns }}}
+data: {release.yaml: {{ toYaml . | quote }}, installer-bom.yaml: {{ toYaml $bomDoc | quote }}}
+{{- end }}{{- end }}

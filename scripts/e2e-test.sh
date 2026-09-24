@@ -209,10 +209,10 @@ if [[ -z "${KC_URL}" ]]; then
   KC_HOST=$(oc get route -n "${NS}" -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null || true)
   KC_URL="https://${KC_HOST}"
 fi
-OIDC_ISSUER="${KC_URL}/realms/openshell"
+OIDC_ISSUER="${KC_URL}/realms/${KEYCLOAK_REALM:-saw}"
 echo "  Keycloak: ${KC_URL}"
 
-OIDC_TOKEN=$(curl -sk -X POST "${KC_URL}/realms/openshell/protocol/openid-connect/token" \
+OIDC_TOKEN=$(curl -sk -X POST "${KC_URL}/realms/${KEYCLOAK_REALM:-saw}/protocol/openid-connect/token" \
   -d "grant_type=password" \
   -d "client_id=${OIDC_CLIENT_ID}" \
   -d "username=${TEST_OWNER}" \

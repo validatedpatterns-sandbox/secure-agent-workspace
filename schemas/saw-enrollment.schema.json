@@ -1,0 +1,188 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "const": "saw.redhat.com/v1alpha1"
+    },
+    "kind": {
+      "const": "SawEnrollment"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
+          "maxLength": 63
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "owner": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "issuer": {
+              "type": "string",
+              "maxLength": 2048,
+              "pattern": "^https://[a-zA-Z0-9.-]+(:[0-9]{1,5})?(/[a-zA-Z0-9._~!$&'()*+,;=:@%/-]*)?$"
+            },
+            "subject": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+            },
+            "username": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
+              "maxLength": 63
+            }
+          },
+          "required": [
+            "issuer",
+            "subject",
+            "username"
+          ]
+        },
+        "vault": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "server": {
+              "type": "string",
+              "maxLength": 2048,
+              "pattern": "^https://[a-zA-Z0-9.-]+(:[0-9]{1,5})?(/[a-zA-Z0-9._~!$&'()*+,;=:@%/-]*)?$"
+            },
+            "mount": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]+(/[a-zA-Z0-9_-]+)*$",
+              "maxLength": 253
+            },
+            "prefix": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]+(/[a-zA-Z0-9_-]+)*$",
+              "maxLength": 253
+            },
+            "authMount": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]+(/[a-zA-Z0-9_-]+)*$",
+              "maxLength": 253
+            },
+            "audience": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]+(\\.[a-zA-Z0-9_-]+)*$",
+              "maxLength": 253
+            },
+            "caConfigMap": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
+              "maxLength": 63
+            }
+          },
+          "required": [
+            "server",
+            "mount",
+            "prefix",
+            "authMount",
+            "audience",
+            "caConfigMap"
+          ]
+        },
+        "credentials": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
+                "maxLength": 40
+              },
+              "remoteKey": {
+                "type": "string",
+                "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
+                "maxLength": 63
+              },
+              "properties": {
+                "type": "object",
+                "minProperties": 1,
+                "maxProperties": 32,
+                "propertyNames": {
+                  "type": "string",
+                  "pattern": "^[a-zA-Z0-9_-]+(\\.[a-zA-Z0-9_-]+)*$",
+                  "maxLength": 253
+                },
+                "additionalProperties": {
+                  "type": "string",
+                  "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
+                  "maxLength": 253
+                }
+              }
+            },
+            "required": [
+              "name",
+              "remoteKey",
+              "properties"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 64
+        },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "namespace": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
+              "maxLength": 63
+            },
+            "dataSource": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
+              "maxLength": 63
+            },
+            "diskSizeGi": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 16384
+            },
+            "storageClass": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
+              "maxLength": 63
+            }
+          },
+          "required": [
+            "namespace",
+            "dataSource",
+            "diskSizeGi"
+          ]
+        }
+      },
+      "required": [
+        "owner",
+        "vault",
+        "credentials",
+        "image"
+      ]
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec"
+  ]
+}

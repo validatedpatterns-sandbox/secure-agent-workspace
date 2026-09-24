@@ -1,0 +1,17 @@
+FROM registry.fedoraproject.org/fedora@sha256:b0b2ac1c4a682dea428ae05a0065824178ad951c304c3ac15c29daa8335e0599 AS builder
+USER 0
+ENV LIBGUESTFS_BACKEND=direct LIBGUESTFS_BACKEND_SETTINGS=force_tcg
+RUN dnf install -y libguestfs-tools-c qemu-img curl && dnf clean all
+WORKDIR /build
+COPY guest.tar.gz customize.sh /build/
+RUN curl --fail --location --retry 3 --output base.qcow2 https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2 && \
+    echo '28680fe5b371a5a82ebf43a31926e086a168e59949d03969c5093e7071f90b7f  base.qcow2' | sha256sum --check
+RUN virt-customize --memsize 4096 -a base.qcow2 \
+      --install podman,shadow-utils,slirp4netns,passt,fuse-overlayfs,python3,python3-pyyaml,cloud-init,qemu-guest-agent,openssl \
+      --copy-in /build/guest.tar.gz:/opt/ \
+      --copy-in /build/release-signing-public-key.pem:/etc/ \
+      --run /build/customize.sh \
+      --selinux-relabel && \
+    mkdir /output && qemu-img convert -c -O qcow2 base.qcow2 /output/disk.qcow2
+FROM scratch
+COPY --from=builder /output/disk.qcow2 /disk/disk.qcow2

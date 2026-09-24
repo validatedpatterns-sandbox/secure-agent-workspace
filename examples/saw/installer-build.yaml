@@ -1,0 +1,43 @@
+# Isolated qualification build, NOT the production Argo deployment.
+# The Docker build strategy builds a disk artifact; the VM compute driver is Podman.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: saw-installer-validation
+  labels:
+    app.kubernetes.io/part-of: saw-installer-validation
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: saw-installer
+  namespace: saw-installer-validation
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: saw-installer
+  namespace: saw-installer-validation
+spec:
+  runPolicy: Serial
+  source:
+    type: Binary
+    binary: {}
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+      forcePull: true
+  output:
+    to:
+      kind: ImageStreamTag
+      name: saw-installer:qualification
+  resources:
+    requests:
+      cpu: '2'
+      memory: 6Gi
+    limits:
+      cpu: '4'
+      memory: 8Gi
+  completionDeadlineSeconds: 3600
+  triggers: []

@@ -1,0 +1,21 @@
+# Profile-selection example, not a complete autonomous deployment.
+apiVersion: saw.redhat.com/v1alpha1
+kind: SawInstance
+metadata:
+  name: research
+spec:
+  ownerSubject: "<immutable OIDC subject matching enrollment>"
+  workspaces:
+    - profileRef:
+        name: data-science
+        configMapRef:
+          name: saw-bom-profiles
+      credentialBindings:
+        inference-main:
+          secretRef:
+            name: nvidia
+            key: api_key
+        web-search:
+          secretRef:
+            name: brave
+            key: api_key

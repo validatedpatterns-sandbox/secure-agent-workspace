@@ -65,7 +65,7 @@ keycloak_token() {
     -o jsonpath='{.spec.host}' 2>/dev/null)" \
     || die "Keycloak route not found in ${SHARED_NS}"
 
-  local token_url="https://${keycloak_host}/realms/openshell/protocol/openid-connect/token"
+  local token_url="https://${keycloak_host}/realms/${KEYCLOAK_REALM:-saw}/protocol/openid-connect/token"
   local response
   response="$(curl -fsSL --insecure --connect-timeout 5 --max-time 10 \
     -X POST "${token_url}" \
@@ -91,7 +91,7 @@ get_oidc_issuer() {
   keycloak_host="$(oc get route openshell-keycloak -n "${SHARED_NS}" \
     -o jsonpath='{.spec.host}' 2>/dev/null)" \
     || die "Keycloak route not found"
-  echo "https://${keycloak_host}/realms/openshell"
+  echo "https://${keycloak_host}/realms/${KEYCLOAK_REALM:-saw}"
 }
 
 ssh_pubkey() {

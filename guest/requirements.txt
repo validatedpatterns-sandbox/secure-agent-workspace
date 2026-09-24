@@ -1,0 +1,2 @@
+# The golden image must provide this dependency; guest boot never runs pip.
+PyYAML==6.0.3

@@ -6,7 +6,11 @@ spec:
     - name: notebook
       type: openclaw
       enabled: true
-      image: quay.io/rh-ai-quickstart/openclaw-openshell:latest
+      image: quay.io/rh-ai-quickstart/openclaw-openshell@sha256:a9113294df7bef4794b72c10415d9b883064d01ca044d6938269d601061b435f
+      data:
+        name: notebook-data
+        mountPath: /sandbox/persist
+        retainOnDelete: true
       providers:
         - nvidia
     - name: cuda-sandbox

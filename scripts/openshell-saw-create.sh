@@ -79,7 +79,7 @@ if [[ -z "${OIDC_ISSUER}" ]]; then
     KC_HOST=$(oc get route --all-namespaces -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null || true)
   fi
   if [[ -n "${KC_HOST}" ]]; then
-    OIDC_ISSUER="https://${KC_HOST}/realms/openshell"
+    OIDC_ISSUER="https://${KC_HOST}/realms/${KEYCLOAK_REALM:-saw}"
   fi
 fi
 

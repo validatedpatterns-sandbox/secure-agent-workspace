@@ -1,0 +1,45 @@
+{{- with .Values.sawTenant.enrollment }}
+{{- $enrollment := . }}
+{{- $namespace := include "saw-tenant.namespace" $enrollment }}
+{{- $instance := $.Values.sawTenant.instance }}
+{{- $profiles := $.Values.sawTenant.profileConfigMaps }}
+{{- $names := dict }}
+{{- range $profile := $profiles }}
+{{- if hasKey $names $profile.name }}{{ fail "duplicate profile ConfigMap name" }}{{ end }}
+{{- $_ := set $names $profile.name true }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $profile.name }}
+  namespace: {{ $namespace }}
+data:
+  {{- $profile.data | toYaml | nindent 2 }}
+{{- end }}
+{{- if $instance }}
+{{- if ne $instance.spec.ownerSubject $enrollment.spec.owner.subject }}{{ fail "instance owner must match enrolled subject" }}{{ end }}
+{{- $intentName := printf "%s-intent" $instance.metadata.name }}
+{{- if hasKey $names $intentName }}{{ fail "profile ConfigMap collides with instance intent" }}{{ end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $intentName }}
+  namespace: {{ $namespace }}
+data:
+  instance.yaml: |
+    {{- toYaml $instance | nindent 4 }}
+{{- end }}
+{{- with $.Values.sawTenant.installerBOM }}
+{{- if not $instance }}{{ fail "installer BOM requires sawTenant.instance" }}{{ end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ printf "%s-installer" $instance.metadata.name }}
+  namespace: {{ $namespace }}
+data:
+  installer-bom.yaml: |
+    {{- toYaml . | nindent 4 }}
+{{- end }}
+{{- end }}

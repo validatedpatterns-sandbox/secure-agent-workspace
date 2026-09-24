@@ -1,0 +1,38 @@
+# Copy this template to config/users/<username>/user.yaml.
+# This file contains identity and profile selection only; never put secret
+# values here.
+# The bundled data-science profile currently includes an enabled sandbox and
+# does not converge through the guest installer until sandbox support lands.
+sawUser:
+  name: bob
+  username: bob
+  # External OIDC: administrator supplies the immutable `sub` value.
+  # Bundled Keycloak: use the created user's immutable UUID/sub.
+  subject: ""
+  profiles:
+    - data-science
+  credentials:
+    - name: nvidia
+      remoteKey: nvidia
+      keys: [type, model, endpoint, api_key]
+    - name: brave
+      remoteKey: brave
+      keys: [type, endpoint, api_key]
+  # If you change `name`, change this ConfigMap reference too. The renderer's
+  # generated profile ConfigMap is named `<name>-profiles`.
+  instance:
+    workspaces:
+      - profileRef:
+          name: data-science
+          configMapRef:
+            name: bob-profiles
+        credentialBindings:
+          nvidia:
+            secretRef: {name: nvidia, key: api_key}
+          brave:
+            secretRef: {name: brave, key: api_key}
+  guest:
+    enabled: true
+    cores: 4
+    memoryGi: 8
+    runStrategy: Halted

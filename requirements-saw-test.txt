@@ -1,0 +1,13 @@
+# Isolated offline-contract test environment; not the guest runtime lock.
+certifi==2026.7.22
+charset-normalizer==3.5.1
+click==8.1.8
+idna==3.20
+iniconfig==2.3.0
+packaging==26.3
+pluggy==1.6.0
+Pygments==2.21.0
+pytest==9.0.2
+PyYAML==6.0.3
+requests==2.33.0
+urllib3==2.8.0

@@ -1,0 +1,11 @@
+# Argo CD consumes this file through the pattern Application in values-prod.yaml.
+# Keep disabled until a qualified guest disk and tenant Vault roles are available.
+# See docs/saw-blueprint-implementation.md for the Git-managed input contract.
+sawBlueprint:
+  enabled: false
+  imageNamespace: saw-images
+  deployerServiceAccount:
+    name: ""
+    namespace: ""
+  goldenImages: []
+  tenants: []

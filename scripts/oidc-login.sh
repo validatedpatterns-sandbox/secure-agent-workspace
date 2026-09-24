@@ -53,7 +53,7 @@ auto_detect_issuer() {
   if [[ -z "${host}" ]]; then
     die "OIDC_ISSUER not set and no Keycloak found in namespace ${NS}. Set OIDC_ISSUER or run 'make keycloak' first."
   fi
-  OIDC_ISSUER="https://${host}/realms/openshell"
+  OIDC_ISSUER="https://${host}/realms/${KEYCLOAK_REALM:-saw}"
   echo "Auto-detected OIDC issuer: ${OIDC_ISSUER}"
 }
 

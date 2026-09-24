@@ -1,0 +1,5 @@
+apiVersion: v2
+name: saw-tenant
+description: One Git-defined SAW enrollment namespace
+type: application
+version: 0.1.0

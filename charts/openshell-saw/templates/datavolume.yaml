@@ -1,0 +1,16 @@
+{{- if .Values.openshellSaw.tenant.name }}{{- $cfg := .Values.openshellSaw }}{{- $image := required "openshellSaw.image is required" $cfg.image }}
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata:
+  name: saw-root
+  namespace: {{ include "openshell-saw.namespace" $cfg }}
+  annotations: {argocd.argoproj.io/sync-options: Prune=false,Delete=false, cdi.kubevirt.io/storage.bind.immediate.requested: "true"}
+spec:
+  sourceRef: {kind: DataSource, name: {{ required "openshellSaw.image.dataSource is required" $image.dataSource }}, namespace: {{ required "openshellSaw.image.namespace is required" $image.namespace }}}
+  storage:
+    {{- with $image.storageClassName }}
+    storageClassName: {{ . | quote }}
+    {{- end }}
+    accessModes: [ReadWriteOnce]
+    resources: {requests: {storage: {{ printf "%vGi" (required "openshellSaw.image.diskSizeGi is required" $image.diskSizeGi) }}}}
+{{- end }}

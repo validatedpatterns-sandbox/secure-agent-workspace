@@ -1,0 +1,27 @@
+{{- if .Values.openshellSaw.tenant.name }}{{- $cfg := .Values.openshellSaw }}{{- $vault := required "openshellSaw.platform.vault is required" $cfg.platform.vault }}{{- $ns := include "openshell-saw.namespace" $cfg }}
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: saw-vault-reader, namespace: {{ $ns }}}
+automountServiceAccountToken: false
+---
+{{- if $vault.caBundle }}
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: vault-ca, namespace: {{ $ns }}}
+data: {ca.crt: {{ $vault.caBundle | quote }} }
+{{- end }}
+---
+apiVersion: external-secrets.io/v1
+kind: SecretStore
+metadata: {name: saw-user-vault, namespace: {{ $ns }}}
+spec:
+  provider:
+    vault:
+      server: {{ required "openshellSaw.platform.vault.server is required" $vault.server | quote }}
+      path: {{ required "openshellSaw.platform.vault.mount is required" $vault.mount | quote }}
+      version: v2
+      {{- if $vault.caBundle }}
+      caProvider: {type: ConfigMap, name: vault-ca, key: ca.crt}
+      {{- end }}
+      auth: {kubernetes: {mountPath: {{ required "openshellSaw.platform.vault.authMount is required" $vault.authMount | quote }}, role: {{ $ns | quote }}, serviceAccountRef: {name: saw-vault-reader, audiences: [{{ required "openshellSaw.platform.vault.audience is required" $vault.audience | quote }}]}}}
+{{- end }}

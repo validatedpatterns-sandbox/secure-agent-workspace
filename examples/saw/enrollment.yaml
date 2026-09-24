@@ -1,0 +1,32 @@
+# Offline example only. The namespace is deterministically derived from
+# issuer + immutable subject + this SAW name, not the mutable username.
+apiVersion: saw.redhat.com/v1alpha1
+kind: SawEnrollment
+metadata:
+  name: research
+spec:
+  owner:
+    issuer: https://identity.example.com/realms/saw
+    subject: alice-immutable-subject
+    username: alice
+  vault:
+    server: https://vault.example.com
+    mount: secret
+    prefix: saw/users
+    authMount: kubernetes
+    audience: vault
+    caConfigMap: vault-ca
+  credentials:
+    - name: nvidia
+      remoteKey: nvidia
+      properties:
+        api_key: api_key
+    - name: brave
+      remoteKey: brave
+      properties:
+        api_key: api_key
+  image:
+    namespace: saw-images
+    # Replace with the content-addressed DataSource name from render-image.
+    dataSource: replace-with-qualified-datasource
+    diskSizeGi: 40

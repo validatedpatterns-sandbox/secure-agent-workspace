@@ -1,0 +1,32 @@
+# Copy this file to config/saw-platform.yaml. The local file is ignored by Git.
+# Empty discoverable values are filled from the current OpenShift cluster by:
+#   make saw-platform-discover
+# Review the generated file before publishing it as a ConfigMap.
+sawPlatform:
+  discovery:
+    keycloakNamespace: keycloak
+    keycloakRealm: saw
+    vaultStore: vault-backend
+    vaultNamespace: vault
+    imageNamespace: saw-images
+  platform:
+    issuer: ""
+    vault:
+      server: ""
+      mount: secret
+      prefix: saw/users
+      authMount: kubernetes
+      audience: vault
+      caBundle: ""
+  image:
+    namespace: saw-images
+    # CDI DataSource name for the approved imported golden VM disk.
+    # Discover with: oc get datasource -n saw-images
+    dataSource: ""
+    diskSizeGi: 40
+    # Optional class for tenant root disks when the cluster default is unsuitable.
+    # storageClassName: immediate-binding-class
+  # Installer metadata is not safely inferable from a running cluster.
+  # Fill this with the release owner's approved immutable bundle reference,
+  # digest, and InstallerBOM (see examples/saw/installer-bom.yaml).
+  installerRelease: {}

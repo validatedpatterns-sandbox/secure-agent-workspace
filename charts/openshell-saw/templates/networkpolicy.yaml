@@ -1,0 +1,28 @@
+{{- if .Values.openshellSaw.tenant.name }}{{- $cfg := .Values.openshellSaw }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: saw-default-deny, namespace: {{ include "openshell-saw.namespace" $cfg }}}
+spec: {podSelector: {}, policyTypes: [Ingress, Egress]}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: saw-guest-egress, namespace: {{ include "openshell-saw.namespace" $cfg }}}
+spec:
+  podSelector:
+    matchLabels: {vm.kubevirt.io/name: {{ $cfg.tenant.name | quote }}}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: openshift-dns}
+          podSelector:
+            matchLabels: {dns.operator.openshift.io/daemonset-dns: default}
+      ports:
+        - {protocol: UDP, port: 5353}
+        - {protocol: TCP, port: 5353}
+    - ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - ports:
+        - {protocol: TCP, port: 443}
+{{- end }}

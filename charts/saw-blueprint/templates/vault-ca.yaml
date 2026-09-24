@@ -1,0 +1,12 @@
+{{- if .Values.sawBlueprint.enabled }}
+{{- $ca := required "sawBlueprint.platform.vault.caBundle is required when the blueprint is enabled" .Values.sawBlueprint.platform.vault.caBundle }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: saw-vault-ca
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+data:
+  ca.crt: {{ $ca | quote }}
+{{- end }}

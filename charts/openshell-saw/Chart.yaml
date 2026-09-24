@@ -1,11 +1,10 @@
 apiVersion: v2
 name: openshell-saw
-description: Per-user agent sandbox — clones from a bootc golden image and configures via Job
+description: One Git-defined SAW tenant namespace, VM, and guest-installer inputs
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
 keywords:
   - openshell
-  - nemoclaw
   - kubevirt
-  - vertex-ai
+  - gitops

@@ -1,0 +1,35 @@
+namespace: rhdh
+
+appsDomain: ""
+
+baseUrl: ""
+
+keycloak:
+  host: ""
+  realm: openshell
+  clientId: rhdh
+  clientSecret: ""
+  keycloakName: openshell-keycloak
+  keycloakNamespace: ""
+
+pipelines:
+  namespace: openshell-agents
+  repoUrl: ""
+  repoRef: main
+
+catalog:
+  processingInterval: 30
+
+provisioner:
+  serviceAccount: saw-provisioner
+
+openshell:
+  gatewayImage: ""
+  supervisorImage: ""
+  version: ""
+  pipIndexUrl: ""
+
+# NOTE: This chart requires a pre-existing Secret 'rhdh-k8s-tokens' in the
+# RHDH namespace containing K8S_API_TOKEN (for rhdh-k8s-backend SA),
+# K8S_CATALOG_TOKEN (for rhdh-catalog-proxy SA), and K8S_API_URL.
+# The quickstart path creates this via 'make deploy-rhdh'.

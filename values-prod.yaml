@@ -13,6 +13,7 @@ clusterGroup:
       operatorGroup: true
       targetNamespaces:
         - openshell-agents
+    rhdh:
     rhdh-operator:
       operatorGroup: true
       targetNamespaces: []
@@ -83,6 +84,10 @@ clusterGroup:
       name: saw-bom
       namespace: openshell-agents
       path: charts/saw-bom
+    openshell-rhdh:
+      name: openshell-rhdh
+      namespace: rhdh
+      path: charts/openshell-rhdh
     openshell-saw:
       name: openshell-saw
       namespace: openshell-agents

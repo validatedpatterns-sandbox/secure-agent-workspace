@@ -1,0 +1,112 @@
+{{- if and .Values.spiffe.enabled .Values.vsockBridge.enabled }}
+{{- if not (regexMatch "@sha256:[0-9a-f]{64}$" .Values.vsockBridge.image) }}
+{{- fail "vsockBridge.image must be pinned by digest" }}
+{{- end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: saw-spire-vsock-bridge
+---
+# VSOCK requires access to the host socket family. No host filesystem, PID
+# namespace, device mounts, Linux capabilities or Kubernetes token are exposed.
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: saw-spire-vsock-bridge
+allowHostNetwork: true
+allowHostPorts: true
+allowHostDirVolumePlugin: false
+allowHostIPC: false
+allowHostPID: false
+allowPrivilegedContainer: false
+allowPrivilegeEscalation: false
+requiredDropCapabilities: [ALL]
+readOnlyRootFilesystem: true
+runAsUser:
+  type: MustRunAs
+  uid: 65532
+seLinuxContext:
+  type: MustRunAs
+  seLinuxOptions:
+    type: spc_t
+seccompProfiles: [unconfined]
+fsGroup:
+  type: RunAsAny
+supplementalGroups:
+  type: RunAsAny
+volumes: [configMap, secret, projected, emptyDir]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: saw-spire-vsock-bridge
+rules:
+  - apiGroups: [security.openshift.io]
+    resources: [securitycontextconstraints]
+    resourceNames: [saw-spire-vsock-bridge]
+    verbs: [use]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: saw-spire-vsock-bridge
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: saw-spire-vsock-bridge
+subjects:
+  - kind: ServiceAccount
+    name: saw-spire-vsock-bridge
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: saw-spire-vsock-bridge
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: saw-spire-vsock-bridge
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: saw-spire-vsock-bridge
+    spec:
+      serviceAccountName: saw-spire-vsock-bridge
+      automountServiceAccountToken: false
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        saw.redhat.com/vsock-bridge: "true"
+      tolerations:
+        - key: node-role.kubernetes.io/master
+          effect: NoSchedule
+          operator: Exists
+      containers:
+        - name: bridge
+          image: {{ .Values.vsockBridge.image | quote }}
+          env:
+            - name: SPIRE_SERVER
+              value: {{ .Values.vsockBridge.serverAddress | quote }}
+          securityContext:
+            runAsUser: 65532
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+            seLinuxOptions:
+              type: spc_t
+            seccompProfile:
+              type: Unconfined
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 18082
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+{{- end }}

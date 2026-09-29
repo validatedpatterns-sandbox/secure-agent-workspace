@@ -1,0 +1,4 @@
+apiVersion: v2
+name: identity-demo
+description: Ephemeral issuer and protected service for SAW identity acceptance tests
+version: 0.1.0

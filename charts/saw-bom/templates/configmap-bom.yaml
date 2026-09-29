@@ -7,6 +7,12 @@
 {{- $_ := set $profileFiles $path ($.Files.Get $path) }}
 {{- end }}
 {{- end }}
+{{- range $path, $content := .Values.profileFiles }}
+{{- if not (regexMatch "^profiles/[a-z0-9-]+/[a-z0-9-]+/(workspace|providers|sandbox)\\.yaml$" $path) }}
+{{- fail (printf "invalid profileFiles path: %s" $path) }}
+{{- end }}
+{{- $_ := set $profileFiles $path $content }}
+{{- end }}
 {{- if $profileFiles }}
 apiVersion: v1
 kind: ConfigMap

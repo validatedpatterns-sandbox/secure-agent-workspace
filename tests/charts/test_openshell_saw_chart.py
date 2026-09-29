@@ -294,7 +294,7 @@ def test_readiness_probe_is_opt_in(default_docs):
     assert "readinessProbe" not in default_docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]
     docs = render("--set", "vm.readinessProbe=true")
     probe = docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]["readinessProbe"]
-    assert probe["exec"]["command"] == ["test", "-f", "/var/lib/saw/ready"]
+    assert probe["exec"]["command"] == ["/usr/libexec/saw-ready"]
 
 
 def test_bom_change_changes_vm_template(default_docs):
@@ -370,6 +370,7 @@ def test_cluster_domain_fills_routes_issuer_and_dashboard():
 def test_installer_configmap_ships_the_real_files(default_docs, ab):
     data = installer_data(default_docs)
     assert data["apply_bom.py"] == (CHART / "files" / "installer" / "apply_bom.py").read_text()
+    assert data["saw_spire.pp.b64"] == (CHART / "files" / "selinux" / "saw_spire.pp.b64").read_text()
     assert data["setup-dashboard.sh"] == (CHART / "files" / "installer" / "setup-dashboard.sh").read_text()
     bom = yaml.safe_load(data["installer-bom.yaml"])
     assert ab.validate_bom(bom)

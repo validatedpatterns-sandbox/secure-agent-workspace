@@ -18,6 +18,7 @@ changes here reach an existing VM after a restart (unlike cloud-init).
 {{- $dashboardEnabled := false }}
 {{- if and .Values.dashboard.enabled .Values.route.webui }}{{- $dashboardEnabled = true }}{{- end }}
 {{- $config := dict
+      "spiffe" .Values.spiffe
       "vmName" (include "openshell-sandbox.fullname" .)
       "namespace" .Release.Namespace
       "runtimeUser" "cloud-user"
@@ -42,7 +43,11 @@ metadata:
     {{- include "openshell-sandbox.labels" . | nindent 4 }}
 data:
   installer-bom.yaml: |
-{{ toYaml .Values.bom | indent 4 }}
+{{- $bom := deepCopy .Values.bom }}
+{{- if .Values.spiffe.enabled }}
+{{- $_ := set $bom.spec "spireAgent" .Values.spiffe.agent }}
+{{- end }}
+{{ toYaml $bom | indent 4 }}
   config.json: |
 {{ toPrettyJson $config | indent 4 }}
   gateway.env: |
@@ -51,6 +56,10 @@ data:
 {{ include "openshell-sandbox.gatewayToml" . | indent 4 }}
   apply_bom.py: |
 {{ .Files.Get "files/installer/apply_bom.py" | indent 4 }}
+  identity.py: |
+{{ .Files.Get "files/installer/identity.py" | indent 4 }}
+  saw_spire.pp.b64: |
+{{ .Files.Get "files/selinux/saw_spire.pp.b64" | indent 4 }}
   setup-dashboard.sh: |
 {{ .Files.Get "files/installer/setup-dashboard.sh" | indent 4 }}
 {{- /* Provider profiles the installer imports when the gateway lacks them
@@ -58,4 +67,8 @@ data:
 {{- range $path, $_ := .Files.Glob "files/provider-profiles/*.yaml" }}
   provider-profile-{{ base $path }}: |
 {{ $.Files.Get $path | indent 4 }}
+{{- end }}
+{{- range $name, $profile := .Values.providerProfiles }}
+  provider-profile-{{ $name }}.yaml: |
+{{ toYaml $profile | indent 4 }}
 {{- end }}

@@ -1,0 +1,5 @@
+enabled: true
+spiffeIssuer: https://spire-oidc.apps.cluster-2p7tv.dyn.redhatworkshops.io
+allowedPrefixes:
+- spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-a/identity-a
+- spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-b/identity-b

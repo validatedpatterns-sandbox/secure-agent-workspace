@@ -45,7 +45,9 @@ vm:
   memory: 8Gi
   diskSize: 40Gi
   # Mark the VMI Ready only after the in-guest installer finished both steps.
-  # Uses a guest-agent exec probe (`test -f /var/lib/saw/ready`). Off by
+  # Uses a guest-agent exec probe (`/usr/libexec/saw-ready`). The helper
+  # checks installer completion and, when the agent unit exists, agent health.
+  # A failed check does not discard enrollment state. Off by
   # default: it needs qemu-guest-agent with guest-exec allowed in the image.
   readinessProbe: false
 
@@ -86,6 +88,23 @@ openshell:
 # Container runtime inside the gateway VM. Stage 1 supports podman only.
 containerRuntime: podman
 
+# Workload identity is opt-in. The shared spire-identity release must be ready.
+spiffe:
+  # Root-only QEMU guest-agent fault injection helper; dedicated test VMs only.
+  testMode: false
+  testRunID: ""
+  enabled: false
+  trustDomain: ""
+  serverAddress: spire-server.zero-trust-workload-identity-manager.svc.cluster.local
+  serverPort: 443
+  serverTransport: tcp
+  gatewayUID: 1000
+  registrarNamespace: zero-trust-workload-identity-manager
+  agent:
+    version: 1.14.7
+    image: ghcr.io/spiffe/spire-agent@sha256:3efffa16f4a928829dd4031862fd6ed4f6118647f2943bac02f539a4fe65f7f8
+    path: /opt/spire/bin/spire-agent
+
 # If a BOM profile's sandbox image lives in this cluster's internal registry,
 # the VM's rootless Podman pulls it without credentials. This grants
 # system:image-puller to system:unauthenticated, scoped to this namespace.
@@ -100,6 +119,9 @@ inference:
   secretName: "inference"
 additionalProviderSecrets:
   - web-search
+
+# Operator-approved provider profile documents (never credentials).
+providerProfiles: {}
 
 # Keycloak/OIDC for end users. The gateway accepts OIDC bearer tokens from
 # users (roles from realm_access.roles) and mTLS from the local installer.

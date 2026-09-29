@@ -230,7 +230,7 @@ def validate_bom(doc):
         raise InstallerError("InstallerBOM metadata.name must be a DNS label")
     spec = doc["spec"]
     _require_keys(spec, {"installerVersion", "openshell"},
-                  {"installerVersion", "openshell", "nemoclaw"}, "InstallerBOM spec")
+                  {"installerVersion", "openshell", "nemoclaw", "spireAgent"}, "InstallerBOM spec")
     if spec["installerVersion"] != INSTALLER_VERSION:
         raise InstallerError(
             f"InstallerBOM targets installer {spec['installerVersion']}, "
@@ -244,7 +244,8 @@ def validate_bom(doc):
         _check_digest_image(entry["image"], f"{where}.image")
         if "path" in entry and (not isinstance(entry["path"], str) or not entry["path"].startswith("/")):
             raise InstallerError(f"{where}.path must be an absolute path")
-    if "nemoclaw" in spec:
+    # Helm null / omitted both mean "no nemoclaw component".
+    if spec.get("nemoclaw") is not None:
         _require_keys(spec["nemoclaw"], {"cliImage"}, {"cliImage"}, "spec.nemoclaw")
         image = spec["nemoclaw"]["cliImage"]
         # Optional add-on: a tag is accepted (no digest is published for it
@@ -253,6 +254,14 @@ def validate_bom(doc):
             raise InstallerError("spec.nemoclaw.cliImage is not a valid image reference")
         if not DIGEST_IMAGE_RE.match(image):
             log(f"WARN: spec.nemoclaw.cliImage {image} is not pinned by digest")
+    else:
+        spec.pop("nemoclaw", None)
+    if spec.get("spireAgent") is not None:
+        entry = spec["spireAgent"]
+        _require_keys(entry, {"image", "version", "path"}, {"image", "version", "path"}, "spec.spireAgent")
+        _check_digest_image(entry["image"], "spec.spireAgent.image")
+        if not VERSION_RE.match(entry["version"]) or not entry["path"].startswith("/"):
+            raise InstallerError("spec.spireAgent needs a version and absolute binary path")
     return doc
 
 
@@ -333,6 +342,8 @@ class Provider:
     model_secret_key: str = ""
     inference_timeout: int = 0
     base_url: str = ""
+    runtime_credentials: bool = False
+    externally_managed: bool = False
 
 
 @dataclass
@@ -428,7 +439,9 @@ def parse_profiles(files):
                         model=p.get("model", ""),
                         base_url_secret_key=p.get("baseUrlSecretKey", ""),
                         model_secret_key=p.get("modelSecretKey", ""),
-                        inference_timeout=int(p.get("inferenceTimeout", 0) or 0)))
+                        inference_timeout=int(p.get("inferenceTimeout", 0) or 0),
+                        runtime_credentials=p.get("runtimeCredentials", False),
+                        externally_managed=p.get("externallyManaged", False)))
             if "sandbox.yaml" in docs:
                 key, text = docs["sandbox.yaml"]
                 for s in (_yaml(text, key).get("spec") or {}).get("sandboxes") or []:
@@ -469,6 +482,16 @@ def validate_profiles(profiles):
             errors.append(f"{where}: duplicate provider names")
         for p in ws.providers:
             if not p.enabled:
+                continue
+            if not isinstance(p.runtime_credentials, bool) or not isinstance(p.externally_managed, bool):
+                errors.append(f"{where}: dynamic provider flags must be booleans")
+            if p.runtime_credentials and p.externally_managed:
+                errors.append(f"{where}: provider '{p.name}' cannot be both runtime and externally managed")
+            if p.runtime_credentials or p.externally_managed:
+                if p.credential_secret:
+                    errors.append(f"{where}: dynamic provider '{p.name}' cannot use credentialSecret")
+                if not NAME_RE.match(p.type):
+                    errors.append(f"{where}: invalid dynamic provider profile type")
                 continue
             if p.type not in PROVIDER_CRED_MAP:
                 errors.append(f"{where}: provider '{p.name}' has unsupported type '{p.type}'")
@@ -546,6 +569,8 @@ def resolve_credentials(profiles, secrets_dir):
     for _, ws in enabled_workspaces(profiles):
         for p in ws.providers:
             if not p.enabled:
+                continue
+            if p.runtime_credentials or p.externally_managed:
                 continue
             base = secrets_dir / p.credential_secret
             key_file = base / p.credential_secret_key
@@ -686,8 +711,12 @@ class ComponentInstaller:
         changed = []
         if not self.sh.dry_run:
             self.bin_dir.mkdir(parents=True, exist_ok=True)
-        for comp, entry in bom["spec"]["openshell"].items():
-            dest = self.bin_dir / COMPONENTS[comp]["dest"]
+        components = dict(bom["spec"]["openshell"])
+        if "spireAgent" in bom["spec"]:
+            components["spireAgent"] = bom["spec"]["spireAgent"]
+        for comp, entry in components.items():
+            layout = COMPONENTS.get(comp, {"dest": "spire-agent", "image_path": "/opt/spire/bin/spire-agent"})
+            dest = self.bin_dir / layout["dest"]
             image = entry["image"]
             if self._is_current(installed.get(comp), image, dest):
                 log(f"{comp}: {entry['version']} already installed")
@@ -699,7 +728,7 @@ class ComponentInstaller:
                 continue
             with tempfile.TemporaryDirectory(dir=self.bin_dir, prefix=".saw-") as tmp:
                 staged = Path(tmp) / dest.name
-                self._extract(image, entry.get("path", COMPONENTS[comp]["image_path"]), staged)
+                self._extract(image, entry.get("path", layout["image_path"]), staged)
                 if not staged.is_file():
                     raise InstallerError(f"{comp}: {image} did not contain a file at the expected path")
                 os.chmod(staged, 0o755)
@@ -1066,6 +1095,28 @@ class ProfileApplier:
         `--credential NAME` (no value) makes the CLI read the key from the
         environment variable NAME, so the key never appears in argv
         (/proc/<pid>/cmdline) or in logs."""
+        if provider.runtime_credentials or provider.externally_managed:
+            if not (self.cfg.get("spiffe") or {}).get("enabled"):
+                raise InstallerError("dynamic token-grant providers require spiffe.enabled")
+            if provider.type not in self.provider_profiles:
+                raise InstallerError(f"dynamic provider '{provider.type}' has no approved shipped profile")
+            doc = _yaml(self.provider_profiles[provider.type], provider.type)
+            grants = [c.get("token_grant") for c in doc.get("credentials", []) if c.get("token_grant")]
+            if provider.externally_managed:
+                if not grants or any(g.get("grant_type") != "token_exchange" for g in grants):
+                    raise InstallerError("externally managed providers require a token_exchange profile")
+                self.import_provider_profile(ws, provider.type)
+                if not self.cli("provider", "get", provider.name, *ws_args(ws.name), check=False, quiet=True).ok:
+                    raise InstallerError(f"provider '{provider.name}' must be created with openshell-saw-token-provider")
+                return
+            if not grants or any(g.get("grant_type", "client_credentials") != "client_credentials" for g in grants):
+                raise InstallerError("runtime providers require a client_credentials token-grant profile")
+            self.import_provider_profile(ws, provider.type)
+            result = self.cli("provider", "create", "--name", provider.name, "--type", provider.type,
+                              *ws_args(ws.name), "--runtime-credentials", ok_if_exists=True, check=False)
+            if not result.ok:
+                raise InstallerError(f"could not create runtime provider '{provider.name}'")
+            return
         credential = self.creds[ws.name][provider.name]
         env_name = PROVIDER_CRED_MAP[provider.type]
         env = {env_name: credential}
@@ -1530,6 +1581,10 @@ def cmd_install(args):
         config_changed = sync_gateway_config(inputs, cfg, args.etc_dir, home, owner,
                                              dry_run=args.dry_run)
         allow_guest_agent_ssh_keys(shell)
+        if (cfg.get("spiffe") or {}).get("enabled"):
+            if "spireAgent" not in bom["spec"]:
+                raise InstallerError("identity requires a pinned spireAgent BOM component")
+            shell.run([sys.executable, str(inputs.installer / "identity.py"), str(inputs.config)], timeout=600)
         # Remember that a restart is owed until it has actually happened, so
         # a failure between here and the restart cannot leave the old
         # gateway running on a retry.

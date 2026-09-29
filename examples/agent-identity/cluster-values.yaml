@@ -1,0 +1,8 @@
+# Replace these three cluster-specific fields before deployment.
+spiffe:
+  enabled: true
+  trustDomain: saw.cluster-2p7tv.dyn.redhatworkshops.io
+  clusterName: cluster-2p7tv
+  jwtIssuer: https://spire-oidc.apps.cluster-2p7tv.dyn.redhatworkshops.io
+persistence:
+  storageClass: ocs-external-storagecluster-ceph-rbd-immediate

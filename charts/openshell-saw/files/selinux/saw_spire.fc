@@ -1,0 +1,4 @@
+/usr/local/bin/spire-agent		--	gen_context(system_u:object_r:saw_spire_agent_exec_t,s0)
+/var/lib/spire(/.*)?			gen_context(system_u:object_r:saw_spire_var_lib_t,s0)
+/spiffe-workload-api(/.*)?		gen_context(system_u:object_r:saw_spire_runtime_t,s0)
+/etc/spire(/.*)?			gen_context(system_u:object_r:saw_spire_etc_t,s0)

@@ -1,0 +1,26 @@
+# Dedicated integration-test VM; no static provider credentials.
+spiffe:
+  testMode: true
+  testRunID: agent-identity-20260927
+  enabled: true
+  trustDomain: saw.cluster-2p7tv.dyn.redhatworkshops.io
+vm:
+  cores: 2
+  memory: 4Gi
+  readinessProbe: true
+# Omit bom.spec.nemoclaw (null is treated as absent by the installer).
+inference:
+  secretName: ""
+additionalProviderSecrets: []
+dashboard:
+  enabled: false
+route:
+  enabled: false
+  dashboard: false
+  webui: false
+oidc:
+  issuerUrl: ""
+governance:
+  enabled: false
+internalRegistry:
+  allowAnonymousPull: false

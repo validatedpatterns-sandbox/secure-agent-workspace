@@ -1,0 +1,85 @@
+policy_module(saw_spire, 2.0.3)
+
+# Guest SPIRE agent domain for the golden-image policy baseline
+# selinux-policy-43.3-1.fc44 / selinux-policy-targeted-43.3-1.fc44.
+# The agent domain is enforcing. connectto is socket access, not identity selection.
+
+gen_require(`
+	type container_t;
+	type unconfined_t;
+	type unconfined_service_t;
+	type virt_qemu_ga_unconfined_t;
+	type iso9660_t;
+	type container_runtime_t;
+	type user_tmp_t;
+	type var_run_t;
+')
+
+type saw_spire_agent_t;
+type saw_spire_agent_exec_t;
+init_daemon_domain(saw_spire_agent_t, saw_spire_agent_exec_t)
+
+type saw_spire_var_lib_t;
+files_type(saw_spire_var_lib_t)
+type saw_spire_runtime_t;
+files_type(saw_spire_runtime_t)
+type saw_spire_etc_t;
+files_type(saw_spire_etc_t)
+
+manage_files_pattern(saw_spire_agent_t, saw_spire_var_lib_t, saw_spire_var_lib_t)
+manage_dirs_pattern(saw_spire_agent_t, saw_spire_var_lib_t, saw_spire_var_lib_t)
+manage_files_pattern(saw_spire_agent_t, saw_spire_etc_t, saw_spire_etc_t)
+manage_dirs_pattern(saw_spire_agent_t, saw_spire_etc_t, saw_spire_etc_t)
+manage_files_pattern(saw_spire_agent_t, saw_spire_runtime_t, saw_spire_runtime_t)
+manage_dirs_pattern(saw_spire_agent_t, saw_spire_runtime_t, saw_spire_runtime_t)
+manage_sock_files_pattern(saw_spire_agent_t, saw_spire_runtime_t, saw_spire_runtime_t)
+allow saw_spire_agent_t self:unix_stream_socket create_stream_socket_perms;
+allow saw_spire_agent_t self:unix_stream_socket connectto;
+# readlink of /proc/pid/exe for a caller in a rootless Podman user namespace.
+# The service unit holds only this capability. Selectors are unchanged.
+allow saw_spire_agent_t self:capability sys_ptrace;
+allow saw_spire_agent_t self:cap_userns sys_ptrace;
+
+# Clients that may reach the Workload API socket. SPIRE still attests the
+# caller; these rules do not grant a sandbox or gateway SVID.
+allow container_t saw_spire_agent_t:unix_stream_socket connectto;
+allow container_t saw_spire_runtime_t:dir search_dir_perms;
+allow container_t saw_spire_runtime_t:sock_file { write getattr };
+# The supervisor hides this directory from sandbox children by mounting an
+# empty tmpfs on it. This is the mount point only, not a filesystem mount
+# and not an identity grant.
+allow container_t saw_spire_runtime_t:dir mounton;
+allow unconfined_t saw_spire_agent_t:unix_stream_socket connectto;
+allow unconfined_t saw_spire_runtime_t:dir search_dir_perms;
+allow unconfined_t saw_spire_runtime_t:sock_file { write getattr };
+allow unconfined_service_t saw_spire_agent_t:unix_stream_socket connectto;
+allow unconfined_service_t saw_spire_runtime_t:dir search_dir_perms;
+allow unconfined_service_t saw_spire_runtime_t:sock_file { write getattr };
+allow virt_qemu_ga_unconfined_t saw_spire_agent_t:unix_stream_socket connectto;
+allow virt_qemu_ga_unconfined_t saw_spire_runtime_t:dir search_dir_perms;
+allow virt_qemu_ga_unconfined_t saw_spire_runtime_t:sock_file { write getattr };
+
+# The readiness helper executes the labeled agent binary for healthcheck.
+domtrans_pattern(virt_qemu_ga_unconfined_t, saw_spire_agent_exec_t, saw_spire_agent_t)
+
+# Outbound SPIRE server on 443, DNS, and the read-only bootstrap ISO.
+corenet_tcp_connect_http_port(saw_spire_agent_t)
+sysnet_dns_name_resolve(saw_spire_agent_t)
+allow saw_spire_agent_t self:tcp_socket create_stream_socket_perms;
+allow saw_spire_agent_t self:udp_socket create_socket_perms;
+allow saw_spire_agent_t iso9660_t:dir search_dir_perms;
+allow saw_spire_agent_t iso9660_t:file read_file_perms;
+allow saw_spire_agent_t var_run_t:dir search_dir_perms;
+
+# Workload attestation: nsswitch, process state, and the rootless Podman socket.
+auth_use_nsswitch(saw_spire_agent_t)
+files_read_etc_files(saw_spire_agent_t)
+dev_read_urand(saw_spire_agent_t)
+dev_read_rand(saw_spire_agent_t)
+kernel_read_system_state(saw_spire_agent_t)
+domain_read_all_domains_state(saw_spire_agent_t)
+logging_send_syslog_msg(saw_spire_agent_t)
+allow saw_spire_agent_t container_runtime_t:unix_stream_socket connectto;
+allow saw_spire_agent_t container_runtime_t:sock_file { write getattr };
+allow saw_spire_agent_t user_tmp_t:dir search_dir_perms;
+allow saw_spire_agent_t user_tmp_t:sock_file { write getattr };

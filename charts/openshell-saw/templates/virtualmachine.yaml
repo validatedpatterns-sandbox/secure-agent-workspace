@@ -3,6 +3,12 @@
 {{- fail "containerRuntime: the in-guest installer supports podman only" }}
 {{- end }}
 {{- $secrets := include "openshell-sandbox.providerSecrets" . | fromJsonArray }}
+{{- if .Values.spiffe.enabled }}
+{{- $_ := required "spiffe.trustDomain is required" .Values.spiffe.trustDomain }}
+{{- if not (has .Values.spiffe.serverTransport (list "tcp" "vsock")) }}
+{{- fail "spiffe.serverTransport must be tcp or vsock" }}
+{{- end }}
+{{- end }}
 {{- range $secrets }}{{- include "openshell-sandbox.validateSecretName" . }}{{- end }}
 apiVersion: kubevirt.io/v1
 kind: VirtualMachine
@@ -11,6 +17,14 @@ metadata:
   labels:
     {{- include "openshell-sandbox.labels" . | nindent 4 }}
     openshell.pattern/role: gateway
+    {{- if .Values.spiffe.enabled }}
+    saw.redhat.com/spiffe: "true"
+    {{- end }}
+  {{- if .Values.spiffe.enabled }}
+  annotations:
+    saw.redhat.com/trust-domain: {{ .Values.spiffe.trustDomain | quote }}
+    saw.redhat.com/gateway-uid: {{ .Values.spiffe.gatewayUID | quote }}
+  {{- end }}
 spec:
   runStrategy: Always
   dataVolumeTemplates:
@@ -58,11 +72,20 @@ spec:
           requests:
             memory: {{ .Values.vm.memory }}
         devices:
+          {{- if and .Values.spiffe.enabled (eq .Values.spiffe.serverTransport "vsock") }}
+          autoattachVSOCK: true
+          {{- end }}
           # Send the serial console (where saw-install/saw-apply log) to the
           # virt-launcher pod's guest-console-log container, even when the
           # cluster default leaves serial console logging off.
           logSerialConsole: true
           disks:
+            {{- if .Values.spiffe.enabled }}
+            - name: saw-spire
+              serial: saw-spire
+              disk:
+                bus: virtio
+            {{- end }}
             - name: rootdisk
               disk:
                 bus: virtio
@@ -119,9 +142,11 @@ spec:
                 users:
                   - cloud-user
       {{- if .Values.vm.readinessProbe }}
+      # Labeled helper: virt_qemu_ga_t cannot getattr /var/lib/saw (var_lib_t).
+      # The helper checks installer completion and agent health. Failure does not re-enroll.
       readinessProbe:
         exec:
-          command: ["test", "-f", "/var/lib/saw/ready"]
+          command: ["/usr/libexec/saw-ready"]
         initialDelaySeconds: 60
         periodSeconds: 15
         timeoutSeconds: 5
@@ -131,6 +156,11 @@ spec:
         - name: default
           pod: {}
       volumes:
+        {{- if .Values.spiffe.enabled }}
+        - name: saw-spire
+          secret:
+            secretName: {{ include "openshell-sandbox.fullname" . }}-spire-join-token
+        {{- end }}
         - name: rootdisk
           dataVolume:
             name: {{ include "openshell-sandbox.fullname" . }}-root

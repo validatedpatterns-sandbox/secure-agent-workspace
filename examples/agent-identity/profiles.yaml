@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: saw-bom-profiles
+  labels:
+    saw.redhat.com/identity-test-run: agent-identity-20260927
+data:
+  profiles__identity-demo__default__workspace.yaml: "apiVersion: saw.redhat.com/v1alpha1\n\
+    kind: Workspace\nmetadata:\n  name: default\nspec:\n  enabled: true\n"
+  profiles__identity-demo__default__providers.yaml: "apiVersion: saw.redhat.com/v1alpha1\n\
+    kind: Providers\nspec:\n  providers:\n  - name: protected\n    runtimeCredentials:\
+    \ true\n    type: saw-demo-cc\n"
+  profiles__identity-demo__default__sandbox.yaml: "apiVersion: saw.redhat.com/v1alpha1\n\
+    kind: Sandboxes\nspec:\n  sandboxes:\n  - image: ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:c2a43bb0d765774e2790b3babfb20997bb2eac7b4bf4c6d7d8661e99817bf904\n\
+    \    name: agent\n    providers:\n    - protected\n    type: generic\n"
+  profiles__identity-demo__research__workspace.yaml: "apiVersion: saw.redhat.com/v1alpha1\n\
+    kind: Workspace\nmetadata:\n  name: research\nspec:\n  enabled: true\n"
+  profiles__identity-demo__research__providers.yaml: "apiVersion: saw.redhat.com/v1alpha1\n\
+    kind: Providers\nspec:\n  providers:\n  - name: protected\n    runtimeCredentials:\
+    \ true\n    type: saw-demo-cc\n"
+  profiles__identity-demo__research__sandbox.yaml: "apiVersion: saw.redhat.com/v1alpha1\n\
+    kind: Sandboxes\nspec:\n  sandboxes:\n  - image: ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:c2a43bb0d765774e2790b3babfb20997bb2eac7b4bf4c6d7d8661e99817bf904\n\
+    \    name: agent\n    providers:\n    - protected\n    type: generic\n"

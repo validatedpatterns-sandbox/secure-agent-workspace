@@ -1,0 +1,26 @@
+# Shared infrastructure only. VM enrollment is gated separately.
+spiffe:
+  enabled: false
+  trustDomain: ""
+  clusterName: ""
+  jwtIssuer: ""
+  # Use Go's canonical duration spelling: ZTWIM normalizes these fields.
+  jwtValidity: 5m0s
+  x509Validity: 1h0m0s
+operator:
+  enabled: true
+  channel: stable-v1
+  startingCSV: zero-trust-workload-identity-manager.v1.1.1
+operands:
+  # First install the operator with this false; enable after CRDs exist.
+  enabled: false
+persistence:
+  size: 2Gi
+  storageClass: ""
+registrar:
+  enabled: false
+  image: ""
+vsockBridge:
+  enabled: false
+  image: ""
+  serverAddress: spire-server.zero-trust-workload-identity-manager.svc.cluster.local:443

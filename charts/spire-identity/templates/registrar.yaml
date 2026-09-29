@@ -1,0 +1,151 @@
+{{- if and .Values.spiffe.enabled .Values.registrar.enabled }}
+{{- if not (regexMatch "@sha256:[0-9a-f]{64}$" .Values.registrar.image) }}
+{{- fail "registrar.image must be pinned by digest" }}
+{{- end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: saw-spire-registrar
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: saw-spire-registrar-observe
+rules:
+  - apiGroups: [kubevirt.io]
+    resources: [virtualmachines, virtualmachineinstances]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: saw-spire-registrar-observe
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: saw-spire-registrar-observe
+subjects:
+  - kind: ServiceAccount
+    name: saw-spire-registrar
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: saw-spire-registrar-launcher
+rules:
+  # virt-launcher is admitted under kubevirt-controller. Exec is rejected unless
+  # this account can use that same constraint; restricted-v2 does not admit it.
+  - apiGroups: [security.openshift.io]
+    resources: [securitycontextconstraints]
+    resourceNames: [kubevirt-controller]
+    verbs: [use]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: saw-spire-registrar-launcher
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: saw-spire-registrar-launcher
+subjects:
+  - kind: ServiceAccount
+    name: saw-spire-registrar
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: saw-spire-registrar-bundle
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [spire-bundle]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: saw-spire-registrar-bundle
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: saw-spire-registrar-bundle
+subjects:
+  - kind: ServiceAccount
+    name: saw-spire-registrar
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: saw-spire-registrar
+spec:
+  className: zero-trust-workload-identity-manager-spire
+  spiffeIDTemplate: {{ printf "spiffe://%s/saw/platform/registrar" .Values.spiffe.trustDomain | quote }}
+  admin: true
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: {{ .Release.Namespace }}
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: saw-spire-registrar
+  workloadSelectorTemplates:
+    - k8s:sa:saw-spire-registrar
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: saw-spire-registrar
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: saw-spire-registrar
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: saw-spire-registrar
+    spec:
+      serviceAccountName: saw-spire-registrar
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: registrar
+          image: {{ .Values.registrar.image | quote }}
+          env:
+            - name: TRUST_DOMAIN
+              value: {{ .Values.spiffe.trustDomain | quote }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: workload-api
+              mountPath: /spiffe-workload-api
+              readOnly: true
+      volumes:
+        - name: workload-api
+          csi:
+            driver: csi.spiffe.io
+            readOnly: true
+{{- end }}

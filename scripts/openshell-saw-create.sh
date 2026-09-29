@@ -45,9 +45,18 @@ OWNER_SUBJECT="${OWNER_SUBJECT:-}"
 SCRIPTS_DIR="${SCRIPTS_DIR:-scripts}"
 CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-podman}"
 GOVERNANCE_ENABLED="${GOVERNANCE_ENABLED:-true}"
+SAW_VALUES_ARGS=()
+BOM_VALUES_ARGS=()
+[[ -z "${SAW_VALUES:-}" ]] || SAW_VALUES_ARGS=(-f "${SAW_VALUES}")
+[[ -z "${SAW_BOM_VALUES:-}" ]] || BOM_VALUES_ARGS=(-f "${SAW_BOM_VALUES}")
+if [[ "${DYNAMIC_PROVIDERS:-false}" == true ]]; then
+  [[ -f "${SAW_VALUES:-}" && -f "${SAW_BOM_VALUES:-}" ]] || {
+    echo 'Dynamic providers require SAW_VALUES and SAW_BOM_VALUES files.' >&2; exit 1;
+  }
+fi
 
 # Validate provider
-if [[ -z "${PROVIDER}" && -z "${GCP_SA_JSON}" ]]; then
+if [[ -z "${PROVIDER}" && -z "${GCP_SA_JSON}" && "${DYNAMIC_PROVIDERS:-false}" != true ]]; then
   echo "Error: PROVIDER or GCP_SA_JSON is required."
   echo ""
   echo "Usage:"
@@ -165,7 +174,8 @@ if [[ -n "${PROFILES}" ]]; then
   BOM_OPTS=(-f "${BOM_VALUES}")
 fi
 # ${arr[@]+...}: an empty array is "unbound" under set -u in bash < 4.4 (macOS).
-helm upgrade --install saw-bom "${SAW_BOM_CHART}" --namespace "${DEPLOY_NS}" ${BOM_OPTS[@]+"${BOM_OPTS[@]}"} >/dev/null
+helm upgrade --install saw-bom "${SAW_BOM_CHART}" --namespace "${DEPLOY_NS}" \
+  ${BOM_OPTS[@]+"${BOM_OPTS[@]}"} ${BOM_VALUES_ARGS[@]+"${BOM_VALUES_ARGS[@]}"} >/dev/null
 echo "SAW-BOM profiles installed in ${DEPLOY_NS}${PROFILES:+ (${PROFILES})}."
 
 # --- Deploy ---
@@ -173,6 +183,7 @@ echo "Provisioning sandbox '${OPENSHELL_SAW_NAME}' for owner '${OWNER}' in names
 
 # shellcheck disable=SC2086
 helm upgrade --install "${OPENSHELL_SAW_NAME}" "${SAW_CHART}" \
+  "${SAW_VALUES_ARGS[@]}" \
   --namespace "${DEPLOY_NS}" --create-namespace \
   --set sandboxName="${OPENSHELL_SAW_NAME}" \
   ${SANDBOX_IMAGE:+--set sandboxImage="${SANDBOX_IMAGE}"} \

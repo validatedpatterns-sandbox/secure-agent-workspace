@@ -18,3 +18,7 @@ __pycache__/
 *.py[cod]
 .venv
 *.pyc
+
+# Go binaries
+go.mod
+go.sum

@@ -1,0 +1,24 @@
+{{- if and .Values.spiffe.enabled .Values.operator.enabled }}
+{{- if ne .Release.Namespace "zero-trust-workload-identity-manager" }}
+{{- fail "spire-identity must be installed in zero-trust-workload-identity-manager" }}
+{{- end }}
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: saw-spire-identity
+spec:
+  targetNamespaces:
+    - {{ .Release.Namespace }}
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: openshift-zero-trust-workload-identity-manager
+spec:
+  name: openshift-zero-trust-workload-identity-manager
+  channel: {{ .Values.operator.channel | quote }}
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Manual
+  startingCSV: {{ .Values.operator.startingCSV | quote }}
+{{- end }}

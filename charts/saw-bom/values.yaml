@@ -1,3 +1,6 @@
 # Active profiles to deploy on this SAW instance.
 profiles:
   - data-science
+
+# Additional operator-approved profile documents, keyed as profiles/<profile>/<workspace>/<file>.yaml.
+profileFiles: {}

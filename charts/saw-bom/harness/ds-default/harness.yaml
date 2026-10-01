@@ -1,0 +1,23 @@
+apiVersion: saw.redhat.com/v1alpha1
+kind: HarnessBundle
+metadata:
+  name: ds-default
+spec:
+  agent: openclaw
+  version: 0.1.0
+  # Mounted read-only at /sandbox/harness exactly as it is: OpenClaw loads the
+  # Agent Plugins bundle at the root (plugin.json, skills/, mcp.json) and the
+  # native tool plugins under plugins/. This file is read only by the
+  # installer, for governance.
+  #
+  # Governance: a plugin or stdio server that calls a service, and every
+  # remote (streamable-http / sse) server in mcp.json, names the provider
+  # profile whose endpoints allow its hosts. The sandbox must have a provider
+  # of that type: it is also how a key reaches the server, as a placeholder
+  # the sandbox's egress proxy swaps for the real key. Keys never go here.
+  plugins: []
+  #  - name: my-plugin
+  #    governanceProfile: <profile>
+  mcpServers: []
+  #  - name: web-search
+  #    governanceProfile: web-search

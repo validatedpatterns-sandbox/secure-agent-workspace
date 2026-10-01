@@ -1,0 +1,9 @@
+{
+  "id": "saw-echo",
+  "name": "SAW echo",
+  "description": "Sample tool delivered by a SAW harness bundle. Echoes its input; no network.",
+  "categories": ["other"],
+  "contracts": { "tools": ["saw_echo"] },
+  "activation": { "onStartup": true },
+  "configSchema": { "type": "object", "additionalProperties": false }
+}

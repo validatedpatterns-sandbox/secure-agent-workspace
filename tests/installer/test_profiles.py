@@ -35,7 +35,10 @@ def test_read_profile_files_ignores_other_files(ab, tmp_path, shipped_profile_fi
         (tmp_path / key).write_text(text)
     (tmp_path / "..data").mkdir()                 # kubelet-style projection dir
     (tmp_path / ".hidden").write_text("ignored")
-    assert ab.read_profile_files(tmp_path) == shipped_profile_files
+    files, harness, index = ab.read_profile_files(tmp_path)
+    assert files == shipped_profile_files
+    assert harness == {}
+    assert index == {}
 
 
 def test_unexpected_profile_file_is_an_error(ab, tmp_path):
@@ -45,7 +48,7 @@ def test_unexpected_profile_file_is_an_error(ab, tmp_path):
 
 
 def test_missing_profiles_dir_means_no_profiles(ab, tmp_path):
-    assert ab.read_profile_files(tmp_path / "absent") == {}
+    assert ab.read_profile_files(tmp_path / "absent") == ({}, {}, {})
     assert ab.parse_profiles({}) == []
 
 

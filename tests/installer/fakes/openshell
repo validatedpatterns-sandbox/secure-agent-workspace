@@ -123,6 +123,16 @@ elif op == "workspace member":
     if member in state["members"]:
         fail("Error: member already exists")
     state["members"].append(member)
+elif op == "provider list-profiles":
+    # catalog.json: {"<profile id>": ["<endpoint host>", ...]}; the default
+    # stands in for the governance interceptor's catalog.
+    catalog = (json.loads((state_dir / "catalog.json").read_text())
+               if (state_dir / "catalog.json").exists() else {
+                   "web-search": ["api.tavily.com", "api.search.brave.com", "registry.npmjs.org"],
+                   "brave": ["api.search.brave.com"], "nvidia": ["integrate.api.nvidia.com"],
+                   "github": ["api.github.com"]})
+    print(json.dumps([{"id": pid, "endpoints": [{"host": h, "port": 443} for h in hosts]}
+                      for pid, hosts in sorted(catalog.items())]))
 elif op == "provider profile" and head[2] == "import":
     # Like the gateway: needs an `id`, scoped to the workspace, reserved if present.
     import yaml
@@ -202,9 +212,33 @@ elif op == "sandbox create":
         fail(f"Error: provider '{missing[0]}' not found")
     state["sandboxes"][key] = {"image": opt("--from"), "providers": providers, "phase": "Ready"}
     remember_labels("sandbox", ws, opt("--name"))
+    if opt("--driver-config-json"):
+        state["sandboxes"][key]["driverConfig"] = json.loads(opt("--driver-config-json"))
 elif op == "sandbox delete":
     state["sandboxes"].pop(f"{ws}/{head[2]}", None)
 elif op == "sandbox exec":
+    # A file inside a volume mounted with --driver-config-json: read it from
+    # the fake podman's volume directory, as the real mount would show it.
+    if len(args) >= 2 and args[-2] == "cat":
+        sb = state["sandboxes"].get(f"{ws}/{opt('-n')}") or {}
+        for mount in ((sb.get("driverConfig") or {}).get("podman") or {}).get("mounts", []):
+            target = mount["target"].rstrip("/") + "/"
+            if args[-1].startswith(target):
+                rel = args[-1][len(target):]
+                if mount["type"] == "image":
+                    images_file = state_dir / "images.json"
+                    images = json.loads(images_file.read_text()) if images_file.exists() else {}
+                    tree = images.get(mount["source"], {}).get("__tree__", {})
+                    if rel in tree:
+                        print(tree[rel], end="")
+                        save()
+                        sys.exit(0)
+                path = state_dir / "volumes" / mount["source"] / rel
+                if mount["type"] == "volume" and path.is_file():
+                    print(path.read_text(), end="")
+                    save()
+                    sys.exit(0)
+        fail(f"cat: {args[-1]}: No such file or directory", 1)
     failing = (json.loads((state_dir / "exec-fail.json").read_text())
                if (state_dir / "exec-fail.json").exists() else [])
     if opt("-n") in failing:

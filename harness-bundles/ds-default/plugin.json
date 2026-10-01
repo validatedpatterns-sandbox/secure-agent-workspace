@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "ds-default",
+  "version": "0.1.0",
+  "description": "SAW data-science harness: skills, MCP servers and tool plugins."
+}

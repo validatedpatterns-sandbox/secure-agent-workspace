@@ -180,6 +180,17 @@ dashboard:
   insecureSkipIssuerTlsVerify: false
 
 # Governance interceptor — enforces signed sandbox policies.
+# A sandbox with a SAW-BOM harnessRef mounts its harness volume through
+# caller driver config (`sandbox create --driver-config-json`), which
+# OpenShell 0.1.x refuses unless the gateway sets allow_driver_config. The
+# gateway keeps resource admission on and bind mounts off, so a caller can
+# only attach a podman volume labelled openshell.ai/sandbox-attachable for
+# its own workspace (the installer labels each harness volume that way);
+# image and host-path mounts stay refused. Set false only when no profile
+# uses a harness: the driver stops sandboxes created with driver config once
+# it is off, and the installer refuses a harnessRef without it.
+allowDriverConfig: true
+
 governance:
   enabled: true
   # Shared namespace where the governance-interceptor chart runs. SAWs live in

@@ -1,3 +1,7 @@
 # Active profiles to deploy on this SAW instance.
 profiles:
   - data-science
+
+# Harness governance is checked in the guest against the gateway's live
+# provider profile catalog (`openshell provider list-profiles`), so there is
+# no list of governance profiles to keep in sync here.

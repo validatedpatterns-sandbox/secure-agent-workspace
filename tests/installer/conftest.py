@@ -5,6 +5,8 @@ fake `podman`, `openshell`, `nemoclaw` and `sudo` executables placed first on
 PATH. No cluster, VM, network or credentials are used.
 """
 
+import base64
+import hashlib
 import importlib.util
 import json
 import os
@@ -22,7 +24,8 @@ SCRIPT = CHART / "files" / "installer" / "apply_bom.py"
 PROFILES = ROOT / "charts" / "saw-bom" / "profiles"
 FAKES = Path(__file__).resolve().parent / "fakes"
 GATEWAY_ENV = "OPENSHELL_SERVER_PORT=17670\nOPENSHELL_ENABLE_MTLS_AUTH=true\n"
-GATEWAY_TOML = '[openshell.drivers.podman]\nsupervisor_image = "quay.io/x/supervisor@sha256:abc"\n'
+GATEWAY_TOML = ('[openshell.drivers.podman]\nsupervisor_image = "quay.io/x/supervisor@sha256:abc"\n'
+                'allow_driver_config = true\n')
 
 
 def _load_module():
@@ -66,6 +69,38 @@ def profile_files(profile="data-science"):
 @pytest.fixture
 def shipped_profile_files():
     return profile_files()
+
+
+HARNESS = ROOT / "charts" / "saw-bom" / "harness"
+
+
+def harness_files():
+    """Flatten charts/saw-bom/harness exactly like templates/configmap-bom.yaml,
+    but as raw bytes (the ConfigMap value is the base64 of these bytes)."""
+    files = {}
+    for path in sorted(HARNESS.rglob("*")):
+        if path.is_file():
+            rel = str(path.relative_to(HARNESS)).replace("/", "__")
+            files[f"harness__{rel}"] = path.read_bytes()
+    return files
+
+
+@pytest.fixture
+def shipped_harness_files():
+    return harness_files()
+
+
+def tree_digest_of_shipped_bundle():
+    """Independent reimplementation of the tree_digest contract, kept apart
+    from the `ab` fixture (the module under test) so a bug in tree_digest
+    cannot make this fixture agree with itself."""
+    root = HARNESS / "ds-default"
+    files = {str(p.relative_to(root)): p.read_bytes()
+             for p in sorted(root.rglob("*")) if p.is_file()}
+    digest = hashlib.sha256()
+    for rel in sorted(files):
+        digest.update(f"{rel}\x00{hashlib.sha256(files[rel]).hexdigest()}\n".encode())
+    return "sha256:" + digest.hexdigest()
 
 
 @pytest.fixture
@@ -200,5 +235,9 @@ def inputs_dir(tmp_path, bom, config, shipped_profile_files, secrets_dir):
     profiles.mkdir()
     for key, text in shipped_profile_files.items():
         (profiles / key).write_text(text)
+    for key, raw in harness_files().items():
+        (profiles / key).write_text(base64.b64encode(raw).decode())
+    (profiles / "harness-index.yaml").write_text(yaml.safe_dump({
+        "bundles": {"ds-default": tree_digest_of_shipped_bundle()}}))
     secrets_dir.rename(root / "secrets")
     return root

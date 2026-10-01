@@ -431,6 +431,20 @@ openshell-saw-vm-ssh: .check-saw-name .check-ssh-key ## Shell on the gateway VM:
 	@SAW_NS=$(SAW_NS) VM_NAME=$(OPENSHELL_SAW_NAME) SSH_KEY_PATH=$(SSH_KEY_PATH) \
 	$(SCRIPTS_DIR)/openshell-saw-vm-ssh.sh
 
+# --- Harness bundles (skills, MCP servers, OpenClaw tool plugins) ---
+# harness-bundles/<bundle>/ as an OCI image, mounted read-only at
+# /sandbox/harness. HARNESS_BUNDLE=ds-default HARNESS_REPO=ghcr.io/<owner>/saw-harness-ds-default
+
+HARNESS_BUNDLE ?= ds-default
+
+.PHONY: harness-bundle-build harness-bundle-push
+harness-bundle-build: ## Build harness-bundles/$(HARNESS_BUNDLE) as a local OCI image
+	@$(SCRIPTS_DIR)/harness-bundle.sh build $(HARNESS_BUNDLE)
+
+harness-bundle-push: ## Push harness-bundles/$(HARNESS_BUNDLE) to $(HARNESS_REPO) and print the harnessRef
+	@test -n "$(HARNESS_REPO)" || { echo "set HARNESS_REPO, e.g. ghcr.io/<owner>/saw-harness-$(HARNESS_BUNDLE)"; exit 1; }
+	@$(SCRIPTS_DIR)/harness-bundle.sh push $(HARNESS_BUNDLE) $(HARNESS_REPO)
+
 openshell-saw-restart: .check-saw-name ## Restart the VM so it applies a changed BOM/profile
 	virtctl -n $(SAW_NS) restart $(OPENSHELL_SAW_NAME)
 

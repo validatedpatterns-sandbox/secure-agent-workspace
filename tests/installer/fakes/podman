@@ -1,8 +1,19 @@
 #!/usr/bin/env python3
-"""Fake podman for installer tests.
+"""Fake podman for installer tests. Every call is appended to podman.log.
 
-images.json maps image -> {path-in-image: {"type": "binary", "version": v}
-or {"type": "nemoclaw"}}. Every call is appended to podman.log.
+State lives in $FAKE_STATE:
+  images.json      image -> content. Component images map a path in the image
+                   to {"type": "binary", "version": v} or {"type": "nemoclaw"}.
+                   A harness bundle image is {"__tree__": {relpath: text}}: a
+                   FROM-scratch image whose root is the bundle tree.
+  containers.json  container id -> image, for `create` / `cp` / `export`.
+  volumes/<name>/  named volumes, as real directories (`volume create`,
+                   `inspect`, `ls`, `import`, `rm`, which refuses a volume a
+                   sandbox mounts); volume-labels.json holds their labels.
+  openshell.json   read-only here: the fake openshell's sandboxes. `ps` and
+                   `inspect` present each one as a sandbox container with the
+                   labels and `.Mounts` the real OpenShell podman driver sets
+                   (see ProfileApplier.sandbox_harness_mount).
 
 `pull --signature-policy <path> <image>` reads the policy file ComponentInstaller
 generates and simulates real enforcement: a "reject" default always fails
@@ -12,9 +23,12 @@ so unsigned.json is the fixture's way of saying "would not verify"). A
 plain `pull` with no --signature-policy always succeeds when the image is
 known, exactly like today's non-signature-checking extraction pulls.
 """
+import io
 import json
 import os
+import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 state = Path(os.environ["FAKE_STATE"])
@@ -27,6 +41,20 @@ containers_file = state / "containers.json"
 containers = json.loads(containers_file.read_text()) if containers_file.exists() else {}
 
 cmd = args[0] if args else ""
+
+
+def sandboxes():
+    """{"<workspace>/<sandbox>": sandbox} from the fake openshell's state."""
+    osh = state / "openshell.json"
+    return json.loads(osh.read_text()).get("sandboxes", {}) if osh.exists() else {}
+
+
+def container_name(key):
+    """Like the real driver: openshell-<workspace>--<sandbox>-<uuid>."""
+    workspace, sandbox = key.split("/", 1)
+    return f"openshell-{workspace}--{sandbox}-0000"
+
+
 if cmd == "pull":
     image = args[-1]
     if image not in images:
@@ -44,9 +72,12 @@ if cmd == "pull":
         if default.get("type") == "sigstoreSigned" and image in unsigned:
             print(f"Error: image {image}: signature verification failed", file=sys.stderr)
             sys.exit(125)
+    images[image]["pulled"] = True      # so `image exists` sees it afterwards
+    (state / "images.json").write_text(json.dumps(images))
     print("sha256:" + "0" * 64)
 elif cmd == "create":
-    image = args[-1]
+    positional = [a for a in args[1:] if not a.startswith("-")]
+    image = positional[0]
     cid = f"c{len(containers) + 1:04d}"
     containers[cid] = image
     containers_file.write_text(json.dumps(containers))
@@ -65,7 +96,115 @@ elif cmd == "cp":
     elif content["type"] == "nemoclaw":
         (dest / "bin").mkdir(parents=True)
         (dest / "bin" / "nemoclaw.js").write_text("console.log('nemoclaw')\n")
-elif cmd in ("rm", "ps", "exec", "volume"):
+elif cmd == "export":
+    # The container filesystem of a harness image: the bundle tree at the root.
+    out = Path(args[args.index("-o") + 1])
+    cid = args[-1]
+    tree = images.get(containers.get(cid, ""), {}).get("__tree__")
+    if tree is None:
+        print(f"Error: no such container {cid}", file=sys.stderr)
+        sys.exit(125)
+    with tarfile.open(out, "w") as tar:
+        for rel, text in sorted(tree.items()):
+            data = text.encode()
+            info = tarfile.TarInfo(rel)
+            info.size = len(data)
+            info.mode = 0o755 if rel.endswith(".sh") else 0o644
+            tar.addfile(info, io.BytesIO(data))
+elif cmd == "image" and args[1] == "exists":
+    sys.exit(0 if args[-1] in images and "pulled" in images[args[-1]] else 1)
+elif cmd == "ps":
+    # Only the label filters the installer uses: sandbox name, workspace and
+    # isolation role. Like 0.1.x, each sandbox is two containers with the
+    # same sandbox labels: its supervisor (listed first, no user mounts) and
+    # the workload (openshell.ai/isolation-role=sandbox).
+    labels = dict(a.split("=", 1)[1].split("=", 1) for a in args if a.startswith("label="))
+    for key in sandboxes():
+        workspace, sandbox = key.split("/", 1)
+        if labels.get("openshell.ai/sandbox-name", sandbox) == sandbox and \
+                labels.get("openshell.ai/sandbox-workspace", workspace) == workspace:
+            role = labels.get("openshell.ai/isolation-role")
+            if role in (None, "supervisor"):
+                print(f"openshell-supervisor-{workspace}-{sandbox}")
+            if role in (None, "sandbox"):
+                print(container_name(key))
+elif cmd == "inspect":
+    # `.Mounts` of a sandbox container, in the shape podman 5.8 prints: an
+    # image mount's Source is the image reference given at create.
+    if args[-1].startswith("openshell-supervisor-"):
+        print("[]")     # the supervisor container has none of the user's mounts
+        sys.exit(0)
+    sb = next((v for k, v in sandboxes().items() if container_name(k) == args[-1]), None)
+    if sb is None:
+        print(f"Error: no such object: {args[-1]}", file=sys.stderr)
+        sys.exit(125)
+    mounts = []
+    for m in ((sb.get("driverConfig") or {}).get("podman") or {}).get("mounts", []):
+        if m["type"] == "image":
+            mounts.append({"Type": "image", "Source": m["source"],
+                           "Destination": m["target"], "RW": False})
+        else:
+            mounts.append({"Type": "volume", "Name": m["source"],
+                           "Source": str(state / "volumes" / m["source"] / "_data"),
+                           "Destination": m["target"], "RW": False})
+    print(json.dumps(mounts))
+elif cmd == "volume":
+    # Named volumes as real directories under volumes/<name>; their labels
+    # (which OpenShell 0.1.x admission checks) in volume-labels.json.
+    import shutil
+    volumes = state / "volumes"
+    volumes.mkdir(exist_ok=True)
+    labels_file = state / "volume-labels.json"
+    all_labels = json.loads(labels_file.read_text()) if labels_file.exists() else {}
+    sub, name = args[1], args[-1]
+
+    def in_use(volume):
+        for sb in sandboxes().values():
+            for m in ((sb.get("driverConfig") or {}).get("podman") or {}).get("mounts", []):
+                if m["type"] == "volume" and m["source"] == volume:
+                    return True
+        return False
+
+    if sub == "create":
+        if (volumes / name).is_dir():
+            print(f"Error: volume with name {name} already exists: volume already exists",
+                  file=sys.stderr)
+            sys.exit(125)
+        (volumes / name).mkdir()
+        all_labels[name] = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "--label")
+        labels_file.write_text(json.dumps(all_labels))
+        print(name)
+    elif sub == "exists":
+        sys.exit(0 if (volumes / name).is_dir() else 1)
+    elif sub == "inspect":
+        if not (volumes / name).is_dir():
+            print(f"Error: no such volume {name}", file=sys.stderr)
+            sys.exit(125)
+        print(json.dumps([{"Name": name, "Driver": "local", "Mountpoint": str(volumes / name),
+                           "Labels": all_labels.get(name, {})}]))
+    elif sub == "ls":
+        for entry in sorted(volumes.iterdir()):
+            if entry.is_dir():
+                print(entry.name)
+    elif sub == "import":
+        name, tarball = args[2], args[3]
+        with tarfile.open(tarball) as tar:
+            tar.extractall(volumes / name)
+    elif sub == "rm":
+        if not (volumes / name).is_dir():
+            print(f"Error: no volume with name \"{name}\" found", file=sys.stderr)
+            sys.exit(1)
+        if in_use(name):
+            print(f"Error: volume {name} is being used by the following container(s): c0001",
+                  file=sys.stderr)
+            sys.exit(2)
+        shutil.rmtree(volumes / name)
+        all_labels.pop(name, None)
+        labels_file.write_text(json.dumps(all_labels))
+elif cmd == "unshare":
+    # No user namespace in tests: run the command as is.
+    sys.exit(subprocess.run(args[1:]).returncode)
+elif cmd in ("rm", "exec"):
     pass
 else:
     print(f"fake podman: unsupported {args}", file=sys.stderr)

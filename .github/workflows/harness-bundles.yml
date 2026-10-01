@@ -1,0 +1,122 @@
+name: Build and push harness bundles
+
+# One OCI image per harness-bundles/<bundle>/: FROM scratch, the bundle tree
+# is the image root. The SAW installer unpacks it, unchanged, into the volume
+# a sandbox mounts read-only at /sandbox/harness, so the image holds exactly
+# the files OpenClaw loads -- nothing is generated or
+# converted after this build. Pull requests build only; main pushes to
+# ghcr.io/<owner>/saw-harness-<bundle> and signs the digest with cosign
+# (keyless, this workflow's GitHub identity). The job summary prints the
+# digest-pinned harnessRef to put in a SAW-BOM sandbox.yaml.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - harness-bundles/**
+      - .github/workflows/harness-bundles.yml
+  pull_request:
+    paths:
+      - harness-bundles/**
+      - .github/workflows/harness-bundles.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write   # cosign keyless signing
+
+concurrency:
+  group: harness-bundles-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  list:
+    runs-on: ubuntu-latest
+    outputs:
+      bundles: ${{ steps.list.outputs.bundles }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: list
+        run: |
+          bundles=$(find harness-bundles -mindepth 2 -maxdepth 2 -name harness.yaml \
+                    -printf '%h\n' | xargs -n1 basename | sort | jq -R . | jq -sc .)
+          echo "bundles=$bundles" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: list
+    if: needs.list.outputs.bundles != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        bundle: ${{ fromJson(needs.list.outputs.bundles) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Image name and version
+        id: meta
+        run: |
+          owner="${OWNER,,}"
+          version=$(yq '.spec.version // "0.0.0"' "harness-bundles/${{ matrix.bundle }}/harness.yaml")
+          echo "repo=ghcr.io/${owner}/saw-harness-${{ matrix.bundle }}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+        env:
+          OWNER: ${{ github.repository_owner }}
+
+      # The same checks the installer makes before it mounts a bundle, so a
+      # broken bundle fails here instead of on every SAW.
+      - name: Check the bundle
+        run: |
+          set -euo pipefail
+          dir="harness-bundles/${{ matrix.bundle }}"
+          [[ -f "$dir/harness.yaml" ]] || { echo "::error::$dir has no harness.yaml"; exit 1; }
+          # Every mcp.json server needs a type OpenClaw accepts.
+          if [[ -f "$dir/mcp.json" ]]; then
+            jq -e '.mcpServers | to_entries | all(.value.type == "stdio" or .value.type == "streamable-http" or .value.type == "sse")' \
+              "$dir/mcp.json" >/dev/null || { echo "::error::$dir/mcp.json: every server needs type stdio, streamable-http or sse"; exit 1; }
+          fi
+          # No links: the installer refuses them when it unpacks the image.
+          if find "$dir" -type l | grep -q .; then
+            echo "::error::$dir contains symbolic links"; exit 1
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: harness-bundles/${{ matrix.bundle }}
+          file: harness-bundles/Containerfile
+          push: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+          tags: |
+            ${{ steps.meta.outputs.repo }}:${{ steps.meta.outputs.version }}
+            ${{ steps.meta.outputs.repo }}:sha-${{ github.sha }}
+          provenance: false
+
+      - uses: sigstore/cosign-installer@v3
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+
+      - name: Sign the image
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: cosign sign --yes "${{ steps.meta.outputs.repo }}@${{ steps.build.outputs.digest }}"
+
+      - name: Summary
+        run: |
+          {
+            echo "### ${{ matrix.bundle }}"
+            echo
+            echo '```yaml'
+            echo "harnessRef:"
+            echo "  image: ${{ steps.meta.outputs.repo }}@${{ steps.build.outputs.digest }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

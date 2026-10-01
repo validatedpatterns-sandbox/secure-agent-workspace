@@ -9,6 +9,14 @@ spec:
       image: quay.io/rh-ai-quickstart/openclaw-openshell:latest
       providers:
         - nvidia
+      # The harness bundle is mounted read-only at /sandbox/harness, as is,
+      # from a volume the installer fills; an update refills it in place:
+      #   harnessRef: {name: <bundle>}   inline, from charts/saw-bom/harness/
+      #                                  (digest: optional, checked when set)
+      #   harnessRef: {image: ghcr.io/<owner>/saw-harness-<bundle>@sha256:<digest>}
+      #                                  published by CI from harness-bundles/
+      harnessRef:
+        name: ds-default
     - name: cuda-sandbox
       type: nemoclaw
       enabled: false

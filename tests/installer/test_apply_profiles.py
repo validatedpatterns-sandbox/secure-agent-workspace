@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import harness_files
+
 
 @pytest.fixture
 def profiles(ab, shipped_profile_files):
@@ -17,8 +19,16 @@ def creds(ab, profiles, secrets_dir):
     return ab.resolve_credentials(profiles, secrets_dir)
 
 
-def make_applier(ab, config, creds, **overrides):
-    return ab.ProfileApplier(ab.Shell(), {**config, **overrides}, creds)
+def _shipped_harness(ab):
+    """Matches the digest pinned on the real 'notebook' sandbox in the shipped
+    profile, so tests that don't care about the harness still get a working
+    default instead of an 'unknown bundle' error."""
+    return {"bundles": ab.parse_harness_files(harness_files())}
+
+
+def make_applier(ab, config, creds, harness=None, **overrides):
+    return ab.ProfileApplier(ab.Shell(), {**config, **overrides}, creds,
+                             harness=harness if harness is not None else _shipped_harness(ab))
 
 
 def cli_ops(fake_env):
@@ -58,6 +68,13 @@ def test_openclaw_calls_the_native_endpoint_with_the_placeholder_key(
     """0.1.x removed https://inference.local: OpenClaw calls NVIDIA directly,
     with the placeholder the sandbox holds in NVIDIA_API_KEY (expanded inside
     the sandbox, never by the installer)."""
+
+
+def test_system_inference_skipped_without_default_workspace_model(ab, fake_env, config, profiles, creds):
+    for _, ws in ab.enabled_workspaces(profiles):
+        if ws.name == "default":
+            for p in ws.providers:
+                p.model = None
     make_applier(ab, config, creds).apply(profiles)
     onboard = next(c[-1] for c in fake_env.openshell_calls()
                    if c[:2] == ["sandbox", "exec"] and "onboard" in c[-1] and "notebook" in c)
@@ -186,7 +203,7 @@ def test_workspace_name_match_is_exact(ab, fake_env, config, creds, profiles):
 
 
 def test_dry_run_calls_nothing(ab, fake_env, config, profiles, creds):
-    applier = ab.ProfileApplier(ab.Shell(dry_run=True), config, creds)
+    applier = ab.ProfileApplier(ab.Shell(dry_run=True), config, creds, harness=_shipped_harness(ab))
     applier.apply(profiles)
     assert fake_env.openshell_calls() == []
 
@@ -234,7 +251,7 @@ SHIPPED_PROFILES = Path(__file__).resolve().parents[2] / "charts" / "openshell-s
 
 def applier_with_shipped_profiles(ab, config, creds):
     docs = {p.stem: p.read_text() for p in SHIPPED_PROFILES.glob("*.yaml")}
-    return ab.ProfileApplier(ab.Shell(), config, creds, docs)
+    return ab.ProfileApplier(ab.Shell(), config, creds, docs, harness=_shipped_harness(ab))
 
 
 def test_missing_profile_is_imported_from_the_chart_then_provider_created(ab, fake_env, config, profiles, creds):
@@ -270,7 +287,8 @@ def test_no_import_when_the_gateway_has_the_profile(ab, fake_env, config, profil
 
 def test_failed_profile_import_stops_the_apply(ab, fake_env, config, profiles, creds):
     fake_env.without_profiles("brave")
-    applier = ab.ProfileApplier(ab.Shell(), config, creds, {"brave": "display_name: no id\n"})
+    applier = ab.ProfileApplier(ab.Shell(), config, creds, {"brave": "display_name: no id\n"},
+                                harness=_shipped_harness(ab))
     with pytest.raises(ab.InstallerError, match="could not import the 'brave' provider profile"):
         applier.apply(profiles)
 
@@ -283,13 +301,17 @@ def test_provider_profiles_are_read_from_the_installer_disk(ab, tmp_path):
 
 def test_verify_fails_when_openclaw_cannot_run_in_the_sandbox(ab, fake_env, config, profiles, creds):
     """Live: the sandbox was Ready but `openclaw` was denied by the sandbox
-    filesystem policy; the best-effort setup steps hid it and verify passed."""
+    filesystem policy; the best-effort setup steps hid it and verify passed.
+
+    The harness is unaffected: it reaches the sandbox through the volume
+    mount, not through `sandbox exec`, so only the openclaw failure shows."""
     fake_env.exec_fails_in("notebook")
     applier = make_applier(ab, config, creds)
     applier.apply(profiles)
     failures = applier.verify(profiles)
-    assert failures == ["openclaw cannot run in sandbox 'notebook': "
-                        "sh: line 1: /usr/local/sbin/openclaw: Permission denied"]
+    assert failures == [
+        "openclaw cannot run in sandbox 'notebook': "
+        "sh: line 1: /usr/local/sbin/openclaw: Permission denied"]
 
 
 def test_verify_runs_openclaw_in_agent_sandboxes_only(ab, fake_env, config, profiles, creds):
@@ -369,3 +391,22 @@ def test_key_never_appears_in_argv_or_logs(ab, fake_env, config, profiles, creds
     key = (fake_env.admin_cert().parent / "tls.key").read_text()
     body = "".join(l for l in key.splitlines() if not l.startswith("-----"))
     assert body[:40] not in capsys.readouterr().err
+
+
+def test_full_apply_mounts_the_harness_into_notebook(ab, fake_env, config, profiles, creds):
+    """A full apply fills the notebook's harness volume, creates the sandbox
+    with it mounted read-only at /sandbox/harness, points OpenClaw at it, and
+    never copies bundle files with `sandbox exec`."""
+    applier = make_applier(ab, config, creds)
+    applier.apply(profiles)
+    name = ab.harness_volume_name("default", "notebook")
+    notebook = fake_env.openshell_state()["sandboxes"]["default/notebook"]
+    assert notebook["driverConfig"] == {"podman": {"mounts": [{
+        "type": "volume", "source": name,
+        "target": "/sandbox/harness", "read_only": True}]}}
+    volume = fake_env.state / "volumes" / name
+    assert (volume / "skills" / "pattern-author" / "SKILL.md").is_file()
+    scripts = "\n".join(c[-1] for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "exec"])
+    assert "base64 -d" not in scripts
+    assert """openclaw config set plugins.load.paths '["/sandbox/harness", "/sandbox/harness/plugins"]'""" in scripts
+    assert applier.verify(profiles) == []

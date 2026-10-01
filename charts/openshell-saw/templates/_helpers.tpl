@@ -138,6 +138,16 @@ Call with (list $ "webui" .Values.route.webuiHost).
 {{/*
 Governance interceptor gRPC endpoint reachable from the VM.
 */}}
+{{/* interceptor or apf; global.governance.engine (the pattern's switch) wins. */}}
+{{- define "openshell-sandbox.governanceEngine" -}}
+{{- $global := .Values.global | default dict -}}
+{{- $engine := (($global.governance | default dict).engine | default .Values.governance.engine) | toString -}}
+{{- if not (hasKey .Values.governance.bindings $engine) -}}
+{{- fail (printf "governance.engine must be one of the keys of governance.bindings, not %q" $engine) -}}
+{{- end -}}
+{{- $engine -}}
+{{- end -}}
+
 {{- define "openshell-sandbox.governanceEndpoint" -}}
 {{- .Values.governance.endpoint | default (printf "http://governance-interceptor.%s.svc.cluster.local:%v" (.Values.governance.namespace | default .Release.Namespace) (.Values.governance.port | default 18081)) -}}
 {{- end }}
@@ -233,29 +243,21 @@ supervisor_image = {{ .Values.bom.spec.openshell.supervisor.image | quote }}
 sandbox_runtime_image = {{ .Values.bom.spec.openshell.sandbox.image | quote }}
 {{- if .Values.governance.enabled }}
 
+{{- $engine := include "openshell-sandbox.governanceEngine" . }}
+
 [[openshell.gateway.interceptors]]
 name           = "governance"
 grpc_endpoint  = {{ include "openshell-sandbox.governanceEndpoint" . | quote }}
 allow_insecure_transport = {{ .Values.governance.allowInsecureTransport }}
 order          = 10
 failure_policy = {{ .Values.governance.failurePolicy | quote }}
-binding_policy = "allowlist"
+binding_policy = {{ index (.Values.governance.bindingPolicy | default dict) $engine | default "allowlist" | quote }}
 timeout        = {{ .Values.governance.timeout | quote }}
+{{- range (index .Values.governance.bindings $engine) }}
 
 [[openshell.gateway.interceptors.bindings]]
-rpc = "openshell.v1.OpenShell/CreateSandbox"
-phases = ["modify_operation", "validate"]
-
-[[openshell.gateway.interceptors.bindings]]
-rpc = "openshell.v1.OpenShell/CreateProvider"
-phases = ["validate"]
-
-[[openshell.gateway.interceptors.bindings]]
-rpc = "openshell.v1.OpenShell/UpdateConfig"
-phases = ["validate"]
-
-[[openshell.gateway.interceptors.bindings]]
-rpc = "openshell.v1.OpenShell/SubmitPolicyAnalysis"
-phases = ["validate"]
+rpc = {{ printf "openshell.v1.OpenShell/%s" .rpc | quote }}
+phases = [{{ range $i, $p := .phases }}{{ if $i }}, {{ end }}{{ $p | quote }}{{ end }}]
+{{- end }}
 {{- end }}
 {{- end }}

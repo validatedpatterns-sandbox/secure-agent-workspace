@@ -7,9 +7,10 @@ metadata:
     app.kubernetes.io/name: governance-interceptor
     app.kubernetes.io/instance: {{ .Release.Name }}
 spec:
+  # The pod serving port {{ .Values.port }}: this chart's interceptor, or APF.
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: governance-interceptor
+      {{- include "governance.podSelector" . | nindent 6 }}
   policyTypes:
     - Ingress
   ingress:

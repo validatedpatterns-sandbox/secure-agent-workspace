@@ -187,9 +187,11 @@ def test_only_the_globals_openshell_saw_reads_are_passed(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE], extra={
         "global": {"repoURL": "https://example.com/repo.git", "targetRevision": "main",
                    "vpArgoNamespace": "vp-gitops", "clusterDomain": "example.com",
-                   "deletePattern": "no", "multiSourceSupport": True, "sshPublicKey": "ssh-ed25519 AAA"}}))
+                   "deletePattern": "no", "multiSourceSupport": True, "sshPublicKey": "ssh-ed25519 AAA",
+                   "governance": {"engine": "apf"}}}))
     assert helm_values(app(docs, "saw-alice"))["global"] == {
-        "clusterDomain": "example.com", "sshPublicKey": "ssh-ed25519 AAA"}
+        "clusterDomain": "example.com", "sshPublicKey": "ssh-ed25519 AAA",
+        "governance": {"engine": "apf"}}
 
 
 @pytest.mark.parametrize("name,message", [

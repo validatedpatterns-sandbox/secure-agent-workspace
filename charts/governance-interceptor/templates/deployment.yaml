@@ -1,4 +1,4 @@
-{{- if .Values.enabled }}
+{{- if and .Values.enabled (eq (include "governance.engine" .) "interceptor") }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

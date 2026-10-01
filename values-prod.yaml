@@ -93,7 +93,15 @@ clusterGroup:
       name: governance-policy
       namespace: openshell-agents
       path: charts/governance-policy
+    # prune: switching global.governance.engine removes the interceptor's
+    # Deployment and Service (APF takes over the Service name) and back.
     governance-interceptor:
       name: governance-interceptor
       namespace: openshell-agents
       path: charts/governance-interceptor
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        retry:
+          limit: 20

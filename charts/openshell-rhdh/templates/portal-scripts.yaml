@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: saw-portal-scripts
+  namespace: {{ .Values.portal.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+data:
+  portal.py: |
+{{ .Files.Get "files/portal.py" | indent 4 }}
+  profile-catalog.json: |
+{{ .Files.Get "files/profile-catalog.json" | indent 4 }}

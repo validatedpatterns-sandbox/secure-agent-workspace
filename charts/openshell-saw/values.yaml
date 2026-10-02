@@ -167,6 +167,30 @@ route:
   # Computed from global.clusterDomain when empty.
   dashboardHost: ""
 
+# Sandbox web UIs (OpenClaw / NemoClaw control UI) on their own routes. The
+# saw-users chart fills the list from the user's SAW-BOM profiles (sandboxes
+# with ui.route: true): [{workspace, sandbox, proxyPort, forwardPort}]. For
+# each, the VM runs `openshell forward service` from forwardPort to the
+# sandbox's targetPort and an oauth2-proxy on proxyPort (Keycloak, client
+# dashboard.clientId), and the route <vm>-<workspace>-<sandbox>-ui sends to
+# that proxy. Only the owner (accessControl.owner, matched against the
+# Keycloak preferred_username) and allowedUsers get through. The ports are
+# VM interface ports, so changing the list takes a VM restart.
+sandboxUi: []
+sandboxUiProxy:
+  targetPort: 18789
+  allowedUsers: []
+  # OpenClaw's trusted-proxy auth: the sandbox's gateway takes the user from
+  # the oauth2-proxy's X-Forwarded-User (allowed: the same users) instead of
+  # asking for its gateway token, and approves their UI devices. Only
+  # requests from `cidrs` are trusted; the forward arrives over loopback.
+  # The CLI and TUI in the sandbox use the gateway secret as a password.
+  # Off: the UI asks for the token (make sandbox-ui prints it).
+  trustedProxy:
+    enabled: true
+    cidrs: ["127.0.0.1/32", "::1/128"]
+    deviceAutoApprove: true
+
 # OpenShell Dashboard + oauth2-proxy, run inside the VM by the installer.
 # Needs oidc.issuerUrl (or global.clusterDomain) and a known webui host.
 dashboard:

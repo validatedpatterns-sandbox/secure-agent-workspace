@@ -22,9 +22,17 @@ pruneOnRemove: false
 defaults:
   profiles:
     - data-science
-  # Shared hub prefix. Set vaultPrefix on a user for a private path.
+  # Shared hub prefix. Set vaultPrefix on a user for a private path
+  # (secret/data/hub/saw-<user>, what the self-service portal writes).
   # This chart does not create Vault entries.
   vaultPrefix: secret/data/hub
+  # The SSH key the VMs are provisioned with is the pattern's, not the
+  # user's: it is always read from here.
+  sshVaultPrefix: secret/data/hub
+  # Provider Secrets for a user none of whose profiles is in the catalog.
+  secrets:
+    - inference
+    - web-search
   # Merged under each user's `values`. owner is the user name.
   openshellSaw:
     signing:
@@ -37,6 +45,21 @@ defaults:
       backoffLimit: 5
     dashboard:
       insecureSkipIssuerTlsVerify: true
+
+# Sandbox web UIs (ui.route: true in a SAW-BOM sandbox.yaml). Each one gets a
+# route and an owner-only oauth2-proxy in the VM that listens on
+# proxyBasePort + n, in front of an `openshell forward` on forwardBasePort + n
+# (n: its place in the sorted <workspace>/<sandbox> list). The VM opens `max`
+# proxy ports, so a user can have at most that many. A user's own `sandboxUi`
+# list ([{workspace, sandbox}]) replaces the one from their profiles.
+sandboxUi:
+  max: 8
+  proxyBasePort: 4201
+  forwardBasePort: 14201
+
+# Extra labels on every user namespace (the self-service portal marks the
+# ones it created: saw.redhat.com/portal=true).
+namespaceLabels: {}
 
 # Where the generated Application objects are stored. The pattern injects
 # global.vpArgoNamespace; argo.namespace is the fallback for helm template.

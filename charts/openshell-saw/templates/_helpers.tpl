@@ -259,3 +259,44 @@ rpc = "openshell.v1.OpenShell/SubmitPolicyAnalysis"
 phases = ["validate"]
 {{- end }}
 {{- end }}
+
+
+{{/*
+Sandbox UI routes: sandboxUi entries with the route host filled in,
+<vm>-<workspace>-<sandbox>-ui.apps.<clusterDomain> (at most 62 characters
+in its first label with 19-character names), or entry.host when set.
+*/}}
+{{- define "openshell-sandbox.sandboxUi" -}}
+{{- $root := . -}}
+{{- $out := list -}}
+{{- $seen := dict -}}
+{{- range $e := .Values.sandboxUi | default list -}}
+{{- $ws := $e.workspace | default "" | toString -}}
+{{- $sb := $e.sandbox | default "" | toString -}}
+{{- if not (and (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $ws) (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $sb)) -}}
+{{- fail (printf "sandboxUi: workspace %q and sandbox %q must be lowercase DNS labels" $ws $sb) -}}
+{{- end -}}
+{{- if not (and $e.proxyPort $e.forwardPort) -}}
+{{- fail (printf "sandboxUi %s/%s needs proxyPort and forwardPort" $ws $sb) -}}
+{{- end -}}
+{{- $label := printf "%s-%s-%s-ui" (include "openshell-sandbox.fullname" $root) $ws $sb -}}
+{{- if gt (len $label) 63 -}}
+{{- fail (printf "sandboxUi route label %q is %d characters; DNS labels allow 63" $label (len $label)) -}}
+{{- end -}}
+{{- $host := $e.host | default "" -}}
+{{- if and (not $host) $root.Values.global -}}
+{{- if $root.Values.global.clusterDomain -}}
+{{- $host = printf "%s.apps.%s" $label $root.Values.global.clusterDomain -}}
+{{- end -}}
+{{- end -}}
+{{- $port := int $e.proxyPort -}}
+{{- if hasKey $seen (toString $port) -}}
+{{- fail (printf "sandboxUi proxyPort %d is used twice" $port) -}}
+{{- end -}}
+{{- $_ := set $seen (toString $port) true -}}
+{{- $out = append $out (dict "workspace" $ws "sandbox" $sb "name" $label "host" $host
+      "proxyPort" $port "forwardPort" (int $e.forwardPort)
+      "portName" (printf "ui-%d" $port)) -}}
+{{- end -}}
+{{- toJson $out -}}
+{{- end }}

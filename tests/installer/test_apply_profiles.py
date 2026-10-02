@@ -99,7 +99,8 @@ def test_second_apply_is_idempotent(ab, fake_env, config, profiles, creds):
     assert len(fake_env.other_calls("nemoclaw")) == 1
 
 
-def test_broken_nemoclaw_sandbox_is_onboarded_again(ab, fake_env, config, profiles, creds):
+def test_broken_nemoclaw_sandbox_is_onboarded_again(ab, fake_env, config, profiles, creds, monkeypatch):
+    monkeypatch.setattr(ab.ProfileApplier, "BROKEN_GRACE_SECONDS", 0)
     make_applier(ab, config, creds).apply(profiles)
     state = fake_env.openshell_state()
     state["sandboxes"]["cuda-dev/cuda-sandbox"]["phase"] = "Error"
@@ -150,7 +151,8 @@ def test_credentials_never_appear_in_logs(ab, fake_env, config, profiles, creds,
     assert "--credential NVIDIA_API_KEY" in out      # the CLI reads the key from $NVIDIA_API_KEY
 
 
-def test_errored_sandbox_is_recreated(ab, fake_env, config, profiles, creds):
+def test_errored_sandbox_is_recreated(ab, fake_env, config, profiles, creds, monkeypatch):
+    monkeypatch.setattr(ab.ProfileApplier, "BROKEN_GRACE_SECONDS", 0)
     make_applier(ab, config, creds).apply(profiles)
     state = fake_env.openshell_state()
     state["sandboxes"]["default/notebook"]["phase"] = "Error"
@@ -159,6 +161,80 @@ def test_errored_sandbox_is_recreated(ab, fake_env, config, profiles, creds):
     ops = fake_env.openshell_calls()
     assert ["sandbox", "delete", "notebook"] in ops
     assert fake_env.openshell_state()["sandboxes"]["default/notebook"]["phase"] == "Ready"
+
+
+@pytest.fixture
+def fast_polls(ab, monkeypatch):
+    monkeypatch.setattr(ab.ProfileApplier, "POLL_SECONDS", 0)
+
+
+def test_a_sandbox_that_recovers_is_not_recreated(ab, fake_env, config, profiles, creds, fast_polls):
+    """Found live after a VM restart: the notebook reported an error while
+    its supervisor reconnected. Recreating it would lose /sandbox."""
+    make_applier(ab, config, creds).apply(profiles)
+    state = fake_env.openshell_state()
+    state["sandboxes"]["default/notebook"].update(phase="Error", after=[2, "Ready"])
+    fake_env.set_openshell_state(state)
+    make_applier(ab, config, creds).apply(profiles)
+    assert ["sandbox", "delete", "notebook"] not in fake_env.openshell_calls()
+    assert fake_env.openshell_state()["sandboxes"]["default/notebook"]["phase"] == "Ready"
+
+
+def test_a_recreate_waits_for_the_deletion(ab, fake_env, config, profiles, creds, fast_polls, monkeypatch):
+    """Found live: `sandbox delete` only accepts the deletion, and the create
+    right after it failed with "already exists"."""
+    monkeypatch.setattr(ab.ProfileApplier, "BROKEN_GRACE_SECONDS", 0)
+    make_applier(ab, config, creds).apply(profiles)
+    state = fake_env.openshell_state()
+    state["sandboxes"]["default/notebook"]["phase"] = "Error"
+    state["deleteDelay"] = 3
+    fake_env.set_openshell_state(state)
+    make_applier(ab, config, creds).apply(profiles)
+    ops = fake_env.openshell_calls()
+    delete = ops.index(["sandbox", "delete", "notebook"])
+    creates = [i for i, c in enumerate(ops) if c[:2] == ["sandbox", "create"] and "notebook" in c]
+    gets = [i for i, c in enumerate(ops) if c[:3] == ["sandbox", "get", "notebook"] and delete < i < creates[-1]]
+    assert len(creates) == 2 and delete < creates[-1]
+    assert len(gets) >= 3, "polled until the deletion finished"
+    assert fake_env.openshell_state()["sandboxes"]["default/notebook"]["phase"] == "Ready"
+
+
+def test_a_deletion_left_by_an_earlier_run_is_finished(ab, fake_env, config, profiles, creds, fast_polls):
+    make_applier(ab, config, creds).apply(profiles)
+    state = fake_env.openshell_state()
+    state["sandboxes"]["default/notebook"].update(phase="Deleting", after=[2, "gone"])
+    fake_env.set_openshell_state(state)
+    make_applier(ab, config, creds).apply(profiles)
+    assert fake_env.openshell_state()["sandboxes"]["default/notebook"]["phase"] == "Ready"
+
+
+def test_a_deletion_that_never_finishes_fails_clearly(ab, fake_env, config, profiles, creds, fast_polls,
+                                                       monkeypatch):
+    monkeypatch.setattr(ab.ProfileApplier, "DELETE_WAIT_SECONDS", 0)
+    make_applier(ab, config, creds).apply(profiles)
+    state = fake_env.openshell_state()
+    state["sandboxes"]["default/notebook"].update(phase="Deleting", after=[99, "gone"])
+    fake_env.set_openshell_state(state)
+    with pytest.raises(ab.InstallerError, match="still being deleted"):
+        make_applier(ab, config, creds).apply(profiles)
+
+
+def test_the_gateway_waits_until_the_sandbox_accepts_exec(ab, fake_env, config, profiles, creds,
+                                                          fast_polls):
+    """Found live after a VM restart: execs failed with "not ready" while the
+    sandbox was still Provisioning, and the OpenClaw gateway never started."""
+    make_applier(ab, config, creds).apply(profiles)
+    state = fake_env.openshell_state()
+    state["notReadyExecs"] = 4
+    fake_env.set_openshell_state(state)
+    before = len(fake_env.openshell_calls())
+    make_applier(ab, config, creds).apply(profiles)
+    calls = fake_env.openshell_calls()[before:]
+    probes = [c for c in calls if c[:2] == ["sandbox", "exec"] and c[-1] == "true"]
+    assert len(probes) >= 5
+    run = [i for i, c in enumerate(calls) if c[:2] == ["sandbox", "exec"] and "openclaw gateway run" in c[-1]]
+    assert run and run[-1] > calls.index(probes[-1])
+    assert fake_env.openshell_state()["notReadyExecs"] == 0
 
 
 def test_verify_reports_missing_resources(ab, fake_env, config, profiles, creds):

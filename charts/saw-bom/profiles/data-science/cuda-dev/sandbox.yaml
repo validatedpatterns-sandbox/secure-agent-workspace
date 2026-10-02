@@ -10,6 +10,10 @@ spec:
       image: quay.io/rh-ai-quickstart/nemoclaw-sandbox:latest
       providers:
         - nvidia
+      # The NemoClaw sandbox runs the OpenClaw gateway too: its control UI
+      # gets its own route like the notebook's (see default/sandbox.yaml).
+      ui:
+        route: true
     - name: toolbox
       type: generic
       enabled: false

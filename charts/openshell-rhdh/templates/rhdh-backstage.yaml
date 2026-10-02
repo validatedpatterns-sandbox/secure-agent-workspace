@@ -1,0 +1,51 @@
+{{- /* Red Hat Developer Hub, configured for the agent workspace portal. */ -}}
+apiVersion: {{ include "openshell-rhdh.backstageApiVersion" . }}
+kind: Backstage
+metadata:
+  name: {{ .Values.rhdh.name }}
+  namespace: {{ .Values.rhdh.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+spec:
+  application:
+    appConfig:
+      configMaps:
+        - name: saw-rhdh-app-config
+    dynamicPluginsConfigMapName: saw-rhdh-dynamic-plugins
+    extraEnvs:
+      envs:
+        - name: NODE_OPTIONS
+          value: "--no-node-snapshot"
+        {{- if .Values.keycloak.insecureSkipTlsVerify }}
+        # The cluster's router certificate is often not publicly trusted.
+        - name: NODE_TLS_REJECT_UNAUTHORIZED
+          value: "0"
+        {{- end }}
+      secrets:
+        # AUTH_OIDC_CLIENT_SECRET, SESSION_SECRET (from Vault)
+        - name: rhdh-oidc
+        # `token`: the rhdh-portal service account's token for the proxy
+        # endpoints (see saw-rhdh-app-config).
+        - name: rhdh-portal-token
+          key: token
+    extraFiles:
+      mountPath: /opt/app-root/src/saw
+      configMaps:
+        - name: saw-rhdh-templates
+        {{- if .Values.rhdh.rbac.enabled }}
+        - name: saw-rhdh-rbac
+        {{- end }}
+      {{- if .Values.rhdh.tekton.enabled }}
+      secrets:
+        # `token` of rhdh-kubernetes-reader, read by the Kubernetes plugin
+        # ($file in saw-rhdh-app-config).
+        - name: rhdh-kubernetes-reader-token
+          key: token
+      {{- end }}
+    route:
+      enabled: true
+      {{- if .Values.rhdh.host }}
+      host: {{ .Values.rhdh.host }}
+      {{- end }}
+  database:
+    enableLocalDb: true

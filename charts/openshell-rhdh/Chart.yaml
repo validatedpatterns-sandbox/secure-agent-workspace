@@ -1,0 +1,8 @@
+apiVersion: v2
+name: openshell-rhdh
+description: >-
+  Self-service agent workspaces: Red Hat Developer Hub templates, the Tekton
+  pipelines that register a workspace and store its keys in Vault, and the
+  Argo CD ApplicationSet that builds each registered workspace.
+type: application
+version: 0.2.0

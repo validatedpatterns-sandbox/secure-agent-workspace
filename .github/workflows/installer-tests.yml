@@ -36,6 +36,8 @@ jobs:
         run: |
           helm lint charts/openshell-saw --set sandboxName=ci
           helm lint charts/saw-bom
+          helm lint charts/saw-users
+          helm lint charts/openshell-rhdh
       - name: Installer, chart and CLI tests
         run: make test-installer PYTHON=python
 

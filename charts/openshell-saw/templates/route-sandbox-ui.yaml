@@ -1,0 +1,28 @@
+{{- /* One route per sandbox web UI (sandboxUi), to the oauth2-proxy the
+installer runs for it in the VM. */ -}}
+{{- range $e := include "openshell-sandbox.sandboxUi" . | fromJsonArray }}
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ $e.name }}
+  labels:
+    {{- include "openshell-sandbox.labels" $ | nindent 4 }}
+    openshell.pattern/sandbox-ui: "true"
+  annotations:
+    openshell.pattern/workspace: {{ $e.workspace | quote }}
+    openshell.pattern/sandbox: {{ $e.sandbox | quote }}
+spec:
+  {{- if $e.host }}
+  host: {{ $e.host }}
+  {{- end }}
+  to:
+    kind: Service
+    name: {{ include "openshell-sandbox.fullname" $ }}-gateway
+    weight: 100
+  port:
+    targetPort: {{ $e.portName }}
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+{{- end }}

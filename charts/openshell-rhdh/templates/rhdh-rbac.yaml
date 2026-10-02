@@ -1,0 +1,119 @@
+{{- if .Values.rhdh.rbac.enabled }}
+{{- /* Backstage RBAC. Each user sees what applies to them:
+- role saw-user (every user, Keycloak group rhdh.rbac.usersGroup): their own
+  workspace; templates without an audience label (create or update); the
+  scaffolder tasks they started;
+- role saw-new (group saw-without-workspace, published by the generator):
+  what is labelled saw.redhat.com/new-users (the generator's "Get started"
+  card);
+- role saw-owner (group saw-workspace-owners, from the generator): those
+  labelled saw.redhat.com/owners (delete my workspace);
+- role saw-admin (portal.admins): every entity but templates, and the
+  templates labelled saw.redhat.com/admin ("… for a user").
+Administrators are kept out of the other three groups (Keycloak job and
+generator): RBAC joins the roles' conditions, so being in them would show an
+administrator the user templates too.
+The pipeline checks the same admin list, so hiding is not what protects the
+admin actions. */ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: saw-rhdh-rbac
+  namespace: {{ .Values.rhdh.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+data:
+  rbac-policy.csv: |
+    {{- range list "saw-user" "saw-admin" }}
+    p, role:default/{{ . }}, scaffolder-template, read, allow
+    p, role:default/{{ . }}, scaffolder-action, use, allow
+    p, role:default/{{ . }}, scaffolder.task.create, create, allow
+    p, role:default/{{ . }}, kubernetes.clusters.read, read, allow
+    p, role:default/{{ . }}, kubernetes.resources.read, read, allow
+    p, role:default/{{ . }}, kubernetes.proxy, use, allow
+    {{- end }}
+    p, role:default/saw-admin, scaffolder.task.read, read, allow
+    p, role:default/saw-admin, scaffolder.task.cancel, use, allow
+    g, group:default/{{ .Values.rhdh.rbac.usersGroup }}, role:default/saw-user
+    g, group:default/saw-without-workspace, role:default/saw-new
+    g, group:default/saw-workspace-owners, role:default/saw-owner
+    {{- range .Values.portal.admins | default list }}
+    g, user:default/{{ . }}, role:default/saw-admin
+    {{- end }}
+  rbac-conditional-policies.yaml: |
+    # Users see and cancel only the scaffolder tasks they started: a task
+    # holds its form (forUser, an inference URL) and its run log.
+    result: CONDITIONAL
+    roleEntityRef: role:default/saw-user
+    pluginId: scaffolder
+    resourceType: scaffolder-task
+    permissionMapping:
+      - read
+      - use
+    conditions:
+      rule: IS_TASK_OWNER
+      resourceType: scaffolder-task
+      params:
+        createdBy:
+          - $currentUser
+    ---
+    result: CONDITIONAL
+    roleEntityRef: role:default/saw-user
+    pluginId: catalog
+    resourceType: catalog-entity
+    permissionMapping:
+      - read
+    conditions:
+      anyOf:
+        # their own workspace
+        - rule: IS_ENTITY_OWNER
+          resourceType: catalog-entity
+          params:
+            claims:
+              - $currentUser
+        # templates for every user (create or update)
+        - allOf:
+            - rule: IS_ENTITY_KIND
+              resourceType: catalog-entity
+              params:
+                kinds: [template]
+            {{- range list "saw.redhat.com/admin" "saw.redhat.com/new-users" "saw.redhat.com/owners" }}
+            - not:
+                rule: HAS_LABEL
+                resourceType: catalog-entity
+                params:
+                  label: {{ . }}
+            {{- end }}
+    ---
+    result: CONDITIONAL
+    roleEntityRef: role:default/saw-admin
+    pluginId: catalog
+    resourceType: catalog-entity
+    permissionMapping:
+      - read
+    conditions:
+      anyOf:
+        - not:
+            rule: IS_ENTITY_KIND
+            resourceType: catalog-entity
+            params:
+              kinds: [template]
+        - rule: HAS_LABEL
+          resourceType: catalog-entity
+          params:
+            label: saw.redhat.com/admin
+    {{- range $role, $label := dict "saw-new" "saw.redhat.com/new-users" "saw-owner" "saw.redhat.com/owners" }}
+    ---
+    result: CONDITIONAL
+    roleEntityRef: role:default/{{ $role }}
+    pluginId: catalog
+    resourceType: catalog-entity
+    permissionMapping:
+      - read
+    conditions:
+      rule: HAS_LABEL
+      resourceType: catalog-entity
+      params:
+        label: {{ $label }}
+    {{- end }}
+{{- end }}

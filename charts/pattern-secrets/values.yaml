@@ -5,3 +5,11 @@ secretStoreRef:
 refreshInterval: 15s
 
 vaultPrefix: secret/data/hub
+# The SSH key the VM is provisioned with; empty = vaultPrefix. saw-users sets
+# the shared prefix, so a user's own prefix only holds their provider keys.
+sshVaultPrefix: ""
+# Provider Secrets to sync from <vaultPrefix>/<name>. saw-users passes the
+# ones the user's SAW-BOM profiles read; the SSH Secrets are always synced.
+secrets:
+  - inference
+  - web-search

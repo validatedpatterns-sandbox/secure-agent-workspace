@@ -1,0 +1,79 @@
+{{- /* Requests nobody handled still hold keys: delete them after an hour. */ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: saw-portal-cleanup
+  namespace: {{ .Values.portal.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: saw-portal-cleanup
+  namespace: {{ .Values.portal.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: saw-portal-cleanup
+  namespace: {{ .Values.portal.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: saw-portal-cleanup
+subjects:
+  - kind: ServiceAccount
+    name: saw-portal-cleanup
+    namespace: {{ .Values.portal.namespace }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: saw-portal-cleanup
+  namespace: {{ .Values.portal.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: saw-portal-cleanup
+          restartPolicy: Never
+          containers:
+            - name: cleanup
+              image: {{ .Values.portal.image }}
+              command: ["python3", "/opt/saw/portal.py", "cleanup"]
+              env:
+                - name: NAMESPACE
+                  value: {{ .Values.portal.namespace }}
+                - name: CATALOG_PATH
+                  value: /opt/saw/profile-catalog.json
+              volumeMounts:
+                - name: scripts
+                  mountPath: /opt/saw
+                  readOnly: true
+              securityContext:
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                capabilities: { drop: [ALL] }
+                seccompProfile: { type: RuntimeDefault }
+          volumes:
+            - name: scripts
+              configMap:
+                name: saw-portal-scripts

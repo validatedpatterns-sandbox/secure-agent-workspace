@@ -114,6 +114,11 @@ spec:
                 - name: ssh
                   port: 22
                   protocol: TCP
+                {{- range $e := include "openshell-sandbox.sandboxUi" . | fromJsonArray }}
+                - name: {{ $e.portName }}
+                  port: {{ $e.proxyPort }}
+                  protocol: TCP
+                {{- end }}
         firmware:
           bootloader:
             efi:

@@ -9,6 +9,9 @@ metadata:
     openshell.pattern/saw: "true"
     openshell.pattern/owner: {{ $user.name | quote }}
     argocd.argoproj.io/managed-by: {{ include "saw-users.argoNamespace" $ | quote }}
+    {{- range $k, $v := $.Values.namespaceLabels | default dict }}
+    {{ $k }}: {{ $v | quote }}
+    {{- end }}
   annotations:
     argocd.argoproj.io/sync-wave: {{ $.Values.syncWave.namespace | quote }}
     {{- if not (include "saw-users.prune" (dict "root" $ "user" $user)) }}

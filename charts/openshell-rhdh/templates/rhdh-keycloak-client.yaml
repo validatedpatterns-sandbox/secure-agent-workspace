@@ -1,0 +1,113 @@
+{{- /* Creates or updates RHDH's OIDC client in the realm on every sync. */ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: saw-rhdh-keycloak
+  namespace: {{ .Values.rhdh.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: saw-rhdh-keycloak-admin
+  namespace: {{ .Values.keycloak.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["{{ .Values.keycloak.name }}-initial-admin"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: saw-rhdh-keycloak-admin
+  namespace: {{ .Values.keycloak.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: saw-rhdh-keycloak-admin
+subjects:
+  - kind: ServiceAccount
+    name: saw-rhdh-keycloak
+    namespace: {{ .Values.rhdh.namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: saw-rhdh-keycloak-client
+  namespace: {{ .Values.rhdh.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+data:
+  keycloak-client.py: |
+{{ .Files.Get "files/keycloak-client.py" | indent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: saw-rhdh-keycloak-client
+  namespace: {{ .Values.rhdh.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        {{- include "openshell-rhdh.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: saw-rhdh-keycloak
+      restartPolicy: OnFailure
+      containers:
+        - name: client
+          image: {{ .Values.portal.image }}
+          command: ["python3", "/opt/saw/keycloak-client.py"]
+          env:
+            - name: KC_URL
+              value: https://{{ include "openshell-rhdh.keycloakHost" . }}
+            - name: KC_NAMESPACE
+              value: {{ .Values.keycloak.namespace }}
+            - name: KC_NAME
+              value: {{ .Values.keycloak.name }}
+            - name: REALM
+              value: {{ .Values.keycloak.realm }}
+            - name: CLIENT_ID
+              value: {{ .Values.keycloak.clientId }}
+            - name: RHDH_URL
+              value: {{ include "openshell-rhdh.url" . }}
+            - name: INSECURE
+              value: {{ .Values.keycloak.insecureSkipTlsVerify | toString | quote }}
+            {{- if .Values.rhdh.rbac.enabled }}
+            # Every user in this group (RBAC role saw-user); the client's
+            # service account may read users and groups (catalog import).
+            - name: USERS_GROUP
+              value: {{ .Values.rhdh.rbac.usersGroup | quote }}
+            - name: ADMINS
+              value: {{ join "," (.Values.portal.admins | default list) | quote }}
+            {{- end }}
+            - name: CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: rhdh-oidc
+                  key: AUTH_OIDC_CLIENT_SECRET
+          volumeMounts:
+            - name: script
+              mountPath: /opt/saw
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
+      volumes:
+        - name: script
+          configMap:
+            name: saw-rhdh-keycloak-client

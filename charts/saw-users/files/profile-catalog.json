@@ -1,0 +1,143 @@
+{
+  "profiles": {
+    "custom-inference": {
+      "description": "Agent workspace backed by a custom OpenAI-compatible endpoint (vLLM, Ollama, ...)",
+      "secrets": {
+        "inference": {
+          "fields": [
+            {
+              "key": "api_key",
+              "kind": "secret",
+              "required": true,
+              "title": "API key"
+            },
+            {
+              "key": "url",
+              "kind": "url",
+              "required": true,
+              "title": "Endpoint base URL (OpenAI-compatible, ending in /v1)"
+            },
+            {
+              "key": "model",
+              "kind": "text",
+              "required": true,
+              "title": "Model"
+            }
+          ],
+          "provider": "openai",
+          "providers": [
+            "openai"
+          ]
+        },
+        "web-search": {
+          "fields": [
+            {
+              "key": "api_key",
+              "kind": "secret",
+              "required": true,
+              "title": "API key"
+            }
+          ],
+          "provider": "brave",
+          "providers": [
+            "brave"
+          ]
+        }
+      },
+      "workspaces": [
+        {
+          "description": "Agent workspace backed by a custom OpenAI-compatible endpoint (vLLM, Ollama, ...)",
+          "enabled": true,
+          "name": "default",
+          "sandboxes": [
+            {
+              "enabled": true,
+              "name": "notebook",
+              "type": "openclaw",
+              "uiRoute": false
+            }
+          ]
+        }
+      ]
+    },
+    "data-science": {
+      "description": "Data science workspace with NVIDIA inference and web search; CUDA development workspace with NVIDIA inference",
+      "secrets": {
+        "inference": {
+          "fields": [
+            {
+              "key": "api_key",
+              "kind": "secret",
+              "required": true,
+              "title": "API key"
+            }
+          ],
+          "provider": "nvidia",
+          "providers": [
+            "nvidia"
+          ]
+        },
+        "web-search": {
+          "fields": [
+            {
+              "key": "api_key",
+              "kind": "secret",
+              "required": true,
+              "title": "API key"
+            }
+          ],
+          "provider": "brave",
+          "providers": [
+            "brave"
+          ]
+        }
+      },
+      "workspaces": [
+        {
+          "description": "Data science workspace with NVIDIA inference and web search",
+          "enabled": true,
+          "name": "default",
+          "sandboxes": [
+            {
+              "enabled": true,
+              "name": "notebook",
+              "type": "openclaw",
+              "uiRoute": true
+            },
+            {
+              "enabled": false,
+              "name": "cuda-sandbox",
+              "type": "nemoclaw",
+              "uiRoute": false
+            },
+            {
+              "enabled": false,
+              "name": "toolbox",
+              "type": "generic",
+              "uiRoute": false
+            }
+          ]
+        },
+        {
+          "description": "CUDA development workspace with NVIDIA inference",
+          "enabled": true,
+          "name": "cuda-dev",
+          "sandboxes": [
+            {
+              "enabled": true,
+              "name": "cuda-sandbox",
+              "type": "nemoclaw",
+              "uiRoute": true
+            },
+            {
+              "enabled": false,
+              "name": "toolbox",
+              "type": "generic",
+              "uiRoute": false
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

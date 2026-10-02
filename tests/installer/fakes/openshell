@@ -227,7 +227,20 @@ elif op == "sandbox get":
     fmt = output_format()
     if fmt == "json" and (state_dir / "reject-json").exists():
         fail("error: unexpected argument '--output' found")
-    sb = state["sandboxes"].get(f"{ws}/{name}")
+    key = f"{ws}/{name}"
+    sb = state["sandboxes"].get(key)
+    # "after": [gets, then]: the phase changes after that many gets; then
+    # "gone" ends a deletion (real deletes are asynchronous).
+    if sb and sb.get("after"):
+        gets, then = sb["after"]
+        if gets <= 0:
+            if then == "gone":
+                state["sandboxes"].pop(key)
+                sb = None
+            else:
+                sb["phase"], sb["after"] = then, None
+        else:
+            sb["after"] = [gets - 1, then]
     if not sb:
         fail("Error: sandbox not found")
     labels = labels_dict("sandbox", ws, name)
@@ -241,6 +254,8 @@ elif op == "sandbox get":
                 print(f"  {key}: {value}")
 elif op == "sandbox create":
     key = f"{ws}/{opt('--name')}"
+    if key in state["sandboxes"]:
+        fail(f"Error:   x sandbox '{opt('--name')}' already exists")
     providers = [head[i + 1] for i, a in enumerate(head) if a == "--provider"]
     missing = [p for p in providers if f"{ws}/{p}" not in state["providers"]]
     if missing:
@@ -248,11 +263,21 @@ elif op == "sandbox create":
     state["sandboxes"][key] = {"image": opt("--from"), "providers": providers, "phase": "Ready"}
     remember_labels("sandbox", ws, opt("--name"))
 elif op == "sandbox delete":
-    state["sandboxes"].pop(f"{ws}/{head[2]}", None)
+    key = f"{ws}/{head[2]}"
+    delay = state.get("deleteDelay", 0)
+    if delay and key in state["sandboxes"]:
+        state["sandboxes"][key].update(phase="Deleting", after=[delay, "gone"])
+    else:
+        state["sandboxes"].pop(key, None)
 elif op == "sandbox exec":
+    # notReadyExecs: the first N execs fail like a sandbox still provisioning.
+    if state.get("notReadyExecs", 0) > 0:
+        state["notReadyExecs"] -= 1
+        fail(f"Error:   x sandbox '{opt('-n')}' is not ready (phase: Provisioning)")
     failing = (json.loads((state_dir / "exec-fail.json").read_text())
                if (state_dir / "exec-fail.json").exists() else [])
-    if opt("-n") in failing:
+    probe = args[-1:] == ["true"]
+    if opt("-n") in failing and not probe:
         fail("sh: line 1: /usr/local/sbin/openclaw: Permission denied", 126)
     # exec-output.json: {"<substring of the command>": "<stderr to print>"}
     outputs = (json.loads((state_dir / "exec-output.json").read_text())

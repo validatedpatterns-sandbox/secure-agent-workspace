@@ -64,6 +64,7 @@ if [[ -n "${existing}" && -z "${ours}" ]]; then
     echo "  (see the check above). Fix that realm in Keycloak, or import a new one with KEYCLOAK_REALM=<name>." >&2
     exit 1
   fi
+  KEYCLOAK_NS="${NS}" KEYCLOAK_CHART="${CHART}" "${SCRIPT_DIR}/keycloak-users.sh" ensure
   echo "Importing realm '${REALM}' into Keycloak '${existing}' in ${NS}..."
   helm upgrade --install openshell-keycloak "${CHART}" --namespace "${NS}" \
     --set keycloak.existing="${existing}" --set keycloak.realm="${REALM}" --timeout 10m
@@ -78,6 +79,9 @@ if [[ -n "${existing}" && -z "${ours}" ]]; then
 fi
 
 echo "Deploying Keycloak via RHBK operator in ${NS}..."
+# The test users' passwords: generated once, kept in a Secret the realm
+# import reads. No guessable defaults.
+KEYCLOAK_NS="${NS}" KEYCLOAK_CHART="${CHART}" "${SCRIPT_DIR}/keycloak-users.sh" ensure
 helm upgrade --install openshell-keycloak "${CHART}" \
   --namespace "${NS}" --create-namespace --set keycloak.realm="${REALM}" --timeout 10m
 
@@ -91,6 +95,7 @@ while true; do
     if [[ -n "${KC_URL}" ]]; then
       echo "  OIDC issuer: ${KC_URL}/realms/${REALM}"
     fi
+    echo "  Test users' passwords: make -f Makefile-quickstart keycloak-passwords"
     exit 0
   fi
   if (( SECONDS > deadline )); then

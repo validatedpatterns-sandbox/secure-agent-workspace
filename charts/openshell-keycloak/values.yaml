@@ -17,7 +17,9 @@ keycloak:
   hostname: ""
 
   realm: openshell
-  registrationAllowed: true
+  # No self-registration: an admin adds users
+  # (make -f Makefile-quickstart keycloak-add-users).
+  registrationAllowed: false
 
   clients:
     cli:
@@ -42,31 +44,59 @@ keycloak:
       redirectUris: []
       webOrigins: []
 
+  # Realm password rules: for passwords users set (registration, reset,
+  # the account console). Keycloak format, see "Password policies" in its
+  # server admin guide.
+  passwordPolicy: >-
+    length(14) and upperCase(1) and lowerCase(1) and digits(1) and
+    specialChars(1) and notUsername(undefined) and notEmail(undefined) and
+    passwordHistory(5)
+  # Lock an account out after failed sign-ins (temporary, growing waits).
+  bruteForce:
+    enabled: true
+    failureFactor: 5
+    waitIncrementSeconds: 60
+    maxFailureWaitSeconds: 900
+    maxDeltaTimeSeconds: 43200
+
+  # The test users' passwords are never in values: they come from the Secret
+  # userPasswords.secretName in this namespace, key = username, and the realm
+  # import reads them as placeholders. Make them with
+  # scripts/keycloak-users.sh ensure (make keycloak does), or, in
+  # the Validated Pattern, from Vault (externalSecret, values-secret
+  # keycloak-users, generated). A user may set `password` instead; it must
+  # pass the same rules as passwordPolicy (14+ characters, upper, lower,
+  # digit, special, not the user name).
+  userPasswords:
+    secretName: openshell-keycloak-user-passwords
+    externalSecret:
+      enabled: false
+      vaultKey: secret/data/hub/keycloak-users
+      secretStoreRef:
+        name: vault-backend
+        kind: ClusterSecretStore
+
   testUsers:
     - username: developer
       firstName: Developer
       lastName: User
-      password: developer
       roles:
         - openshell-user
     - username: admin
       firstName: Admin
       lastName: User
-      password: admin
       roles:
         - openshell-user
         - openshell-admin
     - username: alice
       firstName: Alice
       lastName: User
-      password: alice
       roles:
         - openshell-user
         - openshell-admin
     - username: bob
       firstName: Bob
       lastName: User
-      password: bob
       roles:
         - openshell-user
         - openshell-admin

@@ -1,0 +1,24 @@
+{{- /* RHDH's OIDC client secret and session secret, from Vault. */ -}}
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: rhdh-oidc
+  namespace: {{ .Values.rhdh.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: {{ .Values.oidcSecret.secretStoreRef.name }}
+    kind: {{ .Values.oidcSecret.secretStoreRef.kind }}
+  target:
+    name: rhdh-oidc
+    template:
+      type: Opaque
+      engineVersion: v2
+      data:
+        AUTH_OIDC_CLIENT_SECRET: {{ printf "{{ .client_secret }}" | quote }}
+        SESSION_SECRET: {{ printf "{{ .session_secret }}" | quote }}
+  dataFrom:
+    - extract:
+        key: {{ .Values.oidcSecret.vaultKey }}

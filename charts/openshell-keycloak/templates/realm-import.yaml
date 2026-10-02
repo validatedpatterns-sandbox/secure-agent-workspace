@@ -2,8 +2,28 @@ apiVersion: k8s.keycloak.org/v2alpha1
 kind: KeycloakRealmImport
 metadata:
   name: {{ .Values.keycloak.name }}-realm
+{{- /* Test users' passwords: from the Secret (placeholders), or a strong
+     explicit password. Never a guessable default. */ -}}
+{{- $placeholders := dict }}
+{{- range $i, $u := .Values.keycloak.testUsers | default list }}
+{{- if $u.password }}
+{{- $pw := toString $u.password }}
+{{- if or (lt (len $pw) 14) (not (regexMatch "[a-z]" $pw)) (not (regexMatch "[A-Z]" $pw)) (not (regexMatch "[0-9]" $pw)) (not (regexMatch "[^A-Za-z0-9]" $pw)) (contains (lower $u.username) (lower $pw)) }}
+{{- fail (printf "keycloak.testUsers %s: password is too weak (14+ characters with upper, lower, digit and special, not the user name); leave it out to use the generated one from Secret %s" $u.username $.Values.keycloak.userPasswords.secretName) }}
+{{- end }}
+{{- else }}
+{{- if not $.Values.keycloak.userPasswords.secretName }}
+{{- fail (printf "keycloak.testUsers %s: no password; set keycloak.userPasswords.secretName" $u.username) }}
+{{- end }}
+{{- $_ := set $placeholders (printf "SAW_USER_PASSWORD_%d" $i) (dict "secret" (dict "name" $.Values.keycloak.userPasswords.secretName "key" $u.username)) }}
+{{- end }}
+{{- end }}
 spec:
   keycloakCRName: {{ .Values.keycloak.existing | default .Values.keycloak.name }}
+  {{- with $placeholders }}
+  placeholders:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   realm:
     id: {{ .Values.keycloak.realm }}
     realm: {{ .Values.keycloak.realm }}
@@ -13,6 +33,17 @@ spec:
     loginWithEmailAllowed: true
     duplicateEmailsAllowed: false
     sslRequired: external
+    {{- with .Values.keycloak.passwordPolicy }}
+    passwordPolicy: {{ . | quote }}
+    {{- end }}
+    {{- with .Values.keycloak.bruteForce }}
+    bruteForceProtected: {{ .enabled | default false }}
+    permanentLockout: false
+    failureFactor: {{ .failureFactor | default 5 }}
+    waitIncrementSeconds: {{ .waitIncrementSeconds | default 60 }}
+    maxFailureWaitSeconds: {{ .maxFailureWaitSeconds | default 900 }}
+    maxDeltaTimeSeconds: {{ .maxDeltaTimeSeconds | default 43200 }}
+    {{- end }}
     roles:
       {{- if .Values.keycloak.roles }}
       realm:
@@ -109,7 +140,8 @@ spec:
               access.token.claim: "true"
     {{- if .Values.keycloak.testUsers }}
     users:
-      {{- range .Values.keycloak.testUsers }}
+      {{- range $i, $u := .Values.keycloak.testUsers }}
+      {{- with $u }}
       - username: {{ .username | quote }}
         firstName: {{ .firstName | default (.username | title) | quote }}
         lastName: {{ .lastName | default "User" | quote }}
@@ -118,9 +150,10 @@ spec:
         email: {{ printf "%s@openshell.local" .username | quote }}
         credentials:
           - type: password
-            value: {{ .password | quote }}
+            value: {{ if .password }}{{ .password | quote }}{{ else }}{{ printf "${SAW_USER_PASSWORD_%d}" $i | quote }}{{ end }}
             temporary: false
         realmRoles: {{ .roles | default list | toJson }}
+      {{- end }}
       {{- end }}
     {{- else }}
     users: []

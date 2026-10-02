@@ -1,0 +1,26 @@
+{{- /* The scaffolder templates. create-workspace.yaml is generated from the
+SAW-BOM profiles by scripts/saw-profile-catalog.py. */ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: saw-rhdh-templates
+  namespace: {{ .Values.rhdh.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+data:
+  create-workspace.yaml: |
+{{ .Files.Get "files/create-workspace.yaml" | replace "__PROVISIONER_SA__" .Values.portal.provisionerServiceAccount | indent 4 }}
+  delete-workspace.yaml: |
+{{ .Files.Get "files/delete-workspace.yaml" | replace "__PROVISIONER_SA__" .Values.portal.provisionerServiceAccount | indent 4 }}
+  {{- if .Values.portal.admins }}
+  # Administrators (portal.admins): a workspace for another user.
+  create-workspace-for-user.yaml: |
+{{ .Files.Get "files/create-workspace-for-user.yaml" | replace "__PROVISIONER_SA__" .Values.portal.provisionerServiceAccount | indent 4 }}
+  delete-workspace-for-user.yaml: |
+{{ .Files.Get "files/delete-workspace-for-user.yaml" | replace "__PROVISIONER_SA__" .Values.portal.provisionerServiceAccount | indent 4 }}
+  {{- end }}
+  {{- if .Values.rhdh.homePage.enabled }}
+  # Home page section titles (RHDH i18n overrides, see saw-rhdh-app-config).
+  translations.json: |
+    {{- dict "plugin.homepage" (dict "en" .Values.rhdh.homePage.titles) | toPrettyJson | nindent 4 }}
+  {{- end }}

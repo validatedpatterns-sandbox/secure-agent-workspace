@@ -4,4 +4,4 @@ metadata:
   # Use "default" for the default workspace (always exists on the gateway).
   # Set a custom name to create an additional workspace.
   name: default
-  description: "Data science workspace with Gemini inference and web search"
+  description: "Data science workspace with NVIDIA inference and web search"

@@ -21,6 +21,10 @@ clusterGroup:
     rhdh-operator:
       operatorGroup: true
       targetNamespaces: []
+    # Self-service portal (charts/openshell-rhdh): Red Hat Developer Hub, and
+    # the namespace with the workspace registry and its pipelines.
+    rhdh:
+    saw-portal:
     # ansible-automation-platform:
     #   operatorGroup: true
     #   targetNamespaces: []
@@ -45,6 +49,11 @@ clusterGroup:
       name: rhdh
       namespace: rhdh-operator
       channel: fast
+    # Tekton, for the portal's pipelines.
+    openshift-pipelines:
+      name: openshift-pipelines-operator-rh
+      namespace: openshift-operators
+      channel: latest
     # aap:
     #   name: ansible-automation-platform-operator
     #   namespace: ansible-automation-platform
@@ -72,6 +81,10 @@ clusterGroup:
       name: openshell-keycloak
       namespace: saw-keycloak
       path: charts/openshell-keycloak
+      # The test users' passwords from Vault (values-secret keycloak-users).
+      overrides:
+        - name: keycloak.userPasswords.externalSecret.enabled
+          value: "true"
     # One namespace and three apps (secrets, bill of materials, VM) per user,
     # from overrides/saw-users.yaml. The chart release is tracked here; the
     # Application objects it creates live in the Argo CD namespace.
@@ -89,6 +102,13 @@ clusterGroup:
           selfHeal: true
         retry:
           limit: 20
+    # Self-service agent workspaces: RHDH templates, the pipelines that store
+    # a user's keys in Vault and register the workspace, and the
+    # ApplicationSet that builds each one (docs/self-service-portal.md).
+    openshell-rhdh:
+      name: openshell-rhdh
+      namespace: rhdh
+      path: charts/openshell-rhdh
     governance-policy:
       name: governance-policy
       namespace: openshell-agents
@@ -97,3 +117,10 @@ clusterGroup:
       name: governance-interceptor
       namespace: openshell-agents
       path: charts/governance-interceptor
+  # Vault policy and role that let the portal's pipeline write users' keys
+  # under secret/data/hub/saw-* (ansible/playbooks/saw-portal-vault.yaml).
+  imperative:
+    jobs:
+      - name: saw-portal-vault
+        playbook: ansible/playbooks/saw-portal-vault.yaml
+        timeout: 300

@@ -31,6 +31,7 @@ changes here reach an existing VM after a restart (unlike cloud-init).
 {{- if and (eq $signMode "enforce") (not $trustKeys) (or (not $signIdentity) (not $signIssuer)) }}
 {{- fail "signing.mode enforce requires signing.trustKeys or both signing.identity and signing.issuer" }}
 {{- end }}
+{{- $trusted := .Values.sandboxUiProxy.trustedProxy | default dict }}
 {{- $config := dict
       "vmName" (include "openshell-sandbox.fullname" .)
       "namespace" .Release.Namespace
@@ -49,7 +50,18 @@ changes here reach an existing VM after a restart (unlike cloud-init).
           "insecureSkipTlsVerify" (.Values.dashboard.insecureSkipIssuerTlsVerify | default false))
       "signing" (dict "mode" $signMode "trustKeys" $trustKeys "identity" $signIdentity "issuer" $signIssuer)
       "prune" (dict "mode" $pruneMode "sandboxes" (.Values.prune.sandboxes | default false))
-      "secrets" (include "openshell-sandbox.providerSecrets" . | fromJsonArray) }}
+      "secrets" (include "openshell-sandbox.providerSecrets" . | fromJsonArray)
+      "sandboxUi" (include "openshell-sandbox.sandboxUi" . | fromJsonArray)
+      "sandboxUiProxy" (dict
+          "targetPort" (int .Values.sandboxUiProxy.targetPort)
+          "allowedUsers" (prepend (.Values.sandboxUiProxy.allowedUsers | default list) .Values.accessControl.owner | compact | uniq)
+          "image" .Values.dashboard.proxyImage
+          "clientId" .Values.dashboard.clientId
+          "insecureSkipTlsVerify" (.Values.dashboard.insecureSkipIssuerTlsVerify | default false)
+          "trustedProxy" (dict
+              "enabled" (eq (toString $trusted.enabled) "true")
+              "cidrs" ($trusted.cidrs | default (list "127.0.0.1/32" "::1/128"))
+              "deviceAutoApprove" (ne (toString $trusted.deviceAutoApprove) "false"))) }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

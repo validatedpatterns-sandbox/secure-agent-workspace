@@ -29,6 +29,10 @@ def kc(tmp_path):
         def state(self):
             return json.loads((state / "kc.json").read_text())
 
+        def log(self):
+            path = state / "calls.log"
+            return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
         def calls(self, tool):
             path = state / "calls.log"
             return [c[1:] for c in map(json.loads, path.read_text().splitlines()) if c[0] == tool] if path.exists() else []
@@ -143,3 +147,10 @@ def test_no_keycloak_deploys_one(kc):
     assert r.returncode == 0, r.stdout + r.stderr
     (helm,) = kc.calls("helm")
     assert "keycloak.existing" not in " ".join(helm) and "keycloak.realm=openshell" in helm
+    # The test users' passwords are generated before the realm import reads them.
+    log = kc.log()
+    made = next(i for i, c in enumerate(log)
+                if c[:5] == ["oc", "create", "secret", "generic", "openshell-keycloak-user-passwords"])
+    assert made < next(i for i, c in enumerate(log) if c[0] == "helm")
+    users = {a.split("=", 2)[1] for a in log[made] if a.startswith("--from-literal=")}
+    assert users == {"developer", "admin", "alice", "bob"}

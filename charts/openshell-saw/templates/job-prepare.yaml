@@ -8,6 +8,13 @@ metadata:
   name: {{ include "openshell-sandbox.fullname" . }}-prepare
   labels:
     {{- include "openshell-sandbox.labels" . | nindent 4 }}
+  annotations:
+    # A Sync hook, recreated on every sync (the steps are idempotent): a
+    # Job cannot change once created, and new sandbox UI routes need their
+    # Keycloak callbacks registered. BeforeHookCreation also replaces the
+    # plain Job older charts created under this name.
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
 spec:
   backoffLimit: {{ .Values.job.backoffLimit }}
   activeDeadlineSeconds: {{ .Values.job.activeDeadlineSeconds }}

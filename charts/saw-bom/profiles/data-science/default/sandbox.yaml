@@ -9,6 +9,13 @@ spec:
       image: quay.io/rh-ai-quickstart/openclaw-openshell:latest
       providers:
         - nvidia
+      # ui.route: publish the agent's web UI (OpenClaw control UI, port
+      # 18789) on its own route, <user>-<workspace>-<sandbox>-ui, behind an
+      # oauth2-proxy that signs in with Keycloak and admits only the
+      # workspace owner. The agent gateway then listens on 0.0.0.0 in the
+      # sandbox. Changing which sandboxes have a route restarts the VM.
+      ui:
+        route: true
     - name: cuda-sandbox
       type: nemoclaw
       enabled: false

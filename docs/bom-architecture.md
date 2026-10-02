@@ -173,7 +173,7 @@ User → OpenClaw TUI/GUI
 │ └── No credentials inside sandbox containers    │
 ├─────────────────────────────────────────────────┤
 │ Identity Boundary                               │
-│ ├── OIDC via Keycloak (alice/alice)             │
+│ ├── OIDC via Keycloak (alice)                   │
 │ ├── mTLS for internal gateway communication     │
 │ ├── Gateway token for OpenClaw Control UI       │
 │ └── Sandbox user (UID 65532) — non-root         │

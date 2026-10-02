@@ -30,6 +30,7 @@ OIDC login and never configures the CLI for OAuth.
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -341,6 +342,8 @@ CONFIG_DEFAULTS = {
     "mtlsGateway": "saw-installer",
     "ownerSubject": "",
     "sandboxDashboardRoute": "",
+    "sandboxUi": [],
+    "sandboxUiProxy": {},
     "dashboard": {"enabled": False},
     "signing": {"mode": "off"},
     "prune": {"mode": "off", "sandboxes": False},
@@ -405,7 +408,83 @@ def load_config(path):
         for key in ("image", "proxyImage", "clientId"):
             if not dash.get(key):
                 raise InstallerError(f"installer config: dashboard.{key} is required when the dashboard is enabled")
+    merged["sandboxUi"], merged["sandboxUiProxy"] = check_sandbox_ui(
+        merged.get("sandboxUi"), merged.get("sandboxUiProxy"))
     return merged
+
+
+HOST_RE = re.compile(r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$")
+IMAGE_RE = re.compile(r"^[a-z0-9][a-z0-9./:_@-]*$")
+USER_RE = re.compile(r"^[A-Za-z0-9._@+-]{1,255}$")
+
+
+def check_sandbox_ui(entries, proxy):
+    """sandboxUi and sandboxUiProxy go into unit files and command lines,
+    so everything is checked against a strict pattern."""
+    if not isinstance(entries or [], list) or not isinstance(proxy or {}, dict):
+        raise InstallerError("installer config: sandboxUi must be a list, sandboxUiProxy an object")
+    proxy = dict(proxy or {})
+    ports, out = set(), []
+    for e in entries or []:
+        what = f"installer config: sandboxUi entry {e!r}"
+        if not isinstance(e, dict) or not all(NAME_RE.match(str(e.get(k, ""))) for k in ("workspace", "sandbox")):
+            raise InstallerError(f"{what}: workspace and sandbox must be DNS labels")
+        if not HOST_RE.match(str(e.get("host", ""))):
+            raise InstallerError(f"{what}: needs a route host (set global.clusterDomain)")
+        for key in ("proxyPort", "forwardPort"):
+            if not isinstance(e.get(key), int) or not 1024 <= e[key] <= 65535 or e[key] in ports:
+                raise InstallerError(f"{what}: {key} must be a free port from 1024 to 65535")
+            ports.add(e[key])
+        internal = e["forwardPort"] + FORWARD_INTERNAL_OFFSET
+        if internal > 65535 or internal in ports:
+            raise InstallerError(f"{what}: forwardPort + {FORWARD_INTERNAL_OFFSET} must be a free port "
+                                 "(the relay in front of the forward uses forwardPort)")
+        ports.add(internal)
+        out.append({k: e[k] for k in ("workspace", "sandbox", "host", "proxyPort", "forwardPort")})
+    if out:
+        users = proxy.get("allowedUsers") or []
+        if not users or not all(isinstance(u, str) and USER_RE.match(u) for u in users):
+            raise InstallerError("installer config: sandboxUiProxy.allowedUsers must name the owner "
+                                 "(accessControl.owner) and be plain user names")
+        if not IMAGE_RE.match(str(proxy.get("image", ""))) or not NAME_RE.match(str(proxy.get("clientId", ""))):
+            raise InstallerError("installer config: sandboxUiProxy needs a valid image and clientId")
+        target = proxy.get("targetPort", 18789)
+        if not isinstance(target, int) or not 1 <= target <= 65535:
+            raise InstallerError("installer config: sandboxUiProxy.targetPort must be a port")
+    proxy["trustedProxy"] = check_trusted_proxy(proxy.get("trustedProxy"))
+    return out, proxy
+
+
+def check_trusted_proxy(tp):
+    """sandboxUiProxy.trustedProxy: OpenClaw trusts the oauth2-proxy's
+    X-Forwarded-User instead of asking for its gateway token. Off when absent
+    (configs from before this setting)."""
+    if tp is None:
+        return {"enabled": False}
+    if not isinstance(tp, dict) or not isinstance(tp.get("enabled", False), bool) \
+            or not isinstance(tp.get("deviceAutoApprove", True), bool):
+        raise InstallerError("installer config: sandboxUiProxy.trustedProxy must be "
+                             "{enabled: bool, cidrs: [...], deviceAutoApprove: bool}")
+    cidrs = tp.get("cidrs", TRUSTED_PROXY_CIDRS)
+    if not isinstance(cidrs, list) or not cidrs:
+        raise InstallerError("installer config: sandboxUiProxy.trustedProxy.cidrs must be a list of CIDRs")
+    for c in cidrs:
+        try:
+            ipaddress.ip_network(str(c), strict=False)
+        except ValueError:
+            raise InstallerError(f"installer config: sandboxUiProxy.trustedProxy.cidrs: {c!r} is not a CIDR")
+    return {"enabled": tp.get("enabled", False), "cidrs": [str(c) for c in cidrs],
+            "deviceAutoApprove": tp.get("deviceAutoApprove", True)}
+
+
+# Where the proxied requests reach the sandbox's gateway from: `openshell
+# forward service` connects to the port inside the sandbox, over loopback.
+TRUSTED_PROXY_CIDRS = ["127.0.0.1/32", "::1/128"]
+# What a signed-in owner's Control UI device gets without manual pairing.
+# The header OpenClaw reads the user from: oauth2-proxy's X-Forwarded-Email
+# carries the preferred_username it admitted (see openclaw_gateway_script).
+TRUSTED_PROXY_USER_HEADER = "x-forwarded-email"
+TRUSTED_PROXY_SCOPES = ["operator.read", "operator.write", "operator.approvals", "operator.questions"]
 
 
 # ---------------------------------------------------------------------------
@@ -1508,19 +1587,52 @@ class ProfileApplier:
         return next((p for p in usable if p.model), usable[0] if usable else None)
 
     def sandbox_state(self, ws, sb):
-        """'running', 'broken' (Error/Completed) or 'missing'."""
+        """'running', 'broken' (Error/Completed), 'deleting' or 'missing'."""
         state = self.cli("sandbox", "get", sb.name, *ws_args(ws.name), check=False, quiet=True)
         if not state.ok:
             return "missing"
         clean = re.sub(r"\x1b\[[0-9;]*m", "", state.out)
+        if re.search(r"Phase:\s*Deleting", clean):
+            return "deleting"
         return "broken" if ("Error" in clean or "Phase: Completed" in clean) else "running"
+
+    # Found live after a VM restart: a sandbox reports an error for a while
+    # as its supervisor reconnects, then recovers. Recreating it would lose
+    # /sandbox, so a broken sandbox gets this long to come back first.
+    BROKEN_GRACE_SECONDS = 90
+    # `sandbox delete` only accepts the deletion; creating the same name
+    # before the cleanup finishes fails with "already exists".
+    DELETE_WAIT_SECONDS = 300
+    POLL_SECONDS = 5
+
+    def wait_sandbox(self, ws, sb, until, seconds):
+        """Poll sandbox_state until until(state) or the time is up; the last state."""
+        state = self.sandbox_state(ws, sb)
+        deadline = time.monotonic() + (0 if self.sh.dry_run else seconds)
+        while not until(state) and time.monotonic() < deadline:
+            time.sleep(self.POLL_SECONDS)
+            state = self.sandbox_state(ws, sb)
+        return state
 
     def create_sandbox(self, ws, sb):
         state = self.sandbox_state(ws, sb)
         if state == "broken":
+            log(f"Sandbox '{sb.name}' reports an error; waiting up to "
+                f"{self.BROKEN_GRACE_SECONDS}s for it to recover")
+            state = self.wait_sandbox(ws, sb, lambda s: s != "broken", self.BROKEN_GRACE_SECONDS)
+        if state == "broken":
             log(f"Sandbox '{sb.name}' is not running; recreating it")
             self.cli("sandbox", "delete", sb.name, *ws_args(ws.name), check=False)
-        elif state == "running":
+            state = "deleting"
+        if state == "deleting":
+            # Also a deletion an earlier run started (found live: that run
+            # failed on "already exists" and left the sandbox Deleting).
+            log(f"Waiting for sandbox '{sb.name}' to be deleted")
+            state = self.wait_sandbox(ws, sb, lambda s: s == "missing", self.DELETE_WAIT_SECONDS)
+            if state != "missing":
+                raise InstallerError(f"sandbox '{sb.name}' was still being deleted after "
+                                     f"{self.DELETE_WAIT_SECONDS}s; the next apply recreates it")
+        if state == "running":
             log(f"Sandbox '{sb.name}' already exists")
             self.attach_missing_providers(ws, sb)
             self.remember("sandbox", ws.name, sb.name)
@@ -1590,23 +1702,38 @@ class ProfileApplier:
                              env=env, check=False, timeout=900)
         return result.ok
 
+    EXEC_READY_SECONDS = 300
+
+    def wait_exec_ready(self, ws, sb):
+        """Wait until `sandbox exec` works. Found live after a VM restart:
+        `sandbox get` already mentioned Ready while the phase was still
+        Provisioning, every exec failed with "not ready", and the OpenClaw
+        gateway was never started."""
+        if self.sh.dry_run:
+            return True
+        deadline = time.monotonic() + self.EXEC_READY_SECONDS
+        attempt = 0
+        while True:
+            probe = self.cli("sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty", "--",
+                             "true", check=False, quiet=True)
+            if probe.ok:
+                return True
+            if time.monotonic() >= deadline:
+                log(f"WARN: sandbox '{sb.name}' did not accept exec within {self.EXEC_READY_SECONDS}s")
+                return False
+            attempt += 1
+            if attempt % 6 == 1:
+                log(f"  waiting for sandbox '{sb.name}' to be ready")
+            time.sleep(self.POLL_SECONDS)
+
     def start_openclaw(self, ws, sb, provider):
         """Onboard openclaw inside the sandbox and start its web gateway.
         These steps are best effort, as before; verification decides."""
         exec_cmd = ["sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty", "--"]
-        if not self.sh.dry_run:
-            for attempt in range(20):
-                state = self.cli("sandbox", "get", sb.name, *ws_args(ws.name), check=False, quiet=True)
-                clean = re.sub(r"\x1b\[[0-9;]*m", "", state.out)
-                if "Ready" in clean and "Error" not in clean:
-                    break
-                log(f"  waiting for sandbox '{sb.name}' to be Ready ({attempt + 1}/20)")
-                time.sleep(5)
+        self.wait_exec_ready(ws, sb)
         # No /sandbox chown: OpenShell 0.1.x runs the workload without
         # capabilities (root in the container cannot even read /sandbox) and
         # already gives /sandbox to the image's user.
-        token = secrets.token_hex(16)
-        self.sh.add_secret(token)
         model = sb.model or provider.model or "nvidia/nemotron-3-super-120b-a12b"
         oc_env = ("OPENCLAW_HOME=/sandbox SQLITE_TMPDIR=/sandbox/.openclaw/state "
                   "TMPDIR=/sandbox/.openclaw/state OPENCLAW_NIX_MODE=0")
@@ -1640,16 +1767,10 @@ class ProfileApplier:
             log(f"Activating the new OpenClaw credential '{profile_id}'")
             self.cli(*exec_cmd, "sh", "-c",
                      f"{oc_env} openclaw models auth activate {profile_id} --agent main", check=False)
-        self.cli(*exec_cmd, "sh", "-c", f"{oc_env} openclaw config set gateway.auth.token '{token}'",
-                 check=False)
-        route = self.cfg.get("sandboxDashboardRoute")
-        if route:
-            self.cli(*exec_cmd, "sh", "-c",
-                     f"{oc_env} openclaw config set gateway.controlUi.allowedOrigins "
-                     f"'[\"https://{route}\"]'", check=False)
-        self.cli(*exec_cmd, "sh", "-c",
-                 f"export OPENCLAW_GATEWAY_TOKEN={token} {oc_env} && nohup openclaw gateway run "
-                 "--allow-unconfigured --bind lan --port 18789 > /tmp/openclaw-gateway.log 2>&1 &",
+        # One script: the gateway secret is made and kept inside the sandbox
+        # (the installer never sees it), and the gateway is restarted so a
+        # changed auth mode or origin list takes effect.
+        self.cli(*exec_cmd, "sh", "-c", openclaw_gateway_script(self.cfg, ws.name, sb.name, oc_env),
                  check=False)
         self.install_keepalive(ws, sb)
 
@@ -1947,6 +2068,561 @@ class ProfileApplier:
         if not failures:
             log("PASS  all workspaces, providers and sandboxes present")
         return failures
+
+
+def sandbox_ui_origins(cfg, workspace, sandbox):
+    """https origins the sandbox's OpenClaw control UI is opened from: the
+    legacy dashboard route, and the sandbox's own UI route (sandboxUi)."""
+    origins = []
+    if cfg.get("sandboxDashboardRoute"):
+        origins.append(f"https://{cfg['sandboxDashboardRoute']}")
+    for e in cfg.get("sandboxUi") or []:
+        if e.get("workspace") == workspace and e.get("sandbox") == sandbox and e.get("host"):
+            origins.append(f"https://{e['host']}")
+    return origins
+
+
+def sandbox_ui_trusted_users(cfg, workspace, sandbox):
+    """The users OpenClaw takes from the oauth2-proxy's X-Forwarded-User, or
+    None when the sandbox keeps token auth: it has no UI route, or
+    sandboxUiProxy.trustedProxy is off."""
+    proxy = cfg.get("sandboxUiProxy") or {}
+    if not (proxy.get("trustedProxy") or {}).get("enabled"):
+        return None
+    if not any(e.get("workspace") == workspace and e.get("sandbox") == sandbox
+               for e in cfg.get("sandboxUi") or []):
+        return None
+    return list(proxy.get("allowedUsers") or [])
+
+
+# The gateway's config file (OPENCLAW_HOME=/sandbox). `openclaw config get`
+# redacts secrets, so the existing one is read from the file.
+OPENCLAW_CONFIG = "/sandbox/.openclaw/openclaw.json"
+_READ_SECRET_JS = ('try{const a=(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).gateway||{}).auth||{};'
+                   'const t=[a.password,a.token].find(v=>typeof v==="string"&&/^[A-Za-z0-9_-]{16,}$/.test(v));'
+                   'if(t)process.stdout.write(t)}catch(e){}')
+# Writes gateway.auth.password ($SAW_GATEWAY_SECRET) into the config file.
+# Found live (OpenClaw 2026.9.x, openclaw/openclaw#162216): `config set`
+# removes the password as "inactive" in trusted-proxy mode, although the
+# gateway accepts it from local clients that send no forwarded headers
+# (openclaw/openclaw#82607). Without it the CLI got "device-required".
+_WRITE_PASSWORD_JS = ('const fs=require("fs"),f=process.argv[1];const c=JSON.parse(fs.readFileSync(f,"utf8"));'
+                      'c.gateway=c.gateway||{};c.gateway.auth=c.gateway.auth||{};'
+                      'c.gateway.auth.password=process.env.SAW_GATEWAY_SECRET;'
+                      'fs.writeFileSync(f,JSON.stringify(c,null,2)+"\\n",{mode:0o600})')
+_NEW_SECRET_JS = 'process.stdout.write(require("crypto").randomBytes(24).toString("hex"))'
+# Stops a running gateway (a re-run must apply the new config). /proc, not
+# pkill: the sandbox image need not have procps. Shells are skipped: this
+# script's own `sh -c` (and any wrapper running it) contains the pattern.
+_STOP_GATEWAY_SH = (
+    'for d in /proc/[0-9]*; do c=$(tr "\\000" " " < "$d/cmdline" 2>/dev/null) || continue; '
+    'case "$c" in *"sh -c "*) continue;; esac; '
+    'case "$c" in *"openclaw gateway run"*|openclaw-gateway*) kill "${d#/proc/}" 2>/dev/null;; esac; '
+    'done; sleep 2')
+
+
+def openclaw_gateway_script(cfg, workspace, sandbox, oc_env):
+    """The sandbox shell script that configures and (re)starts OpenClaw's
+    gateway on 0.0.0.0:18789.
+
+    The gateway secret is kept across runs (read from the config file, made
+    once), so the CLI, the TUI and a saved UI session keep working.
+
+    Token mode (no UI route, or trustedProxy off): clients present the secret
+    as gateway.auth.token.
+
+    Trusted-proxy mode (a UI route behind the owner-only oauth2-proxy): the
+    Control UI needs no token. OpenClaw accepts a request only from the
+    trusted CIDRs (the forward arrives over loopback) and takes the user from
+    X-Forwarded-Email: oauth2-proxy sets it to the Keycloak
+    preferred_username it admitted (OIDC_EMAIL_CLAIM), overwriting any value
+    the browser sent. (Found live: its X-Forwarded-User is the Keycloak
+    subject, a UUID.) allowUsers is the same list the proxy admits, and their
+    UI devices are approved without pairing. Local clients (the CLI, the TUI,
+    `openclaw agent`) use the same secret as gateway.auth.password."""
+    q = shlex.quote
+    users = sandbox_ui_trusted_users(cfg, workspace, sandbox)
+    run = ("nohup openclaw gateway run --allow-unconfigured "
+           "--bind lan --port 18789 > /tmp/openclaw-gateway.log 2>&1 &")
+    token_auth = [
+        # JSON-quoted: `config set` parses values as JSON5, and a bare hex
+        # secret of digits only would become a number.
+        "openclaw config set gateway.auth.mode '\"token\"'",
+        'openclaw config set gateway.auth.token "\\"$secret\\""',
+        "openclaw config unset gateway.auth.trustedProxy >/dev/null 2>&1 || true",
+        "openclaw config unset gateway.trustedProxies >/dev/null 2>&1 || true",
+    ]
+    lines = [
+        "set -u",
+        f"export {oc_env}",
+        f"secret=$(node -e {q(_READ_SECRET_JS)} {OPENCLAW_CONFIG} 2>/dev/null)",
+        f'[ -n "$secret" ] || secret=$(node -e {q(_NEW_SECRET_JS)})',
+    ]
+    if users is None:
+        lines += token_auth
+    else:
+        tp = cfg["sandboxUiProxy"]["trustedProxy"]
+        cidrs = tp.get("cidrs") or TRUSTED_PROXY_CIDRS
+        basic = {"userHeader": TRUSTED_PROXY_USER_HEADER, "allowUsers": users}
+        loopback = {**basic, "allowLoopback": any(ipaddress.ip_network(c, strict=False).is_loopback
+                                                  for c in cidrs)}
+        full = {**loopback, "deviceAutoApprove": {"enabled": bool(tp.get("deviceAutoApprove", True)),
+                                                  "scopes": TRUSTED_PROXY_SCOPES}}
+        # Older OpenClaw releases (found live: the NemoClaw image's 2026.7.1)
+        # refuse the newer keys, and a refused `config set` left the mode
+        # trusted-proxy without its settings: the gateway did not start. So
+        # each smaller form is tried in turn, and the mode is switched only
+        # once one was saved; otherwise the sandbox keeps token auth.
+        lines += [
+            f"openclaw config set gateway.trustedProxies {q(json.dumps(cidrs))}",
+            "trusted=0",
+            f"openclaw config set gateway.auth.trustedProxy {q(json.dumps(full))} && trusted=1",
+        ]
+        for what, value in (("deviceAutoApprove", loopback), ("allowLoopback", basic)):
+            lines += [
+                'if [ "$trusted" = 0 ]; then',
+                f'echo "WARN: this OpenClaw refused the trusted-proxy settings; trying without {what}"',
+                f"openclaw config set gateway.auth.trustedProxy {q(json.dumps(value))} && trusted=1",
+                "fi",
+            ]
+        lines += [
+            # The mode after its settings: it is only valid once they are there.
+            'if [ "$trusted" = 1 ]; then',
+            "openclaw config set gateway.auth.mode '\"trusted-proxy\"'",
+            "else",
+            'echo "WARN: this OpenClaw refused every trusted-proxy form; the UI keeps token auth"',
+            *token_auth,
+            "fi",
+        ]
+    # NemoClaw's image sets OpenClaw's managed proxy to 10.200.0.1:3128,
+    # the explicit egress proxy of OpenShell 0.0.x. OpenShell 0.1.x proxies
+    # transparently and refuses that address (found live: connect EACCES, so
+    # every LLM call failed with "network connection error"). Unset, OpenClaw
+    # connects directly and the sandbox's own proxy applies the policy.
+    lines.append("openclaw config unset proxy >/dev/null 2>&1 || true")
+    origins = sandbox_ui_origins(cfg, workspace, sandbox)
+    if origins:
+        # The control UI is reached through a route, so the browser's Origin
+        # is the route's https URL.
+        lines.append(f"openclaw config set gateway.controlUi.allowedOrigins {q(json.dumps(origins))}")
+    lines.append(_STOP_GATEWAY_SH)
+    if users is None:
+        lines.append(f'OPENCLAW_GATEWAY_TOKEN="$secret" {run}')
+    else:
+        lines += [
+            'if [ "$trusted" = 1 ]; then',
+            # After the last `config set`, which would remove it again.
+            f'SAW_GATEWAY_SECRET="$secret" node -e {q(_WRITE_PASSWORD_JS)} {OPENCLAW_CONFIG} '
+            '|| echo "WARN: could not set gateway.auth.password; the CLI needs a paired device"',
+            f'OPENCLAW_GATEWAY_PASSWORD="$secret" {run}',
+            "else",
+            f'OPENCLAW_GATEWAY_TOKEN="$secret" {run}',
+            "fi",
+        ]
+    return "\n".join(lines) + "\n"
+
+
+SANDBOX_UI_UNIT_RE = re.compile(r"^saw-ui-(forward|limit|proxy)-[a-z0-9-]+\.service$")
+# The forward listens on forwardPort + this (VM loopback only); the relay that
+# caps its connections listens on forwardPort, where oauth2-proxy sends.
+FORWARD_INTERNAL_OFFSET = 10000
+# At most this many connections reach `openshell forward service` per UI
+# (OpenShell allows 20 per sandbox; the rest are left for exec sessions).
+FORWARD_MAX_CONNECTIONS = 16
+SANDBOX_UI_LIMIT_PY = r'''"""Caps the connections to `openshell forward service` (SAW sandbox UI).
+
+OpenShell allows 20 concurrent forward connections per sandbox and closes
+the rest (RESOURCE_EXHAUSTED, "sandbox SSH connection limit reached",
+NVIDIA/OpenShell#3494). A browser loading the OpenClaw control UI through
+the route opens more than that at once, and the requests that lost came
+back as 502/504 after 30 s. This TCP relay sits between oauth2-proxy and the
+forward:
+
+- at most MAX connections reach the forward; the others wait for a free one;
+- while some wait, an HTTP keep-alive connection that has been idle for
+  IDLE_PREEMPT seconds after an answer is closed to make room (an HTTP
+  client opens a new one); WebSocket connections are never closed;
+- a connection the forward closes or resets before answering is retried;
+- a GET that gets no answer at all within ANSWER_WAIT is sent again on new
+  connections, and the first answer wins.
+
+  python3 saw_ui_limit.py LISTEN_PORT UPSTREAM_PORT [MAX]
+"""
+import asyncio
+import sys
+import time
+
+
+def log(message):
+    print(message, file=sys.stderr, flush=True)
+
+RETRIES = 8
+BUFFER_LIMIT = 1 << 20
+ANSWER_WAIT = 2.0       # seconds to wait for a first answer byte before giving up retries
+IDLE_PREEMPT = 2.0      # seconds an answered keep-alive connection may hold a slot others wait for
+HEDGES = 2              # extra connections for a repeatable request that gets no answer
+HEDGE_TOTAL = 25.0      # seconds before giving up on such a request (the router allows 30)
+
+
+class Conn:
+    """One client connection holding (or waiting for) a slot."""
+
+    def __init__(self, websocket):
+        self.websocket = websocket
+        self.last = time.monotonic()
+        self.answered = False       # the forward spoke last: no request in flight
+        self.writers = []
+
+    def touch(self, answered):
+        self.last = time.monotonic()
+        self.answered = answered
+
+    def idle_for(self):
+        return time.monotonic() - self.last
+
+    def close(self):
+        for w in self.writers:
+            try:
+                w.transport.abort()
+            except Exception:
+                pass
+
+
+class Slots:
+    """MAX connections at a time; idle keep-alive ones give way."""
+
+    def __init__(self, limit):
+        self.limit = limit
+        self.active = set()
+        self.cond = asyncio.Condition()
+
+    def victim(self):
+        idle = [c for c in self.active
+                if not c.websocket and c.answered and c.idle_for() >= IDLE_PREEMPT]
+        return min(idle, key=lambda c: c.last) if idle else None
+
+    def describe(self):
+        ws = sum(1 for c in self.active if c.websocket)
+        busy = sum(1 for c in self.active if not c.websocket and not c.answered)
+        idle = sorted(round(c.idle_for(), 1) for c in self.active if not c.websocket and c.answered)
+        return (f"{len(self.active)}/{self.limit} in use: {ws} websocket, {busy} awaiting an answer, "
+                f"{len(idle)} answered (idle s: {idle})")
+
+    async def acquire(self, conn):
+        start = time.monotonic()
+        logged = 0.0
+        async with self.cond:
+            while len(self.active) >= self.limit:
+                v = self.victim()
+                if v is not None:
+                    log(f"closing a keep-alive connection idle {v.idle_for():.1f}s to make room")
+                    self.active.discard(v)
+                    v.close()
+                    break
+                waited = time.monotonic() - start
+                if waited - logged >= 5:
+                    logged = waited
+                    log(f"waiting {waited:.0f}s for a slot; {self.describe()}")
+                try:
+                    await asyncio.wait_for(self.cond.wait(), 0.25)
+                except asyncio.TimeoutError:
+                    pass
+            self.active.add(conn)
+        if time.monotonic() - start >= 1:
+            log(f"got a slot after {time.monotonic() - start:.1f}s; {self.describe()}")
+
+    async def release(self, conn):
+        async with self.cond:
+            if conn in self.active:
+                self.active.discard(conn)
+                self.cond.notify()
+
+
+async def relay(reader, writer, conn, answered):
+    """Copy until EOF, then half-close the other side."""
+    try:
+        while True:
+            data = await reader.read(65536)
+            if not data:
+                break
+            conn.touch(answered)
+            writer.write(data)
+            await writer.drain()
+        if writer.can_write_eof():
+            writer.write_eof()
+    except (ConnectionError, OSError):
+        pass
+
+
+async def open_answering(upstream, sent):
+    """Connect to the forward and send the client's first bytes; retry when
+    the forward closes or resets the connection without answering."""
+    for attempt in range(RETRIES + 1):
+        try:
+            ureader, uwriter = await asyncio.open_connection("127.0.0.1", upstream)
+        except OSError:
+            await asyncio.sleep(min(1.0, 0.2 * (attempt + 1)))
+            continue
+        try:
+            uwriter.write(sent)
+            await uwriter.drain()
+            # A refused forward connection closes (or resets) at once. A
+            # request still being sent (a large body) gets no answer yet:
+            # relay it.
+            first = await asyncio.wait_for(ureader.read(65536), ANSWER_WAIT)
+        except asyncio.TimeoutError:
+            if not hedgeable(sent):
+                log(f"no answer within {ANSWER_WAIT:.0f}s ({sent[:60]!r}); relaying without retries")
+                return ureader, uwriter, b""
+            return await hedge(upstream, sent, ureader, uwriter)
+        except (ConnectionError, OSError):
+            first = b""
+        if first:
+            return ureader, uwriter, first
+        uwriter.close()
+        await asyncio.sleep(min(1.0, 0.2 * (attempt + 1)))
+    return None, None, b""
+
+
+def hedgeable(sent):
+    """A complete GET/HEAD request without a body, not a WebSocket upgrade:
+    safe to send again on another connection."""
+    head = sent.split(b"\r\n\r\n", 1)
+    return (len(head) == 2 and not head[1] and sent.split(b" ", 1)[0] in (b"GET", b"HEAD")
+            and b"upgrade: websocket" not in sent.lower())
+
+
+async def hedge(upstream, sent, ureader, uwriter):
+    """Found live: a request through the forward sometimes got no answer at
+    all (no error, nothing in the forward's log) and the browser saw a 504.
+    For a request that is safe to repeat, send it again on new connections
+    and keep whichever answers first."""
+    pending = {asyncio.ensure_future(ureader.read(65536)): (ureader, uwriter)}
+    deadline = time.monotonic() + HEDGE_TOTAL
+    for extra in range(HEDGES + 1):
+        if extra < HEDGES:
+            log(f"no answer within {ANSWER_WAIT:.0f}s ({sent[:60]!r}); sending it again ({extra + 1})")
+            try:
+                r, w = await asyncio.open_connection("127.0.0.1", upstream)
+                w.write(sent)
+                await w.drain()
+                pending[asyncio.ensure_future(r.read(65536))] = (r, w)
+            except (ConnectionError, OSError):
+                pass
+        wait = ANSWER_WAIT * 2 if extra < HEDGES else max(0.0, deadline - time.monotonic())
+        done, _ = await asyncio.wait(pending, timeout=wait, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            r, w = pending.pop(task)
+            try:
+                data = task.result()
+            except (ConnectionError, OSError):
+                data = b""
+            if data:
+                for other, (_, ow) in pending.items():
+                    other.cancel()
+                    ow.close()
+                return r, w, data
+            w.close()
+    for other, (_, ow) in pending.items():
+        other.cancel()
+        ow.close()
+    log(f"no answer on {HEDGES + 1} connections ({sent[:60]!r})")
+    return None, None, b""
+
+
+def handler(upstream, slots):
+    async def handle(creader, cwriter):
+        conn = None
+        try:
+            # The first bytes tell an HTTP request from a WebSocket upgrade,
+            # and are what a retry resends.
+            sent = await creader.read(65536)
+            if not sent:
+                return
+            conn = Conn(b"upgrade: websocket" in sent.lower())
+            conn.writers.append(cwriter)
+            await slots.acquire(conn)
+            ureader, uwriter, first = await open_answering(upstream, sent)
+            if ureader is None:
+                log("the forward refused the connection on every retry")
+                return
+            conn.writers.append(uwriter)
+            conn.touch(bool(first))
+            if first:
+                cwriter.write(first)
+                await cwriter.drain()
+            await asyncio.gather(relay(creader, uwriter, conn, False),
+                                 relay(ureader, cwriter, conn, True))
+            uwriter.close()
+        except (ConnectionError, OSError):
+            pass
+        finally:
+            if conn is not None:
+                await slots.release(conn)
+            cwriter.close()
+    return handle
+
+
+async def main(listen, upstream, limit):
+    server = await asyncio.start_server(handler(upstream, Slots(limit)), "127.0.0.1", listen,
+                                        limit=BUFFER_LIMIT)
+    async with server:
+        await server.serve_forever()
+
+
+if __name__ == "__main__":
+    listen_port, upstream_port = int(sys.argv[1]), int(sys.argv[2])
+    max_conns = int(sys.argv[3]) if len(sys.argv) > 3 else 10
+    asyncio.run(main(listen_port, upstream_port, max_conns))
+'''
+
+
+
+def sandbox_ui_units(cfg, home, cookie, gateway):
+    """{unit file name: content} plus {file: content} for every sandbox UI.
+
+    Per entry of cfg["sandboxUi"] (rendered by the openshell-saw chart):
+      saw-ui-forward-<ws>-<sb>  `openshell forward service`: VM
+                                127.0.0.1:<forwardPort + 10000> to the
+                                sandbox's 127.0.0.1:<targetPort> (OpenClaw,
+                                listening on 0.0.0.0 in the sandbox)
+      saw-ui-limit-<ws>-<sb>    a TCP relay on 127.0.0.1:<forwardPort> that
+                                lets at most FORWARD_MAX_CONNECTIONS through
+                                to the forward and queues the rest (OpenShell
+                                refuses more than 20 per sandbox)
+      saw-ui-proxy-<ws>-<sb>    oauth2-proxy on 0.0.0.0:<proxyPort> (what the
+                                route reaches) in front of the relay. It
+                                signs in with Keycloak (PKCE, the dashboard's
+                                public client) and admits only the users in
+                                sandbox-ui-users (preferred_username): the
+                                workspace owner and sandboxUiProxy.allowedUsers
+                                (saw-ui-<ws>-<sb>.users).
+    """
+    proxy = cfg.get("sandboxUiProxy") or {}
+    config_dir = Path(home) / ".config" / "openshell"
+    users = "".join(f"{u}\n" for u in proxy.get("allowedUsers") or [])
+    units, files = {}, {}
+    limiter = config_dir / "saw-ui-limit.py"
+    if cfg.get("sandboxUi"):
+        files[limiter] = SANDBOX_UI_LIMIT_PY
+    for e in cfg.get("sandboxUi") or []:
+        tag = f"{e['workspace']}-{e['sandbox']}"
+        forward, proxy_unit = f"saw-ui-forward-{tag}.service", f"saw-ui-proxy-{tag}.service"
+        env_file = config_dir / f"saw-ui-{tag}.env"
+        # One users file per proxy: each container relabels its mount
+        # privately (:Z), which a shared file would not survive.
+        users_file = config_dir / f"saw-ui-{tag}.users"
+        files[users_file] = users
+        files[env_file] = "".join(f"{k}={v}\n" for k, v in {
+            "OAUTH2_PROXY_HTTP_ADDRESS": f"0.0.0.0:{e['proxyPort']}",
+            "OAUTH2_PROXY_UPSTREAMS": f"http://127.0.0.1:{e['forwardPort']}",
+            "OAUTH2_PROXY_PROVIDER": "oidc",
+            "OAUTH2_PROXY_OIDC_ISSUER_URL": cfg["oidcIssuer"],
+            "OAUTH2_PROXY_CLIENT_ID": proxy.get("clientId", "openshell-dashboard"),
+            "OAUTH2_PROXY_CLIENT_SECRET_FILE": "/dev/null",
+            "OAUTH2_PROXY_CODE_CHALLENGE_METHOD": "S256",
+            "OAUTH2_PROXY_REDIRECT_URL": f"https://{e['host']}/oauth2/callback",
+            "OAUTH2_PROXY_COOKIE_SECRET": cookie,
+            "OAUTH2_PROXY_COOKIE_NAME": f"_saw_ui_{e['proxyPort']}",
+            "OAUTH2_PROXY_COOKIE_SECURE": "true",
+            "OAUTH2_PROXY_COOKIE_REFRESH": "60s",
+            "OAUTH2_PROXY_SCOPE": "openid email profile",
+            # Who gets in: the Keycloak username, matched against the file.
+            "OAUTH2_PROXY_OIDC_EMAIL_CLAIM": "preferred_username",
+            # X-Forwarded-Email (= that username), which OpenClaw's
+            # trusted-proxy mode reads; oauth2-proxy overwrites any value the
+            # browser sent.
+            "OAUTH2_PROXY_PASS_USER_HEADERS": "true",
+            "OAUTH2_PROXY_AUTHENTICATED_EMAILS_FILE": "/etc/saw/sandbox-ui-users",
+            "OAUTH2_PROXY_INSECURE_OIDC_ALLOW_UNVERIFIED_EMAIL": "true",
+            "OAUTH2_PROXY_SKIP_PROVIDER_BUTTON": "true",
+            "OAUTH2_PROXY_REVERSE_PROXY": "true",
+            "OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY": str(bool(proxy.get("insecureSkipTlsVerify"))).lower(),
+        }.items())
+        internal = e["forwardPort"] + FORWARD_INTERNAL_OFFSET
+        limit_unit = f"saw-ui-limit-{tag}.service"
+        units[forward] = (
+            f"[Unit]\nDescription=SAW sandbox UI: forward {e['sandbox']} ({e['workspace']}) port "
+            f"{proxy.get('targetPort', 18789)} to 127.0.0.1:{internal}\n\n"
+            f"[Service]\nType=simple\n"
+            f"ExecStart=/usr/local/bin/openshell --gateway {gateway} forward service {e['sandbox']} "
+            f"--workspace {e['workspace']} --target-port {proxy.get('targetPort', 18789)} "
+            f"--local 127.0.0.1:{internal}\n"
+            f"Restart=always\nRestartSec=5s\n\n[Install]\nWantedBy=default.target\n")
+        # Found live: the control UI's burst of requests went past OpenShell's
+        # 20 forward connections per sandbox; the refused ones came back as
+        # 502/504 after 30 s. The relay queues them instead.
+        units[limit_unit] = (
+            f"[Unit]\nDescription=SAW sandbox UI: at most {FORWARD_MAX_CONNECTIONS} connections "
+            f"from 127.0.0.1:{e['forwardPort']} to the forward of {e['sandbox']} ({e['workspace']})\n"
+            f"After={forward}\nWants={forward}\n\n"
+            f"[Service]\nType=simple\n"
+            f"ExecStart=/usr/bin/python3 {limiter} {e['forwardPort']} {internal} {FORWARD_MAX_CONNECTIONS}\n"
+            f"Restart=always\nRestartSec=2s\n\n[Install]\nWantedBy=default.target\n")
+        units[proxy_unit] = (
+            f"[Unit]\nDescription=SAW sandbox UI: oauth2-proxy for {e['sandbox']} ({e['workspace']}) "
+            f"on port {e['proxyPort']}\nAfter={limit_unit}\nWants={limit_unit}\n\n"
+            f"[Service]\nType=simple\n"
+            f"ExecStartPre=-/usr/bin/podman rm -f saw-ui-proxy-{tag}\n"
+            f"ExecStart=/usr/bin/podman run --rm --name saw-ui-proxy-{tag} --network host "
+            f"--env-file={env_file} -v {users_file}:/etc/saw/sandbox-ui-users:ro,Z "
+            f"{proxy.get('image', 'quay.io/oauth2-proxy/oauth2-proxy:v7.9.0')}\n"
+            f"ExecStop=/usr/bin/podman stop -t 5 saw-ui-proxy-{tag}\n"
+            f"Restart=on-failure\nRestartSec=5s\n\n[Install]\nWantedBy=default.target\n")
+    return units, files
+
+
+def setup_sandbox_ui(shell, cfg, home):
+    """Run a forward and an owner-only oauth2-proxy per sandbox web UI, as
+    `systemctl --user` units of the runtime user; remove the units of
+    sandboxes that no longer have a UI route. Best effort: a failure here
+    leaves the workspaces usable, and verify reports it."""
+    entries = cfg.get("sandboxUi") or []
+    unit_dir = Path(home) / ".config" / "systemd" / "user"
+    existing = set() if shell.dry_run or not unit_dir.is_dir() else {
+        p.name for p in unit_dir.iterdir() if SANDBOX_UI_UNIT_RE.match(p.name)}
+    units, files = {}, {}
+    if entries:
+        if not cfg.get("oidcIssuer"):
+            log("WARN: sandbox UI routes need oidcIssuer (Keycloak); not starting their proxies")
+            entries = []
+        else:
+            cookie_file = Path(home) / ".config" / "openshell" / "dashboard-cookie-secret"
+            if shell.dry_run:
+                cookie = "dry-run"
+            elif cookie_file.exists():
+                cookie = cookie_file.read_text(encoding="utf-8").strip()
+            else:
+                cookie_file.parent.mkdir(parents=True, exist_ok=True)
+                cookie = secrets.token_hex(16)
+                cookie_file.write_text(cookie, encoding="utf-8")
+                os.chmod(cookie_file, 0o600)
+            shell.add_secret(cookie)
+            units, files = sandbox_ui_units(cfg, home, cookie, cfg.get("mtlsGateway", "saw-installer"))
+    stale = sorted(existing - set(units))
+    for name in stale:
+        log(f"Removing sandbox UI unit {name}; its sandbox no longer has a UI route")
+        shell.run(["systemctl", "--user", "disable", "--now", name], check=False)
+        if not shell.dry_run:
+            (unit_dir / name).unlink(missing_ok=True)
+    if not units:
+        if stale:
+            shell.run(["systemctl", "--user", "daemon-reload"], check=False)
+        return
+    if not shell.dry_run:
+        unit_dir.mkdir(parents=True, exist_ok=True)
+        for path, text in files.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+            os.chmod(path, 0o600 if path.suffix == ".env" else 0o644)
+        for name, text in units.items():
+            (unit_dir / name).write_text(text, encoding="utf-8")
+    for e in entries:
+        log(f"Sandbox UI: https://{e['host']} -> {e['sandbox']} ({e['workspace']})")
+    shell.run(["systemctl", "--user", "daemon-reload"], check=False)
+    shell.run(["systemctl", "--user", "enable", *sorted(units)], check=False)
+    # restart, not `enable --now`: a running proxy keeps its old env file.
+    shell.run(["systemctl", "--user", "restart", *sorted(units)], check=False)
 
 
 def setup_dashboard(shell, cfg, script, home):
@@ -2280,6 +2956,7 @@ def apply_plan(data, dry_run):
     else:
         applier.apply(profiles)
     setup_dashboard(shell, cfg, data["dashboardScript"], os.environ.get("HOME", "~"))
+    setup_sandbox_ui(shell, cfg, os.environ.get("HOME", "~"))
     if dry_run:
         return 0
     failures = applier.verify(profiles)

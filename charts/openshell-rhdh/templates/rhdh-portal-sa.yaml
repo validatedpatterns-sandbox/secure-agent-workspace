@@ -1,0 +1,113 @@
+{{- /* rhdh-portal: the identity RHDH's two proxy endpoints use. It may
+create request Secrets and PipelineRuns in the portal namespace, nothing
+else; the admission policies pin their shape. */ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rhdh-portal
+  namespace: {{ .Values.rhdh.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+---
+# A long-lived token for that service account, kept by Kubernetes.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rhdh-portal-token
+  namespace: {{ .Values.rhdh.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+  annotations:
+    kubernetes.io/service-account.name: rhdh-portal
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rhdh-portal
+  namespace: {{ .Values.portal.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: ["tekton.dev"]
+    resources: ["pipelineruns"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rhdh-portal
+  namespace: {{ .Values.portal.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rhdh-portal
+subjects:
+  - kind: ServiceAccount
+    name: rhdh-portal
+    namespace: {{ .Values.rhdh.namespace }}
+{{- if .Values.rhdh.tekton.enabled }}
+---
+# rhdh-kubernetes-reader: what RHDH's Kubernetes and Tekton plugins read the
+# portal's pipeline runs as. Read only, the portal namespace only. RBAC
+# does not narrow it to one user: anyone with kubernetes.proxy (every user,
+# for the Tekton tab's logs) can read every portal run and its log, which
+# name users, profiles and Vault paths, never keys.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rhdh-kubernetes-reader
+  namespace: {{ .Values.rhdh.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rhdh-kubernetes-reader-token
+  namespace: {{ .Values.rhdh.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+  annotations:
+    kubernetes.io/service-account.name: rhdh-kubernetes-reader
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rhdh-kubernetes-reader
+  namespace: {{ .Values.portal.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["tekton.dev"]
+    resources: ["pipelineruns", "taskruns"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rhdh-kubernetes-reader
+  namespace: {{ .Values.portal.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rhdh-kubernetes-reader
+subjects:
+  - kind: ServiceAccount
+    name: rhdh-kubernetes-reader
+    namespace: {{ .Values.rhdh.namespace }}
+{{- end }}

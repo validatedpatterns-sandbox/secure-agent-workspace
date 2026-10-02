@@ -1,0 +1,167 @@
+# Self-service agent workspaces (see docs/self-service-portal.md).
+#
+#   RHDH template ──► request Secret + PipelineRun ──► portal.py create
+#     (namespace portal.namespace)                     ├─ keys ──► Vault <kv>/data/<prefixBase>/saw-<user>/<secret>
+#                                                      └─ ConfigMap saw-ws-<user> (the workspace registry)
+#   ApplicationSet (plugin generator portal.py serve) ──► Application saw-portal-<user>
+#     └─ charts/saw-users with that one user ──► namespace saw-<user> and its three apps
+#
+# The namespaces rhdh.namespace and portal.namespace are created by the
+# clustergroup (values-prod.yaml).
+
+rhdh:
+  namespace: rhdh
+  # Backstage CR of the Red Hat Developer Hub operator. The route is
+  # backstage-<name>-<namespace>.apps.<clusterDomain> unless host is set.
+  name: developer-hub
+  # Empty: the newest the cluster serves of v1alpha5, v1alpha4, v1alpha3
+  # (RHDH operator 1.10 serves v1alpha4 and v1alpha5); v1alpha5 when the
+  # cluster's API versions are not known (helm template without a cluster).
+  apiVersion: ""
+  host: ""
+  catalogProcessingSeconds: 30
+  # Backstage RBAC. Off: every signed-in realm user may use the templates and
+  # read the catalog. What a request may do is enforced by the pipeline, which
+  # acts only for the user whose Backstage token signed the request.
+  # Sidebar entries to hide: the portal is for agent workspaces, so APIs,
+  # Learning Paths and Docs (TechDocs) are left out. Names as RHDH knows them
+  # (default.* for its own entries, a plugin's route path otherwise).
+  hiddenMenuItems:
+    - default.apis
+    - default.learning-path
+    # appears once users are imported (saw-users); it lists every user
+    - default.my-group
+  # The product name in the header and the browser tab, and its logo
+  # (files/logo-light.svg, files/logo-dark.svg) instead of Red Hat
+  # Developer Hub's.
+  branding:
+    title: Secure Agent Workspace Self Service
+    logoWidth: 250
+  # RHDH plugins the portal does not use, turned off: TechDocs (the Docs
+  # entry) and the admin quickstart drawer ("Let's get you started").
+  # Package names as RHDH 1.10 lists them.
+  disabledPlugins:
+    - ./dynamic-plugins/dist/backstage-plugin-techdocs
+    - ./dynamic-plugins/dist/backstage-plugin-techdocs-module-addons-contrib
+    - ./dynamic-plugins/dist/backstage-plugin-techdocs-backend-dynamic
+    - ./dynamic-plugins/dist/red-hat-developer-hub-backstage-plugin-quickstart
+  # The home page: what a user comes for. "Actions" (the create and delete
+  # templates) and "Workspaces" (the catalog: each workspace, its status and
+  # links), without RHDH's onboarding section. Off: RHDH's default home page.
+  homePage:
+    enabled: true
+    # RHDH's dynamic home page plugin (the package name RHDH 1.10 lists).
+    package: ./dynamic-plugins/dist/red-hat-developer-hub-backstage-plugin-dynamic-home-page
+    titles:
+      templates.title: Actions
+      templates.viewAll: "View all {{count}} actions"
+      entities.title: Workspaces
+      entities.browseTheCatalog: All workspaces
+      entities.description: "Your agent workspaces: their status, their web UIs and their create and delete runs."
+      # RHDH's empty state (only when even the "Get started" card is not
+      # visible, e.g. Keycloak unreachable); its button leads to RHDH's
+      # register page, which is not offered here.
+      entities.empty: No agent workspace yet
+      entities.emptyDescription: "Create one under Actions above."
+  # Backstage RBAC. On: a user sees the user actions, their own workspace
+  # and their own scaffolder tasks; administrators (portal.admins) see only
+  # the admin actions, and every workspace. Every user but the administrators
+  # gets role saw-user through Keycloak group usersGroup (the realm's default
+  # group; the saw-rhdh-keycloak-client job adds existing users and removes
+  # administrators), which RHDH's Keycloak catalog provider imports.
+  # Off: every signed-in user sees everything (the pipeline still refuses
+  # what they may not do).
+  rbac:
+    enabled: true
+    # Who may manage RBAC in RHDH's Administration page.
+    admins:
+      - admin
+    usersGroup: saw-users
+    # RHDH's Keycloak catalog provider (users and groups), as RHDH 1.10 lists it.
+    keycloakCatalogPlugin: ./dynamic-plugins/dist/backstage-community-plugin-catalog-backend-module-keycloak-dynamic
+  # The Tekton tab on each workspace's catalog page: its create and delete
+  # pipeline runs as a graph, with each task's log. Uses RHDH's Kubernetes
+  # and Tekton plugins, reading only the portal namespace as the service
+  # account rhdh-kubernetes-reader. The package names must match the RHDH
+  # release's default list, which RHDH 1.10 takes from its plugin catalog
+  # index image; see them with
+  #   oc logs -n rhdh <pod> -c install-dynamic-plugins | grep -iE "kubernetes|tekton"
+  # (these are RHDH 1.10's).
+  tekton:
+    enabled: true
+    plugins:
+      - ./dynamic-plugins/dist/backstage-plugin-kubernetes-backend-dynamic
+      - ./dynamic-plugins/dist/backstage-plugin-kubernetes
+      - oci://ghcr.io/redhat-developer/rhdh-plugin-export-overlays/backstage-community-plugin-tekton@sha256:49093c5f91e6d46c7b43a9efe26e1705ee501dee2766578b04a9745775bffe60
+
+# The portal namespace: request Secrets, the Tekton pipelines, the workspace
+# registry (ConfigMaps saw-ws-<user>) and the ApplicationSet plugin generator.
+portal:
+  namespace: saw-portal
+  provisionerServiceAccount: saw-portal-provisioner
+  # Python 3 with the standard library is all portal.py needs.
+  image: registry.access.redhat.com/ubi9/python-311:latest
+  # A portal workspace is deleted with its VM when it is removed.
+  pruneOnRemove: true
+  # delete also removes the user's keys from Vault.
+  deleteVaultSecrets: true
+  # Administrators: they may create or delete a workspace for another user
+  # (the "... for a user" templates). Keycloak user names. Everyone else acts
+  # only for themselves.
+  admins:
+    - admin
+  generator:
+    port: 4355
+    # Only RHDH (catalog) and Argo CD (ApplicationSet plugin) may reach the
+    # generator.
+    networkPolicy: true
+
+keycloak:
+  namespace: saw-keycloak
+  name: openshell-keycloak
+  realm: openshell
+  # Default <name>-ingress-<namespace>.apps.<clusterDomain>, as openshell-saw.
+  host: ""
+  # Confidential client for RHDH; the setup Job creates or updates it.
+  clientId: rhdh
+  insecureSkipTlsVerify: true
+
+# The RHDH OIDC client secret and session secret, from Vault (values-secret:
+# rhdh-oidc, generated on first load).
+oidcSecret:
+  vaultKey: secret/data/hub/rhdh-oidc
+  secretStoreRef:
+    name: vault-backend
+    kind: ClusterSecretStore
+
+# Where the pipeline writes a user's keys, as the service account
+# portal.provisionerServiceAccount through Vault's Kubernetes auth. The role
+# and its policy are created by the imperative job saw-portal-vault
+# (ansible/playbooks/saw-portal-vault.yaml) or `make portal-vault-setup`.
+vault:
+  addr: https://vault.vault.svc:8200
+  skipVerify: true
+  authMount: hub
+  role: saw-portal-writer
+  kvMount: secret
+  prefixBase: hub
+
+# The ApplicationSet that builds a workspace per registry entry. It lives in
+# the pattern's Argo CD namespace (global.vpArgoNamespace) unless namespace
+# is set, and needs that Argo CD's ApplicationSet controller
+# (`oc get argocd -n vp-gitops -o jsonpath='{.items[0].spec.applicationSet}'`).
+applicationSet:
+  namespace: ""
+  project: default
+
+# saw-users chart values for portal workspaces, on top of the chart defaults
+# (e.g. defaults.openshellSaw). Each workspace is a one-user saw-users release.
+sawUsers: {}
+
+# Stubs for `helm template`; the pattern sets these.
+global:
+  repoURL: https://example.com/secure-agent-workspace.git
+  targetRevision: main
+  clusterDomain: example.com
+  pattern: secure-agent-workspace
+  vpArgoNamespace: vp-gitops

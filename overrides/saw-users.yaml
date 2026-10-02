@@ -1,5 +1,8 @@
 # One entry per person. Push this file and Argo CD creates saw-<name>.
-# The chart cannot create Keycloak users or Vault entries.
+# The chart cannot create Keycloak users or Vault entries. For the Keycloak
+# accounts: make -f Makefile-quickstart keycloak-add-users (creates each name
+# not in the realm yet, with a generated password; optional per entry: email,
+# firstName, lastName, roles, default [openshell-user]).
 # ownerSubject is the Keycloak subject from `openshell whoami`. Leave it
 # empty until that person has logged in once.
 users:

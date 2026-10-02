@@ -17,6 +17,7 @@ OIDC_ISSUER_URL="{{ include "openshell-sandbox.oidcIssuerUrl" . }}"
 OIDC_KEYCLOAK_NAME="{{ .Values.oidc.keycloakName }}"
 OIDC_REALM="{{ .Values.oidc.realm }}"
 KEYCLOAK_NS="{{ include "openshell-sandbox.keycloakNamespace" . }}"
+UI_ROUTE_HOSTS="{{ range $e := include "openshell-sandbox.sandboxUi" . | fromJsonArray }}{{ $e.host }} {{ end }}"
 SCRIPTS_DIR="/scripts"
 
 # --- Phase 1: tools ---
@@ -30,7 +31,7 @@ echo "Disk source is a registry/HTTP import; no golden image bootstrap needed."
 {{- end }}
 
 # --- Phase 3: dashboard redirect URI in Keycloak ---
-if [[ "${DASHBOARD_ENABLED}" == "true" && -n "${OIDC_ISSUER_URL}" ]]; then
+if [[ ( "${DASHBOARD_ENABLED}" == "true" || -n "${UI_ROUTE_HOSTS// /}" ) && -n "${OIDC_ISSUER_URL}" ]]; then
   source "${SCRIPTS_DIR}/register-keycloak-redirect.sh"
 else
   echo "Dashboard or OIDC issuer not configured; skipping Keycloak redirect registration."

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="250" height="40" viewBox="0 0 250 40">
+  <path d="M16 3 L29 8 V18 C29 27 23.5 33.5 16 37 C8.5 33.5 3 27 3 18 V8 Z" fill="none" stroke="#f56e6e" stroke-width="2.6" stroke-linejoin="round"/>
+  <path d="M10.5 19.5 L14.5 23.5 L22 15" fill="none" stroke="#f56e6e" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="38" y="17" font-family="'Red Hat Display','Red Hat Text',Helvetica,Arial,sans-serif" font-size="15" font-weight="700" fill="#ffffff">Secure Agent Workspace</text>
+  <text x="38" y="34" font-family="'Red Hat Text',Helvetica,Arial,sans-serif" font-size="13" font-weight="400" fill="#c7c7c7">Self Service</text>
+</svg>

@@ -1,0 +1,144 @@
+{{- /* What rhdh-portal (RHDH's proxy identity) may create in the portal
+namespace: request Secrets named saw-req-*, and PipelineRuns of the two
+portal pipelines, run as the provisioner, with only the request parameter.
+Updates are checked too: rhdh-portal may only create today, but a later Role
+change must not let it edit a run or a request into another shape. */ -}}
+{{- $ns := .Values.portal.namespace -}}
+{{- $caller := printf "system:serviceaccount:%s:rhdh-portal" .Values.rhdh.namespace -}}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: saw-portal-pipelineruns
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["tekton.dev"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pipelineruns"]
+  matchConditions:
+    - name: from-rhdh
+      expression: "request.userInfo.username == '{{ $caller }}'"
+  validations:
+    - expression: "has(object.spec.pipelineRef) && !has(object.spec.pipelineSpec) && object.spec.pipelineRef.name in ['saw-workspace-create', 'saw-workspace-delete'] && !has(object.spec.pipelineRef.resolver)"
+      message: "only the saw-workspace-create and saw-workspace-delete pipelines may be run"
+    # A field list, not a deny list: taskRunTemplate.podTemplate alone could
+    # add host aliases (the token check's JWKS host) or environment
+    # variables (PORTAL_ADMINS) to the provisioner's pods. Tekton adds a
+    # podTemplate only when the cluster sets a default pod template; such a
+    # cluster refuses portal runs until this list allows it.
+    - expression: "object.spec.all(k, k in ['pipelineRef', 'params', 'taskRunTemplate', 'timeouts'])"
+      message: "portal pipeline runs set only pipelineRef, params, taskRunTemplate and timeouts"
+    - expression: "has(object.spec.taskRunTemplate) && object.spec.taskRunTemplate.all(k, k == 'serviceAccountName') && object.spec.taskRunTemplate.serviceAccountName == '{{ .Values.portal.provisionerServiceAccount }}'"
+      message: "portal pipeline runs use the provisioner service account and nothing else"
+    - expression: "has(object.spec.params) && size(object.spec.params) == 1 && object.spec.params[0].name == 'request' && string(object.spec.params[0].value).matches('^saw-req-[a-z0-9]{1,20}$')"
+      message: "portal pipeline runs take exactly one parameter, request=saw-req-*"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: saw-portal-pipelineruns
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+spec:
+  policyName: saw-portal-pipelineruns
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ $ns }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: saw-portal-requests
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["secrets"]
+  matchConditions:
+    - name: from-rhdh
+      expression: "request.userInfo.username == '{{ $caller }}'"
+  validations:
+    - expression: "object.metadata.name.matches('^saw-req-[a-z0-9]{1,20}$') && has(object.metadata.labels) && object.metadata.labels['saw.redhat.com/request'] == 'true' && (!has(object.type) || object.type == 'Opaque')"
+      message: "requests are Opaque Secrets named saw-req-* with label saw.redhat.com/request=true"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: saw-portal-requests
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+spec:
+  policyName: saw-portal-requests
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ $ns }}
+---
+# The provisioner may delete an Argo CD Application only if the portal made it.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: saw-portal-application-deletes
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["argoproj.io"]
+        apiVersions: ["*"]
+        operations: ["DELETE"]
+        resources: ["applications"]
+  matchConditions:
+    - name: from-provisioner
+      expression: "request.userInfo.username == 'system:serviceaccount:{{ $ns }}:{{ .Values.portal.provisionerServiceAccount }}'"
+  validations:
+    - expression: "has(oldObject.metadata.labels) && 'saw.redhat.com/portal' in oldObject.metadata.labels && oldObject.metadata.labels['saw.redhat.com/portal'] == 'true' && oldObject.metadata.name.startsWith('portal-ws-')"
+      message: "the portal may delete only the Applications it created (portal-ws-*)"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: saw-portal-application-deletes
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+spec:
+  policyName: saw-portal-application-deletes
+  validationActions: [Deny]
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: saw-portal-limits
+  namespace: {{ $ns }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+spec:
+  limits:
+    - type: Container
+      default: { cpu: 500m, memory: 256Mi }
+      defaultRequest: { cpu: 50m, memory: 64Mi }
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: saw-portal-quota
+  namespace: {{ $ns }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+spec:
+  hard:
+    pods: "20"
+    secrets: "200"

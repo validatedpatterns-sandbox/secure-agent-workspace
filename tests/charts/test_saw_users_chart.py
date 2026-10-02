@@ -101,10 +101,14 @@ def test_waves_release_names_and_value_overrides(tmp_path):
     assert secrets["spec"]["source"]["path"] == "charts/pattern-secrets"
     assert secrets["spec"]["source"]["helm"]["releaseName"] == "saw-alice-secrets"
     assert secrets["spec"]["destination"]["namespace"] == "saw-alice"
-    assert helm_values(secrets) == {"vaultPrefix": "secret/data/hub"}
+    assert helm_values(secrets) == {"vaultPrefix": "secret/data/hub",
+                                    "sshVaultPrefix": "secret/data/hub",
+                                    "secrets": ["inference", "web-search"]}
 
     bob_secrets = helm_values(app(docs, "saw-bob-secrets"))
-    assert bob_secrets == {"vaultPrefix": "secret/data/hub/saw-bob"}
+    assert bob_secrets == {"vaultPrefix": "secret/data/hub/saw-bob",
+                           "sshVaultPrefix": "secret/data/hub",
+                           "secrets": ["inference", "web-search"]}
 
     bom = app(docs, "saw-alice-bom")
     assert bom["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "0"
@@ -272,3 +276,62 @@ def test_rendered_machine_values_validate_in_the_shipped_installer(tmp_path):
     config = json.loads(installer["data"]["config.json"])
     assert config["vmName"] == "alice"
     assert config["ownerSubject"] == ""
+
+
+
+# -- profile catalog: sandbox UI routes and the Secrets to sync ----------------
+
+def test_the_profile_catalog_is_current():
+    """files/profile-catalog.json is generated from charts/saw-bom/profiles."""
+    result = subprocess.run([sys.executable, str(ROOT / "scripts" / "saw-profile-catalog.py"), "--check"],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_ui_routes_come_from_the_profiles(tmp_path):
+    """data-science flags the default workspace's notebook and the cuda-dev
+    workspace's NemoClaw sandbox (ui.route: true)."""
+    values = helm_values(app(docs_from(render_file(tmp_path, [ALICE])), "saw-alice"))
+    assert values["sandboxUi"] == [{"workspace": "cuda-dev", "sandbox": "cuda-sandbox",
+                                    "proxyPort": 4201, "forwardPort": 14201},
+                                   {"workspace": "default", "sandbox": "notebook",
+                                    "proxyPort": 4202, "forwardPort": 14202}]
+
+
+def test_ui_routes_are_sorted_and_numbered(tmp_path):
+    user = {"name": "carol", "sandboxUi": [{"workspace": "zeta", "sandbox": "b"},
+                                            {"workspace": "alpha", "sandbox": "a"}]}
+    values = helm_values(app(docs_from(render_file(tmp_path, [user])), "saw-carol"))
+    assert [(e["workspace"], e["proxyPort"], e["forwardPort"]) for e in values["sandboxUi"]] == [
+        ("alpha", 4201, 14201), ("zeta", 4202, 14202)]
+
+
+def test_too_many_ui_routes_fail_the_render(tmp_path):
+    user = {"name": "carol", "sandboxUi": [{"workspace": "w", "sandbox": f"s{i}"} for i in range(9)]}
+    result = render_file(tmp_path, [user])
+    assert result.returncode != 0 and "at most 8" in result.stderr
+
+
+def test_only_the_profiles_secrets_are_synced_and_mounted(tmp_path):
+    """custom-inference reads inference (with url and model) and web-search."""
+    user = {"name": "dave", "profiles": ["custom-inference"]}
+    docs = docs_from(render_file(tmp_path, [user]))
+    assert helm_values(app(docs, "saw-dave-secrets"))["secrets"] == ["inference", "web-search"]
+    vm = helm_values(app(docs, "saw-dave"))
+    assert vm["inference"]["secretName"] == "inference"
+    assert vm["additionalProviderSecrets"] == ["web-search"]
+    assert vm["sandboxUi"] == []
+
+
+def test_namespace_labels_are_added(tmp_path):
+    docs = docs_from(render_file(tmp_path, [ALICE], {"namespaceLabels": {"saw.redhat.com/portal": "true"}}))
+    [ns] = [d for d in docs if d["kind"] == "Namespace"]
+    assert ns["metadata"]["labels"]["saw.redhat.com/portal"] == "true"
+    assert ns["metadata"]["labels"]["openshell.pattern/saw"] == "true"
+
+
+@pytest.mark.parametrize("name", ["alice-bom", "alice-secrets"])
+def test_names_that_would_take_another_users_apps_are_refused(tmp_path, name):
+    """saw-<u>-bom is user u's BOM app, and the VM app of a user named u-bom."""
+    result = render_file(tmp_path, [{"name": name}])
+    assert result.returncode != 0 and "ends in -bom or -secrets" in result.stderr

@@ -27,9 +27,14 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 SHARED_NS="${SHARED_NS:-openshell-agents}"
 ALICE_USER="alice"
-ALICE_PASS="alice"
 BOB_USER="bob"
-BOB_PASS="bob"
+# Generated passwords (no defaults): from the env, else the Keycloak Secret.
+kc_password() {
+  KEYCLOAK_NS="${KEYCLOAK_NS:-saw-keycloak}" KEYCLOAK_CHART="${REPO_ROOT}/charts/openshell-keycloak" \
+    "${REPO_ROOT}/scripts/keycloak-users.sh" password "$1" 2>/dev/null || true
+}
+ALICE_PASS="${ALICE_PASS:-$(kc_password alice)}"
+BOB_PASS="${BOB_PASS:-$(kc_password bob)}"
 OIDC_CLIENT_ID="${OIDC_CLIENT_ID:-openshell-cli}"
 SKIP_CLEANUP="${1:-}"
 
@@ -73,7 +78,7 @@ keycloak_token() {
     -d "grant_type=password" \
     -d "client_id=${OIDC_CLIENT_ID}" \
     -d "username=${username}" \
-    -d "password=${password}" \
+    --data-urlencode "password=${password}" \
     -d "scope=openid email profile" 2>/dev/null)" \
     || die "Failed to get token for ${username} from Keycloak"
 

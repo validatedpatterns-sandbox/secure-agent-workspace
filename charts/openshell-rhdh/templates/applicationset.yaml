@@ -1,0 +1,80 @@
+{{- /* One Application per workspace registry entry, rendering saw-users for
+that user alone: namespace saw-<user> and its secrets, BOM and VM apps, as
+for a user listed in overrides/saw-users.yaml. */ -}}
+{{- $appNs := include "openshell-rhdh.argoNamespace" . -}}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: saw-portal-generator
+  namespace: {{ $appNs }}
+  labels:
+    # The ApplicationSet controller reads plugin tokens only from Secrets
+    # labelled as Argo CD's.
+    app.kubernetes.io/part-of: argocd
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+type: Opaque
+stringData:
+  token: {{ include "openshell-rhdh.generatorToken" . | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: saw-portal-generator
+  namespace: {{ $appNs }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+data:
+  token: "$saw-portal-generator:token"
+  baseUrl: "http://saw-workspaces-generator.{{ .Values.portal.namespace }}.svc:{{ int .Values.portal.generator.port }}"
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: saw-portal-workspaces
+  namespace: {{ $appNs }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+spec:
+  # Create and update only, and keep the Applications if this ApplicationSet
+  # goes: a registry hiccup or a renamed ApplicationSet must never delete a
+  # VM. A workspace is deleted by its delete pipeline, which deletes its
+  # Application.
+  syncPolicy:
+    applicationsSync: create-update
+    preserveResourcesOnDeletion: true
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - plugin:
+        configMapRef:
+          name: saw-portal-generator
+        requeueAfterSeconds: 30
+  template:
+    metadata:
+      name: 'portal-ws-{{ "{{" }} .name {{ "}}" }}'
+      labels:
+        validatedpatterns.io/pattern: {{ .Values.global.pattern | default "secure-agent-workspace" | quote }}
+        openshell.pattern/owner: '{{ "{{" }} .name {{ "}}" }}'
+        saw.redhat.com/portal: "true"
+      finalizers:
+        # Deleting this Application deletes the user's Applications (and,
+        # with pruneOnRemove, the VM and namespace).
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: {{ .Values.applicationSet.project }}
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: {{ .Values.portal.namespace }}
+      source:
+        repoURL: {{ .Values.global.repoURL | quote }}
+        targetRevision: {{ .Values.global.targetRevision | quote }}
+        path: charts/saw-users
+        helm:
+          releaseName: 'portal-ws-{{ "{{" }} .name {{ "}}" }}'
+          values: '{{ "{{" }} .values {{ "}}" }}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        retry:
+          limit: 20

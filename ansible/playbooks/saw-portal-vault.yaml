@@ -1,0 +1,69 @@
+# Imperative job: let the self-service portal's pipeline write users' keys to
+# Vault (policy + Kubernetes auth role saw-portal-writer), through Vault's
+# HTTP API with the pattern's root token. Idempotent; the imperative CronJob
+# runs it every 10 minutes. Same result as scripts/portal-vault-setup.sh.
+- name: Vault policy and role for the self-service portal
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    vault_addr: https://vault.vault.svc:8200
+    keys_ns: imperative
+    auth_mount: hub
+    kv_mount: secret
+    prefix_base: hub
+    role: saw-portal-writer
+    portal_ns: saw-portal
+    portal_sa: saw-portal-provisioner
+  tasks:
+    - name: Read the Vault root token
+      kubernetes.core.k8s_info:
+        kind: Secret
+        namespace: "{{ keys_ns }}"
+        name: vaultkeys
+      register: vaultkeys
+      no_log: true
+
+    - name: Skip until Vault is initialised
+      ansible.builtin.meta: end_play
+      when: vaultkeys.resources | length == 0
+
+    - name: Set the root token
+      ansible.builtin.set_fact:
+        vault_token: "{{ (vaultkeys.resources[0].data.vault_data_json | b64decode | from_json).root_token }}"
+      no_log: true
+
+    - name: Policy {{ role }}
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/sys/policies/acl/{{ role }}"
+        method: PUT
+        headers:
+          X-Vault-Token: "{{ vault_token }}"
+        body_format: json
+        body:
+          policy: |
+            path "{{ kv_mount }}/data/{{ prefix_base }}/saw-*" {
+              capabilities = ["create", "update", "read"]
+            }
+            path "{{ kv_mount }}/metadata/{{ prefix_base }}/saw-*" {
+              capabilities = ["read", "list", "delete"]
+            }
+        status_code: [200, 204]
+        validate_certs: false
+      no_log: true
+
+    - name: Kubernetes auth role {{ role }}
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/auth/{{ auth_mount }}/role/{{ role }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ vault_token }}"
+        body_format: json
+        body:
+          bound_service_account_names: ["{{ portal_sa }}"]
+          bound_service_account_namespaces: ["{{ portal_ns }}"]
+          policies: ["{{ role }}"]
+          ttl: 15m
+        status_code: [200, 204]
+        validate_certs: false
+      no_log: true

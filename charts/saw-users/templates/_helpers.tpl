@@ -27,6 +27,9 @@ watches, not in whatever namespace this chart happens to be released into.
 {{- if gt (len $route) 63 -}}
 {{- fail (printf "user name %q makes dashboard route label %q %d characters; DNS labels allow 63" $name $route (len $route)) -}}
 {{- end -}}
+{{- if or (hasSuffix "-bom" $name) (hasSuffix "-secrets" $name) -}}
+{{- fail (printf "user name %q ends in -bom or -secrets: its Argo CD applications would take another user's names" $name) -}}
+{{- end -}}
 {{- if hasKey $seen $name -}}
 {{- fail (printf "duplicate user name %q" $name) -}}
 {{- end -}}
@@ -80,8 +83,107 @@ user's `values` on top. Nested maps merge; the user's keys win.
 {{- /* Argo CD runs the chart's pre-delete hook when the app is deleted: only
      users with pruneOnRemove get it, the others keep their VM. */ -}}
 {{- $_ := set $base "cleanupOnDelete" (eq (include "saw-users.prune" (dict "root" $root "user" $user)) "true") -}}
+{{- $_ := set $base "sandboxUi" (include "saw-users.sandboxUi" . | fromJsonArray) -}}
+{{- /* The provider Secrets the VM mounts and waits for: the ones the user's
+     profiles read, which is also what pattern-secrets syncs. */ -}}
+{{- $secretNames := include "saw-users.secretNames" . | fromJsonArray -}}
+{{- $inf := deepCopy (index $base "inference" | default dict) -}}
+{{- $_ := set $inf "secretName" (ternary "inference" "" (has "inference" $secretNames)) -}}
+{{- $_ := set $base "inference" $inf -}}
+{{- $extra := list -}}
+{{- range $secretNames -}}{{- if ne . "inference" -}}{{- $extra = append $extra . -}}{{- end -}}{{- end -}}
+{{- $_ := set $base "additionalProviderSecrets" $extra -}}
 {{- $overlay := deepCopy ($user.values | default dict) -}}
 {{- mergeOverwrite $base $overlay | toYaml -}}
+{{- end -}}
+
+{{/*
+The user's profile names: their own `profiles`, else the default.
+*/}}
+{{- define "saw-users.profileNames" -}}
+{{- $user := .user -}}
+{{- $profiles := .root.Values.defaults.profiles -}}
+{{- if hasKey $user "profiles" -}}
+{{- $profiles = $user.profiles -}}
+{{- end -}}
+{{- toJson ($profiles | default list) -}}
+{{- end -}}
+
+{{/*
+The catalog entries (files/profile-catalog.json, generated from
+charts/saw-bom/profiles by scripts/saw-profile-catalog.py; CI checks it is
+current) of the user's profiles. A profile the catalog does not know (one
+added to a fork without regenerating it) contributes nothing here.
+*/}}
+{{- define "saw-users.userCatalog" -}}
+{{- $catalog := (.root.Files.Get "files/profile-catalog.json" | fromJson).profiles | default dict -}}
+{{- $out := list -}}
+{{- range $name := (include "saw-users.profileNames" . | fromJsonArray) -}}
+{{- if hasKey $catalog $name -}}
+{{- $out = append $out (index $catalog $name) -}}
+{{- end -}}
+{{- end -}}
+{{- toJson $out -}}
+{{- end -}}
+
+{{/*
+Sandboxes of the user's profiles that ask for a UI route (enabled sandbox
+in an enabled workspace, ui.route: true), sorted by <workspace>/<sandbox>,
+each with the VM ports its oauth2-proxy and its forward listen on. A user's
+`sandboxUi` list, when set, replaces it.
+*/}}
+{{- define "saw-users.sandboxUi" -}}
+{{- $user := .user -}}
+{{- $root := .root -}}
+{{- $cfg := $root.Values.sandboxUi -}}
+{{- $keys := dict -}}
+{{- if hasKey $user "sandboxUi" -}}
+{{- range $user.sandboxUi | default list -}}
+{{- $_ := set $keys (printf "%s/%s" .workspace .sandbox) true -}}
+{{- end -}}
+{{- else -}}
+{{- range $profile := (include "saw-users.userCatalog" . | fromJsonArray) -}}
+{{- range $ws := $profile.workspaces | default list -}}
+{{- if $ws.enabled -}}
+{{- range $sb := $ws.sandboxes | default list -}}
+{{- if and $sb.enabled $sb.uiRoute -}}
+{{- $_ := set $keys (printf "%s/%s" $ws.name $sb.name) true -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $sorted := keys $keys | sortAlpha -}}
+{{- if gt (len $sorted) (int $cfg.max) -}}
+{{- fail (printf "user %q has %d sandboxes with a UI route; at most %d (sandboxUi.max)" $user.name (len $sorted) (int $cfg.max)) -}}
+{{- end -}}
+{{- $out := list -}}
+{{- range $i, $key := $sorted -}}
+{{- $parts := splitList "/" $key -}}
+{{- $out = append $out (dict "workspace" (index $parts 0) "sandbox" (index $parts 1)
+      "proxyPort" (add (int $cfg.proxyBasePort) $i) "forwardPort" (add (int $cfg.forwardBasePort) $i)) -}}
+{{- end -}}
+{{- toJson $out -}}
+{{- end -}}
+
+{{/*
+The Secrets the user's profiles read (credentialSecret of every provider in
+an enabled workspace). pattern-secrets syncs only these.
+*/}}
+{{- define "saw-users.secretNames" -}}
+{{- $names := dict -}}
+{{- $known := include "saw-users.userCatalog" . | fromJsonArray -}}
+{{- range $profile := $known -}}
+{{- range $name, $_ := $profile.secrets | default dict -}}
+{{- $_ := set $names $name true -}}
+{{- end -}}
+{{- end -}}
+{{- if not $known -}}
+{{- /* No profile in the catalog: keep the Secrets every SAW used to get. */ -}}
+{{- range .root.Values.defaults.secrets -}}{{- $_ := set $names . true -}}{{- end -}}
+{{- end -}}
+{{- toJson (keys $names | sortAlpha) -}}
 {{- end -}}
 
 {{- define "saw-users.profiles" -}}
@@ -94,10 +196,16 @@ user's `values` on top. Nested maps merge; the user's keys win.
 {{- toYaml (dict "profiles" $profiles) -}}
 {{- end -}}
 
+{{/*
+pattern-secrets values: the user's Vault prefix for their provider keys,
+the shared prefix for the SSH key, and only the Secrets their profiles read.
+*/}}
 {{- define "saw-users.vaultPrefix" -}}
 {{- $user := .user -}}
 {{- $root := .root -}}
-{{- toYaml (dict "vaultPrefix" ($user.vaultPrefix | default $root.Values.defaults.vaultPrefix)) -}}
+{{- toYaml (dict "vaultPrefix" ($user.vaultPrefix | default $root.Values.defaults.vaultPrefix)
+      "sshVaultPrefix" $root.Values.defaults.sshVaultPrefix
+      "secrets" (include "saw-users.secretNames" . | fromJsonArray)) -}}
 {{- end -}}
 
 {{- define "saw-users.application" -}}

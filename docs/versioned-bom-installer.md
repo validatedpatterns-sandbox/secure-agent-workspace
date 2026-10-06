@@ -172,6 +172,7 @@ flag on requires recreating the VM. See [Live inputs](#live-inputs).
 
 ```bash
 make test-installer        # installer + chart tests; chart tests need helm
+make test-tool-gate        # tool-action gate tests; needs node; not run in CI
 ```
 
 - `tests/installer`: the real `apply_bom.py` against fake `podman`,

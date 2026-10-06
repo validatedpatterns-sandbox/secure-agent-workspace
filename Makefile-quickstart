@@ -574,4 +574,14 @@ test-installer: ## Run installer + chart tests (chart tests need helm on PATH)
 		echo "Missing test dependencies for $(PYTHON). Install them with:"; \
 		echo "  $(PYTHON) -m pip install -r tests/requirements.txt"; exit 1; }
 	PYTHONPATH=cli/src$${PYTHONPATH:+:$$PYTHONPATH} $(PYTHON) -m pytest -q -p no:cacheprovider \
+		--ignore=tests/installer/test_tool_gate.py \
 		tests/installer tests/charts tests/scripts cli/tests/test_kube.py cli/tests/test_cli.py
+
+.PHONY: test-tool-gate
+test-tool-gate: ## Tool-action gate tests (needs node on PATH; not part of CI)
+	@$(PYTHON) -c "import pytest, yaml" 2>/dev/null || { \
+		echo "Missing test dependencies for $(PYTHON). Install them with:"; \
+		echo "  $(PYTHON) -m pip install -r tests/requirements.txt"; exit 1; }
+	@command -v node >/dev/null || { echo "node is required for make test-tool-gate"; exit 1; }
+	PYTHONPATH=cli/src$${PYTHONPATH:+:$$PYTHONPATH} $(PYTHON) -m pytest -q -p no:cacheprovider \
+		tests/installer/test_tool_gate.py

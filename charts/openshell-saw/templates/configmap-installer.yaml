@@ -70,6 +70,12 @@ data:
 {{ include "openshell-sandbox.gatewayToml" . | indent 4 }}
   apply_bom.py: |
 {{ .Files.Get "files/installer/apply_bom.py" | indent 4 }}
+  tool-actions.yaml: |
+{{ .Files.Get "files/installer/tool-actions.yaml" | indent 4 }}
+  tool-gate.mjs: |
+{{ .Files.Get "files/installer/tool-gate.mjs" | indent 4 }}
+  tool-gate-plugin.mjs: |
+{{ .Files.Get "files/installer/tool-gate-plugin.mjs" | indent 4 }}
   setup-dashboard.sh: |
 {{ .Files.Get "files/installer/setup-dashboard.sh" | indent 4 }}
 {{- if .Files.Get "files/installer/bundle.sigstore.json" }}

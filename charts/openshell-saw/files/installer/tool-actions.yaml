@@ -1,0 +1,21 @@
+# Consequential tool actions. This list is the policy: nothing in the
+# tool-gate code names these tools. defaultAction applies when no rule
+# matches, and every call is still audited with the signed-in user and task.
+version: 1
+defaultAction: allow
+rules:
+  - id: exec-consequential
+    tool: exec
+    action: approval
+    whenCommandMatches:
+      - git push
+      - gh pr merge
+      - "rm "
+      - kubectl delete
+      - oc delete
+  - id: message-send
+    tool: message
+    action: approval
+  - id: saw-denied-tool
+    tool: saw-denied-tool
+    action: deny

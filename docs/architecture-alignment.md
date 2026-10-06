@@ -77,7 +77,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 - Agents run inside container sandboxes managed by the OpenShell gateway
 - Inference routed through user-configured provider endpoints
 
-**Alignment:** Full for Phase I. The reference design's Phase II runtime sandboxing (per-tool enforcement, credential proxying, filesystem scoping) is an OpenShell-internal capability not configured by this deployment.
+**Alignment:** Full for Phase I. Per-tool approval is the OpenClaw `saw-tool-gate` hook fed by `charts/governance-policy/tool-actions.yaml`: a consequential tool does not run until the configured approval path allows it, and each call is audited with the signed-in user and the current task. Credential proxying and the cluster OCSF pipeline are still absent.
 
 ### 6. Secret Management
 
@@ -108,7 +108,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 
 **Reference:** "OCSF-compatible audit path captures workspace lifecycle events, broker sessions, policy-release activity and runtime/tool events."
 
-**Implementation:** Not implemented. OpenShift's built-in audit logging captures API server events, and Keycloak logs authentication events, but there is no unified OCSF-compatible audit pipeline.
+**Implementation:** Tool-call decisions (allow, deny, approval required, approved, rejected) are appended to `/sandbox/.saw/audit/tool-actions.jsonl` on the sandbox volume, each with the signed-in user and the current task. OpenShift audit logs and Keycloak authentication events remain separate. There is no unified OCSF-compatible audit pipeline.
 
 **Gap:** Adding structured audit logging would require:
 1. Forwarding OpenShift audit logs, Keycloak events, and OpenShell gateway logs to a central collector
@@ -143,7 +143,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 | Reference Design Phase | This Implementation |
 |---|---|
 | **Phase I: Perimeter-based enforcement** | Largely implemented — VM isolation, OIDC, image governance, secret management, GitOps, operator controls |
-| **Phase II: Runtime-based enforcement** | Not yet implemented — policy bundles, credential proxying, per-tool enforcement, runtime reporting |
+| **Phase II: Runtime-based enforcement** | Per-tool approval and user/task audit are implemented (`tool-actions.yaml`, `saw-tool-gate`). Policy bundles, credential proxying, and OCSF collection are not |
 
 ## Recommendations for Closing Gaps
 

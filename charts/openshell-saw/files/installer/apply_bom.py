@@ -13,6 +13,9 @@ saw-mount-inputs mounts either kind under /run/saw:
     /run/saw/installer/apply_bom.py         this script
     /run/saw/installer/gateway.env|.toml    gateway config, synced on every boot
     /run/saw/installer/setup-dashboard.sh   optional dashboard setup
+    /run/saw/installer/tool-actions.yaml    consequential-tool policy
+    /run/saw/installer/tool-gate.mjs        tool-call decision engine
+    /run/saw/installer/tool-gate-plugin.mjs OpenClaw before_tool_call hook
     /run/saw/profiles/<flat key>.yaml       SAW-BOM profiles (saw-bom chart)
     /run/saw/secrets/<secret>/<key>         provider credential Secrets
 
@@ -1808,6 +1811,83 @@ def ws_args(name):
     return [] if name == "default" else ["--workspace", name]
 
 
+_TOOL_GATE_PACKAGE = """\
+{
+  "name": "saw-tool-gate",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "openclaw": {
+    "extensions": ["./index.js"],
+    "runtimeExtensions": ["./index.js"]
+  }
+}
+"""
+
+_TOOL_GATE_MANIFEST = """\
+{
+  "id": "saw-tool-gate",
+  "name": "SAW tool gate",
+  "description": "Audit every tool call with the signed-in user and current task, and require approval before consequential tools run.",
+  "activation": {"onStartup": true},
+  "configSchema": {"type": "object", "additionalProperties": false}
+}
+"""
+
+# CJS so `node -e` can run it. The base64 is the file payload, not a secret.
+_TOOL_GATE_WRITER = """\
+const fs = require("fs");
+const path = require("path");
+const SAW_TOOL_GATE_B64 = "__B64__";
+const payload = JSON.parse(Buffer.from(SAW_TOOL_GATE_B64, "base64").toString("utf8"));
+for (const [dest, body] of Object.entries(payload.files)) {
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.writeFileSync(dest, body);
+}
+fs.mkdirSync("/sandbox/.saw/audit", { recursive: true });
+const linkDir = "/sandbox/.openclaw/extensions/saw-tool-gate/node_modules";
+fs.mkdirSync(linkDir, { recursive: true });
+function findOpenClaw() {
+  const candidates = [
+    "/usr/local/lib/openclaw/node_modules/openclaw",
+    "/usr/local/lib/nemoclaw/openclaw-runtime/node_modules/openclaw",
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate + "/package.json")) return candidate;
+  }
+  try {
+    let dir = path.dirname(fs.realpathSync("/usr/local/bin/openclaw"));
+    for (let i = 0; i < 6; i++) {
+      const pkgPath = dir + "/package.json";
+      if (fs.existsSync(pkgPath)) {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+        if (pkg.name === "openclaw") return dir;
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  } catch (err) {}
+  return "";
+}
+const target = findOpenClaw();
+const link = linkDir + "/openclaw";
+if (target) {
+  try { fs.unlinkSync(link); } catch (err) {}
+  fs.symlinkSync(target, link);
+}
+if (payload.enable) {
+  const cfgPath = "/sandbox/.openclaw/openclaw.json";
+  const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+  cfg.plugins = cfg.plugins || {};
+  cfg.plugins.entries = cfg.plugins.entries || {};
+  const prev = cfg.plugins.entries["saw-tool-gate"] || {};
+  cfg.plugins.entries["saw-tool-gate"] = Object.assign({}, prev, { enabled: true });
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + "\\n");
+}
+console.log("saw-tool-gate installed");
+"""
+
 MANAGED_LABEL = "saw.redhat.com/managed=true"
 MANAGED_LABEL_KEY = "saw.redhat.com/managed"
 # OpenShell 0.0.116 and 0.1.2 print the two kinds differently (confirmed on
@@ -2714,6 +2794,9 @@ class ProfileApplier:
         if not base_url or not key_var:
             log(f"WARN: no native endpoint known for provider type '{provider.type}'; "
                 f"set baseUrl on provider '{provider.name}'. Skipping OpenClaw onboarding")
+            # No openclaw.json yet, so the plugin entry is not enabled. The
+            # files are still in place for a later onboard.
+            self.install_tool_gate(ws, sb, enable=False)
             # The sandbox still has to stay Ready after the installer exits.
             self.install_keepalive(ws, sb)
             return
@@ -2742,6 +2825,10 @@ class ProfileApplier:
             self.cli(*exec_cmd, "sh", "-c",
                      f"{oc_env} openclaw config set gateway.controlUi.allowedOrigins {origins}",
                      check=False)
+        # Before the gateway process starts, so this boot loads the hook.
+        # gateway_start_script restarts only on a harness refill or when none
+        # is running; the files are in place either way.
+        self.install_tool_gate(ws, sb, enable=True)
         refilled = self.harness_refilled.get((ws.name, sb.name), False)
         # Restart (and rotate the token with it) only on a refill or when no
         # gateway is running: an unconditional restart would cut live
@@ -2888,6 +2975,47 @@ class ProfileApplier:
                 log(f"Removed harness image {image}; no sandbox uses it any more")
         self.ledger.data["harnessImages"] = sorted(self.harness_images)
         self.ledger.save()
+
+    def install_tool_gate(self, ws, sb, enable=True):
+        """Copy the tool-action policy and OpenClaw hook into an agent sandbox.
+
+        Generic sandboxes never get here. The consequential-tool list is the
+        YAML file, not this method. enable is false when OpenClaw has not
+        written openclaw.json yet.
+        """
+        here = Path(__file__).resolve().parent
+        needed = {
+            "tool-actions.yaml": here / "tool-actions.yaml",
+            "tool-gate.mjs": here / "tool-gate.mjs",
+            "tool-gate-plugin.mjs": here / "tool-gate-plugin.mjs",
+        }
+        missing = [name for name, path in needed.items() if not path.is_file()]
+        if missing:
+            raise InstallerError(
+                "tool gate files missing from the installer disk: " + ", ".join(missing))
+        identity = {
+            "username": self.cfg.get("vmName") or "",
+            "subject": self.cfg.get("ownerSubject") or "",
+            "sandbox": sb.name,
+            "workspace": ws.name,
+        }
+        ext = "/sandbox/.openclaw/extensions/saw-tool-gate"
+        files = {
+            f"{ext}/package.json": _TOOL_GATE_PACKAGE,
+            f"{ext}/openclaw.plugin.json": _TOOL_GATE_MANIFEST,
+            f"{ext}/index.js": needed["tool-gate-plugin.mjs"].read_text(encoding="utf-8"),
+            f"{ext}/tool-gate.mjs": needed["tool-gate.mjs"].read_text(encoding="utf-8"),
+            "/sandbox/.saw/tool-actions.yaml": needed["tool-actions.yaml"].read_text(encoding="utf-8"),
+            "/sandbox/.saw/identity.json": json.dumps(identity, indent=2) + "\n",
+        }
+        encoded = base64.b64encode(json.dumps({"files": files, "enable": enable}).encode()).decode()
+        script = _TOOL_GATE_WRITER.replace("__B64__", encoded)
+        log(f"Installing saw-tool-gate in sandbox '{sb.name}'")
+        result = self.cli(
+            "sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty", "--",
+            "node", "-e", script, check=False, quiet=True)
+        if not result.ok:
+            log(f"ERROR: saw-tool-gate was not installed in '{sb.name}'")
 
     def install_keepalive(self, ws, sb):
         """A system unit that keeps an exec session open so the sandbox stays
@@ -3569,6 +3697,16 @@ def cmd_apply(args):
             script = copy_dir / "apply_bom.py"
             shutil.copyfile(Path(__file__).resolve(), script)
             os.chmod(script, 0o644)
+            # The runtime user executes this copy, so the tool-gate files it
+            # reads from next to itself have to come along. They are part of
+            # the installer disk (inputs.installer), not only the source tree.
+            for name in ("tool-actions.yaml", "tool-gate.mjs", "tool-gate-plugin.mjs"):
+                src = inputs.installer / name
+                if not src.is_file():
+                    raise InstallerError(f"tool gate file missing from the installer disk: {name}")
+                dest = copy_dir / name
+                shutil.copyfile(src, dest)
+                os.chmod(dest, 0o644)
             dash_copy = copy_dir / "setup-dashboard.sh"
             if inputs.dashboard_script.is_file():
                 shutil.copyfile(inputs.dashboard_script, dash_copy)

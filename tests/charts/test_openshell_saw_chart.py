@@ -653,6 +653,32 @@ def test_every_profile_names_its_binaries():
             assert doc.get("binaries"), path.name
 
 
+def test_tool_actions_copy_matches_governance_policy():
+    """The installer cannot read another chart, so the consequential-tool
+    list is copied. The two files are the same policy."""
+    gov = ROOT / "charts" / "governance-policy" / "tool-actions.yaml"
+    copy = CHART / "files" / "installer" / "tool-actions.yaml"
+    assert copy.read_text() == gov.read_text()
+
+
+def test_installer_disk_ships_the_tool_gate(default_docs):
+    data = installer_data(default_docs)
+    assert data["tool-actions.yaml"] == (CHART / "files" / "installer" / "tool-actions.yaml").read_text()
+    assert "before_tool_call" in data["tool-gate-plugin.mjs"]
+    assert "parsePolicy" in data["tool-gate.mjs"]
+
+
+def test_governance_policy_configmap_ships_tool_actions():
+    result = helm_template(ROOT / "charts" / "governance-policy",
+                           release="governance-policy", namespace="openshell-agents")
+    assert result.returncode == 0, result.stderr
+    docs = [d for d in yaml.safe_load_all(result.stdout) if d]
+    policy = next(d for d in docs if d["metadata"]["name"] == "governance-interceptor-policy")
+    assert policy["data"]["tool-actions.yaml"] == (
+        ROOT / "charts" / "governance-policy" / "tool-actions.yaml").read_text()
+    assert "policy.yaml" in policy["data"]
+
+
 def test_installer_profile_copies_match_governance_policy():
     copies = sorted(SAW_PROFILES.glob("*.yaml"))
     assert [p.name for p in copies] == ["brave.yaml", "nvidia.yaml", "openai.yaml"]

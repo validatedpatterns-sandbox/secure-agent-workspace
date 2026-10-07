@@ -197,6 +197,22 @@ def test_a_sandbox_that_recovers_is_not_recreated(ab, fake_env, config, profiles
     assert fake_env.openshell_state()["sandboxes"]["default/notebook"]["phase"] == "Ready"
 
 
+def test_recovered_sandbox_with_old_workload_api_mount_is_recreated(
+        ab, fake_env, config, profiles, creds, fast_polls, monkeypatch):
+    """Identity opt-out must inspect mounts even when an Error phase recovers."""
+    make_applier(ab, config, creds).apply(profiles)
+    state = fake_env.openshell_state()
+    state["sandboxes"]["default/notebook"].update(phase="Error", after=[2, "Ready"])
+    fake_env.set_openshell_state(state)
+    monkeypatch.setattr(
+        ab.ProfileApplier, "workload_api_mount_must_go",
+        lambda self, ws, sb: ws.name == "default" and sb.name == "notebook")
+
+    make_applier(ab, config, creds).apply(profiles)
+    assert ["sandbox", "delete", "notebook"] in fake_env.openshell_calls()
+    assert fake_env.openshell_state()["sandboxes"]["default/notebook"]["phase"] == "Ready"
+
+
 def test_a_recreate_waits_for_the_deletion(ab, fake_env, config, profiles, creds, fast_polls, monkeypatch):
     """Found live: `sandbox delete` only accepts the deletion, and the create
     right after it failed with "already exists"."""

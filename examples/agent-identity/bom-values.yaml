@@ -1,0 +1,19 @@
+profiles: []
+# This UBI digest supplies sh and curl without an incompatible image policy.
+profileFiles:
+  profiles/identity-demo/default/workspace.yaml: "apiVersion: saw.redhat.com/v1alpha1\n\
+    kind: Workspace\nmetadata:\n  name: default\nspec:\n  enabled: true\n"
+  profiles/identity-demo/default/providers.yaml: "apiVersion: saw.redhat.com/v1alpha1\n\
+    kind: Providers\nspec:\n  providers:\n  - name: protected\n    runtimeCredentials:\
+    \ true\n    type: saw-demo-cc\n"
+  profiles/identity-demo/default/sandbox.yaml: "apiVersion: saw.redhat.com/v1alpha1\n\
+    kind: Sandboxes\nspec:\n  sandboxes:\n  - image: registry.access.redhat.com/ubi9/ubi@sha256:dec374e05cc13ebbc0975c9f521f3db6942d27f8ccdf06b180160490eef8bdbc\n\
+    \    name: agent\n    providers:\n    - protected\n    type: generic\n"
+  profiles/identity-demo/research/workspace.yaml: "apiVersion: saw.redhat.com/v1alpha1\n\
+    kind: Workspace\nmetadata:\n  name: research\nspec:\n  enabled: true\n"
+  profiles/identity-demo/research/providers.yaml: "apiVersion: saw.redhat.com/v1alpha1\n\
+    kind: Providers\nspec:\n  providers:\n  - name: protected\n    runtimeCredentials:\
+    \ true\n    type: saw-demo-cc\n"
+  profiles/identity-demo/research/sandbox.yaml: "apiVersion: saw.redhat.com/v1alpha1\n\
+    kind: Sandboxes\nspec:\n  sandboxes:\n  - image: registry.access.redhat.com/ubi9/ubi@sha256:dec374e05cc13ebbc0975c9f521f3db6942d27f8ccdf06b180160490eef8bdbc\n\
+    \    name: agent\n    providers:\n    - protected\n    type: generic\n"

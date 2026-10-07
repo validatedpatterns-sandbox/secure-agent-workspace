@@ -36,11 +36,17 @@ cosign:
 # config.json and skip enforcement (PR #54 review round 2, 1).
 signing:
   floor: ""
+  # Trusted cosign public keys baked into /etc/saw/trust/<name>.pub.
+  # Keep private keys out of values and Git. A production image should
+  # set floor: enforce and supply the publisher keys used by its BOM.
+  publicKeys: {}
 
 build:
   builderImage: "registry.fedoraproject.org/fedora:44"
   fedoraCloud: "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"
   memoryLimit: "4Gi"
+  ephemeralStorageRequest: "8Gi"
+  nodeSelector: {}
 
 output:
   imageStreamTag: "openshell-gateway:latest"

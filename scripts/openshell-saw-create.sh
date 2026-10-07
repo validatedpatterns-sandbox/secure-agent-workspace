@@ -45,9 +45,25 @@ OWNER_SUBJECT="${OWNER_SUBJECT:-}"
 SCRIPTS_DIR="${SCRIPTS_DIR:-scripts}"
 CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-podman}"
 GOVERNANCE_ENABLED="${GOVERNANCE_ENABLED:-true}"
+DYNAMIC_MODE="${DYNAMIC_PROVIDERS:-false}"
+SAW_VALUES_ARGS=()
+BOM_VALUES_ARGS=()
+if [[ -n "${SAW_VALUES:-}" ]]; then
+  IFS=',' read -r -a SAW_VALUE_FILES <<< "${SAW_VALUES}"
+  for values_file in "${SAW_VALUE_FILES[@]}"; do
+    [[ -f "${values_file}" ]] || { echo "SAW values file not found: ${values_file}" >&2; exit 1; }
+    SAW_VALUES_ARGS+=(-f "${values_file}")
+  done
+fi
+[[ -z "${SAW_BOM_VALUES:-}" ]] || BOM_VALUES_ARGS=(-f "${SAW_BOM_VALUES}")
+if [[ "${DYNAMIC_MODE}" == true ]]; then
+  [[ -n "${SAW_VALUES:-}" && -f "${SAW_BOM_VALUES:-}" ]] || {
+    echo 'Dynamic providers require SAW_VALUES and SAW_BOM_VALUES files.' >&2; exit 1;
+  }
+fi
 
 # Validate provider
-if [[ -z "${PROVIDER}" && -z "${GCP_SA_JSON}" ]]; then
+if [[ -z "${PROVIDER}" && -z "${GCP_SA_JSON}" && "${DYNAMIC_MODE}" != true ]]; then
   echo "Error: PROVIDER or GCP_SA_JSON is required."
   echo ""
   echo "Usage:"
@@ -91,7 +107,7 @@ fi
 # --- Detect OIDC issuer (OIDC_ISSUER=none deploys without OIDC) ---
 if [[ "${OIDC_ISSUER}" == "none" ]]; then
   OIDC_ISSUER=""
-elif [[ -z "${OIDC_ISSUER}" ]]; then
+elif [[ -z "${OIDC_ISSUER}" && "${DYNAMIC_MODE}" != true ]]; then
   KC_HOST=$("${SCRIPTS_DIR}/keycloak-host.sh" "${KEYCLOAK_NS}" 2>/dev/null || true)
   if [[ -n "${KC_HOST}" ]]; then
     OIDC_ISSUER="https://${KC_HOST}/realms/${KEYCLOAK_REALM}"
@@ -165,22 +181,40 @@ if [[ -n "${PROFILES}" ]]; then
   BOM_OPTS=(-f "${BOM_VALUES}")
 fi
 # ${arr[@]+...}: an empty array is "unbound" under set -u in bash < 4.4 (macOS).
-helm upgrade --install saw-bom "${SAW_BOM_CHART}" --namespace "${DEPLOY_NS}" ${BOM_OPTS[@]+"${BOM_OPTS[@]}"} >/dev/null
+helm upgrade --install saw-bom "${SAW_BOM_CHART}" --namespace "${DEPLOY_NS}" \
+  ${BOM_OPTS[@]+"${BOM_OPTS[@]}"} ${BOM_VALUES_ARGS[@]+"${BOM_VALUES_ARGS[@]}"} >/dev/null
 echo "SAW-BOM profiles installed in ${DEPLOY_NS}${PROFILES:+ (${PROFILES})}."
 
 # --- Deploy ---
 echo "Provisioning sandbox '${OPENSHELL_SAW_NAME}' for owner '${OWNER}' in namespace '${DEPLOY_NS}'..."
 
+# A dynamic-provider SAW takes inference, governance, and route settings from
+# SAW_VALUES. The ordinary quickstart defaults must not override that file.
+QUICKSTART_HELM_ARGS=()
+if [[ "${DYNAMIC_MODE}" != true ]]; then
+  QUICKSTART_HELM_ARGS=(
+    --set "inference.provider=${PROVIDER}"
+    --set "inference.model=${MODEL}"
+    --set "inference.endpointUrl=${ENDPOINT_URL}"
+    --set "inference.webSearch=${WEB_SEARCH}"
+    --set "governance.enabled=${GOVERNANCE_ENABLED}"
+    --set route.enabled=true --set route.dashboard=true
+  )
+  [[ -z "${ROUTE_HOST}" ]] || QUICKSTART_HELM_ARGS+=(--set "route.host=${ROUTE_HOST}")
+  [[ -z "${APPS_DOMAIN}" ]] || QUICKSTART_HELM_ARGS+=(
+    --set "route.webuiHost=${OPENSHELL_SAW_NAME}-webui-${DEPLOY_NS}.${APPS_DOMAIN}"
+    --set "route.dashboardHost=${OPENSHELL_SAW_NAME}-dashboard-${DEPLOY_NS}.${APPS_DOMAIN}"
+  )
+fi
+
 # shellcheck disable=SC2086
 helm upgrade --install "${OPENSHELL_SAW_NAME}" "${SAW_CHART}" \
+  "${SAW_VALUES_ARGS[@]}" \
   --namespace "${DEPLOY_NS}" --create-namespace \
   --set sandboxName="${OPENSHELL_SAW_NAME}" \
   ${SANDBOX_IMAGE:+--set sandboxImage="${SANDBOX_IMAGE}"} \
   --set agent="${AGENT}" \
-  --set inference.provider="${PROVIDER}" \
-  --set inference.model="${MODEL}" \
-  --set inference.endpointUrl="${ENDPOINT_URL}" \
-  --set inference.webSearch="${WEB_SEARCH}" \
+  ${QUICKSTART_HELM_ARGS[@]+"${QUICKSTART_HELM_ARGS[@]}"} \
   ${GCP_SA_JSON:+--set-file vertexSaJson="${GCP_SA_JSON}"} \
   ${OIDC_OPTS} \
   --set accessControl.owner="${OWNER}" \
@@ -188,12 +222,7 @@ helm upgrade --install "${OPENSHELL_SAW_NAME}" "${SAW_CHART}" \
   --set oidc.keycloakNamespace="${KEYCLOAK_NS}" \
   --set governance.namespace="${NS}" \
   --set source.dataSourceNamespace="${NS}" \
-  --set containerRuntime="${CONTAINER_RUNTIME}" \
-  --set governance.enabled="${GOVERNANCE_ENABLED}" \
-  --set route.enabled=true --set route.dashboard=true \
-  ${ROUTE_HOST:+--set route.host="${ROUTE_HOST}"} \
-  ${APPS_DOMAIN:+--set route.webuiHost="${OPENSHELL_SAW_NAME}-webui-${DEPLOY_NS}.${APPS_DOMAIN}"} \
-  ${APPS_DOMAIN:+--set route.dashboardHost="${OPENSHELL_SAW_NAME}-dashboard-${DEPLOY_NS}.${APPS_DOMAIN}"}
+  --set containerRuntime="${CONTAINER_RUNTIME}"
 
 echo ""
 echo "Sandbox '${OPENSHELL_SAW_NAME}' deployed."

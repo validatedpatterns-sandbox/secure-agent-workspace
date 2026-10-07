@@ -395,6 +395,7 @@ openshell-saw-create: .check-saw-name ## Provision a sandbox (PROVIDER=, MODEL=,
 	OIDC_ISSUER=$(OIDC_ISSUER) OIDC_CLIENT_ID=$(OIDC_CLIENT_ID) \
 	OIDC_TOKEN_DIR=$(OIDC_TOKEN_DIR) OWNER=$(OWNER) \
 	SCRIPTS_DIR=$(SCRIPTS_DIR) \
+	DYNAMIC_PROVIDERS="$(DYNAMIC_PROVIDERS)" SAW_VALUES="$(SAW_VALUES)" SAW_BOM_VALUES="$(SAW_BOM_VALUES)" \
 	CONTAINER_RUNTIME=$(CONTAINER_RUNTIME) \
 	GOVERNANCE_ENABLED=$(GOVERNANCE_ENABLED) \
 	$(SCRIPTS_DIR)/openshell-saw-create.sh
@@ -605,11 +606,22 @@ status: ## Show status of all OpenShell resources (every SAW namespace + $(NS))
 	@echo "" && echo "=== Builds ($(NS)) ===" && oc -n $(NS) get builds 2>/dev/null || true
 
 # --- In-guest installer tests (no cluster needed) ---
+.PHONY: deploy-spire-identity test-agent-identity-live
+deploy-spire-identity: ## Deploy shared SPIRE infrastructure (explicit IDENTITY_CONTEXT and IDENTITY_VALUES)
+	$(PYTHON) scripts/deploy-spire-identity.py --context "$(IDENTITY_CONTEXT)" --values "$(IDENTITY_VALUES)"
+
+test-agent-identity-live: ## Run live identity compatibility gate; exit 2 means acceptance remains blocked
+	$(PYTHON) scripts/test-agent-identity-live.py --context "$(IDENTITY_CONTEXT)" \
+		--namespace-prefix "$(IDENTITY_NAMESPACE_PREFIX)" --transport "$(IDENTITY_TRANSPORT)" \
+		--artifact-dir "$(IDENTITY_ARTIFACT_DIR)"
+
 PYTHON ?= python3
 .PHONY: test-installer
 test-installer: ## Run installer + chart tests (chart tests need helm on PATH)
-	@$(PYTHON) -c "import pytest, yaml, click, requests" 2>/dev/null || { \
-		echo "Missing test dependencies for $(PYTHON). Install them with:"; \
-		echo "  $(PYTHON) -m pip install -r tests/requirements.txt"; exit 1; }
 	PYTHONPATH=cli/src$${PYTHONPATH:+:$$PYTHONPATH} $(PYTHON) -m pytest -q -p no:cacheprovider \
 		tests/installer tests/charts tests/scripts tests/portal cli/tests/test_kube.py cli/tests/test_cli.py
+
+.PHONY: openshell-saw-token-provider
+openshell-saw-token-provider: ## Create a token-exchange provider using laptop OIDC credentials
+	@test "$(origin WORKSPACE)" != "file" || { echo 'Set WORKSPACE explicitly'; exit 1; }
+	@$(PYTHON) $(SCRIPTS_DIR)/openshell-saw-token-provider.py --gateway "$(OPENSHELL_SAW_NAME)" --workspace "$(WORKSPACE)" --provider "$(PROVIDER)" --profile "$(PROVIDER_PROFILE)"

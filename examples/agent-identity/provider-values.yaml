@@ -1,0 +1,53 @@
+providerProfiles:
+  saw-demo-cc:
+    id: saw-demo-cc
+    display_name: SAW identity acceptance
+    category: other
+    credentials:
+    - name: access_token
+      required: false
+      auth_style: bearer
+      header_name: Authorization
+      token_grant:
+        grant_type: client_credentials
+        token_endpoint: http://identity-demo.saw-identity-demo.svc.cluster.local:8080/token
+        audience: saw-protected-service
+        jwt_svid_audience: http://identity-demo.saw-identity-demo.svc.cluster.local:8080
+        cache_ttl_seconds: 30
+    endpoints:
+    - host: identity-demo.saw-identity-demo.svc.cluster.local
+      port: 8080
+      protocol: rest
+      access: read-write
+      enforcement: enforce
+    binaries:
+    - /usr/bin/curl
+  saw-demo-exchange:
+    id: saw-demo-exchange
+    display_name: SAW identity acceptance
+    category: other
+    credentials:
+    - name: subject_token
+      required: true
+    - name: access_token
+      required: false
+      auth_style: bearer
+      header_name: Authorization
+      token_grant:
+        grant_type: token_exchange
+        token_endpoint: http://identity-demo.saw-identity-demo.svc.cluster.local:8080/token
+        audience: saw-protected-service
+        jwt_svid_audience: http://identity-demo.saw-identity-demo.svc.cluster.local:8080
+        cache_ttl_seconds: 30
+        subject_token:
+          source: provider_credential
+          credential: subject_token
+          subject_token_type: urn:ietf:params:oauth:token-type:access_token
+    endpoints:
+    - host: identity-demo.saw-identity-demo.svc.cluster.local
+      port: 8080
+      protocol: rest
+      access: read-write
+      enforcement: enforce
+    binaries:
+    - /usr/bin/curl

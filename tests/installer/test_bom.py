@@ -76,21 +76,21 @@ def test_component_path_override_is_allowed(ab, bom):
 
 
 @pytest.mark.parametrize("a, b", [
-    ("0.0.116+rhaiv.0", "0.0.116-rhaiv.0"),
-    ("v0.0.116-rhaiv.0", "0.0.116-rhaiv.0"),
-    ("0.0.116", "v0.0.116"),
+    ("0.1.2+rhaiv.0", "0.1.2-rhaiv.0"),
+    ("v0.1.2-rhaiv.0", "0.1.2-rhaiv.0"),
+    ("0.1.2", "v0.1.2"),
 ])
 def test_version_normalisation_equal(ab, a, b):
     assert ab.normalize_version(a) == ab.normalize_version(b)
 
 
 def test_version_normalisation_distinguishes_releases(ab):
-    assert ab.normalize_version("0.0.116-rhaiv.0") != ab.normalize_version("0.0.117-rhaiv.0")
+    assert ab.normalize_version("0.1.2-rhaiv.0") != ab.normalize_version("0.1.3-rhaiv.0")
 
 
 @pytest.mark.parametrize("output, expected", [
-    ("openshell-gateway 0.0.116-rhaiv.0", "0.0.116-rhaiv.0"),
-    ("openshell v0.0.116\n", "v0.0.116"),
+    ("openshell-gateway 0.1.2-rhaiv.0", "0.1.2-rhaiv.0"),
+    ("openshell v0.1.2\n", "v0.1.2"),
     ("version: 1.2.3+build.4 (commit abc)", "1.2.3+build.4"),
     ("no version here", None),
     ("", None),

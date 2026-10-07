@@ -22,6 +22,9 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 helm.sh/chart: {{ include "openshell-sandbox.chart" . }}
 app.kubernetes.io/part-of: openshell-cnv-fedora
+{{- if .Values.spiffe.testMode }}
+saw.redhat.com/identity-test-run: {{ required "spiffe.testRunID is required for testMode" .Values.spiffe.testRunID | quote }}
+{{- end }}
 {{- end }}
 
 {{/*
@@ -187,6 +190,9 @@ OPENSHELL_GATEWAY_CONFIG=/home/cloud-user/.config/openshell/gateway.toml
 # The in-VM installer authenticates with the local mTLS client
 # certificate. End users authenticate with OIDC bearer tokens.
 OPENSHELL_ENABLE_MTLS_AUTH=true
+{{- if .Values.spiffe.enabled }}
+OPENSHELL_GATEWAY_SPIFFE_WORKLOAD_API_SOCKET=/spiffe-workload-api/agent.sock
+{{- end }}
 {{- if $routeHost }}
 OPENSHELL_ROUTE_FQDN={{ $routeHost }}
 {{- end }}
@@ -230,6 +236,9 @@ allow_unauthenticated_users = false
 
 [openshell.drivers.podman]
 supervisor_image = {{ .Values.bom.spec.openshell.supervisor.image | quote }}
+{{- if .Values.spiffe.enabled }}
+provider_spiffe_workload_api_socket = "/spiffe-workload-api/agent.sock"
+{{- end }}
 sandbox_runtime_image = {{ .Values.bom.spec.openshell.sandbox.image | quote }}
 {{- if .Values.allowDriverConfig }}
 # Sandboxes mount their harness volume through caller driver config.

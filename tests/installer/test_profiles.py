@@ -191,3 +191,23 @@ def test_chart_default_bom_covers_the_default_profile(ab, chart_bom, shipped_pro
     """The default saw-bom profile has a nemoclaw sandbox, so the chart's
     default BOM must include the NemoClaw CLI or a default install fails."""
     ab.check_profiles_against_bom(ab.parse_profiles(shipped_profile_files), ab.validate_bom(chart_bom))
+
+
+@pytest.mark.parametrize("flag", ["runtimeCredentials", "externallyManaged"])
+def test_dynamic_provider_needs_no_static_secret(ab, tmp_path, flag):
+    profiles = ab.parse_profiles(make_files(providers=[{
+        "name": "protected", "type": "saw-demo", flag: True}]))
+    ab.validate_profiles(profiles)
+    assert ab.resolve_credentials(profiles, tmp_path) == {}
+
+
+@pytest.mark.parametrize("extra,message", [
+    ({"externallyManaged": True}, "cannot be both"),
+    ({"credentialSecret": "inference"}, "cannot use credentialSecret"),
+    ({"runtimeCredentials": "true"}, "must be booleans"),
+])
+def test_dynamic_provider_rejects_ambiguous_credentials(ab, extra, message):
+    profiles = ab.parse_profiles(make_files(providers=[{
+        "name": "protected", "type": "saw-demo", "runtimeCredentials": True, **extra}]))
+    with pytest.raises(ab.InstallerError, match=message):
+        ab.validate_profiles(profiles)

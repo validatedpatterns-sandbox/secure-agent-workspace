@@ -21,11 +21,13 @@ import sys
 import yaml
 
 FIXED_FILES = ["installer-bom.yaml", "apply_bom.py", "setup-dashboard.sh"]
+IDENTITY_FILES = ["identity.py", "saw_spire.pp.b64"]
 
 
 def build_manifest(data):
     covered = sorted(
         FIXED_FILES
+        + [name for name in IDENTITY_FILES if name in data]
         + [name for name in data if name.startswith("provider-profile-") and name.endswith(".yaml")]
     )
     lines = []

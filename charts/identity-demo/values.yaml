@@ -1,0 +1,7 @@
+enabled: false
+image: registry.access.redhat.com/ubi9/nodejs-22-minimal@sha256:a459753a1a8b417686ca77f0a4291028c50dfdc468c1e6e7868e636312df77ec
+spiffeIssuer: ""
+allowedPrefixes: []
+issuer: http://identity-demo.saw-identity-demo.svc.cluster.local:8080
+# Pre-created, random test-run Secret. Never put its value in Helm values.
+enrollmentSecret: identity-demo-enrollment

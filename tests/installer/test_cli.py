@@ -241,13 +241,16 @@ def test_install_syncs_gateway_config_every_boot(world):
     user_env = world.home / ".config" / "openshell" / "gateway.env"
     assert user_env.read_text() == env_text
     # The golden image's first-boot setup appends runtime keys; they survive.
-    user_env.write_text(user_env.read_text() + "OPENSHELL_PODMAN_SOCKET=/run/user/1000/podman/podman.sock\n")
+    user_env.write_text(user_env.read_text()
+                        + "OPENSHELL_PODMAN_SOCKET=/run/user/1000/podman/podman.sock\n"
+                        + "OPENSHELL_GATEWAY_SPIFFE_WORKLOAD_API_SOCKET=/spiffe-workload-api/agent.sock\n")
     # The chart changes the gateway config: the next boot applies it.
     (world.inputs / "installer" / "gateway.env").write_text(env_text + "OPENSHELL_NEW=1\n")
     result = world.run("install")
     assert result.returncode == 0 and "updated" in result.stdout
     text = user_env.read_text()
     assert "OPENSHELL_NEW=1" in text and "OPENSHELL_PODMAN_SOCKET=" in text
+    assert "OPENSHELL_GATEWAY_SPIFFE_WORKLOAD_API_SOCKET" not in text
     assert "OPENSHELL_NEW=1" in (world.etc / "gateway.env").read_text()
 
 

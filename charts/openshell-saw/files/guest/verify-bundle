@@ -133,6 +133,9 @@ fi
 # format), or a genuine, unmodified installer fails enforce.
 manifest_text() {
   local dir="$1" files=(installer-bom.yaml apply_bom.py setup-dashboard.sh) extra f
+  for extra in identity.py saw_spire.pp.b64; do
+    [[ ! -e "${dir}/${extra}" ]] || files+=("${extra}")
+  done
   shopt -s nullglob
   for extra in "${dir}"/provider-profile-*.yaml; do
     files+=("$(basename "$extra")")

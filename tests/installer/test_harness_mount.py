@@ -352,6 +352,27 @@ def test_a_sandbox_created_before_its_harness_is_recreated(ab, fake_env, config,
     assert applier.verify(profiles) == []
 
 
+def test_identity_opt_out_recreates_only_the_stale_workload_mount(
+        ab, fake_env, config, profiles, creds):
+    """The harness survives an identity opt-out sandbox recreation."""
+    fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
+    cfg = {**config, "spiffe": {"enabled": False}}
+    use_ref(profiles, {"image": IMAGE_V1})
+    make_applier(ab, cfg, creds).apply(profiles)
+    state = fake_env.openshell_state()
+    state["sandboxes"]["default/notebook"]["identityBinds"] = [
+        "/spiffe-workload-api:/spiffe-workload-api:ro"]
+    fake_env.set_openshell_state(state)
+
+    make_applier(ab, cfg, creds).apply(profiles)
+    assert len(notebook_deletes(fake_env)) == 1
+    assert len(notebook_creates(fake_env)) == 2
+    assert notebook(fake_env)["driverConfig"]["podman"]["mounts"][0]["source"] == volume_name(ab)
+
+    make_applier(ab, cfg, creds).apply(profiles)
+    assert len(notebook_creates(fake_env)) == 2
+
+
 def test_verify_reports_a_volume_holding_another_image(ab, fake_env, config, profiles, creds):
     fake_env.set_images({IMAGE_V1: {"__tree__": V1}, IMAGE_V2: {"__tree__": V2}})
     make_applier(ab, config, creds).apply(use_ref(profiles, {"image": IMAGE_V1}))

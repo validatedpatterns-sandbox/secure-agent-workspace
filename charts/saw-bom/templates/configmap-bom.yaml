@@ -15,19 +15,34 @@
 {{- end }}
 {{- end }}
 {{- end }}
+{{- range $path, $content := .Values.profileFiles }}
+{{- if not (regexMatch "^profiles/[a-z0-9-]+/[a-z0-9-]+/(workspace|providers|sandbox)\\.yaml$" $path) }}
+{{- fail (printf "invalid profileFiles path: %s" $path) }}
+{{- end }}
+{{- if and (hasSuffix "sandbox.yaml" $path) (not $.Values.harnessEnabled) }}
+{{- $doc := $content | fromYaml }}
+{{- range $sb := ($doc.spec.sandboxes | default list) }}
+{{- $_ := unset $sb "harnessRef" }}
+{{- end }}
+{{- $_ := set $profileFiles $path (toYaml $doc) }}
+{{- else }}
+{{- $_ := set $profileFiles $path $content }}
+{{- end }}
+{{- end }}
 {{- /* Inline harness bundles: charts/saw-bom/harness/<bundle>/<relpath>, for
      sandboxes with harnessRef.name. The guest copies them unchanged into a
      volume mounted read-only at /sandbox/harness. (harnessRef.image bundles
      are OCI images the guest mounts directly; nothing is shipped here for
      them.) Content is base64 per key -- a `|` block scalar normalises trailing whitespace, which
      would change the tree digest between Git and the guest.
-     Only bundles referenced by a selected profile's sandbox harnessRef are
-     shipped, so the ConfigMap stays scoped to `.Values.profiles`. */ -}}
+     Only bundles referenced by a selected or inline profile's sandbox
+     harnessRef are shipped. */ -}}
 {{- $wanted := dict }}
 {{- if .Values.harnessEnabled }}
-{{- range $profile := .Values.profiles }}
-{{- range $path, $_ := $.Files.Glob (printf "profiles/%s/**/sandbox.yaml" $profile) }}
-{{- range $sb := ((($.Files.Get $path | fromYaml).spec).sandboxes | default list) }}
+{{- range $path, $content := $profileFiles }}
+{{- if hasSuffix "sandbox.yaml" $path }}
+{{- $doc := $content | fromYaml }}
+{{- range $sb := ($doc.spec.sandboxes | default list) }}
 {{- if and $sb.harnessRef (not $sb.harnessRef.image) }}
 {{- $_ := set $wanted ($sb.harnessRef.name | default "") true }}
 {{- end }}
@@ -90,9 +105,10 @@
      digest instead; the guest pulls it and mounts it into the sandbox. */ -}}
 {{- $imageRefs := false }}
 {{- if .Values.harnessEnabled }}
-{{- range $profile := $.Values.profiles }}
-{{- range $path, $_ := $.Files.Glob (printf "profiles/%s/**/sandbox.yaml" $profile) }}
-{{- range $sb := ((($.Files.Get $path | fromYaml).spec).sandboxes | default list) }}
+{{- range $path, $content := $profileFiles }}
+{{- if hasSuffix "sandbox.yaml" $path }}
+{{- $doc := $content | fromYaml }}
+{{- range $sb := ($doc.spec.sandboxes | default list) }}
 {{- if and $sb.harnessRef $sb.harnessRef.image }}
 {{- $imageRefs = true }}
 {{- if not (regexMatch "^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$" $sb.harnessRef.image) }}

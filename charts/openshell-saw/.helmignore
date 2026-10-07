@@ -1,4 +1,6 @@
 *.tgz
 .git
 .gitignore
+files/selinux/tmp
+files/selinux/saw_spire.if
 

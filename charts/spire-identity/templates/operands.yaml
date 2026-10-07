@@ -1,0 +1,75 @@
+{{- if and .Values.spiffe.enabled .Values.operands.enabled }}
+{{- if ne .Release.Namespace "zero-trust-workload-identity-manager" }}
+{{- fail "spire-identity must be installed in zero-trust-workload-identity-manager" }}
+{{- end }}
+{{- $td := required "spiffe.trustDomain is required" .Values.spiffe.trustDomain }}
+{{- $cluster := required "spiffe.clusterName is required" .Values.spiffe.clusterName }}
+{{- $issuer := required "spiffe.jwtIssuer is required" .Values.spiffe.jwtIssuer }}
+{{- if not (regexMatch "^https://[^/]+$" $issuer) }}
+{{- fail "spiffe.jwtIssuer must be an HTTPS origin" }}
+{{- end }}
+{{- $existing := lookup "operator.openshift.io/v1alpha1" "ZeroTrustWorkloadIdentityManager" "" "cluster" }}
+{{- if and $existing (ne $existing.spec.trustDomain $td) }}
+{{- fail "spiffe.trustDomain is immutable; existing cluster trust domain differs" }}
+{{- end }}
+apiVersion: operator.openshift.io/v1alpha1
+kind: ZeroTrustWorkloadIdentityManager
+metadata:
+  name: cluster
+spec:
+  trustDomain: {{ $td | quote }}
+  clusterName: {{ $cluster | quote }}
+  bundleConfigMap: spire-bundle
+---
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpireServer
+metadata:
+  name: cluster
+spec:
+  jwtIssuer: {{ $issuer | quote }}
+  defaultJWTValidity: {{ .Values.spiffe.jwtValidity | quote }}
+  defaultX509Validity: {{ .Values.spiffe.x509Validity | quote }}
+  caKeyType: rsa-2048
+  caValidity: 24h0m0s
+  caSubject:
+    commonName: SAW SPIRE Server CA
+    country: US
+    organization: SAW
+  datastore:
+    databaseType: sqlite3
+    connectionString: /run/spire/data/datastore.sqlite3
+  persistence:
+    accessMode: ReadWriteOnce
+    size: {{ .Values.persistence.size | quote }}
+    storageClass: {{ .Values.persistence.storageClass | quote }}
+---
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpireAgent
+metadata:
+  name: cluster
+spec:
+  nodeAttestor:
+    k8sPSATEnabled: "true"
+  workloadAttestors:
+    k8sEnabled: "true"
+    workloadAttestorsVerification:
+      type: auto
+---
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpiffeCSIDriver
+metadata:
+  name: cluster
+spec:
+  agentSocketPath: /run/spire/agent-sockets
+  pluginName: csi.spiffe.io
+---
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpireOIDCDiscoveryProvider
+metadata:
+  name: cluster
+spec:
+  jwtIssuer: {{ $issuer | quote }}
+  managedRoute: "true"
+  csiDriverName: csi.spiffe.io
+  replicaCount: 1
+{{- end }}

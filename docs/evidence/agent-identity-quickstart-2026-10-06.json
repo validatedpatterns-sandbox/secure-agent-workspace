@@ -1,0 +1,75 @@
+{
+  "scenario": "tcp-dynamic-quickstart-and-reapply",
+  "status": "pass",
+  "clusterVersion": "4.22.14",
+  "openshellVersion": "0.1.2-rhaiv.0",
+  "runId": "agent-identity-quickstart-20261006",
+  "namespace": "saw-identity-v",
+  "vm": "identity-v",
+  "vmUid": "b629e752-297d-4847-aec3-adecf28e349c",
+  "vmiUid": "1265650f-408c-4c1c-a3c2-53326ccfdea2",
+  "generation": "1",
+  "agentPathHash": "0c1bc26c03d3",
+  "helmRevisions": {
+    "initial": 1,
+    "identicalValuesReapply": 2
+  },
+  "renderedValues": {
+    "spiffeEnabled": true,
+    "routesEnabled": false,
+    "governanceEnabled": false,
+    "inferenceProviderOverride": null
+  },
+  "registrations": [
+    {
+      "id": "ea6486e6-34f9-44e7-8486-a4c41541e752",
+      "path": "/saw/saw-identity-v/identity-v/gateway",
+      "parentHash": "0c1bc26c03d3",
+      "admin": false,
+      "selectors": ["unix:uid:1000", "unix:path:/usr/local/bin/openshell-gateway"]
+    },
+    {
+      "id": "a6e256bc-539e-4bf1-bef7-43a4e8fe8e61",
+      "path": "/saw/saw-identity-v/identity-v/ws/default/sandbox/agent",
+      "parentHash": "0c1bc26c03d3",
+      "admin": false,
+      "selectors": ["docker:label:openshell.managed:true", "docker:label:openshell.ai/sandbox-workspace:default", "docker:label:openshell.ai/sandbox-name:agent"]
+    },
+    {
+      "id": "df10ca8f-a086-42c7-a55c-4adf80be1ef7",
+      "path": "/saw/saw-identity-v/identity-v/ws/research/sandbox/agent",
+      "parentHash": "0c1bc26c03d3",
+      "admin": false,
+      "selectors": ["docker:label:openshell.managed:true", "docker:label:openshell.ai/sandbox-workspace:research", "docker:label:openshell.ai/sandbox-name:agent"]
+    }
+  ],
+  "beforeReapply": {
+    "time": "2026-10-06T12:09:35Z",
+    "default": {"http": 200, "curlExit": 0, "subject": "spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-v/identity-v/ws/default/sandbox/agent", "audience": "saw-protected-service", "exp": 1791288876},
+    "research": {"http": 200, "curlExit": 0, "subject": "spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-v/identity-v/ws/research/sandbox/agent", "audience": "saw-protected-service", "exp": 1791288877}
+  },
+  "afterReapply": {
+    "time": "2026-10-06T12:18:45Z",
+    "sameVmUid": true,
+    "sameVmiUid": true,
+    "sameGeneration": true,
+    "sameAgentAndRegistrationIds": true,
+    "defaultHttp": 200,
+    "researchHttp": 200,
+    "sameWorkspaceSubjects": true
+  },
+  "socketIsolation": {
+    "defaultPodmanExec": "Workload API path absent for uid 0",
+    "researchPodmanExec": "Workload API path absent for uid 0",
+    "directSvidProbe": "unavailable from podman exec; supervisor grant used the socket"
+  },
+  "cleanup": {
+    "vmAndBomHelmReleasesRemoved": true,
+    "namespaceRemoved": true,
+    "registrationsRemaining": 0,
+    "agentBanned": true,
+    "demoAllowedPrefixesRestored": 8,
+    "identityVPrefixAbsent": true,
+    "identityUStillReady": true
+  }
+}

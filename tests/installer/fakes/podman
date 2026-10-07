@@ -141,6 +141,9 @@ elif cmd == "inspect":
     if sb is None:
         print(f"Error: no such object: {args[-1]}", file=sys.stderr)
         sys.exit(125)
+    if "{{json .HostConfig.Binds}}" in args:
+        print(json.dumps(sb.get("identityBinds", [])))
+        sys.exit(0)
     mounts = []
     for m in ((sb.get("driverConfig") or {}).get("podman") or {}).get("mounts", []):
         if m["type"] == "image":

@@ -74,3 +74,21 @@ def test_defaults_are_unchanged(run):
     assert not bom_values.exists()
     bom = next(line for line in log.splitlines() if line.startswith("helm upgrade --install saw-bom"))
     assert " -f " not in bom
+
+
+def test_dynamic_values_are_not_overridden_by_quickstart_defaults(run, tmp_path):
+    saw_values = tmp_path / "dynamic-saw.yaml"
+    saw_values.write_text("spiffe:\n  enabled: true\nroute:\n  enabled: false\ngovernance:\n  enabled: false\n")
+    provider_values = tmp_path / "dynamic-providers.yaml"
+    provider_values.write_text("providerProfiles: {}\n")
+    bom_values = tmp_path / "dynamic-bom.yaml"
+    bom_values.write_text("profiles: []\n")
+    log, _ = run(DYNAMIC_PROVIDERS="true", SAW_VALUES=f"{saw_values},{provider_values}", SAW_BOM_VALUES=str(bom_values),
+                 OIDC_ISSUER="none")
+    helm = next(line for line in log.splitlines() if line.startswith("helm upgrade --install cinf "))
+    assert f"-f {saw_values}" in helm
+    assert f"-f {provider_values}" in helm
+    for override in ("inference.provider=", "inference.model=", "inference.endpointUrl=",
+                     "governance.enabled=", "route.enabled=", "route.dashboard=", "oidc.issuerUrl="):
+        assert override not in helm
+    assert "oc create secret generic inference" not in log

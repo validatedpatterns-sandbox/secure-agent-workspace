@@ -3,6 +3,12 @@
 {{- fail "containerRuntime: the in-guest installer supports podman only" }}
 {{- end }}
 {{- $secrets := include "openshell-sandbox.providerSecrets" . | fromJsonArray }}
+{{- if .Values.spiffe.enabled }}
+{{- $_ := required "spiffe.trustDomain is required" .Values.spiffe.trustDomain }}
+{{- if ne .Values.spiffe.serverTransport "tcp" }}
+{{- fail "spiffe.serverTransport must be tcp" }}
+{{- end }}
+{{- end }}
 {{- range $secrets }}{{- include "openshell-sandbox.validateSecretName" . }}{{- end }}
 apiVersion: kubevirt.io/v1
 kind: VirtualMachine
@@ -11,6 +17,14 @@ metadata:
   labels:
     {{- include "openshell-sandbox.labels" . | nindent 4 }}
     openshell.pattern/role: gateway
+    {{- if .Values.spiffe.enabled }}
+    saw.redhat.com/spiffe: "true"
+    {{- end }}
+  {{- if .Values.spiffe.enabled }}
+  annotations:
+    saw.redhat.com/trust-domain: {{ .Values.spiffe.trustDomain | quote }}
+    saw.redhat.com/gateway-uid: {{ .Values.spiffe.gatewayUID | quote }}
+  {{- end }}
 spec:
   runStrategy: Always
   dataVolumeTemplates:
@@ -34,9 +48,23 @@ spec:
           name: {{ include "openshell-sandbox.dataSourceName" . }}
           namespace: {{ include "openshell-sandbox.goldenNamespace" . }}
         {{- end }}
+        {{- $access := .Values.vm.accessMode | default "ReadWriteOnce" }}
+        {{- if not (has $access (list "ReadWriteOnce" "ReadWriteMany")) }}
+        {{- fail "vm.accessMode must be ReadWriteOnce or ReadWriteMany" }}
+        {{- end }}
+        {{- $volumeMode := .Values.vm.volumeMode | default "" }}
+        {{- if and $volumeMode (not (has $volumeMode (list "Filesystem" "Block"))) }}
+        {{- fail "vm.volumeMode must be Filesystem, Block, or empty" }}
+        {{- end }}
         storage:
+          {{- with .Values.vm.storageClass }}
+          storageClassName: {{ . | quote }}
+          {{- end }}
           accessModes:
-            - ReadWriteOnce
+            - {{ $access }}
+          {{- if $volumeMode }}
+          volumeMode: {{ $volumeMode }}
+          {{- end }}
           resources:
             requests:
               storage: {{ .Values.vm.diskSize }}
@@ -65,6 +93,12 @@ spec:
           # cluster default leaves serial console logging off.
           logSerialConsole: true
           disks:
+            {{- if .Values.spiffe.enabled }}
+            - name: saw-spire
+              serial: saw-spire
+              disk:
+                bus: virtio
+            {{- end }}
             - name: rootdisk
               disk:
                 bus: virtio
@@ -139,9 +173,11 @@ spec:
                 users:
                   - cloud-user
       {{- if .Values.vm.readinessProbe }}
+      # Labeled helper: virt_qemu_ga_t cannot getattr /var/lib/saw (var_lib_t).
+      # The helper checks installer completion and agent health. Failure does not re-enroll.
       readinessProbe:
         exec:
-          command: ["test", "-f", "/var/lib/saw/ready"]
+          command: ["/usr/libexec/saw-ready"]
         initialDelaySeconds: 60
         periodSeconds: 15
         timeoutSeconds: 5
@@ -151,6 +187,11 @@ spec:
         - name: default
           pod: {}
       volumes:
+        {{- if .Values.spiffe.enabled }}
+        - name: saw-spire
+          secret:
+            secretName: {{ include "openshell-sandbox.fullname" . }}-spire-join-token
+        {{- end }}
         - name: rootdisk
           dataVolume:
             name: {{ include "openshell-sandbox.fullname" . }}-root

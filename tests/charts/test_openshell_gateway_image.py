@@ -90,6 +90,34 @@ def test_invalid_signing_floor_fails_the_render():
     assert "signing.floor must be off, warn, enforce, or empty" in result.stderr
 
 
+def test_public_key_is_baked_into_the_trust_directory(tmp_path):
+    key = tmp_path / "test.pub"
+    key.write_text("-----BEGIN PUBLIC KEY-----\nTEST\n-----END PUBLIC KEY-----\n")
+    text = dockerfile("--set-file", f"signing.publicKeys.test={key}")
+    assert "RUN mkdir -p /build/saw/trust" in text
+    assert "> /build/saw/trust/test.pub" in text
+    assert "--copy-in /build/saw/trust:/etc/saw/" in text
+    assert text.index("/build/saw/trust/test.pub") < text.index("--copy-in /build/saw/trust:/etc/saw/")
+
+
+def test_public_key_name_is_validated(tmp_path):
+    key = tmp_path / "test.pub"
+    key.write_text("-----BEGIN PUBLIC KEY-----\nTEST\n-----END PUBLIC KEY-----\n")
+    result = subprocess.run(
+        [HELM, "template", "gw-test", str(CHART), "--set-file", f"signing.publicKeys.bad_name={key}"],
+        capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "must be a lowercase key label" in result.stderr
+
+
+def test_build_can_request_disk_and_select_a_worker():
+    docs = render("--set", "build.ephemeralStorageRequest=12Gi",
+                  "--set", "build.nodeSelector.kubernetes\\.io/hostname=worker-example")
+    build = next(d for d in docs if d["kind"] == "BuildConfig")
+    assert build["spec"]["resources"]["requests"]["ephemeral-storage"] == "12Gi"
+    assert build["spec"]["nodeSelector"] == {"kubernetes.io/hostname": "worker-example"}
+
+
 def test_the_two_verify_bundle_copies_are_identical():
     """verify-bundle exists twice: charts/openshell-saw/files/guest (cloud-init
     delivered, used by the offline installer tests) and this chart's files/

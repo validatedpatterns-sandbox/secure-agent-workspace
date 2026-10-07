@@ -1,0 +1,9 @@
+# Site values for a new shared SPIRE installation. Supply the three required
+# identity fields from your deployment; never copy another cluster's values.
+spiffe:
+  enabled: true
+  trustDomain: ""
+  clusterName: ""
+  jwtIssuer: ""
+persistence:
+  storageClass: ""

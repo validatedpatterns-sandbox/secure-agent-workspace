@@ -306,17 +306,39 @@ def _manifest_text(directory, names):
     return "".join(lines)
 
 
-def test_edited_bundle_fails_enforce_and_warns(tmp_path):
-    """A test key signs the manifest covering the three installer files.
-    Editing apply_bom.py changes its hash, which changes the manifest and
-    makes enforce stop and warn continue, without touching an already
-    installed binary."""
+def test_identity_inputs_are_covered_by_signed_manifest():
+    """A signed installer must cover the identity script and SELinux module."""
+    import importlib.util
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location(
+        "build_installer_manifest", root / "scripts" / "build-installer-manifest.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    data = {
+        "installer-bom.yaml": "bom", "apply_bom.py": "installer",
+        "setup-dashboard.sh": "dashboard", "identity.py": "identity",
+        "saw_spire.pp.b64": "policy",
+    }
+    manifest = module.build_manifest(data)
+    assert "  identity.py\n" in manifest
+    assert "  saw_spire.pp.b64\n" in manifest
+    data["identity.py"] = "tampered"
+    assert module.build_manifest(data) != manifest
+
+
+@pytest.mark.parametrize("edited", ("apply_bom.py", "identity.py", "saw_spire.pp.b64"))
+def test_edited_bundle_fails_enforce_and_warns(tmp_path, edited):
+    """Tampering with installer or identity inputs invalidates the signed bundle."""
     from pathlib import Path
     root = Path(__file__).resolve().parents[2]
     script = root / "charts" / "openshell-saw" / "files" / "guest" / "verify-bundle"
     installer = tmp_path / "installer"
     installer.mkdir()
-    for name in ("installer-bom.yaml", "apply_bom.py", "setup-dashboard.sh"):
+    covered = ("installer-bom.yaml", "apply_bom.py", "setup-dashboard.sh",
+               "identity.py", "saw_spire.pp.b64")
+    for name in covered:
         (installer / name).write_text(name + "\n")
     trust = tmp_path / "trust"
     trust.mkdir()
@@ -326,7 +348,7 @@ def test_edited_bundle_fails_enforce_and_warns(tmp_path):
                     "-out", str(key)], check=True, capture_output=True)
     subprocess.run(["openssl", "pkey", "-in", str(key), "-pubout", "-out", str(pub)], check=True, capture_output=True)
     payload = tmp_path / "payload"
-    payload.write_text(_manifest_text(installer, ("installer-bom.yaml", "apply_bom.py", "setup-dashboard.sh")))
+    payload.write_text(_manifest_text(installer, covered))
     bundle = installer / "bundle.sigstore.json"
     subprocess.run(["openssl", "dgst", "-sha256", "-sign", str(key), "-out", str(bundle), str(payload)],
                    check=True, capture_output=True)
@@ -358,7 +380,7 @@ def test_edited_bundle_fails_enforce_and_warns(tmp_path):
     assert run("enforce").returncode == 0
     assert json.loads(status.read_text())["bundle"]["signature"] == "verified"
     assert staged_apply_bom.read_text() == "apply_bom.py\n"
-    (installer / "apply_bom.py").write_text("tampered\n")
+    (installer / edited).write_text("tampered\n")
     enforced = run("enforce")
     assert enforced.returncode == 1
     assert json.loads(status.read_text())["bundle"]["signature"] == "failed"
@@ -371,9 +393,12 @@ def test_edited_bundle_fails_enforce_and_warns(tmp_path):
     assert warned.returncode == 0
     assert json.loads(status.read_text())["bundle"]["signature"] == "failed"
     assert installed.read_text() == "old-binary\n"
-    # warn does publish a failed bundle, so it takes effect (matches the
-    # documented "warn logs ... and continues").
-    assert staged_apply_bom.read_text() == "tampered\n"
+    # warn does publish a failed bundle, so the edited file takes effect
+    # (matches the documented "warn logs ... and continues"). Other covered
+    # files stay as they were.
+    assert (tmp_path / "verified" / "installer" / edited).read_text() == "tampered\n"
+    if edited != "apply_bom.py":
+        assert staged_apply_bom.read_text() == "apply_bom.py\n"
 
 
 def test_a_byte_shifted_between_files_is_rejected(tmp_path):

@@ -302,7 +302,7 @@ def test_readiness_probe_is_opt_in(default_docs):
     assert "readinessProbe" not in default_docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]
     docs = render("--set", "vm.readinessProbe=true")
     probe = docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]["readinessProbe"]
-    assert probe["exec"]["command"] == ["test", "-f", "/var/lib/saw/ready"]
+    assert probe["exec"]["command"] == ["/usr/libexec/saw-ready"]
 
 
 def test_bom_change_changes_vm_template(default_docs):
@@ -409,6 +409,7 @@ def test_cluster_domain_fills_routes_issuer_and_dashboard():
 def test_installer_configmap_ships_the_real_files(default_docs, ab):
     data = installer_data(default_docs)
     assert data["apply_bom.py"] == (CHART / "files" / "installer" / "apply_bom.py").read_text()
+    assert data["saw_spire.pp.b64"] == (CHART / "files" / "selinux" / "saw_spire.pp.b64").read_text()
     assert data["setup-dashboard.sh"] == (CHART / "files" / "installer" / "setup-dashboard.sh").read_text()
     bom = yaml.safe_load(data["installer-bom.yaml"])
     assert ab.validate_bom(bom)
@@ -579,6 +580,23 @@ def test_pattern_puts_keycloak_and_each_saw_in_their_own_namespaces():
     assert [user["name"] for user in listed] == ["alice"]
     for app in ("governance-interceptor", "governance-policy"):
         assert apps[app]["namespace"] == "openshell-agents", app
+
+
+def test_root_disk_keeps_readwriteonce_unless_storage_is_selected(default_docs):
+    storage = default_docs[("VirtualMachine", "saw-test")]["spec"]["dataVolumeTemplates"][0]["spec"]["storage"]
+    assert storage["accessModes"] == ["ReadWriteOnce"]
+    assert "storageClassName" not in storage
+    assert "volumeMode" not in storage
+    docs = render("--set", "vm.storageClass=ocs-external-storagecluster-cephfs",
+                  "--set", "vm.accessMode=ReadWriteMany",
+                  "--set", "vm.volumeMode=Filesystem")
+    selected = docs[("VirtualMachine", "saw-test")]["spec"]["dataVolumeTemplates"][0]["spec"]["storage"]
+    assert selected["storageClassName"] == "ocs-external-storagecluster-cephfs"
+    assert selected["accessModes"] == ["ReadWriteMany"]
+    assert selected["volumeMode"] == "Filesystem"
+    refused = helm_template(CHART, "--set", "sandboxName=saw-test", "--set", "vm.accessMode=ReadOnlyMany")
+    assert refused.returncode != 0
+    assert "vm.accessMode" in refused.stderr
 
 
 def test_vm_logs_its_serial_console(default_docs):

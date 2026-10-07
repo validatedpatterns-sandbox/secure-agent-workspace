@@ -1,0 +1,53 @@
+{
+  "dateUTC": "2026-10-07",
+  "status": "partial",
+  "clusterVersion": "4.22.14",
+  "branchRevisionAtDeployment": "c26b026b15fa9cbfc735139e5044e4d25bc72f51",
+  "patternInstall": {
+    "command": "./pattern.sh make install",
+    "existingPattern": "patterns-operator/secure-agent-workspace",
+    "sourceRevisionAfterCommand": "codex/agent-identity",
+    "result": "incomplete",
+    "reason": "The install health wait did not finish. Three legacy Argo Applications still target codex/custom-inference-vm-installer; openshell-saw is Degraded because its setup Job reached DeadlineExceeded on 2026-09-27. The wait was stopped after three attempts.",
+    "existingAliceUnchanged": true,
+    "sharedSpireReleaseUnchanged": true
+  },
+  "dedicatedCanary": {
+    "runID": "agent-identity-pattern-20261007",
+    "namespace": "saw-identity-pattern",
+    "vm": "identity-pattern",
+    "vmUID": "b869008c-dd4e-475a-929f-6f5d8f24997d",
+    "vmiUIDAfterInstallerDiskRefresh": "8cf8a2ae-75c9-4b3a-a52d-5cf3bef4a556",
+    "vmReady": true,
+    "installerChecksum": "f332a4c7b453f64c",
+    "enrollmentGeneration": 1,
+    "agentPresent": true,
+    "applications": {
+      "identity-pattern": "Synced/Healthy",
+      "identity-pattern-bom": "Synced/Healthy"
+    },
+    "issuer": {
+      "namespace": "saw-identity-pattern-demo",
+      "release": "identity-demo",
+      "scope": "run-owned and separate from the shared identity-demo release"
+    },
+    "profileRefresh": {
+      "cause": "The VM kept the old installer disk until restart. OpenShell import then kept the old custom profile instead of replacing it.",
+      "action": "Restarted only the dedicated VM and used provider profile update with exported resource_version 1.",
+      "result": "Gateway and sandbox loaded the new demo host; profile resource_version became 2."
+    },
+    "protectedGrant": {
+      "http": 200,
+      "curlExit": 0,
+      "aud": "saw-protected-service",
+      "subAzpClientId": "spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-pattern/identity-pattern/ws/default/sandbox/agent",
+      "tokenMaterialRetained": false
+    }
+  },
+  "open": [
+    "Validate and deploy the installer change that reconciles a changed custom dynamic-provider profile.",
+    "Finish the existing Pattern install health wait without deleting applications that own existing SAWs.",
+    "Remove the run-owned canary and issuer after the installer change is verified.",
+    "Complete the automated TCP suite and correlated audit acceptance."
+  ]
+}

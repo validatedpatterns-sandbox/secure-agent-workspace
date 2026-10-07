@@ -1,7 +1,16 @@
 {{- $imageName := ternary "openshell-gateway-docker" "openshell-gateway" (eq .Values.containerRuntime "docker") -}}
 {{- $signingFloor := .Values.signing.floor | default "" -}}
+{{- $publicKeys := .Values.signing.publicKeys | default dict -}}
 {{- if and $signingFloor (not (or (eq $signingFloor "off") (eq $signingFloor "warn") (eq $signingFloor "enforce"))) }}
 {{- fail (printf "signing.floor must be off, warn, enforce, or empty, got %q" $signingFloor) }}
+{{- end }}
+{{- range $name, $key := $publicKeys }}
+{{- if not (regexMatch "^[a-z0-9][a-z0-9-]*$" $name) }}
+{{- fail (printf "signing.publicKeys name %q must be a lowercase key label" $name) }}
+{{- end }}
+{{- if not (contains "-----BEGIN PUBLIC KEY-----" $key) }}
+{{- fail (printf "signing.publicKeys.%s must contain a PEM public key" $name) }}
+{{- end }}
 {{- end }}
 apiVersion: build.openshift.io/v1
 kind: BuildConfig
@@ -209,6 +218,12 @@ spec:
       # registry is not implicitly trusted); there is no static, baked-in
       # component policy file to keep in sync with that (PR #54 review, 4).
       RUN mkdir -p /build/saw
+      {{- if $publicKeys }}
+      RUN mkdir -p /build/saw/trust
+      {{- range $name, $key := $publicKeys }}
+      RUN echo '{{ $key | b64enc }}' | base64 -d > /build/saw/trust/{{ $name }}.pub
+      {{- end }}
+      {{- end }}
       RUN echo '{{ .Files.Get "files/verify-bundle" | b64enc }}' | base64 -d > /build/saw/verify-bundle
       RUN echo '{{ .Files.Get "files/registries.yaml" | b64enc }}' | base64 -d > /build/saw/saw.yaml
       RUN chmod 755 /build/saw/verify-bundle
@@ -249,6 +264,9 @@ spec:
             --copy-in /build/saw/verify-bundle:/usr/libexec/saw/ \
             --copy-in /build/saw/saw.yaml:/etc/containers/registries.d/ \
             --copy-in /build/saw/cosign:/usr/local/bin/ \
+            {{- if $publicKeys }}
+            --copy-in /build/saw/trust:/etc/saw/ \
+            {{- end }}
             {{- if $signingFloor }}
             --copy-in /build/saw/signing-mode:/etc/saw/ \
             {{- end }}
@@ -273,6 +291,12 @@ spec:
       kind: ImageStreamTag
       name: {{ $imageName }}:latest
   resources:
+    requests:
+      ephemeral-storage: {{ .Values.build.ephemeralStorageRequest }}
     limits:
       memory: {{ .Values.build.memoryLimit }}
+  {{- with .Values.build.nodeSelector }}
+  nodeSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   triggers: []

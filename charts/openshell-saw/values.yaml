@@ -30,8 +30,9 @@ sshPublicKey: ""
 #        dataSource: openshell-gateway
 #        dataSourceNamespace: openshell-agents
 #
-# 3. HTTP: download a qcow2 disk image from a URL (the VM's namespace must
-#    reach that host; see egress).
+# 3. HTTP: download a qcow2 disk image from a URL. An http(s) host is added
+#    to the namespace egress firewall unless that host and port are already
+#    allowed. A host inside the cluster needs no entry.
 #      source:
 #        httpURL: "https://example.com/openshell-gateway.qcow2"
 source:
@@ -255,3 +256,43 @@ job:
 # Each SAW is installed into its own namespace (the release namespace), e.g.
 # saw-<name>. Label that namespace openshell.pattern/saw=true so the shared
 # governance interceptor accepts its VM (make openshell-saw-create does this).
+
+# Default-deny egress for every pod in the sandbox namespace, including the
+# VM. OpenShell's own allowlist is a separate layer and does not replace this.
+# Exact hostnames only: a wildcard needs the DNSNameResolver feature gate.
+# The Keycloak route host is added automatically from the OIDC issuer URL.
+# Add an enterprise system or a custom inference host under extraAllow
+# (pattern: defaults.openshellSaw.egress.extraAllow, or one user's values).
+# A host inside the cluster (*.svc) needs no entry.
+egress:
+  enabled: true
+  allow:
+    # Registries the VM pulls from. Quay redirects blobs to the cdn hosts.
+    - quay.io
+    - cdn.quay.io
+    - cdn01.quay.io
+    - cdn02.quay.io
+    - cdn03.quay.io
+    - cdn04.quay.io
+    - cdn05.quay.io
+    - cdn06.quay.io
+    - registry.fedoraproject.org
+    # Exact hosts from charts/governance-policy/profiles. A test fails if a
+    # shipped profile grows a host that is not listed here.
+    # *-aiplatform.googleapis.com is not here: a dnsName rule cannot express it.
+    - integrate.api.nvidia.com
+    - api.search.brave.com
+    - api.openai.com
+    - api.tavily.com
+    - registry.npmjs.org
+    - github.com
+    - api.github.com
+    - api-1.github.com
+    - slack.com
+    - generativelanguage.googleapis.com
+    - cloudcode-pa.googleapis.com
+    - accounts.google.com
+    - oauth2.googleapis.com
+    - www.googleapis.com
+    - iamcredentials.googleapis.com
+  extraAllow: []

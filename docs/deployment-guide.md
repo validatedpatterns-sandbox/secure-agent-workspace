@@ -121,7 +121,7 @@ Cloud-init runs once and writes the static files: the mount script, the `saw-ins
 
 #### Root disk
 
-There is no prepare Job: nothing runs in the SAW's namespace but the VM. The VM's disk template makes its root disk once, when it does not exist: by default CDI imports the golden image from the internal registry (`<source.dataSourceNamespace>/openshell-gateway:latest`, from `make copy-images` or the image build) with `pullMethod: node`, so each node pulls the image once and caches it. Set `source.registryURL` to import another image (pin it by digest), or `source.dataSource` to clone a golden image DataSource that already exists. Changing the source later does not change an existing VM's disk. Keycloak redirect URIs are registered by the redirect registrar in Keycloak's namespace, or by an administrator ([Web UI redirect URIs](#web-ui-redirect-uris)).
+There is no prepare Job: nothing runs in the SAW's namespace but the VM. The VM's disk template makes its root disk once, when it does not exist: by default CDI imports the golden image from the internal registry (`<source.dataSourceNamespace>/openshell-gateway:latest`, from `make copy-images` or the image build) with `pullMethod: node`, so each node pulls the image once and caches it. Set `source.registryURL` to import another image (pin it by digest), `source.httpURL` (or the older `source.goldenImageURL`) to download a qcow2 over HTTP, or `source.dataSource` to clone a golden image DataSource that already exists. An `http://` or `https://` disk URL is added to the namespace egress firewall on its own host and port; a host already allowed on that port is not listed twice. Changing the source later does not change an existing VM's disk. Keycloak redirect URIs are registered by the redirect registrar in Keycloak's namespace, or by an administrator ([Web UI redirect URIs](#web-ui-redirect-uris)).
 
 #### Guest
 
@@ -175,6 +175,34 @@ sandboxes.
 | `<name>-gateway` | 17670 | Passthrough | gRPC gateway (CLI + API) |
 | `<name>-dashboard` | 18789 | Edge | OpenClaw agent web UI; the dashboard Route does not reach the OpenClaw UI on OpenShell 0.1.x, see [OpenClaw UI and the dashboard Route](#openclaw-ui-and-the-dashboard-route) |
 | `<name>-webui` | 8080 | Edge | OpenShell Dashboard (via oauth2-proxy) |
+
+### Egress from the VM
+
+Each sandbox namespace has an `EgressFirewall` (`k8s.ovn.org/v1`, name `default`) rendered by the `openshell-saw` chart. It needs OVN-Kubernetes. On another network plugin the kind is unknown and the Argo CD sync fails. It is independent of OpenShell's sandbox allowlist: a process on the VM that skips the sandbox proxy still cannot open a connection to a host that is not listed.
+
+The source of truth is `egress.allow` in [`charts/openshell-saw/values.yaml`](../charts/openshell-saw/values.yaml). That list includes the registries the VM pulls from and every exact host in [`charts/governance-policy/profiles/`](../charts/governance-policy/profiles/). A chart test fails if a shipped profile adds a host that is not on the firewall. The chart also allows the Keycloak route host taken from the OIDC issuer URL, using the URL's port (443 when the URL has none).
+
+Node addresses are allowed only on TCP 6443, 443, and 80 (the API and the ingress router). Kubelet, SSH, and NodePorts are not. If the API or the ingress is a load balancer address rather than a node IP, this rule does not cover it. The Keycloak host is what the VM uses for login.
+
+Everything else on the public internet is denied, for IPv4 and IPv6. Pods and services inside the cluster, including DNS, the governance interceptor, and the internal registry, are not filtered by this object.
+
+Hostnames are exact. A name such as `*.quay.io` is rejected at render time, because matching a wildcard needs the `DNSNameResolver` feature gate. Gemini's `*-aiplatform.googleapis.com` cannot be written as a `dnsName` rule. Add the regional host you use under `extraAllow` (for example `us-central1-aiplatform.googleapis.com`).
+
+Quay serves image layers from `cdn01.quay.io` through `cdn06.quay.io`. Those names are on the list. Their addresses change often, and OVN resolves them itself, which can disagree with the VM's own resolver. On cluster-mx8z2, `podman pull quay.io/quay/busybox` succeeded three times in a row and `https://cdn01.quay.io/` returned HTTP 403 (the name is reachable; Quay refuses a bare GET). `registry.npmjs.org` is on the list too, and from that same VM it still timed out: the guest resolved Cloudflare addresses that OVN had not installed for the name. Public NTP (UDP 123) is denied. The guest clock stays on kvm-clock; chrony will not see public pool servers. Harness images from ghcr.io and Sigstore (follow-up #53) are not on this list yet.
+
+An external disk download (`source.httpURL`, or `source.goldenImageURL` / `source.registryURL` when it is `http://` or `https://`) is allowed automatically. A `docker://` image and the internal registry are not added. Any other host outside the cluster, including a custom inference endpoint, still has to be listed.
+
+To let one deployment reach another host (an enterprise system, or a custom inference endpoint outside the cluster), add it in Git under `egress.extraAllow`. On the pattern path, set that under `defaults.openshellSaw` in [`charts/saw-users/values.yaml`](../charts/saw-users/values.yaml), or on one user. A host inside the cluster (`*.svc`) needs no entry.
+
+```yaml
+egress:
+  extraAllow:
+    - vllm.example.net
+```
+
+`egress.enabled: false` removes the firewall. Leave it on.
+
+**Upgrading an existing sandbox.** The next sync turns this firewall on. A custom-inference URL that is outside the cluster lives only in Vault, so the chart cannot see it. Before upgrading, put that host in `egress.extraAllow`, or set `egress.enabled: false` on that user until you do. Calls to that URL time out. OpenShell does not report a policy denial.
 
 ### Internal Connectivity
 

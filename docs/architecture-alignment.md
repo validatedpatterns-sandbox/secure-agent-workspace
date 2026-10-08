@@ -11,7 +11,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 | VM-per-user isolation | One persistent VM per user | One KubeVirt VM per sandbox, cloned from bootc golden image | Implemented |
 | OIDC / SSO | Trusted access broker with SSO | Red Hat Build of Keycloak with OIDC, PKCE, device code flow | Implemented |
 | GitOps control plane | ArgoCD for policy and config | Red Hat Validated Patterns with ArgoCD | Implemented |
-| Network boundary controls | NetworkPolicy, EgressFirewall, EgressIP | TLS passthrough route + auth proxy; NetworkPolicy not yet configured | Partial |
+| Network boundary controls | NetworkPolicy, EgressFirewall, EgressIP | EgressFirewall default-deny on each sandbox namespace, with an explicit host allowlist in Git. No EgressIP | Partial |
 | Agent runtime | OpenShell or equivalent runtime sandbox | OpenShell Gateway + OpenClaw/NemoClaw agents | Implemented |
 | Secret management | Credential proxy / external secret boundary | HashiCorp Vault + External Secrets Operator | Implemented |
 | Policy distribution | Signed policy bundles via NFS | Not implemented (Phase II feature) | Gap |
@@ -63,9 +63,9 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 **Implementation:**
 - TLS passthrough on the gateway route preserves gRPC/HTTP2
 - Auth proxy restricts dashboard access to the sandbox owner
-- No NetworkPolicy or EgressFirewall resources are deployed by default
+- Each sandbox namespace gets an OpenShift `EgressFirewall` named `default`. The VM uses masquerade, so traffic leaving the guest is traffic leaving that pod. Undeclared internet hosts are denied. The allowlist is `egress.allow` plus `egress.extraAllow` in [`charts/openshell-saw/values.yaml`](../charts/openshell-saw/values.yaml), and the Keycloak route host from the OIDC issuer. See [Deployment guide](deployment-guide.md#egress-from-the-vm).
 
-**Gap:** The reference design calls for default-deny egress with explicit allowlists. This implementation does not configure network policies. Adding `NetworkPolicy` resources to restrict VM egress to approved inference endpoints and enterprise systems would close this gap.
+**Gap:** A Kubernetes NetworkPolicy cannot name a host, so it is not the allowlist. Traffic to other pods and services inside the cluster is not covered by the egress firewall. EgressIP is not configured.
 
 ### 5. Agent Runtime
 
@@ -147,7 +147,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 
 ## Recommendations for Closing Gaps
 
-1. **NetworkPolicy:** Add default-deny egress policies to sandbox namespaces with allowlists for inference provider endpoints and enterprise systems.
+1. **In-cluster egress:** The sandbox namespace already denies undeclared internet hosts. What remains is a NetworkPolicy for traffic to other namespaces, and EgressIP if a fixed source address is required.
 2. **Image admission:** The guest already checks component signatures and can verify an installer bundle with cosign. What is still missing is an admission controller (e.g., Kyverno) that rejects an unapproved golden image, and the publisher public key in `/etc/saw/trust`.
 3. **Audit pipeline:** Deploy OpenShift's cluster logging operator with OCSF-compatible log normalization.
 4. **Policy bundles (Phase II):** Implement when OpenShell's policy API stabilizes — requires NFS storage, a signing pipeline, and an in-VM policy agent.

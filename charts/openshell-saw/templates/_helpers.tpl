@@ -47,6 +47,53 @@ Priority: explicit oidc.issuerUrl > computed from global.clusterDomain.
 {{- end }}
 
 {{/*
+Hostname of the Keycloak route, taken from the issuer URL, without a port.
+The egress firewall allows this host so the VM can fetch OIDC keys. Empty
+when the issuer URL is not known yet.
+*/}}
+{{- define "openshell-sandbox.keycloakRouteHost" -}}
+{{- $issuer := include "openshell-sandbox.oidcIssuerUrl" . | trim -}}
+{{- if $issuer -}}
+{{- $authority := regexReplaceAll "/.*$" (regexReplaceAll "^https?://" $issuer "") "" -}}
+{{- regexReplaceAll ":[0-9]+$" $authority "" -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+TCP port of the Keycloak issuer URL. 443 when the URL has no port.
+*/}}
+{{- define "openshell-sandbox.keycloakRoutePort" -}}
+{{- $issuer := include "openshell-sandbox.oidcIssuerUrl" . | trim -}}
+{{- if $issuer -}}
+{{- $authority := regexReplaceAll "/.*$" (regexReplaceAll "^https?://" $issuer "") "" -}}
+{{- if regexMatch ":[0-9]+$" $authority -}}
+{{- regexReplaceAll "^.*:" $authority "" -}}
+{{- else -}}443{{- end -}}
+{{- else -}}443{{- end -}}
+{{- end }}
+
+{{/*
+"host port" for an http(s) disk URL the CDI importer in this namespace must
+reach. Empty for docker://, the internal registry, or anything else.
+http defaults to port 80, https to 443, unless the URL names a port.
+*/}}
+{{- define "openshell-sandbox.httpHostPort" -}}
+{{- $url := . | trim -}}
+{{- if regexMatch "^https?://" $url -}}
+{{- $authority := regexReplaceAll "/.*$" (regexReplaceAll "^https?://" $url "") "" -}}
+{{- $host := regexReplaceAll ":[0-9]+$" $authority "" -}}
+{{- $port := "443" -}}
+{{- if hasPrefix "http://" $url -}}{{- $port = "80" -}}{{- end -}}
+{{- if regexMatch ":[0-9]+$" $authority -}}
+{{- $port = regexReplaceAll "^.*:" $authority "" -}}
+{{- end -}}
+{{- if and $host (not (hasSuffix ".svc" $host)) (not (contains ".svc." $host)) -}}
+{{- printf "%s %s" $host $port -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Validate a Kubernetes secret name (RFC 1123 subdomain).
 */}}
 {{- define "openshell-sandbox.validateSecretName" -}}

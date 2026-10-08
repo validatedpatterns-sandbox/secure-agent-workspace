@@ -1,0 +1,89 @@
+{{- define "openshell-sandbox.validateEgressHost" -}}
+{{- if contains "*" . }}
+{{- fail (printf "egress host %q uses a wildcard; list the exact hostname (DNSNameResolver is not enabled)" .) }}
+{{- end }}
+{{- if regexMatch "^[0-9.]+$" . }}
+{{- fail (printf "egress host %q is an IP address; a dnsName rule does not match an address, so list a hostname" .) }}
+{{- end }}
+{{- if not (regexMatch "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$" .) }}
+{{- fail (printf "egress host %q must be a lowercase DNS name, with no scheme, port, or path" .) }}
+{{- end }}
+{{- end }}
+{{- if .Values.egress.enabled }}
+{{- $hosts := concat (.Values.egress.allow | default list) (.Values.egress.extraAllow | default list) }}
+{{- range $hosts }}
+{{- include "openshell-sandbox.validateEgressHost" . }}
+{{- end }}
+{{- $keycloak := include "openshell-sandbox.keycloakRouteHost" . | trim }}
+{{- if $keycloak }}
+{{- include "openshell-sandbox.validateEgressHost" $keycloak }}
+{{- end }}
+apiVersion: k8s.ovn.org/v1
+kind: EgressFirewall
+metadata:
+  name: default
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+spec:
+  egress:
+    # API (6443) and the ingress router (443, 80) on node addresses.
+    # Not kubelet, SSH, or NodePorts. A load-balancer IP is not a node
+    # address, so this rule does not cover that path.
+    - type: Allow
+      to:
+        nodeSelector:
+          matchLabels:
+            kubernetes.io/os: linux
+      ports:
+        - protocol: TCP
+          port: 6443
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+    {{- range $hosts }}
+    - type: Allow
+      to:
+        dnsName: {{ . | quote }}
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- end }}
+    {{- if and $keycloak (not (has $keycloak $hosts)) }}
+    - type: Allow
+      to:
+        dnsName: {{ $keycloak | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ include "openshell-sandbox.keycloakRoutePort" . | trim }}
+    {{- end }}
+    {{- /* CDI downloads an http(s) disk in this namespace. Skip a host and port already allowed. */}}
+    {{- $kcPort := include "openshell-sandbox.keycloakRoutePort" . | trim }}
+    {{- $seen := list }}
+    {{- range $url := list ($.Values.source.httpURL | default "") ($.Values.source.goldenImageURL | default "") ($.Values.source.registryURL | default "") }}
+    {{- $pair := include "openshell-sandbox.httpHostPort" $url | trim }}
+    {{- if and $pair (not (has $pair $seen)) }}
+    {{- $seen = append $seen $pair }}
+    {{- $parts := splitList " " $pair }}
+    {{- $diskHost := index $parts 0 }}
+    {{- $diskPort := index $parts 1 }}
+    {{- $listed := and (eq $diskPort "443") (has $diskHost $hosts) }}
+    {{- $sameKeycloak := and (eq $diskHost $keycloak) (eq $diskPort $kcPort) }}
+    {{- if and (not $listed) (not $sameKeycloak) }}
+    {{- include "openshell-sandbox.validateEgressHost" $diskHost }}
+    - type: Allow
+      to:
+        dnsName: {{ $diskHost | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ $diskPort }}
+    {{- end }}
+    {{- end }}
+    {{- end }}
+    - type: Deny
+      to:
+        cidrSelector: 0.0.0.0/0
+    - type: Deny
+      to:
+        cidrSelector: "::/0"
+{{- end }}

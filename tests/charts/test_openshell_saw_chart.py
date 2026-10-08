@@ -403,6 +403,207 @@ def test_cluster_domain_fills_routes_issuer_and_dashboard():
         installer_data(docs)["gateway.env"]
 
 
+DEFAULT_EGRESS_HOSTS = [
+    "quay.io",
+    "cdn.quay.io",
+    "cdn01.quay.io",
+    "cdn02.quay.io",
+    "cdn03.quay.io",
+    "cdn04.quay.io",
+    "cdn05.quay.io",
+    "cdn06.quay.io",
+    "registry.fedoraproject.org",
+    "integrate.api.nvidia.com",
+    "api.search.brave.com",
+    "api.openai.com",
+    "api.tavily.com",
+    "registry.npmjs.org",
+    "github.com",
+    "api.github.com",
+    "api-1.github.com",
+    "slack.com",
+    "generativelanguage.googleapis.com",
+    "cloudcode-pa.googleapis.com",
+    "accounts.google.com",
+    "oauth2.googleapis.com",
+    "www.googleapis.com",
+    "iamcredentials.googleapis.com",
+]
+# A dnsName rule cannot express this. A new wildcard in a shipped profile
+# must be added here on purpose, not silently skipped.
+KNOWN_UNEXPRESSIBLE_HOSTS = {"*-aiplatform.googleapis.com"}
+NODE_ALLOW_PORTS = [
+    {"protocol": "TCP", "port": 6443},
+    {"protocol": "TCP", "port": 443},
+    {"protocol": "TCP", "port": 80},
+]
+
+
+def _egress_names(docs):
+    firewalls = [d for (kind, _), d in docs.items() if kind == "EgressFirewall"]
+    assert len(firewalls) == 1
+    assert firewalls[0]["metadata"]["name"] == "default"
+    assert firewalls[0]["apiVersion"] == "k8s.ovn.org/v1"
+    rules = firewalls[0]["spec"]["egress"]
+    return rules, [r["to"]["dnsName"] for r in rules if r["to"].get("dnsName")]
+
+
+def _assert_safe_order(rules):
+    """Allows come first. Both IP families are denied, and nothing is an allow-all."""
+    types = [r["type"] for r in rules]
+    assert types[0] == "Allow"
+    assert "Deny" in types
+    assert types[types.index("Deny"):] == ["Deny", "Deny"]
+    assert rules[-2] == {"type": "Deny", "to": {"cidrSelector": "0.0.0.0/0"}}
+    assert rules[-1] == {"type": "Deny", "to": {"cidrSelector": "::/0"}}
+    for rule in rules:
+        assert set(rule["to"]) <= {"dnsName", "cidrSelector", "nodeSelector"}
+        assert len(rule["to"]) == 1
+        if rule["type"] == "Allow" and "cidrSelector" in rule["to"]:
+            assert rule["to"]["cidrSelector"] not in {"0.0.0.0/0", "::/0"}
+
+
+def test_egress_firewall_denies_undeclared_hosts(default_docs):
+    rules, allowed = _egress_names(default_docs)
+    _assert_safe_order(rules)
+    assert rules[0]["to"]["nodeSelector"]["matchLabels"] == {"kubernetes.io/os": "linux"}
+    assert rules[0]["ports"] == NODE_ALLOW_PORTS
+    assert allowed == DEFAULT_EGRESS_HOSTS
+    assert all(r["ports"] == [{"protocol": "TCP", "port": 443}] for r in rules if "dnsName" in r["to"])
+    assert all(h.strip() and "*" not in h and "/" not in h for h in allowed)
+
+
+def test_egress_firewall_allows_keycloak_and_extra_hosts():
+    docs = render("--set", "global.clusterDomain=example.com",
+                  "--set-string", "egress.extraAllow[0]=vllm.example.net")
+    rules, allowed = _egress_names(docs)
+    _assert_safe_order(rules)
+    assert "vllm.example.net" in allowed
+    assert "openshell-keycloak-ingress-saw-keycloak.apps.example.com" in allowed
+    assert "example.com" not in allowed
+
+
+def test_egress_keycloak_host_is_taken_from_the_issuer_and_not_repeated():
+    host = "openshell-keycloak-ingress-saw-keycloak.apps.example.com"
+    docs = render("--set", "global.clusterDomain=example.com",
+                  "--set-string", f"egress.extraAllow[0]={host}")
+    _, allowed = _egress_names(docs)
+    assert allowed.count(host) == 1
+
+    docs = render("--set-string", "oidc.issuerUrl=https://id.example.net/realms/openshell")
+    rules, allowed = _egress_names(docs)
+    assert "id.example.net" in allowed
+    assert not any("://" in h or "/" in h or ":" in h for h in allowed)
+    keycloak = next(r for r in rules if r["to"].get("dnsName") == "id.example.net")
+    assert keycloak["ports"] == [{"protocol": "TCP", "port": 443}]
+
+
+def _host_ports(rules):
+    return [(r["to"]["dnsName"], r["ports"][0]["port"]) for r in rules if "dnsName" in r["to"]]
+
+
+def test_egress_allows_an_external_golden_image_url():
+    docs = render("--set-string", "source.goldenImageURL=https://images.example.net/disk.qcow2")
+    rules, _ = _egress_names(docs)
+    assert ("images.example.net", 443) in _host_ports(rules)
+
+    docs = render("--set-string", "source.httpURL=http://images.example.net:8080/disk.qcow2")
+    rules, _ = _egress_names(docs)
+    assert ("images.example.net", 8080) in _host_ports(rules)
+    assert ("images.example.net", 80) not in _host_ports(rules)
+
+
+def test_egress_does_not_repeat_a_disk_host_already_allowed():
+    docs = render("--set-string", "source.httpURL=https://quay.io/openshell-gateway.qcow2")
+    rules, _ = _egress_names(docs)
+    assert _host_ports(rules).count(("quay.io", 443)) == 1
+
+    docs = render("--set-string", "source.goldenImageURL=https://vllm.example.net/disk.qcow2",
+                  "--set-string", "egress.extraAllow[0]=vllm.example.net")
+    rules, _ = _egress_names(docs)
+    assert _host_ports(rules).count(("vllm.example.net", 443)) == 1
+
+    docs = render("--set-string", "source.httpURL=http://quay.io:8080/disk.qcow2")
+    rules, _ = _egress_names(docs)
+    ports = _host_ports(rules)
+    assert ports.count(("quay.io", 443)) == 1
+    assert ("quay.io", 8080) in ports
+
+    docs = render("--set-string", "source.goldenImageURL=docker://quay.io/x/old:1")
+    rules, _ = _egress_names(docs)
+    assert _host_ports(rules).count(("quay.io", 443)) == 1
+
+    docs = render("--set-string",
+                  "source.goldenImageURL=https://image-registry.openshift-image-registry.svc:5000/ns/img")
+    _, allowed = _egress_names(docs)
+    assert not any("image-registry" in host for host in allowed)
+
+
+def test_egress_keycloak_port_comes_from_the_issuer():
+    docs = render("--set-string", "oidc.issuerUrl=https://id.example.net:8443/realms/openshell")
+    rules, allowed = _egress_names(docs)
+    assert "id.example.net" in allowed
+    assert "id.example.net:8443" not in allowed
+    keycloak = next(r for r in rules if r["to"].get("dnsName") == "id.example.net")
+    assert keycloak["ports"] == [{"protocol": "TCP", "port": 8443}]
+
+
+def test_egress_covers_every_shipped_profile_host(default_docs):
+    _, allowed = _egress_names(default_docs)
+    exact, wild = set(), set()
+    for path in (ROOT / "charts/governance-policy/profiles").glob("*.yaml"):
+        for endpoint in (yaml.safe_load(path.read_text()) or {}).get("endpoints") or []:
+            host = endpoint["host"]
+            (wild if "*" in host else exact).add(host)
+    missing = exact - set(allowed)
+    assert not missing, "shipped profile hosts missing from the firewall: " + ", ".join(sorted(missing))
+    assert wild == KNOWN_UNEXPRESSIBLE_HOSTS
+    assert not any("*" in host for host in allowed)
+
+
+def test_egress_without_an_issuer_adds_no_empty_hostname(default_docs):
+    rules, allowed = _egress_names(default_docs)
+    assert all(allowed)
+    assert not any(rule["to"] == {} for rule in rules)
+
+
+def test_egress_custom_allow_list_cannot_drop_the_deny():
+    docs = render("--set-string", "egress.allow[0]=only.example.net")
+    rules, allowed = _egress_names(docs)
+    _assert_safe_order(rules)
+    assert "only.example.net" in allowed
+
+
+def test_egress_firewall_can_be_disabled():
+    docs = render("--set", "egress.enabled=false")
+    assert not any(kind == "EgressFirewall" for kind, _ in docs)
+    assert any(kind == "VirtualMachine" for kind, _ in docs)
+
+
+@pytest.mark.parametrize("host", [
+    "*.quay.io",
+    "quay.io.*",
+    "cdn.*.quay.io",
+    "*",
+    "https://example.com",
+    "example.com:443",
+    "example.com/v1",
+    "Example.COM",
+    "1.2.3.4",
+    "10.0.0.0/8",
+    "localhost",
+    "user@example.com",
+    "-bad.example.com",
+    "example..com",
+    " example.com",
+])
+def test_egress_rejects_unsafe_hosts(host):
+    result = helm_template(CHART, "--set", "sandboxName=saw-test",
+                           "--set-string", f"egress.extraAllow[0]={host}")
+    assert result.returncode != 0, host
+    assert "egress host" in result.stderr
+
+
 # -- installer ConfigMap -----------------------------------------------------
 
 def test_installer_configmap_ships_the_real_files(default_docs, ab):

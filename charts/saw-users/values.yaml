@@ -42,6 +42,10 @@ defaults:
       sandboxes: false
     dashboard:
       insecureSkipIssuerTlsVerify: true
+    # Hosts the VM may reach beyond charts/openshell-saw `egress.allow`.
+    # egress:
+    #   extraAllow:
+    #     - vllm.example.net
 
 # Sandbox web UIs (ui.route: true in a SAW-BOM sandbox.yaml). Each one gets a
 # route and an owner-only oauth2-proxy in the VM that listens on

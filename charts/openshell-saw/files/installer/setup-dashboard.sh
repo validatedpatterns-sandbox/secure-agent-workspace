@@ -4,8 +4,13 @@
 # Requires OIDC to be configured on the gateway (the dashboard's gRPC client
 # has no mTLS support).
 set -euo pipefail
+umask 077
 
 : "${RUNTIME:?RUNTIME not set — must be docker or podman}"
+case "${RUNTIME}" in
+  docker|podman) ;;
+  *) echo "Error: RUNTIME must be docker or podman." >&2; exit 1 ;;
+esac
 
 if [[ "${DASHBOARD_ENABLED:-false}" != "true" ]]; then
   echo "Dashboard disabled, skipping."
@@ -32,9 +37,10 @@ CA_FOR_DASHBOARD="${HOME}/.config/openshell/dashboard-gateway-ca.crt"
 if [[ -f "${CA_SRC}" ]]; then
   install -m 0644 "${CA_SRC}" "${CA_FOR_DASHBOARD}"
 else
-  echo "WARN: gateway CA cert not found at ${CA_SRC}, dashboard gRPC connection will likely fail"
+  echo "Error: gateway CA cert not found at ${CA_SRC}." >&2
+  exit 1
 fi
-chmod o+x "${HOME}" "${HOME}/.config" "${HOME}/.config/openshell" 2>/dev/null || true
+chmod o+x "${HOME}" "${HOME}/.config" "${HOME}/.config/openshell"
 
 cat > "${HOME}/.config/openshell/dashboard.env" <<ENVEOF
 PORT=8090
@@ -125,9 +131,9 @@ for i in $(seq 1 15); do
   echo "  waiting for dashboard... (attempt $i)"
 done
 if [[ "${ok}" -ne 1 ]]; then
-  echo "WARN: dashboard health check timed out"
-  ${RUNTIME} logs openshell-dashboard 2>&1 | tail -10 || true
-  ${RUNTIME} logs openshell-dashboard-proxy 2>&1 | tail -10 || true
+  echo "Error: dashboard health check timed out." >&2
+  echo "Inspect the dashboard and proxy service status in the VM." >&2
+  exit 1
 else
   echo "dashboard ready"
 fi

@@ -27,9 +27,15 @@ spec:
           # use the first that exists and store it as the requested version.
           WANTED="${VERSION}"
           SRC=""
+          INSPECT_LOG="$(mktemp)"
+          trap 'rm -f "${INSPECT_LOG}"' EXIT
           for TAG in "${WANTED}" "v${WANTED#v}" latest; do
-            if skopeo inspect --raw "docker://${QUAY_REPO}/${IMAGE}:${TAG}" >/dev/null 2>&1; then
+            if skopeo inspect --raw "docker://${QUAY_REPO}/${IMAGE}:${TAG}" > /dev/null 2>"${INSPECT_LOG}"; then
               SRC="${TAG}"; break
+            fi
+            if ! grep -Eiq 'manifest unknown|not found|name unknown' "${INSPECT_LOG}"; then
+              echo "ERROR: cannot inspect ${QUAY_REPO}/${IMAGE}:${TAG}; check registry access" >&2
+              exit 1
             fi
             echo "no tag ${TAG} on ${QUAY_REPO}/${IMAGE}"
           done

@@ -26,7 +26,7 @@ if [[ "${1:-}" == "--add-key-only" ]]; then add_only=true; shift; fi
 if (( $# == 0 )) && [[ -n "${CMD:-}" ]]; then set -- "${CMD}"; fi
 
 if [[ ! -f "${SSH_KEY_PATH}.pub" ]]; then
-  echo "Error: no public key at ${SSH_KEY_PATH}.pub (make generate-keys, or set SSH_KEY_PATH)" >&2
+  echo "Error: no public key at ${SSH_KEY_PATH}.pub (make ssh-key-generate, or set SSH_KEY_PATH)" >&2
   exit 1
 fi
 pubkey="$(tr -d '\n' < "${SSH_KEY_PATH}.pub")"
@@ -39,16 +39,27 @@ if [[ -z "${secret}" ]]; then
 fi
 
 synced() {
-  oc get vmi "${VM_NAME}" -n "${SAW_NS}" \
-    -o jsonpath='{.status.conditions[?(@.type=="AccessCredentialsSynchronized")].status}' 2>/dev/null
+  local output rc
+  if output="$(oc get vmi "${VM_NAME}" -n "${SAW_NS}" \
+      -o jsonpath='{.status.conditions[?(@.type=="AccessCredentialsSynchronized")].status}' 2>&1)"; then
+    printf '%s' "${output}"
+    return 0
+  else
+    rc=$?
+  fi
+  if [[ "${output}" == *NotFound* || "${output}" == *"not found"* ]]; then
+    return 10
+  fi
+  printf '%s\n' "${output}" >&2
+  return "${rc}"
 }
 
-current="$(oc get secret "${secret}" -n "${SAW_NS}" -o go-template="{{ index .data \"${KEY_NAME}\" }}" 2>/dev/null || true)"
-if [[ "${current}" == "<no value>" ]]; then current=""; fi
-if [[ -n "${current}" && "$(printf '%s' "${current}" | base64 -d 2>/dev/null)" == "${pubkey}" ]]; then
-  echo "Key '${KEY_NAME}' already in Secret ${secret}."
+secret_data="$(oc get secret "${secret}" -n "${SAW_NS}" -o json)"
+current="$(jq -r --arg key "${KEY_NAME}" '.data[$key] // empty' <<<"${secret_data}")"
+if [[ -n "${current}" && "$(printf '%s' "${current}" | base64 -d)" == "${pubkey}" ]]; then
+  echo "Key '${KEY_NAME}' already in Secret ${secret}." >&2
 else
-  echo "Adding key '${KEY_NAME}' to Secret ${secret}..."
+  echo "Adding key '${KEY_NAME}' to Secret ${secret}..." >&2
   # stringData via a patch file keeps the key out of argv.
   patch="$(mktemp)"; trap 'rm -f "${patch}"' EXIT
   printf '{"stringData":{"%s":"%s"}}' "${KEY_NAME}" "${pubkey}" > "${patch}"
@@ -57,13 +68,19 @@ else
   sleep 5
 fi
 
-echo "Waiting for the guest agent to sync the key (AccessCredentialsSynchronized)..."
+echo "Waiting for the guest agent to sync the key (AccessCredentialsSynchronized)..." >&2
 deadline=$(( $(date +%s) + SYNC_TIMEOUT ))
-until [[ "$(synced)" == "True" ]]; do
+while :; do
+  if sync_state="$(synced)"; then
+    if [[ "${sync_state}" == True ]]; then break; fi
+  else
+    rc=$?
+    if (( rc != 10 )); then exit "${rc}"; fi
+  fi
   if (( $(date +%s) > deadline )); then
     echo "Error: key not synced after ${SYNC_TIMEOUT}s:" >&2
     oc get vmi "${VM_NAME}" -n "${SAW_NS}" \
-      -o jsonpath='{.status.conditions[?(@.type=="AccessCredentialsSynchronized")].message}{"\n"}' >&2 || true
+      -o jsonpath='{.status.conditions[?(@.type=="AccessCredentialsSynchronized")].message}{"\n"}' >&2
     echo "The VM needs a running qemu-guest-agent and the SELinux boolean virt_qemu_ga_manage_ssh=on." >&2
     exit 1
   fi
@@ -84,7 +101,7 @@ until virtctl "${ssh_args[@]}" --local-ssh-opts=-oBatchMode=yes \
   fi
   sleep 3
 done
-echo "Key synced."
+echo "Key synced." >&2
 ${add_only} && exit 0
 
 if (( $# )); then

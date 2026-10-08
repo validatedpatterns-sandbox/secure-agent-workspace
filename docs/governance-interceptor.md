@@ -207,27 +207,27 @@ gateway interceptor evaluated
 ### List active profiles
 
 ```bash
-make governance-list-profiles OPENSHELL_SAW_NAME=alice
+make governance-profile-list OPENSHELL_SAW_NAME=alice
 ```
 
 ### Add a profile from a YAML file
 
 ```bash
-make governance-create-profile OPENSHELL_SAW_NAME=alice \
+make governance-profile-create OPENSHELL_SAW_NAME=alice \
   PROFILE_NAME=jira PROFILE_FILE=/path/to/jira.yaml
 ```
 
 ### Remove a profile
 
 ```bash
-make governance-remove-profile OPENSHELL_SAW_NAME=alice \
+make governance-profile-remove OPENSHELL_SAW_NAME=alice \
   PROFILE_NAME=github
 ```
 
 ### Restore a previously removed profile
 
 ```bash
-make governance-add-profile OPENSHELL_SAW_NAME=alice \
+make governance-profile-add OPENSHELL_SAW_NAME=alice \
   PROFILE_NAME=github
 ```
 
@@ -248,4 +248,4 @@ helm upgrade --install governance-policy charts/governance-policy \
   --namespace openshell-agents
 ```
 
-`governance-list-profiles` queries the gateway named by `OPENSHELL_SAW_NAME` (default `openshell-saw`).
+`make governance-profile-list` lists local profiles without a name. Set `OPENSHELL_SAW_NAME` to query that gateway.

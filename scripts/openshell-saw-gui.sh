@@ -1,55 +1,63 @@
 #!/usr/bin/env bash
-# Open the OpenClaw web UI via openshell ssh-proxy port-forward.
-# Uses the local openshell CLI with fresh OIDC token — no virtctl needed.
-
+# Open the OpenClaw web UI through a forward owned by this process.
 set -euo pipefail
 
-GATEWAY_NAME="${GATEWAY_NAME:?GATEWAY_NAME is required}"
-SANDBOX_NAME="${SANDBOX_NAME:-${OPENSHELL_SAW_NAME:-${GATEWAY_NAME}}}"
-WORKSPACE="${WORKSPACE:-default}"
-GUI_PORT="${GUI_PORT:-18789}"
-SSH_USER="${SSH_USER:-sandbox}"
+gateway="${GATEWAY_NAME:?GATEWAY_NAME is required}"
+sandbox="${SANDBOX_NAME:?SANDBOX_NAME is required}"
+workspace="${WORKSPACE:-default}"
+port="${GUI_PORT:-18789}"
+user="${SSH_USER:-sandbox}"
 
-command -v openshell >/dev/null 2>&1 || {
-  echo "Error: openshell CLI not found. Install from https://github.com/NVIDIA/OpenShell/releases"
+command -v openshell >/dev/null || { echo "Error: openshell is required." >&2; exit 1; }
+if [[ ! "${port}" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
+  echo "Error: GUI_PORT must be a TCP port from 1 to 65535." >&2
   exit 1
+fi
+
+if command -v lsof >/dev/null && lsof -nP -iTCP:"${port}" -sTCP:LISTEN >/dev/null; then
+  echo "Error: local port ${port} is in use. Set GUI_PORT to a free port." >&2
+  exit 1
+fi
+
+config="$(openshell --gateway "${gateway}" sandbox exec -n "${sandbox}" \
+  --workspace "${workspace}" --no-tty -- cat /sandbox/.openclaw/openclaw.json)"
+mode="$(jq -r '.gateway.auth.mode // empty' <<<"${config}")"
+token=""
+if [[ "${mode}" != "trusted-proxy" ]]; then
+  token="$(jq -er '.gateway.auth.token | select(type == "string" and length > 0)' <<<"${config}")"
+fi
+
+url="http://localhost:${port}/"
+if [[ -n "${token}" ]]; then
+  url+="#token=${token}"
+fi
+
+ssh -o "ProxyCommand=openshell ssh-proxy --gateway-name ${gateway} --name ${sandbox} --workspace ${workspace}" \
+  -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+  -L "${port}:127.0.0.1:18789" -N "${user}@openshell-${sandbox}.${workspace}" &
+forward_pid=$!
+cleanup_forward() {
+  if kill -0 "${forward_pid}" 2>/dev/null; then
+    kill "${forward_pid}"
+  fi
 }
-
-# Kill any existing port-forward on this port
-pids=$(lsof -ti :"${GUI_PORT}" 2>/dev/null || true)
-if [[ -n "${pids}" ]]; then
-  kill "${pids}" 2>/dev/null || true
-  sleep 1
-fi
-
-# Fetch dashboard token via openshell sandbox exec
-echo "Fetching dashboard token..."
-TOKEN=$(openshell sandbox exec -n "${SANDBOX_NAME}" --workspace "${WORKSPACE}" --no-tty -- \
-  cat /sandbox/.openclaw/openclaw.json 2>/dev/null \
-  | python3 -c "import sys,json; c=json.load(sys.stdin); print((c.get('gateway',{}).get('auth',{}).get('token','')))" 2>/dev/null | grep -oE '^[a-f0-9]+$' || true)
-
-if [[ -z "${TOKEN}" ]]; then
-  TOKEN=$(openshell sandbox exec -n "${SANDBOX_NAME}" --workspace "${WORKSPACE}" --no-tty -- \
-    cat /tmp/auth-token 2>/dev/null | grep -oE '[a-f0-9]{32,}' || true)
-fi
-
-if [[ -z "${TOKEN}" ]]; then
-  echo "Error: Could not extract dashboard token."
-  echo "  Make sure the sandbox setup has completed and openclaw is configured."
-  echo ""
-  echo "  Try: openshell sandbox list"
+trap cleanup_forward EXIT
+sleep 2
+if ! kill -0 "${forward_pid}" 2>/dev/null; then
+  wait "${forward_pid}"
+  echo "Error: the UI forward stopped." >&2
   exit 1
 fi
 
-echo ""
-echo "OpenClaw UI: http://localhost:${GUI_PORT}/#token=${TOKEN}"
-echo "Press Ctrl-C to stop."
-echo ""
-
-# Port-forward via openshell ssh-proxy — uses local OIDC token
-ssh -o "ProxyCommand=openshell ssh-proxy --gateway-name ${GATEWAY_NAME} --name ${SANDBOX_NAME} --workspace ${WORKSPACE}" \
-  -o StrictHostKeyChecking=no \
-  -o UserKnownHostsFile=/dev/null \
-  -o LogLevel=ERROR \
-  -L "${GUI_PORT}:127.0.0.1:18789" \
-  -N "${SSH_USER}@openshell-${SANDBOX_NAME}.${WORKSPACE}"
+if command -v open >/dev/null; then
+  open "${url}"
+elif command -v xdg-open >/dev/null; then
+  xdg-open "${url}"
+else
+  echo "Error: no browser opener is available." >&2
+  exit 1
+fi
+unset token url config
+echo "OpenClaw UI is available on local port ${port}. Press Ctrl-C to stop."
+wait "${forward_pid}"

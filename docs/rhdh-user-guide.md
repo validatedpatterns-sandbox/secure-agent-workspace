@@ -53,7 +53,7 @@ The imperative job `saw-portal-vault` creates the Vault policy and role
 `saw-portal-writer`. Without the imperative framework, run once:
 
 ```bash
-make -f Makefile-quickstart portal-vault-setup
+make portal-vault-setup
 ```
 
 Check:
@@ -73,7 +73,7 @@ A new realm gets this from the chart. A realm imported before (an existing
 cluster) needs it applied once:
 
 ```bash
-make -f Makefile-quickstart keycloak-harden
+make keycloak-harden
 ```
 
 It sets the password policy and brute-force lockout, turns registration
@@ -102,15 +102,15 @@ users:
     email: carol@example.com        # optional; also firstName, lastName
     roles: [openshell-user]         # default
 EOF
-make -f Makefile-quickstart keycloak-add-users USERS_FILE=/tmp/portal-users.yaml
+make keycloak-add-users USERS_FILE=/tmp/portal-users.yaml
 ```
 
-The new password is printed once and kept in Secret
-`openshell-keycloak-users`. Later:
+The command stores each new password in the
+`openshell-keycloak-users` Secret. It prints the Secret location. Later:
 
 ```bash
-make -f Makefile-quickstart keycloak-password KC_USER=carol         # show it
-make -f Makefile-quickstart keycloak-reset-password KC_USER=carol   # new one
+make keycloak-password KC_USER=carol         # show its Secret location
+make keycloak-reset-password KC_USER=carol   # generate and store a new one
 ```
 
 User names must be lowercase DNS labels of at most 19 characters. Running
@@ -199,7 +199,7 @@ The same run is on the workspace's catalog page: open `saw-carol` → the
 The installer inside the VM cannot report to the cluster, so a failure there
 (for example a missing key) shows as the `sandboxes` task running to its
 30-minute limit. The installer's log says why (next section:
-`openshell-saw-logs`).
+`make saw-logs`).
 
 ### Check what happened
 
@@ -233,7 +233,7 @@ and `carol-default-notebook-ui`.
 Follow the VM's installer until `apply: Done` (about 10 minutes):
 
 ```bash
-make -f Makefile-quickstart openshell-saw-logs OPENSHELL_SAW_NAME=carol
+make saw-logs OPENSHELL_SAW_NAME=carol
 ```
 
 In RHDH, **Catalog** lists `saw-carol` ("Agent
@@ -276,14 +276,24 @@ Check that only the owner gets in: in a private window, open the same URL
 and sign in as another user (e.g. bob). Expected: 403 from the proxy, before
 OpenClaw.
 
+As tested on 2026-10-08, the `cuda-sandbox` image contains OpenClaw
+2026.7.1. Its first
+browser connection can stop at `pairing required` after Keycloak accepts the
+owner. In the sandbox, run `openclaw devices list` and verify the pending
+browser request before approving its exact request ID with
+`openclaw devices approve <requestId>`. The browser request can include
+`operator.admin`; approval grants that scope to the browser device. Remove
+the paired device after a temporary test. The `notebook` image uses a newer
+OpenClaw release and did not need this step in the live test.
+
 ### From the command line (admin)
 
 ```bash
 export OPENSHELL_SAW_NAME=carol
-make -f Makefile-quickstart openshell-saw-configure-gateway
+make saw-configure
 openshell gateway login carol          # sign in as carol in the browser
 openshell sandbox list
-make -f Makefile-quickstart openclaw-tui SANDBOX_NAME=notebook
+make openclaw-tui SANDBOX_NAME=notebook
 ```
 
 The TUI talks to the same OpenClaw gateway with the gateway password; it
@@ -299,7 +309,7 @@ must keep working with the UI's trusted-proxy mode.
 | 502 / 503 | OpenClaw is not running in the sandbox, or the VM is still installing | wait for `apply: Done`; check the gateway log |
 
 ```bash
-make -f Makefile-quickstart openshell-saw-vm-ssh OPENSHELL_SAW_NAME=carol \
+make saw-vm-ssh OPENSHELL_SAW_NAME=carol \
   CMD='openshell sandbox exec -n notebook --no-tty -- sh -c "tail -20 /tmp/openclaw-gateway.log; grep -h trusted_proxy /tmp/openclaw/openclaw-*.log | tail -5"'
 ```
 

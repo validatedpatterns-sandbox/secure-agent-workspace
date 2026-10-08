@@ -1,13 +1,13 @@
 # Required — must be set at install time. Maximum 19 characters (OpenShell limit).
 sandboxName: ""
-# Operator SSH access (used by `make openshell-saw-configure-gateway` to fetch
+# Operator SSH access (used by `make saw-configure` to fetch
 # the gateway CA). Provisioning does not use SSH. Keys are provisioned
 # dynamically by KubeVirt accessCredentials through the qemu guest agent:
 # updating the Secret updates cloud-user's authorized_keys in the running VM.
 # https://kubevirt.io/user-guide/user_workloads/accessing_virtual_machines/
 #
 # The chart creates an empty <name>-ssh-pubkey Secret for this;
-# `make openshell-saw-vm-ssh` adds your key to it when you need a shell.
+# `make saw-vm-ssh` adds your key to it when you need a shell.
 # Or name an existing Secret instead (every value in it is a public key):
 sshPublicKeySecret: ""
 # Optional: seed the chart-created Secret with one key (key1).
@@ -19,7 +19,7 @@ sshPublicKey: ""
 #
 # 1. Registry (default): import the golden image into the VM's own disk.
 #    Without registryURL, the internal registry's
-#    <dataSourceNamespace>/openshell-gateway:latest (make copy-images, or the
+#    <dataSourceNamespace>/openshell-gateway:latest (make images-mirror, or the
 #    openshell-gateway-image build); the namespace may pull it from there.
 #      source:
 #        registryURL: "docker://quay.io/rh-ai-quickstart/openshell-gateway@sha256:<digest>"
@@ -206,7 +206,7 @@ sandboxUiProxy:
   # asking for its gateway token, and approves their UI devices. Only
   # requests from `cidrs` are trusted; the forward arrives over loopback.
   # The CLI and TUI in the sandbox use the gateway secret as a password.
-  # Off: the UI asks for the token (make sandbox-ui prints it).
+  # Off: the UI asks for its token. make sandbox-ui lists routes only.
   trustedProxy:
     enabled: true
     cidrs: ["127.0.0.1/32", "::1/128"]
@@ -260,4 +260,4 @@ job:
 
 # Each SAW is installed into its own namespace (the release namespace), e.g.
 # saw-<name>. Label that namespace openshell.pattern/saw=true so the shared
-# governance interceptor accepts its VM (make openshell-saw-create does this).
+# governance interceptor accepts its VM (make saw-create does this).

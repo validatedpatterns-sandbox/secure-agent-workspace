@@ -1,10 +1,14 @@
 """saw-with-lock holds one flock so two reconciles cannot overlap."""
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
 
+
+@pytest.mark.skipif(shutil.which("flock") is None, reason="requires flock")
 def test_two_locked_commands_do_not_overlap(tmp_path):
     script = Path(__file__).resolve().parents[2] / "charts" / "openshell-saw" / "files" / "guest" / "saw-with-lock"
     lock = tmp_path / "saw" / "lock"

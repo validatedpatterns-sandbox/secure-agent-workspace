@@ -81,7 +81,7 @@ def fixture(tmp_path, **changes):
         script.chmod(0o755)
     env = {**os.environ, 'PATH': str(tmp_path)+os.pathsep+os.environ['PATH'],
            'FAKE_STATE':str(path),'FAKE_LOG':str(log),'DRILL_TIMEOUT':'1',
-           'DRILL_POLL_INTERVAL':'0.01'}
+           'DRILL_POLL_INTERVAL':'0.01','SAW_NS':'saw-demo'}
     return path,log,env
 
 

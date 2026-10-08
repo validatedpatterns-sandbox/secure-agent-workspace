@@ -190,5 +190,5 @@ User → OpenClaw TUI/GUI
 | `openclaw-tui` | OpenClaw sandbox TUI | `OPENSHELL_SAW_NAME=alice SANDBOX_NAME=notebook make openclaw-tui` |
 | `nemoclaw-gui` | NemoClaw sandbox GUI | `... GUI_PORT=18789 make nemoclaw-gui` |
 | `openclaw-gui` | OpenClaw sandbox GUI | `... GUI_PORT=18790 make openclaw-gui` |
-| `openshell-saw-tui` | Alias for nemoclaw-tui | `make openshell-saw-tui` |
-| `openshell-saw-gui` | Alias for nemoclaw-gui | `make openshell-saw-gui` |
+| `openshell-saw-tui` | Alias for nemoclaw-tui | `make saw-tui` |
+| `openshell-saw-gui` | Alias for nemoclaw-gui | `make saw-gui` |

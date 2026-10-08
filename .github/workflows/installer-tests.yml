@@ -33,11 +33,7 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install -r tests/requirements.txt -e ./cli
       - name: Lint charts
-        run: |
-          helm lint charts/openshell-saw --set sandboxName=ci
-          helm lint charts/saw-bom
-          helm lint charts/saw-users
-          helm lint charts/openshell-rhdh
+        run: make lint
       - name: Installer, chart and CLI tests
         run: make test-installer PYTHON=python
 

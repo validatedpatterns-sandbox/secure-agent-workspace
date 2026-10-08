@@ -1,28 +1,38 @@
 #!/usr/bin/env bash
-# Print the host name of the Keycloak in a namespace (no scheme, no slash).
-# Exits 1 if none is found.
-#
-# Usage: keycloak-host.sh [namespace]   (default: $KEYCLOAK_NS or saw-keycloak)
-#
-# Works for the Keycloak `make keycloak` deploys and for an existing RHBK
-# instance, which may report its URL in status.externalURL, only set
-# spec.hostname.hostname, or be exposed by a route without the app=keycloak
-# label.
-set -uo pipefail
+# Print the Keycloak host in one namespace, without a scheme or path.
+set -euo pipefail
 
-NS="${1:-${KEYCLOAK_NS:-saw-keycloak}}"
-
-clean() { sed -e 's|^https\{0,1\}://||' -e 's|/.*$||'; }
-
-# The repo's own Keycloak (make keycloak) wins if the namespace has several.
-host=$(oc get keycloak openshell-keycloak -n "${NS}" -o jsonpath='{.status.externalURL}' 2>/dev/null | clean)
-[[ -n "${host}" ]] || host=$(oc get keycloak -n "${NS}" -o jsonpath='{.items[0].status.externalURL}' 2>/dev/null | clean)
-[[ -n "${host}" ]] || host=$(oc get keycloak -n "${NS}" -o jsonpath='{.items[0].spec.hostname.hostname}' 2>/dev/null | clean)
-[[ -n "${host}" ]] || host=$(oc get route -n "${NS}" -l app=keycloak -o jsonpath='{.items[0].spec.host}' 2>/dev/null)
-[[ -n "${host}" ]] || host=$(oc get route -n "${NS}" -o jsonpath='{.items[0].spec.host}' 2>/dev/null)
+namespace="${1:-${KEYCLOAK_NS:-saw-keycloak}}"
+host=""
+if keycloaks="$(oc get keycloaks -n "${namespace}" -o json 2>&1)"; then
+  host="$(jq -r '
+    [.items[] | select(.metadata.name == "openshell-keycloak")] +
+    [.items[] | select(.metadata.name != "openshell-keycloak")] |
+    map((.status.externalURL // "") as $url |
+        if $url != "" then $url else .spec.hostname.hostname // "" end) |
+    map(select(. != "")) | first // empty' <<<"${keycloaks}")"
+elif [[ "${keycloaks}" != *"doesn't have a resource type"* &&
+        "${keycloaks}" != *"the server could not find the requested resource"* ]]; then
+  echo "Error: cannot query Keycloak in ${namespace}. Check cluster access." >&2
+  exit 2
+fi
 
 if [[ -z "${host}" ]]; then
-  echo "Error: no Keycloak found in namespace ${NS} (set KEYCLOAK_NS, or run 'make keycloak')" >&2
+  if routes="$(oc get routes -n "${namespace}" -o json 2>&1)"; then
+    host="$(jq -r '
+      [.items[] | select(.metadata.labels.app == "keycloak" or
+        (.metadata.name // "" | contains("keycloak")))] |
+      map(.spec.host // empty) | map(select(. != "")) | first // empty' \
+      <<<"${routes}")"
+  elif [[ "${routes}" != *NotFound* && "${routes}" != *"not found"* ]]; then
+    echo "Error: cannot query routes in ${namespace}. Check cluster access." >&2
+    exit 2
+  fi
+fi
+
+host="$(printf '%s' "${host}" | sed -e 's|^https\{0,1\}://||' -e 's|/.*$||')"
+if [[ -z "${host}" ]]; then
+  echo "Error: no Keycloak found in namespace ${namespace}. Set KEYCLOAK_NS or run make keycloak-deploy." >&2
   exit 1
 fi
-echo "${host}"
+printf '%s\n' "${host}"

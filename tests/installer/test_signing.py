@@ -5,6 +5,7 @@ import os
 import re
 import stat
 import subprocess
+import sys
 
 import pytest
 
@@ -149,6 +150,7 @@ def test_load_config_applies_the_floor(ab, tmp_path, monkeypatch):
     assert cfg["signing"]["mode"] == "enforce"
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="shell verifier uses Linux tools")
 def test_verify_bundle_floor_overrides_config_json_off(tmp_path):
     """Same as the Python-side test above, but for the bash verifier: an
     unsigned bundle under a config.json mode: off still fails when the
@@ -173,6 +175,7 @@ def test_verify_bundle_floor_overrides_config_json_off(tmp_path):
     assert json.loads(status.read_text())["bundle"]["signature"] == "unsigned"
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="shell verifier uses Linux tools")
 def test_verify_bundle_without_a_floor_file_respects_config_json(tmp_path):
     """No floor file (the common case today) changes nothing: config.json's
     own mode still applies."""
@@ -263,6 +266,7 @@ def test_keyless_signature_shape_is_accepted_but_never_verifies(ab, bom, fake_en
         installer.install(bom)
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="shell verifier uses Linux tools")
 def test_verify_bundle_warn_allows_unsigned_and_enforce_stops(tmp_path):
     from pathlib import Path
     root = Path(__file__).resolve().parents[2]
@@ -306,6 +310,7 @@ def _manifest_text(directory, names):
     return "".join(lines)
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="shell verifier uses Linux tools")
 def test_edited_bundle_fails_enforce_and_warns(tmp_path):
     """A test key signs the manifest covering the three installer files.
     Editing apply_bom.py changes its hash, which changes the manifest and
@@ -376,6 +381,7 @@ def test_edited_bundle_fails_enforce_and_warns(tmp_path):
     assert staged_apply_bom.read_text() == "tampered\n"
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="shell verifier uses Linux tools")
 def test_a_byte_shifted_between_files_is_rejected(tmp_path):
     """A raw concatenation of the three files left their boundary ambiguous:
     moving bytes from the end of one file to the start of the next kept the

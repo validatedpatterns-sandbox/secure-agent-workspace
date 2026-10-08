@@ -123,7 +123,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 - Stop VM: `helm uninstall <sandbox>` or `virtctl stop <vm>`
 - Revoke SSO: Remove user from Keycloak or delete the sandbox's OIDC token
 - Remove route: Managed by helm; deleted with the sandbox release
-- Rebake image: `make build-gateway-image` rebuilds the bootc image
+- Rebake image: `make gateway-build` rebuilds the bootc image
 
 **Alignment:** Full. All kill switch capabilities are available through standard OpenShift and helm operations.
 

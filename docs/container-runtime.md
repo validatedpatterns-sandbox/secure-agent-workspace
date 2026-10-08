@@ -59,10 +59,10 @@ onboardCli: nemoclaw
 
 ```bash
 # Podman variant — default for NemoClaw fallback validation, openclaw, and opencode
-make build-gateway-podman
+make gateway-build-podman
 
 # Docker compatibility variant (optional)
-make build-gateway-docker
+make gateway-build-docker
 ```
 
 Each produces a separate ImageStream, DataVolume, and DataSource on the cluster.
@@ -72,13 +72,13 @@ Both can coexist in the same namespace.
 
 ```bash
 # Podman runtime + NemoClaw fallback validation (default)
-make openshell-saw-create \
+make saw-create \
   OPENSHELL_SAW_NAME=my-sandbox \
   CONTAINER_RUNTIME=podman \
   PROVIDER=build MODEL=nvidia/nemotron-3-super-120b-a12b API_KEY=<nvapi-key>
 
 # Docker compatibility runtime + NemoClaw
-make openshell-saw-create \
+make saw-create \
   OPENSHELL_SAW_NAME=my-sandbox \
   CONTAINER_RUNTIME=docker \
   PROVIDER=build MODEL=nvidia/nemotron-3-super-120b-a12b API_KEY=<nvapi-key>
@@ -160,9 +160,11 @@ uses rootless Podman; if onboarding or connect reports a Docker-only preflight f
 capture that result as a validation blocker rather than switching the production default
 back silently.
 
-**The `inference.local` route** (NemoClaw's LLM routing inside the openclaw sandbox) requires the OpenShell gateway to be in Docker-driver mode (openshell ≤ 0.0.97). With the externally-supervised gateway (0.0.99+), `nemoclaw onboard` reaches step 4 then exits with `OpenShell inference route was not configured`. The provider fallback in `setup-nemoclaw.sh` handles this gracefully — inference still works via the gateway-level `inference` provider.
+**Inference routing** follows the current SAW-BOM provider profiles. The
+agent calls its provider endpoint through the sandbox proxy. See
+[deployment details](deployment-guide.md) for the current installer flow.
 
-**The `nemoclaw-sandbox` image** must be available in the cluster before the in-guest installer creates that sandbox. Either build it with `make build-nemoclaw` or mirror it from `quay.io/rh-ai-quickstart/nemoclaw-sandbox:<version>` using an in-cluster skopeo job (see Bug #1 in `local-docs/deployment-summary.md`).
+**The `nemoclaw-sandbox` image** must be available in the cluster before the in-guest installer creates that sandbox. Either build it with `make sandbox-build` or mirror it from `quay.io/rh-ai-quickstart/nemoclaw-sandbox:<version>` using an in-cluster skopeo job (see Bug #1 in `local-docs/deployment-summary.md`).
 
 ## Risks
 

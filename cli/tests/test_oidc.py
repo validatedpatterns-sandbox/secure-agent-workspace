@@ -35,33 +35,32 @@ class TestAutoDetectIssuer:
         result = oidc.auto_detect_issuer("https://my-issuer", "ns", "/tmp", "client")
         assert result == "https://my-issuer"
 
-    def test_from_gateway_values(self):
-        values = {"oidc": {"enabled": True, "issuerUrl": "https://gw-issuer"}}
-        with patch("openshell_saw.helm.get_values", return_value=values):
+    def test_from_keycloak_status(self):
+        with patch("openshell_saw.kube.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="https://keycloak.example.com")
             result = oidc.auto_detect_issuer(None, "ns", "/nonexistent", "client")
-        assert result == "https://gw-issuer"
+        assert result == "https://keycloak.example.com/realms/openshell"
 
     def test_from_token_file(self, tmp_path):
         token_file = tmp_path / "token.json"
         token_file.write_text(json.dumps({"issuer_url": "https://saved-issuer"}))
-        with patch("openshell_saw.helm.get_values", return_value=None):
+        with patch("openshell_saw.kube.run", return_value=MagicMock(returncode=1, stdout="")):
             result = oidc.auto_detect_issuer(None, "ns", str(tmp_path), "client")
         assert result == "https://saved-issuer"
 
     def test_from_keycloak_route(self):
         with (
-            patch("openshell_saw.helm.get_values", return_value=None),
             patch("openshell_saw.kube.run") as mock_run,
         ):
-            mock_run.return_value = MagicMock(
-                returncode=0, stdout="keycloak.apps.cluster.example.com"
-            )
+            mock_run.side_effect = [
+                MagicMock(returncode=1, stdout=""),
+                MagicMock(returncode=0, stdout="keycloak.apps.cluster.example.com"),
+            ]
             result = oidc.auto_detect_issuer(None, "ns", "/nonexistent", "client")
         assert result == "https://keycloak.apps.cluster.example.com/realms/openshell"
 
     def test_none_when_nothing_found(self):
         with (
-            patch("openshell_saw.helm.get_values", return_value=None),
             patch("openshell_saw.kube.run") as mock_run,
         ):
             mock_run.return_value = MagicMock(returncode=1, stdout="")

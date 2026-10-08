@@ -34,6 +34,9 @@ if tool == "curl":
     realm = url.split("/realms/")[1].split("/")[0]
     r = st["realms"].get(realm)
     if url.endswith("/.well-known/openid-configuration"):
+        if "-w" in args:
+            print("200" if r else "404", end="")
+            sys.exit(0)
         if not r:
             if "-f" in args or "-skf" in args:
                 sys.exit(22)
@@ -61,9 +64,22 @@ if tool == "curl":
 # oc
 out = next((a for a in args if a.startswith("jsonpath=")), args[args.index("-o") + 1] if "-o" in args else "")
 if args[:2] == ["get", "csv"]:
-    print("rhbk-operator.v26  Succeeded" if st.get("rhbk_csv", True) else ""); sys.exit(0)
-if args[:2] == ["get", "keycloak"]:
+    items = ([{"metadata": {"name": "rhbk-operator.v26", "namespace": "keycloak"}}]
+             if st.get("rhbk_csv", True) else [])
+    if out == "json":
+        print(json.dumps({"items": items}))
+    else:
+        print("rhbk-operator.v26  Succeeded" if items else "")
+    sys.exit(0)
+if args[:2] in (["get", "keycloak"], ["get", "keycloaks"]):
     named = args[2] if len(args) > 2 and not args[2].startswith("-") else None
+    if out == "json" and not named:
+        items = [{"metadata": {"name": name},
+                  "spec": {"hostname": {"hostname": st["host"]}},
+                  "status": {"externalURL": f"https://{st['host']}",
+                             "conditions": [{"type": "Ready", "status": "True"}]}}
+                 for name in st["keycloaks"]]
+        print(json.dumps({"items": items})); sys.exit(0)
     if named:
         if named not in st["keycloaks"]:
             sys.exit(1)
@@ -80,7 +96,10 @@ if args[:2] == ["get", "keycloak"]:
 if args[:2] == ["get", "keycloakrealmimport"]:
     if "conditions" in out:
         print("True" if st.get("realm_import_done") else "", end=""); sys.exit(0)
-    items = [{"spec": {"realm": {"realm": r, "roles": {"realm": [{"name": n} for n in roles]}}}}
+    items = [{"metadata": {"name": "openshell-keycloak-realm"},
+              "status": {"conditions": [{"type": "Done", "status": "True"}]}
+                         if st.get("realm_import_done") else {},
+              "spec": {"realm": {"realm": r, "roles": {"realm": [{"name": n} for n in roles]}}}}
              for r, roles in st["imports"].items()]
     print(json.dumps({"items": items})); sys.exit(0)
 if args[:2] == ["get", "route"]:

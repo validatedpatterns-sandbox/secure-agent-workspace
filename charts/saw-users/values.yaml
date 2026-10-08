@@ -1,7 +1,7 @@
 # One entry per person. The pattern's list lives in overrides/saw-users.yaml.
 # A name is a lowercase DNS label, unique, and at most 19 characters: it is
 # the VM name (OpenShell's limit), in namespace saw-<name>, as with
-# `make openshell-saw-create OPENSHELL_SAW_NAME=<name>`. The dashboard route
+# `make saw-create OPENSHELL_SAW_NAME=<name>`. The dashboard route
 # label "<name>-dashboard-saw-<name>" is then at most 53 of 63.
 users: []
 

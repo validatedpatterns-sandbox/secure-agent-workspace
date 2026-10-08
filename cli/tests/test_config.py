@@ -19,7 +19,8 @@ class TestLoadConfig:
         with patch.object(config, "CONFIG_FILE", tmp_path / "nonexistent.yaml"):
             cfg = config.load_config()
         assert cfg["namespace"] == "openshell-agents"
-        assert cfg["source_mode"] == "containerDisk"
+        assert cfg["shared_namespace"] == "openshell-agents"
+        assert cfg["keycloak_namespace"] == "saw-keycloak"
         assert cfg["agent"] == "openclaw"
         assert cfg["oidc"]["client_id"] == "openshell-cli"
         assert cfg["oidc"]["flow"] == "browser"
@@ -36,18 +37,18 @@ class TestLoadConfig:
 
 class TestRepoRoot:
     def test_env_var(self, tmp_path):
-        (tmp_path / "helm").mkdir()
+        (tmp_path / "charts").mkdir()
         with patch.dict("os.environ", {"OPENSHELL_REPO_ROOT": str(tmp_path)}):
             assert config.repo_root() == tmp_path
 
-    def test_env_var_no_helm_dir(self, tmp_path):
+    def test_env_var_no_charts_dir(self, tmp_path):
         with patch.dict("os.environ", {"OPENSHELL_REPO_ROOT": str(tmp_path)}), \
              patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1)
             assert config.repo_root() is None
 
     def test_git_fallback(self, tmp_path):
-        (tmp_path / "helm").mkdir()
+        (tmp_path / "charts").mkdir()
         with patch.dict("os.environ", {}, clear=True), patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0, stdout=str(tmp_path)
@@ -62,10 +63,10 @@ class TestRepoRoot:
 
 class TestChartPath:
     def test_repo_chart(self, tmp_path):
-        (tmp_path / "helm" / "openshell-sandbox").mkdir(parents=True)
+        (tmp_path / "charts" / "openshell-saw").mkdir(parents=True)
         with patch.object(config, "repo_root", return_value=tmp_path):
-            result = config.chart_path("openshell-sandbox")
-        assert result == str(tmp_path / "helm" / "openshell-sandbox")
+            result = config.chart_path("openshell-saw")
+        assert result == str(tmp_path / "charts" / "openshell-saw")
 
     def test_not_found(self):
         with patch.object(config, "repo_root", return_value=None), \

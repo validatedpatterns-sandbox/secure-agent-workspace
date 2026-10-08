@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import time
 
 import pytest
@@ -985,6 +986,7 @@ def gateway_script(ab, home, refilled=False, cfg=None):
                                       f"OPENCLAW_HOME={home}", refilled=refilled)
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="gateway process detection uses /proc")
 def test_a_running_gateway_is_kept_when_nothing_changed(ab, gateway, tmp_path):
     assert gateway.run(gateway_script(ab, tmp_path)) == 0
     assert len(gateway.started()) == 1
@@ -992,6 +994,7 @@ def test_a_running_gateway_is_kept_when_nothing_changed(ab, gateway, tmp_path):
     assert len(gateway.started()) == 1, "a live gateway (and its sessions) is left alone"
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="gateway process detection uses /proc")
 def test_a_running_gateway_without_a_fingerprint_is_replaced(ab, gateway, tmp_path):
     """A gateway started before the fingerprint existed (or by hand) may run
     other settings: it is replaced once."""
@@ -1001,6 +1004,7 @@ def test_a_running_gateway_without_a_fingerprint_is_replaced(ab, gateway, tmp_pa
     assert len(gateway.started()) == 2
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="gateway process detection uses /proc")
 def test_a_refill_replaces_the_running_gateway(ab, gateway, tmp_path):
     assert gateway.run(gateway_script(ab, tmp_path)) == 0
     assert gateway.run(gateway_script(ab, tmp_path, refilled=True)) == 0
@@ -1008,6 +1012,7 @@ def test_a_refill_replaces_the_running_gateway(ab, gateway, tmp_path):
     assert len(gateway.running()) == 1
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="gateway process detection uses /proc")
 def test_changed_settings_replace_the_running_gateway(ab, gateway, tmp_path):
     """A new UI origin or auth setting only applies after a restart."""
     assert gateway.run(gateway_script(ab, tmp_path)) == 0

@@ -28,7 +28,7 @@ resources:
     cpu: 100m
 
 # SAW namespaces carrying this label may reach the interceptor from their
-# gateway VMs (make openshell-saw-create and values-prod.yaml set it).
+# gateway VMs (make saw-create and values-prod.yaml set it).
 sawNamespaceLabel:
   key: openshell.pattern/saw
   value: "true"

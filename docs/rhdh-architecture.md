@@ -209,7 +209,7 @@ OpenClaw's token mode.
 ## Users and passwords
 
 - Self-registration is off. An admin adds users from a list
-  (`make -f Makefile-quickstart keycloak-add-users`), each with a generated
+  (`make keycloak-add-users`), each with a generated
   24-character password; existing users are left alone.
 - The realm enforces a password policy (14+ characters, upper, lower, digit,
   special, not the user name or email, not one of the last 5) and locks an

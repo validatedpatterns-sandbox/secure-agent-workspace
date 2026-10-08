@@ -30,7 +30,7 @@ OpenShell 0.1.x removed managed inference routing (`openshell inference`,
    With the quickstart, one command does steps 1 and 2:
 
    ```bash
-   make openshell-saw-create OPENSHELL_SAW_NAME=<name> PROFILES=custom-inference \
+   make saw-create OPENSHELL_SAW_NAME=<name> PROFILES=custom-inference \
      PROVIDER=openai MODEL=<served model> ENDPOINT_URL=https://<host>/v1 API_KEY=<key>
    ```
 
@@ -43,7 +43,7 @@ OpenShell 0.1.x removed managed inference routing (`openshell inference`,
    | `url` | the OpenAI-compatible base URL, ending in `/v1` |
    | `api_key` | the server's key; any non-empty value if it needs none |
 
-3. Restart the VM (`make openshell-saw-restart`) so the installer applies it.
+3. Restart the VM (`make saw-restart`) so the installer applies it.
 
 ## Requirements
 

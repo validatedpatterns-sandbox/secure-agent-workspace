@@ -14,7 +14,7 @@
 set -euo pipefail
 
 NS="${NS:-openshell-agents}"
-SAW_NAME="${SAW_NAME:-openshell-saw}"
+SAW_NAME="${SAW_NAME:-}"
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PROFILES_DIR="${REPO_DIR}/charts/governance-policy/profiles"
 SSH_KEY="${SSH_KEY:-$HOME/.generated-ssh-keys/sandbox-ssh}"
@@ -45,13 +45,13 @@ wait_for_sync() {
   local expected_action="${2:-}"
   echo "  Waiting for ArgoCD to sync..."
   oc annotate application governance-policy -n vp-gitops \
-    argocd.argoproj.io/refresh=hard --overwrite > /dev/null 2>&1
+    argocd.argoproj.io/refresh=hard --overwrite
 
   local profile_name="${expected_key%.yaml}"
   for i in $(seq 1 36); do
     sleep 5
     local profiles
-    profiles=$(openshell --gateway "${SAW_NAME}" provider list-profiles 2>&1 || true)
+    profiles=$(openshell --gateway "${SAW_NAME}" provider list-profiles)
     if [[ -n "${expected_action}" && -n "${profile_name}" ]]; then
       if [[ "${expected_action}" == "appear" ]] && echo "${profiles}" | grep -q "${profile_name}"; then
         echo "  Profile '${profile_name}' is now active. (${i} polls)"
@@ -62,17 +62,37 @@ wait_for_sync() {
       fi
     fi
   done
-  echo "  Warning: timed out waiting for profile change (3 min)."
+  echo "Error: timed out waiting for profile change (3 min)." >&2
+  return 1
 }
 
 cmd_list() {
-  echo "Active profiles (enforced on gateway):"
-  echo ""
-  openshell --gateway "${SAW_NAME}" provider list-profiles
+  if [[ -z "${SAW_NAME}" ]]; then
+    echo "Profiles in this repository:"
+    for file in "${PROFILES_DIR}"/*.yaml; do
+      [[ -f "${file}" ]] || continue
+      basename "${file}" .yaml
+    done
+  else
+    echo "Profiles enforced on ${SAW_NAME}:"
+    openshell --gateway "${SAW_NAME}" provider list-profiles
+  fi
+}
+
+validate_name() {
+  [[ ${#1} -le 19 && "$1" =~ ^[a-z0-9][a-z0-9-]*$ ]] || {
+    echo "Error: profile name must be a lowercase DNS label of at most 19 characters." >&2
+    exit 1
+  }
+  [[ -n "${SAW_NAME}" ]] || {
+    echo "Error: OPENSHELL_SAW_NAME is required for profile changes." >&2
+    exit 1
+  }
 }
 
 cmd_add() {
   local name="${1:?Profile name is required}"
+  validate_name "${name}"
 
   if [[ -f "${PROFILES_DIR}/${name}.yaml" ]]; then
     echo "Profile '${name}' already exists."
@@ -83,8 +103,9 @@ cmd_add() {
   local restored=false
   for path in "charts/governance-policy/profiles/${name}.yaml" "charts/governance-interceptor/profiles/${name}.yaml"; do
     local commit
-    commit=$(git -C "${REPO_DIR}" log --all --diff-filter=D --format='%H' -1 -- "${path}" 2>/dev/null || true)
-    if [[ -n "${commit}" ]] && git -C "${REPO_DIR}" show "${commit}~1:${path}" > "${PROFILES_DIR}/${name}.yaml" 2>/dev/null; then
+    commit=$(git -C "${REPO_DIR}" log --all --diff-filter=D --format='%H' -1 -- "${path}")
+    if [[ -n "${commit}" ]]; then
+      git -C "${REPO_DIR}" show "${commit}~1:${path}" > "${PROFILES_DIR}/${name}.yaml"
       restored=true
       break
     fi
@@ -96,9 +117,9 @@ cmd_add() {
   fi
   echo "Restoring profile '${name}' from git history..."
 
-  git -C "${REPO_DIR}" add "${PROFILES_DIR}/${name}.yaml" > /dev/null 2>&1
-  git -C "${REPO_DIR}" commit -m "policy: enable ${name} provider profile" --no-verify > /dev/null 2>&1
-  git -C "${REPO_DIR}" push origin HEAD --no-verify > /dev/null 2>&1
+  git -C "${REPO_DIR}" add "${PROFILES_DIR}/${name}.yaml"
+  git -C "${REPO_DIR}" commit --only -m "feat(policy): enable ${name} profile" -- "${PROFILES_DIR}/${name}.yaml"
+  git -C "${REPO_DIR}" push origin HEAD
   echo "  Pushed: restored profiles/${name}.yaml"
 
   wait_for_sync "${name}.yaml" appear
@@ -108,6 +129,7 @@ cmd_add() {
 
 cmd_remove() {
   local name="${1:?Profile name is required}"
+  validate_name "${name}"
 
   if [[ ! -f "${PROFILES_DIR}/${name}.yaml" ]]; then
     echo "Profile '${name}' is not active."
@@ -117,9 +139,9 @@ cmd_remove() {
   echo "Removing profile '${name}'..."
   rm -f "${PROFILES_DIR}/${name}.yaml"
 
-  git -C "${REPO_DIR}" add -A "${PROFILES_DIR}" > /dev/null 2>&1
-  git -C "${REPO_DIR}" commit -m "policy: revoke ${name} provider profile" --no-verify > /dev/null 2>&1
-  git -C "${REPO_DIR}" push origin HEAD --no-verify > /dev/null 2>&1
+  git -C "${REPO_DIR}" add -A "${PROFILES_DIR}"
+  git -C "${REPO_DIR}" commit --only -m "fix(policy): revoke ${name} profile" -- "${PROFILES_DIR}/${name}.yaml"
+  git -C "${REPO_DIR}" push origin HEAD
   echo "  Pushed: removed profiles/${name}.yaml"
 
   wait_for_sync "${name}.yaml" disappear
@@ -130,6 +152,7 @@ cmd_remove() {
 cmd_create() {
   local name="${1:?Profile name is required}"
   local file="${2:?Profile YAML file is required}"
+  validate_name "${name}"
 
   if [[ ! -f "${file}" ]]; then
     echo "Error: file '${file}' not found" >&2
@@ -147,9 +170,9 @@ cmd_create() {
   cp "${file}" "${dest}"
   echo "  Created: profiles/${name}.yaml"
 
-  git -C "${REPO_DIR}" add "${dest}" > /dev/null 2>&1
-  git -C "${REPO_DIR}" commit -m "policy: add ${name} provider profile" --no-verify > /dev/null 2>&1
-  git -C "${REPO_DIR}" push origin HEAD --no-verify > /dev/null 2>&1
+  git -C "${REPO_DIR}" add "${dest}"
+  git -C "${REPO_DIR}" commit --only -m "feat(policy): add ${name} profile" -- "${dest}"
+  git -C "${REPO_DIR}" push origin HEAD
   echo "  Pushed: profiles/${name}.yaml"
 
   wait_for_sync "${name}.yaml" appear

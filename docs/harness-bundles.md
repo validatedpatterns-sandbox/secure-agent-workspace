@@ -170,13 +170,13 @@ pushes `ghcr.io/<owner>/saw-harness-<bundle>:<version>` on `main`, signs the
 digest with cosign, and prints the `harnessRef` in the job summary. Locally:
 
 ```bash
-make -f Makefile-quickstart harness-bundle-build HARNESS_BUNDLE=ds-default
-make -f Makefile-quickstart harness-bundle-push  HARNESS_BUNDLE=ds-default \
+make harness-bundle-build HARNESS_BUNDLE=ds-default
+make harness-bundle-push  HARNESS_BUNDLE=ds-default \
      HARNESS_REPO=ghcr.io/<owner>/saw-harness-ds-default
 ```
 
 The gateway VM pulls as its runtime user, so the package must be public, or
-the VM needs pull credentials for it. `make copy-images` does not mirror
+the VM needs pull credentials for it. `make images-mirror` does not mirror
 harness images; a disconnected cluster needs them in a reachable registry.
 
 ### Inline, in the saw-bom chart

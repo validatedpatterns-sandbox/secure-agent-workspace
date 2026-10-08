@@ -25,9 +25,6 @@ clusterGroup:
     # the namespace with the workspace registry and its pipelines.
     rhdh:
     saw-portal:
-    # ansible-automation-platform:
-    #   operatorGroup: true
-    #   targetNamespaces: []
     redhat-ods-operator:
       operatorGroup: true
       targetNamespaces: []
@@ -54,10 +51,6 @@ clusterGroup:
       name: openshift-pipelines-operator-rh
       namespace: openshift-operators
       channel: latest
-    # aap:
-    #   name: ansible-automation-platform-operator
-    #   namespace: ansible-automation-platform
-    #   channel: stable-2.5
     openshift-ai:
       name: rhods-operator
       namespace: redhat-ods-operator

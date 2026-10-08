@@ -11,7 +11,7 @@ keycloak:
   # Name of a Keycloak CR already running in this namespace. When set, the
   # chart only imports the OpenShell realm into that server (no Keycloak or
   # PostgreSQL of its own); other realms on it are not touched.
-  # `make keycloak` sets it when you choose to use an existing Keycloak.
+  # `make keycloak-deploy` sets it when you choose to use an existing Keycloak.
   existing: ""
 
   hostname: ""
@@ -64,7 +64,7 @@ keycloak:
   # The test users' passwords are never in values: they come from the Secret
   # userPasswords.secretName in this namespace, key = username, and the realm
   # import reads them as placeholders. Make them with
-  # scripts/keycloak-users.sh ensure (make keycloak does), or, in
+  # scripts/keycloak-users.sh ensure (make keycloak-deploy does), or, in
   # the Validated Pattern, from Vault (externalSecret, values-secret
   # keycloak-users, generated). A user may set `password` instead; it must
   # pass the same rules as passwordPolicy (14+ characters, upper, lower,
@@ -131,4 +131,3 @@ redirectRegistrar:
   # Empty: the cluster's ingress domain (ingresses.config.openshift.io).
   hostSuffix: ""
   intervalSeconds: 15
-

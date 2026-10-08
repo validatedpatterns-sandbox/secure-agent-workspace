@@ -712,7 +712,7 @@ def test_installer_disk_ships_provider_profiles(default_docs, ab, tmp_path):
 
 def test_create_script_passes_the_keycloak_it_finds():
     text = (ROOT / "scripts" / "openshell-saw-create.sh").read_text()
-    assert "--set oidc.keycloakName=${KC_NAME}" in text and "--set oidc.realm=${KEYCLOAK_REALM}" in text
+    assert "oidc.keycloakName=${KC_NAME}" in text and "oidc.realm=${KEYCLOAK_REALM}" in text
 
 
 def test_secret_template_matches_the_default_profile():

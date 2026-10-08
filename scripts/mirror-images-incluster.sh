@@ -17,21 +17,22 @@ oc apply -n "${BUILD_NS}" -f "${SCRIPTS_DIR}/mirror-images-rbac.yaml"
 # to /tmp in the Job spec so skopeo never touches /run/containers (the root-only
 # path that previously forced anyuid). The namespace's restricted PodSecurity still
 # blocks root; nonroot overrides it for this SA without granting broader privileges.
-oc adm policy add-scc-to-user nonroot -z image-mirror -n "${BUILD_NS}" 2>/dev/null || true
+oc adm policy add-scc-to-user nonroot -z image-mirror -n "${BUILD_NS}"
 
 for IMAGE in ${IMAGES}; do
   export IMAGE BUILD_NS QUAY_REPO VERSION
   echo "Mirroring ${IMAGE}:${VERSION}..."
-  oc delete job "mirror-${IMAGE}" -n "${BUILD_NS}" 2>/dev/null || true
+  oc delete job "mirror-${IMAGE}" -n "${BUILD_NS}" --ignore-not-found=true
   # Only substitute template vars; leave runtime shell vars (e.g. ${TOKEN}) intact
+  # shellcheck disable=SC2016
   envsubst '${IMAGE} ${BUILD_NS} ${QUAY_REPO} ${VERSION}' \
     < "${SCRIPTS_DIR}/mirror-images-job.yaml" \
     | oc apply -n "${BUILD_NS}" -f -
   # `oc wait --for=condition=complete` would sit out its timeout on a failed Job.
   deadline=$(( $(date +%s) + 900 ))
   while :; do
-    ok=$(oc get job "mirror-${IMAGE}" -n "${BUILD_NS}" -o jsonpath='{.status.succeeded}' 2>/dev/null)
-    bad=$(oc get job "mirror-${IMAGE}" -n "${BUILD_NS}" -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null)
+    ok=$(oc get job "mirror-${IMAGE}" -n "${BUILD_NS}" -o jsonpath='{.status.succeeded}')
+    bad=$(oc get job "mirror-${IMAGE}" -n "${BUILD_NS}" -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}')
     [[ "${ok}" == 1 ]] && break
     if [[ "${bad}" == True || $(date +%s) -gt ${deadline} ]]; then
       echo "ERROR: mirroring ${IMAGE} failed:"
@@ -40,8 +41,8 @@ for IMAGE in ${IMAGES}; do
     fi
     sleep 5
   done
-  oc logs -n "${BUILD_NS}" "job/mirror-${IMAGE}" --tail=2 2>/dev/null
-  oc tag "${BUILD_NS}/${IMAGE}:${VERSION}" "${BUILD_NS}/${IMAGE}:latest" 2>/dev/null || true
+  oc logs -n "${BUILD_NS}" "job/mirror-${IMAGE}" --tail=2
+  oc tag "${BUILD_NS}/${IMAGE}:${VERSION}" "${BUILD_NS}/${IMAGE}:latest"
   echo "  ${IMAGE} done."
 done
 

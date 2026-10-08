@@ -1,0 +1,6 @@
+apiVersion: v2
+name: mailpit
+description: On-cluster Mailpit email sink (SMTP + web UI) for governed sandbox agents
+type: application
+version: 0.1.0
+appVersion: "v1.31.4"

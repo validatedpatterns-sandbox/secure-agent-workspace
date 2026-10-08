@@ -1,0 +1,21 @@
+{{- if .Values.route.enabled }}
+# Edge route for the Radicale web UI only: admin/user watch the calendar in
+# a browser. The CalDAV/HTTP API stays cluster-internal (the sandbox agent
+# reaches it via the ClusterIP, governed by OpenShell policy).
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: radicale-ui
+  labels:
+    app.kubernetes.io/name: radicale
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  to:
+    kind: Service
+    name: radicale
+    weight: 100
+  port:
+    targetPort: cal
+  tls:
+    termination: edge
+{{- end }}

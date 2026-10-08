@@ -1,0 +1,16 @@
+{{- if and .Values.seed.enabled .Values.seed.events }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: radicale-seed
+  labels:
+    app.kubernetes.io/name: radicale
+    app.kubernetes.io/instance: {{ .Release.Name }}
+data:
+  props.json: |
+    {"tag": "VCALENDAR", "displayname": {{ .Values.seed.calendarDescription | toJson }}}
+  {{- range $i, $event := .Values.seed.events }}
+  event-{{ $i }}.ics: |
+    {{- $event | nindent 4 }}
+  {{- end }}
+{{- end }}

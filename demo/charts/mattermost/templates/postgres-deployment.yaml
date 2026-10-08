@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mattermost-postgres
+  labels:
+    app.kubernetes.io/name: mattermost-postgres
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mattermost-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mattermost-postgres
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: postgres
+          image: {{ .Values.postgresImage }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          env:
+            - name: POSTGRES_DB
+              value: {{ .Values.postgresCredentials.database }}
+            - name: POSTGRES_USER
+              value: {{ .Values.postgresCredentials.user }}
+            - name: POSTGRES_PASSWORD
+              value: {{ .Values.postgresCredentials.password }}
+          ports:
+            - name: postgres
+              containerPort: {{ .Values.postgresPort }}
+              protocol: TCP
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - {{ .Values.postgresCredentials.user }}
+                - -d
+                - {{ .Values.postgresCredentials.database }}
+            initialDelaySeconds: {{ .Values.postgresReadinessInitialDelaySeconds }}
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - {{ .Values.postgresCredentials.user }}
+            initialDelaySeconds: {{ .Values.postgresLivenessInitialDelaySeconds }}
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.postgresResources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.postgresSecurityContext | nindent 12 }}
+          {{- if .Values.storage.postgresSize }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          {{- end }}
+      {{- if .Values.storage.postgresSize }}
+      volumes:
+        - name: data
+          emptyDir:
+            sizeLimit: {{ .Values.storage.postgresSize }}
+      {{- end }}

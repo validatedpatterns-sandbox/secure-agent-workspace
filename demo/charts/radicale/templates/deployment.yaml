@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: radicale
+  labels:
+    app.kubernetes.io/name: radicale
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: radicale
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: radicale
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if and .Values.seed.enabled .Values.storage.size }}
+      initContainers:
+        - name: seed-calendar
+          image: {{ .Values.image }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          # The radicale image has no shell-free guarantee but is alpine-based
+          # with sh available; override the entrypoint for the one-shot seed.
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              CAL=/var/lib/radicale/collections/collection-root/{{ .Values.seed.user }}/{{ .Values.seed.calendar }}
+              if [ -f "$CAL/.Radicale.props" ]; then
+                echo "calendar collection already exists; skipping seed"
+                exit 0
+              fi
+              mkdir -p "$CAL"
+              cp /seed/props.json "$CAL/.Radicale.props"
+              for f in /seed/event-*.ics; do
+                cp "$f" "$CAL/$(basename "$f")"
+              done
+              echo "seeded $(ls /seed/event-*.ics | wc -l) events into $CAL"
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: seed
+              mountPath: /seed
+            - name: data
+              mountPath: /var/lib/radicale
+      {{- end }}
+      containers:
+        - name: radicale
+          image: {{ .Values.image }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          args:
+            - --config
+            - /config/config
+          ports:
+            - name: cal
+              containerPort: {{ .Values.httpPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /.web/
+              port: cal
+            initialDelaySeconds: {{ .Values.livenessInitialDelaySeconds }}
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /.web/
+              port: cal
+            initialDelaySeconds: {{ .Values.readinessInitialDelaySeconds }}
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /config
+            {{- if .Values.storage.size }}
+            - name: data
+              mountPath: /var/lib/radicale
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: radicale-config
+        {{- if .Values.storage.size }}
+        - name: data
+          emptyDir:
+            sizeLimit: {{ .Values.storage.size }}
+        {{- end }}
+        {{- if .Values.seed.enabled }}
+        - name: seed
+          configMap:
+            name: radicale-seed
+        {{- end }}

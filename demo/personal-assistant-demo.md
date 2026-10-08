@@ -324,8 +324,7 @@ openshell logs assistant --workspace personal-assistant --source sandbox    # th
 
 ## Learn more
 
-- [docs/personal-assistant-demo.md](docs/personal-assistant-demo.md): the
-  same demo, condensed, for people who know the platform.
-- [docs/daily-briefing.md](docs/daily-briefing.md): how the briefing,
+- [daily-briefing.md](daily-briefing.md): how the briefing,
   token refresh and read-only access work.
-- [README.md](README.md): the platform, and other ways to install it.
+- [README.md](../README.md): the platform, and other ways to install it.
+- [demo/README.md](README.md): both demo options, and how they differ.

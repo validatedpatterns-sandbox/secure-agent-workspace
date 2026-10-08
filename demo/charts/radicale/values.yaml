@@ -1,0 +1,118 @@
+# Radicale in openshell-agents (mirrors the mailpit/mattermost pattern): the
+# OpenClaw agent reads calendar events via CalDAV/HTTP :5232, governed by
+# OpenShell policy, and the demo watches the calendar in the web UI. Backs the
+# beat-4 "policy-as-data" beat: the employee asks for calendar access in
+# Mattermost, the admin commits profiles/calendar.yaml, ArgoCD syncs, and the
+# agent can answer "what meetings did I miss while I was on PTO?".
+enabled: true
+
+# Radicale image built and published by the upstream project (Kozea). Runs as
+# uid/gid 1000 (user "radicale") and ships curl; storage lives under
+# /var/lib/radicale as filesystem collections.
+image: "kozea/radicale:3.8.2"
+imagePullPolicy: IfNotPresent
+
+# Radicale HTTP listener (web UI + CalDAV; server default 5232).
+httpPort: 5232
+
+# Demo-ephemeral: data lives in an emptyDir and is lost on pod restart. Set a
+# size, or leave size empty to skip the volume entirely.
+storage:
+  size: 256Mi
+
+# OpenShift edge Route for the Radicale web UI so admin/user can see the
+# calendar in a browser. The CalDAV/HTTP API stays cluster-internal for the
+# sandbox agent.
+route:
+  enabled: true
+
+resources:
+  limits:
+    memory: 128Mi
+    cpu: 100m
+  requests:
+    memory: 32Mi
+    cpu: 10m
+
+# Security contexts (OpenShift restricted-v2): the kozea/radicale image's
+# files are owned by uid 1000 (user "radicale"), so the container runs as
+# runAsUser 1000 with fsGroup 1000 for group-writable access to the emptyDir
+# (needed by both the seed initContainer and the server).
+podSecurityContext:
+  fsGroup: 1000
+securityContext:
+  runAsUser: 1000
+
+# Probe delays: Radicale is a tiny Python server that is ready almost
+# immediately, but the first start creates the storage layout, so give the
+# readiness probe a small grace period. Both are configurable.
+livenessInitialDelaySeconds: 15
+readinessInitialDelaySeconds: 5
+
+# Seed data for the demo: without it the agent has no events to read. The
+# initContainer copies the seed into /var/lib/radicale/collections (Radicale's
+# filesystem collection layout) only when the calendar collection does not
+# exist yet, so user-created data is never overwritten on restart.
+seed:
+  enabled: true
+  # Radicale collection owner (the path component under collection-root) and
+  # calendar name: /var/lib/radicale/collections/collection-root/<user>/<calendar>/
+  user: demo
+  calendar: personal
+  calendarDescription: Demo personal calendar (seeded)
+  # One ICS block per event; each is written as its own item file in the
+  # collection (Radicale treats each .ics file as a single calendar item).
+  # Adjust dates/summaries for the demo run as needed.
+  events:
+    - |
+      BEGIN:VCALENDAR
+      VERSION:2.0
+      PRODID:-//SAW demo//EN
+      BEGIN:VEVENT
+      UID:saw-seed-ai-platform-sync@demo
+      DTSTAMP:20261005T090000Z
+      DTSTART:20261005T100000Z
+      DTEND:20261005T110000Z
+      SUMMARY:AI Platform sync
+      DESCRIPTION:Weekly AI platform sync — attended before PTO
+      END:VEVENT
+      END:VCALENDAR
+    - |
+      BEGIN:VCALENDAR
+      VERSION:2.0
+      PRODID:-//SAW demo//EN
+      BEGIN:VEVENT
+      UID:saw-seed-gtc-rehearsal@demo
+      DTSTAMP:20261006T090000Z
+      DTSTART:20261006T140000Z
+      DTEND:20261006T150000Z
+      SUMMARY:GTC Berlin rehearsal
+      DESCRIPTION:Dry run of the Secure Agent Workspace demo
+      END:VEVENT
+      END:VCALENDAR
+    - |
+      BEGIN:VCALENDAR
+      VERSION:2.0
+      PRODID:-//SAW demo//EN
+      BEGIN:VEVENT
+      UID:saw-seed-security-review@demo
+      DTSTAMP:20261007T090000Z
+      DTSTART:20261007T160000Z
+      DTEND:20261007T170000Z
+      SUMMARY:Security review — SAW governance
+      DESCRIPTION:Review of policy-as-data governance model
+      END:VEVENT
+      END:VCALENDAR
+    - |
+      BEGIN:VCALENDAR
+      VERSION:2.0
+      PRODID:-//SAW demo//EN
+      BEGIN:VEVENT
+      UID:saw-seed-retro@demo
+      DTSTAMP:20261007T090000Z
+      DTSTART:20261008T110000Z
+      DTEND:20261008T120000Z
+      SUMMARY:Sprint retrospective
+      DESCRIPTION:Missed while on PTO — agent should flag this one
+      END:VEVENT
+      END:VCALENDAR

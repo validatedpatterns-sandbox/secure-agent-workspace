@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+id: mailpit
+display_name: Mailpit
+description: On-cluster Mailpit email sink (SMTP send + HTTP API) for governed sandbox agents
+category: messaging
+# Mailpit is auth-free, so no credentials key is declared (same as
+# web-search.yaml); see docs/custom-inference.md.
+endpoints:
+  - host: mailpit.openshell-agents.svc.cluster.local
+    port: 1025
+    protocol: rest
+    enforcement: enforce
+    access: read-write
+  - host: mailpit.openshell-agents.svc.cluster.local
+    port: 8025
+    protocol: rest
+    enforcement: enforce
+    access: read-write
+binaries:
+  - /usr/bin/curl
+  - /usr/local/bin/curl
+  # OpenClaw's node: /usr/bin/node-<major> in the Hummingbird image
+  # (/usr/bin/node links to it; the real path is what is matched),
+  # /usr/local/bin/node in the NemoClaw image.
+  - /usr/bin/node
+  - /usr/bin/node-*
+  - /usr/local/bin/node

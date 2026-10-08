@@ -1,0 +1,20 @@
+{{- if .Values.route.enabled }}
+# Edge route for the web UI only: the demo watches mail arrive in a browser.
+# SMTP stays cluster-internal (ClusterIP, never routed).
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: mailpit-ui
+  labels:
+    app.kubernetes.io/name: mailpit
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  to:
+    kind: Service
+    name: mailpit
+    weight: 100
+  port:
+    targetPort: ui
+  tls:
+    termination: edge
+{{- end }}

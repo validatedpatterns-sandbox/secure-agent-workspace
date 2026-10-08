@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mailpit
+  labels:
+    app.kubernetes.io/name: mailpit
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mailpit
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mailpit
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: mailpit
+          image: {{ .Values.image }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          args:
+            - --smtp
+            - "0.0.0.0:{{ .Values.smtpPort }}"
+            - --listen
+            - "0.0.0.0:{{ .Values.uiPort }}"
+          ports:
+            - name: smtp
+              containerPort: {{ .Values.smtpPort }}
+              protocol: TCP
+            - name: ui
+              containerPort: {{ .Values.uiPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: ui
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: ui
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.storage.size }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          {{- end }}
+      {{- if .Values.storage.size }}
+      volumes:
+        - name: data
+          emptyDir:
+            sizeLimit: {{ .Values.storage.size }}
+      {{- end }}

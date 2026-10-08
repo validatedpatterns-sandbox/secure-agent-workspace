@@ -1,0 +1,21 @@
+{{- if .Values.route.enabled }}
+# Edge route for the Mattermost web UI only: admin/user watch the channel in
+# a browser. The REST API stays cluster-internal (the sandbox agent reaches
+# it via the ClusterIP, governed by OpenShell policy).
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: mattermost-ui
+  labels:
+    app.kubernetes.io/name: mattermost
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  to:
+    kind: Service
+    name: mattermost
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+{{- end }}

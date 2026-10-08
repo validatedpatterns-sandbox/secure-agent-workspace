@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+id: mattermost
+display_name: Mattermost
+description: Read-only Mattermost channel API access for governed sandbox agents
+category: messaging
+credentials:
+  - name: api_token
+    description: Mattermost personal access token
+    env_vars: [MM_TOKEN, MATTERMOST_TOKEN]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+discovery:
+  credentials: [api_token]
+endpoints:
+  - host: mattermost.openshell-agents.svc.cluster.local
+    port: 8065
+    protocol: rest
+    enforcement: enforce
+    access: read-only
+binaries:
+  - /usr/bin/curl
+  - /usr/local/bin/curl
+  # OpenClaw's node: /usr/bin/node-<major> in the Hummingbird image
+  # (/usr/bin/node links to it; the real path is what is matched),
+  # /usr/local/bin/node in the NemoClaw image.
+  - /usr/bin/node
+  - /usr/bin/node-*
+  - /usr/local/bin/node

@@ -1,0 +1,73 @@
+# Mattermost in openshell-agents (mirrors the mailpit pattern): the OpenClaw
+# agent reads a channel's messages via the Mattermost REST API :8065, governed
+# by OpenShell policy, and the demo watches the channel in the web UI. Replaces
+# Slack for the GTC demo — no external dependencies.
+enabled: true
+
+# Official Mattermost image. Despite the name, it runs in team edition mode
+# without a license (community edition behaviour).
+image: "mattermost/mattermost-enterprise-edition:10.11.2"
+imagePullPolicy: IfNotPresent
+
+# Postgres backing store for the Mattermost server (official postgres image).
+postgresImage: "postgres:17-alpine"
+
+# Mattermost HTTP listener (server default 8065).
+httpPort: 8065
+
+# Postgres listener.
+postgresPort: 5432
+
+mattermostSiteUrl: ""  # optional; set to the Route host to override auto-derivation
+
+# Demo-ephemeral: data lives in emptyDirs and is lost on pod restart. Set a
+# size, or leave size empty to skip the volumes entirely.
+storage:
+  mattermostSize: 1Gi
+  postgresSize: 1Gi
+
+# OpenShift edge Route for the Mattermost web UI so admin/user can see the
+# channel in a browser. The API stays cluster-internal for the sandbox agent.
+route:
+  enabled: true
+
+resources:
+  limits:
+    memory: 512Mi
+    cpu: 500m
+  requests:
+    memory: 256Mi
+    cpu: 100m
+
+postgresResources:
+  limits:
+    memory: 256Mi
+    cpu: 250m
+  requests:
+    memory: 128Mi
+    cpu: 50m
+
+postgresCredentials:
+  database: mattermost
+  user: mmuser
+  password: mmuser_password
+
+# Security contexts (OpenShift restricted-v2): image files are owned by uid
+# 2000, so the server must run as runAsUser 2000 with fsGroup 2000 for
+# config.json access. Postgres runs as runAsUser 0 because initdb fails with
+# EPERM on a root-owned emptyDir under restricted-v2 — installing that way
+# requires the default service account to have anyuid:
+#   oc adm policy add-scc-to-user anyuid -z default -n <namespace>
+podSecurityContext:
+  fsGroup: 2000
+securityContext:
+  runAsUser: 2000
+postgresSecurityContext:
+  runAsUser: 0
+
+# Probe delays: plugin extraction on first start can exceed 30s, so the
+# server's liveness probe waits 240s before the first check.
+livenessInitialDelaySeconds: 240
+readinessInitialDelaySeconds: 10
+postgresLivenessInitialDelaySeconds: 30
+postgresReadinessInitialDelaySeconds: 5

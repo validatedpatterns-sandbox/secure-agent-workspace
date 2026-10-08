@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mattermost
+  labels:
+    app.kubernetes.io/name: mattermost
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mattermost
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mattermost
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: mattermost
+          image: {{ .Values.image }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          env:
+            - name: MM_SQLSETTINGS_DRIVERNAME
+              value: postgres
+            - name: MM_SQLSETTINGS_DATASOURCE
+              value: postgres://{{ .Values.postgresCredentials.user }}:{{ .Values.postgresCredentials.password }}@mattermost-postgres:{{ .Values.postgresPort }}/{{ .Values.postgresCredentials.database }}?sslmode=disable&connect_timeout=10
+            - name: MM_SERVICESETTINGS_LISTENADDRESS
+              value: ":{{ .Values.httpPort }}"
+            {{- if .Values.mattermostSiteUrl }}
+            - name: MM_SERVICESETTINGS_SITEURL
+              value: {{ .Values.mattermostSiteUrl }}
+            {{- else if .Values.route.enabled }}
+            - name: MM_SERVICESETTINGS_SITEURL
+              value: https://mattermost-ui-{{ .Release.Namespace }}.apps.{{ (.Values.global).clusterDomain | default "openshift.local" }}
+            {{- end }}
+            - name: MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS
+              value: "true"
+          ports:
+            - name: http
+              containerPort: {{ .Values.httpPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /api/v4/system/ping
+              port: http
+            initialDelaySeconds: {{ .Values.livenessInitialDelaySeconds }}
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /api/v4/system/ping
+              port: http
+            initialDelaySeconds: {{ .Values.readinessInitialDelaySeconds }}
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- if .Values.storage.mattermostSize }}
+          volumeMounts:
+            - name: data
+              mountPath: /mattermost/data
+          {{- end }}
+      {{- if .Values.storage.mattermostSize }}
+      volumes:
+        - name: data
+          emptyDir:
+            sizeLimit: {{ .Values.storage.mattermostSize }}
+      {{- end }}

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: mattermost
+description: On-cluster Mattermost server (channels + web UI) for governed sandbox agents
+type: application
+version: 0.1.0
+appVersion: "10.11.2"

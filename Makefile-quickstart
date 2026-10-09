@@ -16,6 +16,9 @@ AGENT          ?= openclaw
 CONTAINER_RUNTIME ?= podman
 IMAGE_NAME      = $(if $(filter docker,$(CONTAINER_RUNTIME)),openshell-gateway-docker,openshell-gateway)
 GOVERNANCE_ENABLED ?= true
+# interceptor (OpenShell governance interceptor) or apf (docs/apf.md)
+GOVERNANCE_ENGINE ?= interceptor
+PYTHON ?= python3
 PROVIDER       ?=
 MODEL          ?=
 API_KEY        ?=
@@ -140,6 +143,7 @@ WORKSPACE      ?= default
         openshell-saw-configure-gateway openshell-saw-tui openshell-saw-gui test \
         openshell-saw-delete sandbox-pre-delete delete-all status \
         governance-list-profiles governance-add-profile governance-remove-profile governance-create-profile governance-demo \
+        apf-keys apf-bundle apf-bundle-check governance-apf \
         .check-saw-name .check-ssh-key .check-gateway-ca .check-prereqs
 
 check-prereqs: .check-prereqs ## Verify required operators and CLI tools
@@ -422,7 +426,7 @@ openshell-saw-create: .check-saw-name ## Provision a sandbox (PROVIDER=, MODEL=,
 	OIDC_TOKEN_DIR=$(OIDC_TOKEN_DIR) OWNER=$(OWNER) \
 	SCRIPTS_DIR=$(SCRIPTS_DIR) \
 	CONTAINER_RUNTIME=$(CONTAINER_RUNTIME) \
-	GOVERNANCE_ENABLED=$(GOVERNANCE_ENABLED) \
+	GOVERNANCE_ENABLED=$(GOVERNANCE_ENABLED) GOVERNANCE_ENGINE=$(GOVERNANCE_ENGINE) \
 	$(SCRIPTS_DIR)/openshell-saw-create.sh
 
 openshell-saw-configure-gateway: .check-saw-name ## Configure openshell CLI for a sandbox gateway
@@ -595,6 +599,23 @@ governance-create-profile: ## Create a new profile from YAML (PROFILE_NAME=jira 
 governance-demo: .check-saw-name ## Run governance interceptor demo
 	@$(SCRIPTS_DIR)/demo-governance.sh $(OPENSHELL_SAW_NAME)
 
+# --- APF (Agent Policy Fabric) governance: docs/apf.md ---
+
+APF_SEED ?= $(HOME)/.apf-keys/apf.seed
+GHCR_USER ?=
+
+apf-keys: ## Create the APF signing key (seed in APF_SEED, public key in the chart)
+	@APF_SEED=$(APF_SEED) $(PYTHON) scripts/apf-bundle.py keygen
+
+apf-bundle: ## Sign charts/governance-policy into the APF bundle (commit it to your deployment branch)
+	@APF_SEED=$(APF_SEED) $(PYTHON) scripts/apf-bundle.py build
+
+apf-bundle-check: ## Check the committed APF bundle: hashes, signature, up to date
+	@$(PYTHON) scripts/apf-bundle.py verify
+
+governance-apf: ## Quickstart: run APF as the governance interceptor (GHCR_USER=, GHCR_TOKEN= env)
+	@NS=$(NS) APF_SEED=$(APF_SEED) GHCR_USER=$(GHCR_USER) PYTHON=$(PYTHON) $(SCRIPTS_DIR)/governance-apf.sh
+
 # --- Test ---
 
 test: ## Run headless E2E test (auto-detects provider from ~/values-secret.yaml)
@@ -631,7 +652,6 @@ status: ## Show status of all OpenShell resources (every SAW namespace + $(NS))
 	@echo "" && echo "=== Builds ($(NS)) ===" && oc -n $(NS) get builds 2>/dev/null || true
 
 # --- In-guest installer tests (no cluster needed) ---
-PYTHON ?= python3
 .PHONY: test-installer
 test-installer: ## Run installer + chart tests (chart tests need helm on PATH)
 	@$(PYTHON) -c "import pytest, yaml, click, requests" 2>/dev/null || { \

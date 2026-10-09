@@ -1,4 +1,4 @@
-{{- if .Values.enabled }}
+{{- if and .Values.enabled (eq (include "governance.engine" .) "interceptor") }}
 apiVersion: v1
 kind: Service
 metadata:

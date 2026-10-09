@@ -24,6 +24,7 @@ Deploy isolated, per-user AI agent sandboxes on OpenShift Virtualization with OI
       - [Option B: Quickstart (manual, step-by-step)](#option-b-quickstart-manual-step-by-step)
       - [Supported inference providers](#supported-inference-providers)
       - [Custom inference provider](#custom-inference-provider)
+      - [Governance with APF (optional)](#governance-with-apf-optional)
     - [Validating the deployment](#validating-the-deployment)
     - [Delete](#delete)
   - [Repository structure](#repository-structure)
@@ -384,6 +385,95 @@ Notes:
 
 Details: [docs/custom-inference.md](docs/custom-inference.md).
 
+#### Governance with APF (optional)
+
+Every SAW gateway calls a fail-closed governance service. By default that is the OpenShell governance interceptor. It can instead be NVIDIA **Agent Policy Fabric (APF)**, which serves the same policy (`charts/governance-policy`) as an Ed25519-signed bundle, stamps provenance on every sandbox, refuses runtime policy changes and writes an audit trail. Details: [docs/apf.md](docs/apf.md).
+
+**1. Get access to APF (once).** APF's Helm chart and images are private on `ghcr.io/mkhaas/apf`.
+
+- Ask the owner (@mkhaas) for read access to the chart **and to each image package**: `apf-policy-service`, `apf-policy-gateway` and `apf-compile`. On GHCR each image has its own access list, so access to one does not give the others.
+- Create a GitHub token (classic) with the `read:packages` scope and save it:
+  ```bash
+  printf '%s' '<token>' > ~/.ghcr-token && chmod 600 ~/.ghcr-token
+  ```
+- Check that you can pull:
+  ```bash
+  docker login ghcr.io -u <github-user> --password-stdin < ~/.ghcr-token
+  docker pull ghcr.io/mkhaas/apf/apf-policy-gateway:0.2.0
+  ```
+
+**2. Create your signing key and bundle.** This repository ships no key and no bundle. Each deployment makes its own, so no deployment trusts someone else's key.
+
+```bash
+python3 -m pip install cryptography        # if missing
+make apf-keys      # seed -> ~/.apf-keys/apf.seed (never in git); public key -> charts/governance-interceptor/files/apf/apf.pub
+make apf-bundle    # signs charts/governance-policy -> charts/governance-interceptor/files/apf/bundle.tar.gz
+git add charts/governance-interceptor/files/apf
+git commit -m "chore(governance): sign the APF policy bundle"
+git push origin <branch the pattern deploys from>
+```
+
+Keep `~/.apf-keys/apf.seed` safe: only its holder can sign policy changes. `make apf-bundle-check` verifies the committed bundle.
+
+**3. Add the secrets.** Add these two entries under `secrets:` in your values-secret file (`~/values-secret-secure-agent-workspace.yaml`, or `~/values-secret.yaml`):
+
+```yaml
+  # Pull the private APF chart (Argo CD) and images (cluster)
+  - name: ghcr
+    fields:
+    - name: username
+      value: <github-user>
+    - name: token
+      path: ~/.ghcr-token
+  # The private half of the key from step 2
+  - name: apf-signing
+    fields:
+    - name: seed
+      path: ~/.apf-keys/apf.seed
+```
+
+Load them and check that the three ExternalSecrets become ready:
+
+```bash
+./pattern.sh make load-secrets          # reports one more secret per entry
+oc get externalsecret ghcr-pull governance-apf-signing -n openshell-agents
+oc get externalsecret governance-apf-chart-repo -n vp-gitops
+```
+
+They read `secret/hub/ghcr` and `secret/hub/apf-signing` in Vault and create the image pull secret, the signing key Secret, and the Argo CD repository Secret for the private chart, all outside the user namespaces.
+
+**4. Switch the engine.** Either set it in git:
+
+```yaml
+# values-global.yaml
+global:
+  governance:
+    engine: apf
+```
+
+or set it on the installed pattern without a commit:
+
+```bash
+oc patch pattern secure-agent-workspace -n patterns-operator --type merge \
+  -p '{"spec":{"extraParameters":[{"name":"global.governance.engine","value":"apf"}]}}'
+```
+
+For a new install, pass the same override: `./pattern.sh make install EXTRA_HELM_OPTS="--set main.extraParameters[0].name=global.governance.engine --set main.extraParameters[0].value=apf"`.
+
+Argo CD then removes the interceptor, creates the `governance-apf` app (the APF chart, still serving `governance-interceptor.openshell-agents.svc:18081`), and re-renders each user's gateway config with APF's bindings. Restart each user VM once so it boots with them:
+
+```bash
+oc get application governance-apf -n vp-gitops              # Synced / Healthy
+oc get pod -n openshell-agents -l app.kubernetes.io/name=apf  # 2/2 Running
+virtctl -n saw-<user> restart <user>
+```
+
+While APF is not running the gateways refuse write operations (fail closed). If the APF pod shows `ErrImagePull` with `denied`, your account lacks access to that image package (step 1).
+
+**Quickstart (no Argo CD):** after steps 1 and 2, `GHCR_USER=<github-user> GHCR_TOKEN="$(cat ~/.ghcr-token)" make governance-apf`, then create SAWs with `make openshell-saw-create ... GOVERNANCE_ENGINE=apf`.
+
+**Changing policy:** edit `charts/governance-policy`, run `make apf-bundle` (it bumps `policy_revision`), commit and push the new bundle. **Switching back:** set `engine: interceptor` (or remove the override), delete the `governance-apf` Application and restart the user VMs.
+
 ### Self-service workspaces and sandbox web UIs
 
 Users can create their own workspace from Red Hat Developer Hub: they pick a SAW-BOM profile and enter only the keys it needs; the keys go to Vault under `secret/data/hub/saw-<user>`, and an Argo CD ApplicationSet builds the workspace like any `overrides/saw-users.yaml` entry. A sandbox with `ui: {route: true}` in its profile gets its own route to the OpenClaw / NemoClaw web UI, signed in with Keycloak and open to the workspace owner only (its sign-in is registered by the redirect registrar: [Web UI sign-in](#web-ui-sign-in-redirect-uris)). Details: [docs/self-service-portal.md](docs/self-service-portal.md); how it fits together: [docs/rhdh-architecture.md](docs/rhdh-architecture.md); step-by-step test: [docs/rhdh-user-guide.md](docs/rhdh-user-guide.md).
@@ -510,6 +600,7 @@ The system implements layered isolation:
 3. **Per-user access control** — Auth proxy validates the OIDC token's `preferred_username` matches the sandbox owner
 4. **TLS passthrough** — Gateway route preserves gRPC/HTTP2 end-to-end; the gateway validates OIDC tokens directly
 5. **Secret management** — API keys flow through Vault + ESO; the user's SSH private key never touches the cluster in plaintext
+6. **Governed gateways** — every gateway calls a fail-closed governance service: the OpenShell governance interceptor, or APF with a signed policy bundle ([docs/apf.md](docs/apf.md))
 
 ### Keycloak test users
 

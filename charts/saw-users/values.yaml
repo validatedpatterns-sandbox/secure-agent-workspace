@@ -75,6 +75,7 @@ argo:
 machineGlobals:
   - clusterDomain
   - sshPublicKey
+  - governance
 
 syncWave:
   namespace: "-1"

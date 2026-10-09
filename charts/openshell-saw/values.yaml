@@ -270,6 +270,31 @@ governance:
   allowInsecureTransport: true
   failurePolicy: "fail_closed"
   timeout: "500ms"
+  # Which interceptor answers at that endpoint: interceptor (the OpenShell
+  # governance interceptor) or apf (NVIDIA Agent Policy Fabric).
+  # global.governance.engine (the pattern's switch) wins.
+  engine: interceptor
+  # How the gateway combines its bindings with the ones the interceptor
+  # declares (OpenShell binding_policy):
+  #   allowlist  only the RPCs and phases listed below; the interceptor must
+  #              declare exactly one binding per listed RPC
+  #   dynamic    the interceptor's own declarations (RPCs, phases, and a
+  #              failure policy per binding, e.g. fail_open for post_commit),
+  #              limited to the RPCs OpenShell allows interceptors on; the
+  #              list below may only narrow them
+  # APF declares one binding per phase (three for CreateSandbox and for
+  # UpdateConfig), which allowlist rejects ("declared multiple bindings"),
+  # so APF uses dynamic.
+  bindingPolicy:
+    interceptor: allowlist
+    apf: dynamic
+  bindings:
+    interceptor:
+      - { rpc: CreateSandbox, phases: [modify_operation, validate] }
+      - { rpc: CreateProvider, phases: [validate] }
+      - { rpc: UpdateConfig, phases: [validate] }
+      - { rpc: SubmitPolicyAnalysis, phases: [validate] }
+    apf: []
 
 # Delete the VM and its disks when this release is deleted (a pre-delete
 # hook; Argo CD runs it when the Application is deleted, too). The pattern's

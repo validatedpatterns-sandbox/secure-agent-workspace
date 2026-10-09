@@ -1,0 +1,30 @@
+{{- if and .Values.enabled (eq (include "governance.engine" .) "apf") }}
+{{- $bundle := .Files.Get "files/apf/bundle.tar.gz" }}
+{{- $pub := .Files.Get "files/apf/apf.pub" }}
+{{- if or (not $bundle) (not $pub) }}
+{{- fail "engine apf needs files/apf/bundle.tar.gz and files/apf/apf.pub in this chart: each deployment generates them: run `make apf-keys apf-bundle` and commit them to the branch the pattern deploys from (docs/apf.md)" }}
+{{- end }}
+# The signed policy bundle, built from charts/governance-policy by
+# scripts/apf-bundle.py. The APF pod verifies it against the trust root below.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.apf.bundleConfigMap }}
+  labels:
+    app.kubernetes.io/name: governance-interceptor
+    app.kubernetes.io/instance: {{ .Release.Name }}
+binaryData:
+  bundle.tar.gz: {{ $bundle | b64enc }}
+---
+# Public key only. The APF chart mounts it as apf-dev.pub.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.apf.trustConfigMap }}
+  labels:
+    app.kubernetes.io/name: governance-interceptor
+    app.kubernetes.io/instance: {{ .Release.Name }}
+data:
+  apf-dev.pub: |
+{{ $pub | trim | indent 4 }}
+{{- end }}

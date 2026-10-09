@@ -6,6 +6,16 @@
 # governance-policy chart, which creates the ConfigMap this
 # deployment mounts.
 enabled: true
+
+# Which interceptor serves the governance-interceptor Service (port 18081):
+#   interceptor  the OpenShell governance interceptor below, reading the
+#                governance-policy ConfigMaps (default)
+#   apf          NVIDIA Agent Policy Fabric (private chart and images on
+#                ghcr.io), serving a signed bundle built from the same
+#                governance-policy files. See docs/apf.md.
+# The pattern sets global.governance.engine (values-global.yaml), which wins.
+engine: interceptor
+
 # Built by .github/workflows/build-governance-interceptor.yml on main and
 # tagged with the OpenShell ref it is built from (image-builder-charts/helm/
 # governance-interceptor-image/values.yaml source.git.ref). It must match the
@@ -32,3 +42,54 @@ resources:
 sawNamespaceLabel:
   key: openshell.pattern/saw
   value: "true"
+
+# --- engine: apf -------------------------------------------------------------
+apf:
+  # The APF chart (private OCI chart on GHCR).
+  chart:
+    repoURL: ghcr.io/mkhaas/apf/charts
+    name: apf
+    version: 0.2.0
+  # Pattern: an Argo CD Application installs the APF chart. Quickstart (no
+  # Argo CD) turns this off and `make governance-apf` runs helm instead.
+  application:
+    enabled: true
+  # Pattern: ExternalSecrets read the GHCR credential and the signing seed
+  # from Vault (values-secret.yaml: ghcr, apf-signing). Quickstart turns this
+  # off and `make governance-apf` creates the Secrets with oc.
+  externalSecrets:
+    enabled: true
+    vaultPrefix: secret/data/hub
+    refreshInterval: 15s
+    secretStoreRef:
+      name: vault-backend
+      kind: ClusterSecretStore
+  # Secret names in this namespace.
+  pullSecret: ghcr-pull
+  signingSecret: governance-apf-signing
+  # ConfigMaps this chart makes from files/apf (scripts/apf-bundle.py).
+  bundleConfigMap: governance-apf-bundle
+  trustConfigMap: governance-apf-trust
+  # Values for the APF chart. The release is named governance-interceptor,
+  # and fullnameOverride keeps the Service name the SAW gateways call.
+  values:
+    fullnameOverride: governance-interceptor
+    openshift: true
+    interceptor:
+      port: 18081
+      failurePolicy: fail_closed
+      timeout: 500ms
+      allowInsecureTransport: true
+      # APF would call back to one gateway here; SAW has a gateway per user
+      # VM, and they read the catalog through SnapshotProviderProfiles.
+      gatewayEndpoint: ""
+    bundle:
+      manifest: bundle.yaml
+    tier: 1
+
+# Where the APF Application object is created. The pattern injects
+# global.vpArgoNamespace; argo.namespace is the fallback.
+argo:
+  namespace: vp-gitops
+  project: default
+  destinationName: in-cluster

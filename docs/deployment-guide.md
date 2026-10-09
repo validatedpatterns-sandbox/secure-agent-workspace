@@ -50,7 +50,7 @@ All applications are defined in `values-prod.yaml` and deployed by the Validated
 | `saw-users` | `openshell-agents` | One namespace and three apps per user, from `overrides/saw-users.yaml` |
 | `openshell-keycloak` | `saw-keycloak` | Keycloak OIDC provider + realm |
 | `governance-policy` | `openshell-agents` | Policy ConfigMaps (profiles + sandbox policy) |
-| `governance-interceptor` | `openshell-agents` | gRPC interceptor deployment |
+| `governance-interceptor` | `openshell-agents` | gRPC interceptor deployment; with `global.governance.engine: apf`, the APF inputs and an Argo CD app for the APF chart ([apf.md](apf.md)) |
 
 **Operator Subscriptions:** OpenShift Virtualization, RHBK (Keycloak), External Secrets Operator, RHDH, OpenShift AI.
 

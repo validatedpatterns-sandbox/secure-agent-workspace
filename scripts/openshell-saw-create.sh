@@ -45,6 +45,7 @@ OWNER_SUBJECT="${OWNER_SUBJECT:-}"
 SCRIPTS_DIR="${SCRIPTS_DIR:-scripts}"
 CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-podman}"
 GOVERNANCE_ENABLED="${GOVERNANCE_ENABLED:-true}"
+GOVERNANCE_ENGINE="${GOVERNANCE_ENGINE:-interceptor}"
 
 # Validate provider
 if [[ -z "${PROVIDER}" && -z "${GCP_SA_JSON}" ]]; then
@@ -202,6 +203,7 @@ helm upgrade --install "${OPENSHELL_SAW_NAME}" "${SAW_CHART}" \
   --set source.dataSourceNamespace="${NS}" \
   --set containerRuntime="${CONTAINER_RUNTIME}" \
   --set governance.enabled="${GOVERNANCE_ENABLED}" \
+  --set governance.engine="${GOVERNANCE_ENGINE}" \
   --set route.enabled=true --set route.dashboard=true \
   ${ROUTE_HOST:+--set route.host="${ROUTE_HOST}"} \
   ${APPS_DOMAIN:+--set route.webuiHost="${OPENSHELL_SAW_NAME}-webui-${DEPLOY_NS}.${APPS_DOMAIN}"} \

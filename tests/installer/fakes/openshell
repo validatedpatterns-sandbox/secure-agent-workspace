@@ -160,7 +160,9 @@ elif op == "provider list-profiles":
                    "web-search": ["api.tavily.com", "api.search.brave.com", "registry.npmjs.org"],
                    "brave": ["api.search.brave.com"], "nvidia": ["integrate.api.nvidia.com"],
                    "github": ["api.github.com"]})
-    print(json.dumps([{"id": pid, "endpoints": [{"host": h, "port": 443} for h in hosts]}
+    # Tests may also supply full profile objects, including credentials.
+    print(json.dumps(catalog if isinstance(catalog, list) else
+                     [{"id": pid, "endpoints": [{"host": h, "port": 443} for h in hosts]}
                       for pid, hosts in sorted(catalog.items())]))
 elif op == "provider profile" and head[2] == "import":
     # Like the gateway: needs an `id`, scoped to the workspace, reserved if present.
@@ -192,14 +194,18 @@ elif op == "provider update":
     key = f"{ws}/{head[2]}"
     if key not in state["providers"]:
         fail("Error: provider not found")
-    state["providers"][key]["credential"] = credential()
+    incoming = credential()
+    if incoming is not None:
+        state["providers"][key]["credential"] = None if incoming.partition("=")[2] == "" else incoming
     configs = [head[i + 1] for i, a in enumerate(head) if a == "--config"]
     if configs:
         state["providers"][key]["config"] = configs
 elif op == "provider get":
     if f"{ws}/{head[2]}" not in state["providers"]:
         fail("Error: provider not found")
-    print(f"Name: {head[2]}")
+    stored = state["providers"][f"{ws}/{head[2]}"]["credential"]
+    keys = stored.split("=", 1)[0] if stored else "<none>"
+    print(f"Name: {head[2]}\nCredential keys: {keys}")
 elif op == "provider list":
     print("NAME TYPE")
     for key in sorted(state["providers"]):
@@ -331,32 +337,41 @@ elif op == "sandbox exec":
                         for p in root.rglob("*") if p.is_file()}
         return {}
 
+    if args[-4:-2] == ["node", "-e"] and "config.mcp?.servers?." in args[-2]:
+        key = f"mcp.servers[{json.dumps(args[-1])}]"
+        print(json.dumps((sb.get("openclawConfig") or {}).get(key)))
+        sys.exit(0)
     script = args[-1] if args else ""
     if "openclaw config set " in script:
         m = re.search(r"openclaw config set (\S+)\s+(.*)", script)
         if m:
-            key, rest = m.group(1), m.group(2).strip()
+            key, rest = shlex.split(m.group(1))[0], m.group(2).strip()
             try:
                 tokens = shlex.split(rest)
                 val = json.loads(tokens[0]) if tokens else None
             except (ValueError, json.JSONDecodeError):
                 val = rest.strip("'\"")
-            if key.startswith(("plugins.load", "skills.load")):
+            if key.startswith(("plugins.load", "skills.load", "mcp.servers")):
                 sb.setdefault("openclawConfig", {})[key] = val
             save()
             sys.exit(0)
     if "openclaw config unset " in script:
         m = re.search(r"openclaw config unset (\S+)", script)
         if m:
-            (sb.get("openclawConfig") or {}).pop(m.group(1), None)
+            (sb.get("openclawConfig") or {}).pop(shlex.split(m.group(1))[0], None)
             save()
             sys.exit(0)
     if "openclaw config get " in script:
         m = re.search(r"openclaw config get (\S+)", script)
         if m:
-            val = (sb.get("openclawConfig") or {}).get(m.group(1))
+            val = (sb.get("openclawConfig") or {}).get(shlex.split(m.group(1))[0])
             if val is None:
                 sys.exit(1)
+            if shlex.split(m.group(1))[0].startswith("mcp.servers"):
+                # Native config reads resolve env references; authored-file
+                # verification must not compare against this expanded view.
+                val = json.loads(re.sub(r"\$\{[A-Z_]+\}", "openshell:test-placeholder",
+                                        json.dumps(val)))
             print(json.dumps(val))
             save()
             sys.exit(0)

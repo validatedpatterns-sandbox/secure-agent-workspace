@@ -306,6 +306,22 @@ def test_an_agent_plugins_bundle_is_loaded_from_its_root(ab):
         "plugins.load.paths": ["/sandbox/harness", "/sandbox/harness/plugins"]}
 
 
+@pytest.mark.parametrize("transport", ["streamable-http", "sse"])
+def test_remote_placeholder_headers_have_native_connection_config(ab, transport):
+    conf = {"type": transport, "url": "https://api.tavily.com/mcp",
+            "headers": {"Authorization": "Bearer ${TAVILY_API_KEY}"}}
+    info = ab.describe_harness_tree(_stdio_tree(decl={"governanceProfile": "tavily"}, conf=conf))
+    assert info["nativeMcpServers"] == {"tavily": {
+        "transport": transport, "url": conf["url"], "headers": conf["headers"]}}
+
+
+def test_bundle_servers_without_remote_headers_need_no_native_override(ab):
+    stdio = ab.describe_harness_tree(_stdio_tree())
+    remote = ab.describe_harness_tree(_stdio_tree(decl={"governanceProfile": "tavily"}, conf={
+        "type": "streamable-http", "url": "https://api.tavily.com/mcp"}))
+    assert stdio["nativeMcpServers"] == remote["nativeMcpServers"] == {}
+
+
 def test_a_bundle_without_plugin_json_uses_extra_skill_dirs(ab):
     info = ab.describe_harness_tree(_tree(**{"skills__s__SKILL.md": "x"}))
     assert ab.openclaw_harness_config(info) == {

@@ -86,6 +86,104 @@ def mcp_tree(url, profile="brave"):
             "mcp.json": json.dumps({"mcpServers": {"search": {"type": "streamable-http", "url": url}}})}
 
 
+def keyed_mcp_tree():
+    tree = mcp_tree("https://api.search.brave.com/mcp")
+    doc = json.loads(tree["mcp.json"])
+    doc["mcpServers"]["search"]["headers"] = {"Authorization": "Bearer ${BRAVE_API_KEY}"}
+    return {**tree, "mcp.json": json.dumps(doc)}
+
+
+def test_managed_native_headers_are_created_and_verified(ab, fake_env, config, profiles, creds):
+    fake_env.set_images({IMAGE_V1: {"__tree__": keyed_mcp_tree()}})
+    applier = make_applier(ab, config, creds)
+    applier.apply(use_ref(profiles, {"image": IMAGE_V1}, ["nvidia", "brave"]))
+    key = 'mcp.servers["search"]'
+    expected = {"transport": "streamable-http", "url": "https://api.search.brave.com/mcp",
+                "headers": {"Authorization": "Bearer ${BRAVE_API_KEY}"}}
+    assert notebook(fake_env)["openclawConfig"][key] == expected
+    assert applier.verify(profiles) == []
+    state = fake_env.openshell_state()
+    state["sandboxes"]["default/notebook"]["openclawConfig"][key]["url"] = "https://wrong.example/mcp"
+    fake_env.set_openshell_state(state)
+    assert any("native MCP" in failure for failure in applier.verify(profiles))
+
+
+def test_removed_native_override_preserves_unrelated_connections(
+        ab, fake_env, config, profiles, creds, tmp_path):
+    cfg = {**config, "prune": {"mode": "off", "ledgerPath": str(tmp_path / "ledger.json")}}
+    fake_env.set_images({IMAGE_V1: {"__tree__": keyed_mcp_tree()},
+                         IMAGE_V2: {"__tree__": mcp_tree("https://api.search.brave.com/mcp")}})
+    make_applier(ab, cfg, creds).apply(use_ref(profiles, {"image": IMAGE_V1}, ["nvidia", "brave"]))
+    state = fake_env.openshell_state()
+    assert 'mcp.servers["search"]' in state["sandboxes"]["default/notebook"]["openclawConfig"]
+    state["sandboxes"]["default/notebook"]["openclawConfig"]['mcp.servers["manual"]'] = {
+        "transport": "streamable-http", "url": "https://manual.example/mcp"}
+    fake_env.set_openshell_state(state)
+    applier = make_applier(ab, cfg, creds)
+    applier.apply(use_ref(profiles, {"image": IMAGE_V2}, ["nvidia", "brave"]))
+    conf = notebook(fake_env)["openclawConfig"]
+    assert 'mcp.servers["search"]' not in conf
+    assert 'mcp.servers["manual"]' in conf
+    assert applier.verify(profiles) == []
+
+
+
+def test_native_headers_do_not_overwrite_a_manual_server(
+        ab, fake_env, config, profiles, creds, tmp_path):
+    cfg = {**config, "prune": {"mode": "off", "ledgerPath": str(tmp_path / "ledger.json")}}
+    fake_env.set_images({IMAGE_V1: {"__tree__": mcp_tree("https://api.search.brave.com/mcp")},
+                         IMAGE_V2: {"__tree__": keyed_mcp_tree()}})
+    make_applier(ab, cfg, creds).apply(use_ref(profiles, {"image": IMAGE_V1}, ["nvidia", "brave"]))
+    state = fake_env.openshell_state()
+    manual = {"transport": "streamable-http", "url": "https://manual.example/mcp"}
+    state["sandboxes"]["default/notebook"]["openclawConfig"]['mcp.servers["search"]'] = manual
+    fake_env.set_openshell_state(state)
+    applier = make_applier(ab, cfg, creds)
+    with pytest.raises(ab.InstallerError, match="conflicts with.*manual"):
+        applier.apply(use_ref(profiles, {"image": IMAGE_V2}, ["nvidia", "brave"]))
+    assert notebook(fake_env)["openclawConfig"]['mcp.servers["search"]'] == manual
+    assert "search" not in applier.native_mcp_owned.get("default/notebook", [])
+
+
+def test_native_headers_dry_run_does_not_read_uncreated_sandbox(ab, fake_env, config, profiles, creds):
+    applier = ab.ProfileApplier(ab.Shell(dry_run=True), config, creds)
+    ws = profiles[0].workspaces[0]
+    applier.configure_native_mcp(ws, ws.sandboxes[0], ["sandbox", "exec"], ab.OPENCLAW_EXEC_ENV,
+                                 {"nativeMcpServers": {"search": {"transport": "streamable-http"}}})
+    assert not fake_env.openshell_calls()
+
+
+def test_native_config_read_failure_defers_to_verify(
+        ab, fake_env, config, profiles, creds, monkeypatch):
+    fake_env.set_images({IMAGE_V1: {"__tree__": keyed_mcp_tree()}})
+    applier = make_applier(ab, config, creds)
+    original = applier.cli
+
+    def cli(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if ab.READ_NATIVE_MCP_JS in args:
+            result.rc = 1
+            result.out = ""
+            result.err = "ENOENT: /sandbox/.openclaw/openclaw.json"
+        return result
+
+    monkeypatch.setattr(applier, "cli", cli)
+    applier.apply(use_ref(profiles, {"image": IMAGE_V1}, ["nvidia", "brave"]))
+    assert any("native MCP" in f for f in applier.verify(profiles))
+
+
+def test_native_drift_does_not_hide_bundle_load_failure(ab, fake_env, config, profiles, creds):
+    fake_env.set_images({IMAGE_V1: {"__tree__": keyed_mcp_tree()}})
+    applier = make_applier(ab, config, creds)
+    applier.apply(use_ref(profiles, {"image": IMAGE_V1}, ["nvidia", "brave"]))
+    state = fake_env.openshell_state()
+    state["sandboxes"]["default/notebook"]["openclawConfig"].pop('mcp.servers["search"]')
+    fake_env.set_openshell_state(state)
+    (fake_env.state / "plugins-list.json").write_text(live_listing(bundle={"status": "error"}))
+    failures = applier.verify(profiles)
+    assert any("native MCP" in f for f in failures)
+    assert any("does not load the harness bundle" in f for f in failures)
+
 def _inline(ab, name, tree):
     """Build content-addressed harness__<name>__<hash> keys plus the
     harness__<name>__map key, exactly like templates/configmap-bom.yaml."""
@@ -1105,3 +1203,13 @@ def test_a_harness_needs_driver_config_allowed(ab, tmp_path):
     toml.write_text('[openshell.drivers.podman]\nallow_driver_config = true\n')
     ab.check_driver_config_allowed(toml)
     ab.check_driver_config_allowed(tmp_path / "missing.toml")
+
+
+def test_native_headers_reapply_without_a_ledger(ab, fake_env, config, profiles, creds):
+    cfg = {**config, "prune": {"mode": "off"}}
+    fake_env.set_images({IMAGE_V1: {"__tree__": keyed_mcp_tree()}})
+    use_ref(profiles, {"image": IMAGE_V1}, ["nvidia", "brave"])
+    make_applier(ab, cfg, creds).apply(profiles)
+    applier = make_applier(ab, cfg, creds)
+    applier.apply(profiles)
+    assert applier.verify(profiles) == []

@@ -36,6 +36,143 @@ def cli_ops(fake_env):
     return [" ".join(c[:2]) for c in fake_env.openshell_calls()]
 
 
+@pytest.mark.parametrize("keyed", [False, True])
+def test_custom_mcp_creation_and_reapply(ab, fake_env, config, profiles, creds, keyed):
+    ws = profiles[0].workspaces[0]
+    p = ab.Provider(name="local-mcp", type="local-mcp", credential_free=not keyed,
+                    credential_env="MCP_API_KEY" if keyed else "",
+                    credential_secret="local-mcp" if keyed else "")
+    ws.providers.insert(0, p)
+    ws.sandboxes[0].providers.insert(0, p.name)
+    entries = [{"id": "local-mcp", "credentials":
+                [{"name": "api_key", "env_vars": ["MCP_API_KEY"], "required": True}] if keyed else [],
+                "endpoints": [{"host": "mcp-service.ns.svc.cluster.local"}]}]
+    (fake_env.state / "catalog.json").write_text(json.dumps(entries))
+    if keyed:
+        creds[ws.name][p.name] = "test-mcp-secret"
+    applier = make_applier(ab, config, creds)
+    applier.apply_provider(ws, p)
+    make_applier(ab, config, creds).apply_provider(ws, p)
+    state = fake_env.openshell_state()["providers"][f"{ws.name}/{p.name}"]
+    assert state["credential"] == ("MCP_API_KEY=test-mcp-secret" if keyed else None)
+    calls = [c for c in fake_env.openshell_calls() if c[:1] == ["provider"] and p.name in c]
+    assert all("test-mcp-secret" not in " ".join(c) for c in calls)
+    assert any(c[:2] == ["provider", "update"] for c in calls) is keyed
+    assert all(("--credential" in c) is keyed for c in calls)
+    ws.providers[1].model = ""  # MCP must not be the fallback model provider either.
+    assert applier.find_provider(ws, [p.name, "nvidia"]).name == "nvidia"
+    assert applier.find_provider(ws, [p.name]) is None
+
+
+@pytest.mark.parametrize("denied", [False, True])
+def test_switching_custom_provider_to_credential_free_clears_old_key(
+        ab, fake_env, config, profiles, creds, denied):
+    ws = profiles[0].workspaces[0]
+    (fake_env.state / "catalog.json").write_text(json.dumps([{
+        "id": "local-mcp", "credentials": [{"env_vars": ["MCP_API_KEY"], "required": False}]}]))
+    creds[ws.name]["local-mcp"] = "old-test-key"
+    keyed = ab.Provider(name="local-mcp", type="local-mcp", credential_env="MCP_API_KEY")
+    make_applier(ab, config, creds).apply_provider(ws, keyed)
+    assert fake_env.openshell_state()["providers"][f"{ws.name}/local-mcp"]["credential"]
+    if denied:
+        (fake_env.state / "deny.json").write_text(json.dumps(["provider update"]))
+    applier = make_applier(ab, config, creds)
+    free = ab.Provider(name="local-mcp", type="local-mcp", credential_free=True)
+    if denied:
+        with pytest.raises(ab.InstallerError):
+            applier.apply_provider(ws, free)
+    else:
+        applier.apply_provider(ws, free)
+        assert fake_env.openshell_state()["providers"][f"{ws.name}/local-mcp"]["credential"] is None
+    assert all("old-test-key" not in " ".join(c) for c in fake_env.openshell_calls())
+
+@pytest.mark.parametrize("catalog, keyed, message", [
+    ([{"id": "local-mcp", "credentials": [{"env_vars": ["MCP_API_KEY"], "required": True}]}], False, "requires credentials"),
+    ([{"id": "local-mcp", "credentials": [{"env_vars": ["OTHER_KEY"], "required": True}]}], True, "credentialEnv.*not declared"),
+])
+def test_custom_mcp_requires_matching_served_profile(ab, fake_env, config, profiles, creds, catalog, keyed, message):
+    ws = profiles[0].workspaces[0]
+    p = ab.Provider(name="local-mcp", type="local-mcp", credential_free=not keyed,
+                    credential_env="MCP_API_KEY" if keyed else "")
+    creds[ws.name][p.name] = "test-mcp-secret"
+    (fake_env.state / "catalog.json").write_text(json.dumps(catalog))
+    with pytest.raises(ab.InstallerError, match=message):
+        make_applier(ab, config, creds).apply_provider(ws, p)
+    assert not [c for c in fake_env.openshell_calls() if c[:2] == ["provider", "create"]]
+
+
+
+def test_custom_provider_does_not_cache_catalog_before_later_imports(
+        ab, fake_env, config, profiles, creds):
+    ws = profiles[0].workspaces[0]
+    custom = {"id": "local-mcp", "endpoints": [{"host": "mcp.ns.svc.cluster.local"}]}
+    catalog = fake_env.state / "catalog.json"
+    catalog.write_text(json.dumps([custom]))
+    applier = make_applier(ab, config, creds)
+    applier.apply_provider(ws, ab.Provider(name="local-mcp", type="local-mcp", credential_free=True))
+    # A later built-in provider imports its shipped profile into the live catalog.
+    catalog.write_text(json.dumps([custom, {"id": "brave", "endpoints": [{"host": "api.search.brave.com"}]}]))
+    assert "brave" in applier.governance_catalog(ws)
+
+
+def test_custom_provider_catalog_gap_preserves_existing_provider(
+        ab, fake_env, config, profiles, creds, tmp_path):
+    ws = profiles[0].workspaces[0]
+    provider = ab.Provider(name="local-mcp", type="local-mcp", credential_free=True)
+    catalog = fake_env.state / "catalog.json"
+    catalog.write_text(json.dumps([{"id": "local-mcp"}]))
+    cfg = {**config, "prune": {"mode": "on", "ledgerPath": str(tmp_path / "ledger.json")}}
+    applier = make_applier(ab, cfg, creds)
+    applier.apply_provider(ws, provider)
+    applier.ledger.add("provider", ws.name, provider.name, "demo")
+    applier.ledger.data["adopted"] = True
+    catalog.write_text("[]")
+    applier.desired.clear()
+    applier.apply_provider(ws, provider)
+    applier.finish_prune()
+    assert (ws.name, provider.name) in applier.skipped
+    assert ("provider", ws.name, provider.name) in applier.desired
+    assert f"{ws.name}/{provider.name}" in fake_env.openshell_state()["providers"]
+    assert applier.ledger.data["lastPrune"]["skipped"] == "providers were skipped this run"
+
+
+def test_custom_provider_catalog_read_failure_has_diagnostic(
+        ab, fake_env, config, profiles, creds):
+    fake_env.deny("provider list-profiles")
+    applier = make_applier(ab, config, creds)
+    with pytest.raises(ab.InstallerError, match="cannot read the gateway's provider profile catalog"):
+        applier.apply_provider(profiles[0].workspaces[0],
+                               ab.Provider(name="local-mcp", type="local-mcp", credential_free=True))
+
+
+def test_credential_free_cleanup_ignores_invalid_key_names(
+        ab, fake_env, config, profiles, creds, monkeypatch):
+    ws = profiles[0].workspaces[0]
+    (fake_env.state / "catalog.json").write_text(json.dumps([{"id": "local-mcp"}]))
+    applier = make_applier(ab, config, creds)
+    applier.apply_provider(ws, ab.Provider(name="local-mcp", type="local-mcp", credential_free=True))
+    original = applier.cli
+
+    def cli(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if args[:2] == ("provider", "get"):
+            result.out = "Credential keys: MCP_API_KEY, invalid key, BAD=VALUE, _OLD_KEY, 9KEY\n"
+        return result
+
+    monkeypatch.setattr(applier, "cli", cli)
+    applier.apply_provider(ws, ab.Provider(name="local-mcp", type="local-mcp", credential_free=True))
+    update = [c for c in fake_env.openshell_calls() if c[:2] == ["provider", "update"]][-1]
+    assert update[update.index("--credential"):] == [
+        "--credential", "MCP_API_KEY=", "--credential", "_OLD_KEY="]
+
+
+def test_custom_provider_dry_run_validates_live_profile(ab, fake_env, config, profiles, creds):
+    (fake_env.state / "catalog.json").write_text(json.dumps([{"id": "local-mcp"}]))
+    applier = ab.ProfileApplier(ab.Shell(dry_run=True), config, creds)
+    applier.apply_provider(profiles[0].workspaces[0],
+                           ab.Provider(name="local-mcp", type="local-mcp", credential_free=True))
+    assert not [c for c in fake_env.openshell_calls() if c[:2] == ["provider", "create"]]
+
 def test_fresh_apply_creates_everything(ab, fake_env, config, profiles, creds):
     applier = make_applier(ab, config, creds)
     applier.apply(profiles)

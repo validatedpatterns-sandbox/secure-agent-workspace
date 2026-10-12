@@ -191,3 +191,69 @@ def test_chart_default_bom_covers_the_default_profile(ab, chart_bom, shipped_pro
     """The default saw-bom profile has a nemoclaw sandbox, so the chart's
     default BOM must include the NemoClaw CLI or a default install fails."""
     ab.check_profiles_against_bom(ab.parse_profiles(shipped_profile_files), ab.validate_bom(chart_bom))
+
+
+@pytest.mark.parametrize("auth", [
+    {"credentialFree": True},
+    {"credentialEnv": "MCP_API_KEY", "credentialSecret": "local-mcp"},
+])
+def test_custom_mcp_provider_authentication(ab, tmp_path, auth):
+    profiles = ab.parse_profiles(make_files(providers=[{"name": "local-mcp", "type": "local-mcp", **auth}]))
+    ab.validate_profiles(profiles)
+    provider = ws_by_name(profiles)["team"].providers[0]
+    if auth.get("credentialFree"):
+        assert provider.credential_free is True
+        assert ab.resolve_credentials(profiles, tmp_path) == {}
+    else:
+        assert provider.credential_env == "MCP_API_KEY"
+        secret = tmp_path / "local-mcp"
+        secret.mkdir()
+        (secret / "api_key").write_text("test-mcp-key")
+        assert ab.resolve_credentials(profiles, tmp_path) == {"team": {"local-mcp": "test-mcp-key"}}
+
+
+@pytest.mark.parametrize("auth, message", [
+    ({"credentialFree": "false"}, "credentialFree must be a boolean"),
+    ({"credentialFree": 1}, "credentialFree must be a boolean"),
+    ({"credentialFree": True, "credentialSecret": "local-mcp"}, "credentialFree.*credentialSecret"),
+    ({"credentialFree": True, "credentialEnv": "MCP_API_KEY"}, "credentialFree.*credentialEnv"),
+    ({"credentialEnv": "MCP_API_KEY"}, "no credentialSecret"),
+    ({"credentialEnv": "bad env", "credentialSecret": "local-mcp"}, "invalid credentialEnv"),
+    ({"credentialFree": True, "model": "model-x"}, "model settings"),
+    ({"credentialEnv": "MCP_API_KEY", "credentialSecret": "local-mcp", "model": "model-x"}, "model settings"),
+])
+def test_invalid_custom_mcp_authentication(ab, auth, message):
+    profiles = ab.parse_profiles(make_files(providers=[{"name": "local-mcp", "type": "local-mcp", **auth}]))
+    with pytest.raises(ab.InstallerError, match=message):
+        ab.validate_profiles(profiles)
+
+
+def test_known_keyed_type_cannot_bypass_secret(ab):
+    profiles = ab.parse_profiles(make_files(providers=[{"name": "nvidia", "type": "nvidia", "credentialFree": True}]))
+    with pytest.raises(ab.InstallerError, match="requires credentials"):
+        ab.validate_profiles(profiles)
+
+
+@pytest.mark.parametrize("auth", [{"credentialFree": True}, {"credentialEnv": "MCP_API_KEY", "credentialSecret": "local-mcp"}])
+def test_agent_requires_model_provider_besides_custom_mcp(ab, auth):
+    providers = [NVIDIA, {"name": "local-mcp", "type": "local-mcp", **auth}]
+    profiles = ab.parse_profiles(make_files(providers=providers, sandboxes=[
+        {"name": "agent", "type": "openclaw", "providers": ["local-mcp"]}]))
+    with pytest.raises(ab.InstallerError, match="model provider"):
+        ab.validate_profiles(profiles)
+
+
+@pytest.mark.parametrize("search", ["brave", "tavily"])
+@pytest.mark.parametrize("agent", ["openclaw", "nemoclaw"])
+def test_search_provider_does_not_satisfy_agent_inference_requirement(ab, search, agent):
+    profiles = ab.parse_profiles(make_files(
+        providers=[{"name": search, "type": search, "credentialSecret": search}],
+        sandboxes=[{"name": "agent", "type": agent, "providers": [search]}]))
+    with pytest.raises(ab.InstallerError, match="model provider"):
+        ab.validate_profiles(profiles)
+
+
+@pytest.mark.parametrize("name", ["my-existing-inference-provider", "existing_provider"])
+def test_existing_provider_names_remain_compatible(ab, name):
+    profiles = ab.parse_profiles(make_files(providers=[{**NVIDIA, "name": name}]))
+    ab.validate_profiles(profiles)

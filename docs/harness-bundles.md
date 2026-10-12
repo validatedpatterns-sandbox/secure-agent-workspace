@@ -60,6 +60,96 @@ spec:
       governanceProfile: local-mcp
 ```
 
+#### In-cluster MCP Services
+
+Use the Service DNS name in the bundle's `mcp.json` URL, for example
+`http://my-mcp.mcp-servers.svc.cluster.local:8080/mcp`, and declare
+`governanceProfile: local-mcp` in `harness.yaml` as shown above. The VM must
+be able to resolve and reach the Service.
+
+Add `charts/governance-policy/profiles/local-mcp.yaml`:
+
+```yaml
+id: local-mcp
+display_name: Local MCP
+description: In-cluster MCP Service
+category: other
+endpoints:
+  - host: my-mcp.mcp-servers.svc.cluster.local
+    port: 8080
+    protocol: mcp
+    enforcement: enforce
+    mcp:
+      versions: ["2025-06-18", "2025-11-25"]
+      allow_all_known_mcp_methods: true
+binaries:
+  - /usr/bin/node
+  - /usr/bin/node-*
+  - /usr/local/bin/node
+```
+
+Replace the host, port, binary paths and MCP versions with your server's
+values. This example permits all known MCP methods at that endpoint.
+
+Add the provider to your selected SAW-BOM workspace's `providers.yaml`,
+keeping its existing model provider:
+
+```yaml
+spec:
+  providers:
+    - name: local-mcp
+      type: local-mcp
+      credentialFree: true
+```
+
+Use the profile ID for both name and type. Include `local-mcp` alongside
+the model provider in `sandbox.yaml`:
+
+```yaml
+spec:
+  sandboxes:
+    - name: notebook
+      type: openclaw
+      providers: [nvidia, local-mcp]
+      harnessRef: {name: my-bundle}
+```
+
+Deploy the profile, SAW-BOM and bundle through your Argo or Helm workflow.
+The installer creates and attaches the provider automatically; a profile
+alone does not grant sandbox access.
+
+If the Service requires an API key, replace `credentialFree: true` with:
+
+```yaml
+credentialEnv: MCP_API_KEY
+credentialSecret: local-mcp-credentials
+credentialSecretKey: api_key
+```
+
+Create that Kubernetes Secret in the VM namespace and include its name in
+`additionalProviderSecrets` in your openshell-saw values. Add the matching
+authentication declaration to the governance profile:
+
+```yaml
+credentials:
+  - name: api_key
+    env_vars: [MCP_API_KEY]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+```
+
+In `mcp.json`, add `"headers": {"Authorization": "Bearer ${MCP_API_KEY}"}`
+to the server. The installer automatically configures OpenClaw's native
+header workaround for OpenClaw 2026.9.6; the sandbox receives only a
+placeholder. An existing native entry with identical settings is reused;
+a conflicting manual entry must first be removed or renamed. Custom
+providers support one Secret credential.
+
+For `403 policy_denied`, check the attached profile's host, port, calling
+binary and negotiated MCP version. An unlisted MCP version can cause a
+denial even when the Service is reachable.
+
 #### Servers that need an API key
 
 A server that calls a keyed service gets its key the same way OpenClaw gets

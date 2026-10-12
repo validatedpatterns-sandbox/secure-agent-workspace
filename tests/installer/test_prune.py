@@ -516,3 +516,18 @@ def test_kept_sandbox_providers_are_protected_when_listing_fails(
     state = fake_env.openshell_state()
     assert "cuda-dev/cuda-sandbox" in state["sandboxes"]
     assert "cuda-dev/nvidia" in state["providers"], "provider pruned despite a kept sandbox using it"
+
+
+@pytest.mark.parametrize("kind", ["sandbox", "workspace"])
+def test_pruning_deleted_objects_forgets_native_mcp_ownership(
+        ab, fake_env, config, creds, tmp_path, kind):
+    cfg = {**config, "prune": {"mode": "on", "sandboxes": True,
+                              "ledgerPath": str(tmp_path / "ledger.json")}}
+    applier = ab.ProfileApplier(ab.Shell(), cfg, creds)
+    ws, name = ("removed", "notebook") if kind == "sandbox" else ("", "removed")
+    applier.ledger.add(kind, ws, name, "p", adopted=True)
+    applier.native_mcp_owned.update({"removed/notebook": ["search"], "default/keep": ["manual"]})
+    applier.ledger.save()
+    applier.prune()
+    assert "removed/notebook" not in applier.native_mcp_owned
+    assert applier.native_mcp_owned["default/keep"] == ["manual"]

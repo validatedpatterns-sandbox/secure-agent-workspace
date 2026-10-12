@@ -117,6 +117,8 @@ from the release is enough and keeps renders stable.
       "clusterDomain" .Values.global.clusterDomain "pattern" (.Values.global.pattern | default "secure-agent-workspace")
       "vpArgoNamespace" (.Values.global.vpArgoNamespace | default "vp-gitops") -}}
 {{- if .Values.global.sshPublicKey -}}{{- $_ := set $g "sshPublicKey" .Values.global.sshPublicKey -}}{{- end -}}
+{{- /* The governance engine decides each gateway's bindings (docs/apf.md). */ -}}
+{{- if .Values.global.governance -}}{{- $_ := set $g "governance" (deepCopy .Values.global.governance) -}}{{- end -}}
 {{- $_ := set $v "global" $g -}}
 {{- $labels := deepCopy (index $v "namespaceLabels" | default dict) -}}
 {{- $_ := set $labels "saw.redhat.com/portal" "true" -}}

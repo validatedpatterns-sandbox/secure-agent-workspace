@@ -3,6 +3,14 @@ global:
   singleArgoCD: true
   secretLoader:
     disabled: false
+  # Which service governs every SAW gateway (docs/apf.md):
+  #   interceptor  the OpenShell governance interceptor (default)
+  #   apf          NVIDIA Agent Policy Fabric: private images on ghcr.io, so
+  #                values-secret.yaml needs the ghcr and apf-signing entries,
+  #                and charts/governance-interceptor/files/apf needs a signed
+  #                bundle you generate (make apf-keys apf-bundle, docs/apf.md).
+  governance:
+    engine: interceptor
 main:
   clusterGroupName: prod
   multiSourceConfig:

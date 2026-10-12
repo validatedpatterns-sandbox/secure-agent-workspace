@@ -146,7 +146,7 @@ oc login --server=https://api.<your-cluster-domain>:6443 -u <admin user>
 Create the SSH key and the secrets file the installer reads:
 
 ```bash
-make generate-keys
+make ssh-key-generate
 ```
 
 This creates an SSH key in `~/.generated-ssh-keys/` and copies
@@ -168,10 +168,13 @@ into the portal in Step 7.
 
 ## Step 5. Install the platform
 
+On an NVIDIA LaunchPad cluster, follow [docs/launchpad.md](docs/launchpad.md)
+for access and for installing from the bastion instead.
+
 Copy the virtual machine image into the cluster (about 5 minutes):
 
 ```bash
-make copy-images
+make images-mirror
 ```
 
 Install everything else. Set the branch you checked out in Step 3:
@@ -206,14 +209,17 @@ echo "https://$(oc get route backstage-developer-hub -n rhdh -o jsonpath='{.spec
 The portal does not create accounts; the administrator does:
 
 ```bash
-make -f Makefile-quickstart keycloak-add-user KC_USER=dana
+make keycloak-add-user KC_USER=dana
 ```
 
-It prints dana's password. Write it down. To show it again:
+Her generated password is not printed: it is kept in the Secret
+`openshell-keycloak-users` in `saw-keycloak`. Read it with:
 
 ```bash
-make -f Makefile-quickstart keycloak-password KC_USER=dana
+oc -n saw-keycloak extract secret/openshell-keycloak-users --keys=dana --to=-
 ```
+
+(`make keycloak-password KC_USER=dana` says which Secret holds it.)
 
 The portal picks up new users every 2 minutes, so wait 2 minutes before
 the next step.
@@ -294,15 +300,15 @@ Point out along the way:
 | The workspace run fails at "Submit the request" (HTTP 500) | `oc logs -n rhdh deploy/backstage-developer-hub -c saw-ca-bundle` must list `added: Kubernetes API CA`; if not, restart Developer Hub: `oc rollout restart deploy/backstage-developer-hub -n rhdh` |
 | "Start the VM" takes more than 10 minutes | `oc get events -n saw-dana \| grep FailedMount`: the VM waits for dana's keys to arrive from Vault |
 | "403 Forbidden" on the assistant | You are signed in as someone else. Use a new private window and sign in as dana |
-| "Invalid parameter: redirect_uri" | Wait a minute and reload; or `make -f Makefile-quickstart keycloak-register KC_USER=dana` |
+| "Invalid parameter: redirect_uri" | Wait a minute and reload; or `make keycloak-register KC_USER=dana` |
 | The briefing has no Gmail messages | The Google refresh token expired (7 days in Testing). Get a new one (Step 2), then update dana's workspace in the portal with **Create or update my agent workspace** |
 | The briefing has no Slack messages | The app is not in the channel: `/invite @<app>` |
 
 More checks, for administrators with the `openshell` CLI:
 
 ```bash
-make -f Makefile-quickstart openshell-saw-status OPENSHELL_SAW_NAME=dana    # the installer's status
-make -f Makefile-quickstart openshell-saw-configure-gateway OPENSHELL_SAW_NAME=dana
+make saw-status OPENSHELL_SAW_NAME=dana    # the installer's status
+make saw-configure OPENSHELL_SAW_NAME=dana
 openshell gateway login dana                                                # sign in as dana
 openshell provider refresh status gmail --workspace personal-assistant
 openshell logs assistant --workspace personal-assistant --source sandbox    # the denials from the demo
@@ -329,3 +335,5 @@ openshell logs assistant --workspace personal-assistant --source sandbox    # th
 - [docs/daily-briefing.md](docs/daily-briefing.md): how the briefing,
   token refresh and read-only access work.
 - [README.md](README.md): the platform, and other ways to install it.
+- [docs/launchpad.md](docs/launchpad.md): running the demo on an NVIDIA
+  LaunchPad cluster (SSH tunnel, browser, installing from the bastion).

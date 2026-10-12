@@ -1,0 +1,9 @@
+# Offline render fixture only. These are documentation addresses, not defaults.
+networkPolicy:
+  clusterNetworkCIDRs: ["10.128.0.0/14"]
+  serviceNetworkCIDRs: ["172.30.0.0/16"]
+cleanupApi:
+  serviceIP: "172.30.0.1"
+  endpoints:
+    - ip: "192.0.2.10"
+      port: 6443

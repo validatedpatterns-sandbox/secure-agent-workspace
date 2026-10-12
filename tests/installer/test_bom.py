@@ -59,7 +59,7 @@ def test_non_mapping_bom_is_rejected(ab):
 
 
 def test_nemoclaw_tag_is_accepted_with_a_warning(ab, bom, capsys):
-    bom["spec"]["nemoclaw"] = {"cliImage": "quay.io/rh-ai-quickstart/nemoclaw-cli:latest"}
+    bom["spec"]["nemoclaw"] = {"cliImage": "ghcr.io/validatedpatterns-sandbox/nemoclaw-cli:latest"}
     ab.validate_bom(bom)
     assert "not pinned by digest" in capsys.readouterr().out
 

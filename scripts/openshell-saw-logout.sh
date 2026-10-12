@@ -1,29 +1,33 @@
 #!/usr/bin/env bash
-# Clear OIDC tokens from all running sandbox VMs.
-# Called after oidc-login.sh logout to clean up gateway-side tokens.
+# Clear locally stored OpenShell gateway credentials without cluster access.
+# OPENSHELL_SAW_NAME limits cleanup to one registration when set.
 
 set -euo pipefail
 
-NS="${NS:-openshell-agents}"
-SSH_KEY_PATH="${SSH_KEY_PATH:-.generated-ssh-keys/sandbox-ssh}"
+command -v openshell >/dev/null 2>&1 || {
+  echo "Error: openshell CLI is required to clear gateway credentials." >&2
+  exit 1
+}
 
-echo "Clearing OIDC tokens from running sandboxes..."
+registrations="$(openshell gateway list -o json)"
+names="$(jq -r --arg selected "${OPENSHELL_SAW_NAME:-}" '
+  if type != "array" then error("expected a gateway list") else
+    [.[] | select($selected == "" or .name == $selected) |
+      .name | select(type == "string" and length > 0)] | .[]
+  end' <<<"${registrations}")"
 
-helm list -n "${NS}" --filter '.*' -o json 2>/dev/null \
-  | jq -r '.[] | select(.chart | startswith("openshell-saw")) | .name' 2>/dev/null \
-  | while read -r sb; do
-    echo -n "  ${sb}: clearing token... "
-    if virtctl -n "${NS}" ssh "cloud-user@vm/${sb}" \
-        --identity-file="${SSH_KEY_PATH}" \
-        --local-ssh-opts="-oStrictHostKeyChecking=no" \
-        --local-ssh-opts="-oUserKnownHostsFile=/dev/null" \
-        --local-ssh-opts="-oConnectTimeout=5" \
-        --command="sudo rm -f /etc/openshell/gateway.toml ~/.config/openshell/gateway.toml && sudo systemctl restart openshell-gateway-setup.service" \
-        2>/dev/null; then
-      echo "done"
-    else
-      echo "skipped (VM unreachable)"
-    fi
-  done
+failed=0
+while IFS= read -r name; do
+  [[ -n "${name}" ]] || continue
+  if openshell gateway logout "${name}"; then
+    echo "Cleared local gateway credentials for ${name}."
+  else
+    echo "Error: could not clear local gateway credentials for ${name}." >&2
+    failed=1
+  fi
+done <<<"${names}"
 
-echo "Logout complete."
+if (( failed != 0 )); then
+  exit 1
+fi
+echo "Local gateway credential cleanup complete."

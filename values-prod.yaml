@@ -25,9 +25,6 @@ clusterGroup:
     # the namespace with the workspace registry and its pipelines.
     rhdh:
     saw-portal:
-    # ansible-automation-platform:
-    #   operatorGroup: true
-    #   targetNamespaces: []
     redhat-ods-operator:
       operatorGroup: true
       targetNamespaces: []
@@ -54,10 +51,6 @@ clusterGroup:
       name: openshift-pipelines-operator-rh
       namespace: openshift-operators
       channel: latest
-    # aap:
-    #   name: ansible-automation-platform-operator
-    #   namespace: ansible-automation-platform
-    #   channel: stable-2.5
     openshift-ai:
       name: rhods-operator
       namespace: redhat-ods-operator
@@ -113,14 +106,27 @@ clusterGroup:
       name: governance-policy
       namespace: openshell-agents
       path: charts/governance-policy
+    # prune: switching global.governance.engine removes the interceptor's
+    # Deployment and Service (APF takes over the Service name) and back.
     governance-interceptor:
       name: governance-interceptor
       namespace: openshell-agents
       path: charts/governance-interceptor
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        retry:
+          limit: 20
   # Vault policy and role that let the portal's pipeline write users' keys
   # under secret/data/hub/saw-* (ansible/playbooks/saw-portal-vault.yaml).
   imperative:
     jobs:
       - name: saw-portal-vault
         playbook: ansible/playbooks/saw-portal-vault.yaml
+        timeout: 300
+      # The cluster's ingress CA in Vault, for workspace VMs to trust the
+      # in-cluster Keycloak (ansible/playbooks/saw-ingress-ca.yaml).
+      - name: saw-ingress-ca
+        playbook: ansible/playbooks/saw-ingress-ca.yaml
         timeout: 300

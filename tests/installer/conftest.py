@@ -230,6 +230,7 @@ def config():
             "ownerSubject": "", "oidcIssuer": "", "sandboxDashboardRoute": "",
             "dashboard": {"enabled": False},
             "harness": {"cosign": {
+                "cacheTtlSeconds": 0,
                 "identity": "https://github.com/example/saw/.github/workflows/harness-bundles.yml@refs/heads/main",
                 "issuer": "https://token.actions.githubusercontent.com"}}}
 

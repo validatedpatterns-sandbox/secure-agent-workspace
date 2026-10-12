@@ -33,11 +33,7 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install -r tests/requirements.txt -e ./cli
       - name: Lint charts
-        run: |
-          helm lint charts/openshell-saw --set sandboxName=ci
-          helm lint charts/saw-bom
-          helm lint charts/saw-users
-          helm lint charts/openshell-rhdh
+        run: make lint
       - name: Installer, chart and CLI tests
         run: make test-installer PYTHON=python
 
@@ -73,7 +69,7 @@ jobs:
             exit 1
           fi
           pip install -q pyyaml
-          helm template saw-sign charts/openshell-saw --namespace saw-sign --set sandboxName=saw-sign > /tmp/rendered.yaml
+          helm template saw-sign charts/openshell-saw --namespace saw-sign -f tests/fixtures/saw-network-topology.yaml --set sandboxName=saw-sign > /tmp/rendered.yaml
           python3 scripts/build-installer-manifest.py /tmp/rendered.yaml /tmp/installer-manifest.txt
           ok=0
           for key in "${keys[@]}"; do

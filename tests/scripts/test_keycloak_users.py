@@ -22,8 +22,15 @@ args = sys.argv[1:]
 def path(name): return state / f"secret-{name}.json"
 if args[:2] in (["get", "namespace"], ["create", "namespace"]):
     sys.exit(0)
+if args[:2] == ["get", "namespaces"]:
+    print(json.dumps({"items": [{"metadata": {"name": "saw-keycloak"}}]}))
+    sys.exit(0)
 if args[:2] == ["get", "keycloak"]:
-    print("https://sso.example.com", end="")
+    if "-o" in args and args[args.index("-o") + 1] == "json":
+        print(json.dumps({"items": [{"metadata": {"name": "openshell-keycloak"},
+                                     "status": {"externalURL": "https://sso.example.com"}}]}))
+    else:
+        print("https://sso.example.com", end="")
     sys.exit(0)
 if args[:2] == ["get", "secret"]:
     p = path(args[2])
@@ -105,17 +112,18 @@ def test_ensure_fills_in_only_the_missing_users(tmp_path):
     assert after["alice"] == alice and after["bob"]
 
 
-def test_show_prints_the_passwords(tmp_path):
+def test_show_lists_users_without_passwords(tmp_path):
     run(tmp_path, "ensure")
     result = run(tmp_path, "show")
     assert result.returncode == 0
-    shown = dict(line.split() for line in result.stdout.splitlines())
-    assert shown == stored(tmp_path)
+    for user, password in stored(tmp_path).items():
+        assert user in result.stdout
+        assert password not in result.stdout
 
 
 def test_show_without_a_secret_says_how_to_make_one(tmp_path):
     result = run(tmp_path, "show")
-    assert result.returncode != 0 and "make -f Makefile-quickstart keycloak" in result.stderr
+    assert result.returncode != 0 and "make keycloak-deploy" in result.stderr
 
 
 FAKE_CURL = r"""#!/usr/bin/env python3
@@ -243,7 +251,7 @@ def test_add_users_creates_them_with_generated_passwords_and_roles(tmp_path, key
     assert dave["email"] == "dave@openshell.local" and dave["emailVerified"] is True
     assert carol["roles"] == ["openshell-user"] and dave["roles"] == ["openshell-admin", "openshell-user"]
     for pw in passwords.values():
-        assert len(pw) >= 20 and pw in result.stdout       # printed for the admin
+        assert len(pw) >= 20 and pw not in result.stdout
 
 
 def test_existing_users_are_skipped(tmp_path, keycloak):
@@ -269,16 +277,20 @@ def test_the_default_file_is_saw_users(tmp_path, keycloak):
     assert set(keycloak()) == names
 
 
-def test_password_prints_the_users_password(tmp_path, keycloak):
+def test_password_reports_secret_location_without_value(tmp_path, keycloak):
     run(tmp_path, "ensure")
     run(tmp_path, "add-users", write_users(tmp_path, [{"name": "carol"}]))
-    assert run(tmp_path, "password", "carol").stdout.strip() == added(tmp_path)["carol"]
-    assert run(tmp_path, "password", "alice").stdout.strip() == stored(tmp_path)["alice"]
+    carol = run(tmp_path, "password", "carol")
+    alice = run(tmp_path, "password", "alice")
+    assert "Secret openshell-keycloak-users" in carol.stdout
+    assert "Secret openshell-keycloak-user-passwords" in alice.stdout
+    assert added(tmp_path)["carol"] not in carol.stdout
+    assert stored(tmp_path)["alice"] not in alice.stdout
     missing = run(tmp_path, "password", "nobody")
     assert missing.returncode != 0 and "keycloak-reset-password KC_USER=nobody" in missing.stderr
 
 
-def test_reset_password_sets_prints_and_keeps_a_new_one(tmp_path, keycloak):
+def test_reset_password_sets_and_keeps_a_new_one_without_output(tmp_path, keycloak):
     run(tmp_path, "ensure")
     run(tmp_path, "add-users", write_users(tmp_path, [{"name": "carol"}, {"name": "dave"}]))
     before = added(tmp_path)
@@ -286,10 +298,11 @@ def test_reset_password_sets_prints_and_keeps_a_new_one(tmp_path, keycloak):
     assert result.returncode == 0, result.stderr
     after = added(tmp_path)
     assert after["carol"] != before["carol"] and after["dave"] == before["dave"]
-    assert after["carol"] == result.stdout.strip().splitlines()[-1]
+    assert after["carol"] not in result.stdout
+    assert "was reset in Secret" in result.stdout
     assert keycloak()["carol"]["credentials"][0] == {"type": "password", "value": after["carol"],
                                                      "temporary": False}
-    assert run(tmp_path, "password", "carol").stdout.strip() == after["carol"]
+    assert "Secret openshell-keycloak-users" in run(tmp_path, "password", "carol").stdout
 
 
 def test_a_reset_test_user_wins_over_the_imported_password(tmp_path, keycloak):
@@ -298,11 +311,13 @@ def test_a_reset_test_user_wins_over_the_imported_password(tmp_path, keycloak):
     run(tmp_path, "ensure")
     realm = tmp_path / "state" / "realm.json"
     realm.write_text(json.dumps({"users": {"alice": {"username": "alice", "roles": []}}}))
-    new = run(tmp_path, "reset-password", "alice").stdout.strip().splitlines()[-1]
+    result = run(tmp_path, "reset-password", "alice")
+    new = added(tmp_path)["alice"]
     assert new != stored(tmp_path)["alice"]
-    assert run(tmp_path, "password", "alice").stdout.strip() == new
-    shown = dict(line.split() for line in run(tmp_path, "show").stdout.splitlines())
-    assert shown["alice"] == new
+    assert new not in result.stdout
+    assert "Secret openshell-keycloak-users" in run(tmp_path, "password", "alice").stdout
+    shown = run(tmp_path, "show").stdout
+    assert "alice" in shown and new not in shown
 
 
 def test_reset_password_of_an_unknown_user_fails(tmp_path, keycloak):
@@ -329,5 +344,6 @@ def test_a_bad_users_file_changes_nothing(tmp_path, keycloak, users, message):
 def test_show_lists_added_users_too(tmp_path, keycloak):
     run(tmp_path, "ensure")
     run(tmp_path, "add-users", write_users(tmp_path, [{"name": "carol"}]))
-    shown = dict(line.split() for line in run(tmp_path, "show").stdout.splitlines())
-    assert shown["carol"] == added(tmp_path)["carol"] and "alice" in shown
+    shown = run(tmp_path, "show").stdout
+    assert "carol" in shown and "alice" in shown
+    assert added(tmp_path)["carol"] not in shown

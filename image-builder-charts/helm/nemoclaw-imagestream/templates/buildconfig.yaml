@@ -1,3 +1,7 @@
+{{- if .Values.source.discoveryImage }}
+{{- if not (regexMatch "^[^[:space:]@]+@sha256:[a-f0-9]{64}$" .Values.source.discoveryImage) }}
+{{- fail "source.discoveryImage must be an image pinned by sha256 digest" }}
+{{- end }}
 apiVersion: build.openshift.io/v1
 kind: BuildConfig
 metadata:
@@ -10,10 +14,17 @@ spec:
     git:
       uri: {{ .Values.source.git.uri }}
       ref: {{ .Values.source.git.ref }}
+    images:
+      - from:
+          kind: DockerImage
+          name: {{ .Values.source.discoveryImage | quote }}
+        paths:
+          - sourcePath: /reviewed-runtime-bundle/mcp-tool-discovery/.
+            destinationDir: tools/mcp-tool-discovery-runtime/reviewed-runtime-bundle/mcp-tool-discovery
     configMaps:
       - configMap:
-          name: nemoclaw-audit-patch
-        destinationDir: tools/mcp-tool-discovery-runtime
+          name: nemoclaw-mcporter-runtime
+        destinationDir: agents/openclaw/mcporter-runtime
   strategy:
     type: Docker
     dockerStrategy:
@@ -48,3 +59,4 @@ spec:
       kind: ImageStreamTag
       name: {{ .Values.output.imageStreamTag }}
   triggers: []
+{{- end }}

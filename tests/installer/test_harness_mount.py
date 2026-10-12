@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import time
 
 import pytest
@@ -179,6 +180,39 @@ def test_a_bundle_openclaw_has_not_loaded_fails_verify(
     assert any("does not load the harness bundle" in f for f in failures)
 
 
+def test_a_dropped_live_mcp_server_fails_verify(
+        ab, fake_env, config, profiles, creds):
+    """`openclaw mcp status` never lists a bundle's MCP servers (regression:
+    it only shows ones added via `mcp add`/`mcp set`), so verify must read
+    `openclaw plugins inspect <bundle>` instead; an entry missing from its
+    live listing (OpenClaw dropped it) still fails the run."""
+    fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
+    use_ref(profiles, {"image": IMAGE_V1})
+    applier = make_applier(ab, config, creds)
+    applier.apply(profiles)
+    assert applier.verify(profiles) == []
+    (fake_env.state / "mcp-inspect.json").write_text(json.dumps({"demo": []}))
+    failures = applier.verify(profiles)
+    assert any("does not list MCP server(s) echo" in f for f in failures)
+
+
+def test_a_server_name_that_is_a_prefix_of_another_still_fails_verify(
+        ab, fake_env, config, profiles, creds):
+    """A plain `\\b` regex does not stop at a hyphen (it is a non-word
+    character, same as a space), so `\\bsearch\\b` still matches inside
+    "search-internal" -- exactly the false positive the whole-token match
+    was supposed to prevent. Server names are kebab-case, so the hyphen
+    must count as part of the token, not a boundary."""
+    fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
+    use_ref(profiles, {"image": IMAGE_V1})
+    applier = make_applier(ab, config, creds)
+    applier.apply(profiles)
+    assert applier.verify(profiles) == []
+    (fake_env.state / "mcp-inspect.json").write_text(json.dumps({"demo": ["echo-internal"]}))
+    failures = applier.verify(profiles)
+    assert any("does not list MCP server(s) echo" in f for f in failures)
+
+
 def test_an_unparseable_plugins_list_fails_verify(
         ab, fake_env, config, profiles, creds):
     fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
@@ -275,6 +309,197 @@ def test_an_unchanged_image_is_not_pulled_again(
     make_applier(ab, cfg, creds).apply(profiles)
     assert sum(op[:1] == ["pull"] and op[-1] == IMAGE_V1 for op in podman_ops(fake_env)) == 1
     assert sum(op[:1] == ["export"] for op in podman_ops(fake_env)) == 1
+
+
+def test_a_revoked_signature_is_caught_on_a_later_apply(
+        ab, fake_env, config, profiles, creds, tmp_path):
+    """A volume that already holds the image is not evidence the image is
+    still trusted: the signature is rechecked even when the ledger says the
+    volume is current and no pull/export is needed."""
+    fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
+    cfg = {**config, "prune": {"mode": "off", "ledgerPath": str(tmp_path / "ledger.json")}}
+    use_ref(profiles, {"image": IMAGE_V1})
+    make_applier(ab, cfg, creds).apply(profiles)
+    (fake_env.state / "unsigned.json").write_text(json.dumps([IMAGE_V1]))
+    with pytest.raises(ab.InstallerError, match="is not signed by"):
+        make_applier(ab, cfg, creds).apply(profiles)
+    assert sum(op[:1] == ["pull"] and op[-1] == IMAGE_V1 for op in podman_ops(fake_env)) == 1, \
+        "the volume was already current; the signature check must not require a pull"
+
+
+def test_an_image_whose_signature_is_revoked_is_garbage_collected(
+        ab, fake_env, config, profiles, creds, tmp_path):
+    """An image must join harness_images only after it verifies: joining
+    first would make cleanup_harness_images see it as still wanted and
+    never remove it, keeping an untrusted image on disk forever."""
+    fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
+    cfg = {**config, "prune": {"mode": "off", "ledgerPath": str(tmp_path / "ledger.json")}}
+    images = lambda: json.loads((fake_env.state / "images.json").read_text())
+    use_ref(profiles, {"image": IMAGE_V1})
+    make_applier(ab, cfg, creds).apply(profiles)
+    assert IMAGE_V1 in images()
+    (fake_env.state / "unsigned.json").write_text(json.dumps([IMAGE_V1]))
+    with pytest.raises(ab.InstallerError, match="sandbox\\(es\\) failed to apply"):
+        make_applier(ab, cfg, creds).apply(profiles)
+    assert IMAGE_V1 not in images(), "a revoked image must not linger on the VM"
+
+
+def test_signature_refusal_removes_active_harness_and_recovers(
+        ab, fake_env, config, profiles, creds, tmp_path):
+    fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
+    cfg = {**config, "harness": {"cosign": {**config["harness"]["cosign"], "cacheTtlSeconds": 0}},
+           "prune": {"mode": "off", "ledgerPath": str(tmp_path / "ledger.json")}}
+    use_ref(profiles, {"image": IMAGE_V1})
+    make_applier(ab, cfg, creds).apply(profiles)
+    (fake_env.state / "unsigned.json").write_text(json.dumps([IMAGE_V1]))
+    with pytest.raises(ab.InstallerError, match="is not signed by"):
+        make_applier(ab, cfg, creds).apply(profiles)
+    assert not notebook(fake_env).get("driverConfig"), "revoked code must stop running"
+    assert not (fake_env.state / "volumes" / volume_name(ab)).exists()
+    paths = fake_env.openshell_state()["sandboxes"]["default/notebook"].get("openclawConfig", {})
+    assert "/sandbox/harness" not in json.dumps(paths)
+    (fake_env.state / "unsigned.json").write_text("[]")
+    fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
+    applier = make_applier(ab, cfg, creds)
+    applier.apply(profiles)
+    assert notebook(fake_env)["driverConfig"]["podman"]["mounts"][0]["read_only"] is True
+    assert applier.verify(profiles) == []
+
+
+@pytest.mark.parametrize("inspection", ["failed", "malformed", "object", "non-object-entry"])
+def test_signature_refusal_stops_sandbox_when_mount_inspection_is_unknown(
+        ab, fake_env, config, profiles, creds, monkeypatch, inspection):
+    fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
+    use_ref(profiles, {"image": IMAGE_V1})
+    make_applier(ab, config, creds).apply(profiles)
+    (fake_env.state / "unsigned.json").write_text(json.dumps([IMAGE_V1]))
+    applier = make_applier(ab, config, creds)
+    podman = applier._podman
+    def broken_inspection(*args, **kwargs):
+        if args[:1] == ("inspect",):
+            output = {"malformed": "not json", "object": '{"Mounts": []}',
+                      "non-object-entry": '["bad"]'}
+            return ab.Result(1) if inspection == "failed" else ab.Result(0, output[inspection])
+        return podman(*args, **kwargs)
+    monkeypatch.setattr(applier, "_podman", broken_inspection)
+    with pytest.raises(ab.InstallerError, match="is not signed by"):
+        applier.apply(profiles)
+    assert not notebook(fake_env).get("driverConfig")
+
+
+def cache_config(config, tmp_path):
+    return {**config, "harness": {"cosign": {**config["harness"]["cosign"], "cacheTtlSeconds": 300}},
+            "prune": {"mode": "off", "ledgerPath": str(tmp_path / "ledger.json")}}
+
+
+def cosign_ops(fake_env):
+    return (fake_env.state / "cosign.log").read_text().splitlines()
+
+
+def test_signature_cache_is_bounded_and_policy_scoped(
+        ab, fake_env, config, creds, tmp_path, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(ab.time, "time", lambda: clock[0])
+    cfg = cache_config(config, tmp_path)
+    make_applier(ab, cfg, creds).verify_harness_image(IMAGE_V1)
+    clock[0] += 299
+    make_applier(ab, cfg, creds).verify_harness_image(IMAGE_V1)
+    assert len(cosign_ops(fake_env)) == 1
+    clock[0] += 1
+    make_applier(ab, cfg, creds).verify_harness_image(IMAGE_V1)
+    assert len(cosign_ops(fake_env)) == 2
+    cfg["harness"]["cosign"]["identity"] += "-new"
+    make_applier(ab, cfg, creds).verify_harness_image(IMAGE_V1)
+    make_applier(ab, cfg, creds).verify_harness_image(IMAGE_V2)
+    assert len(cosign_ops(fake_env)) == 4
+    clock[0] -= 1  # a clock rollback cannot make a future entry trustworthy
+    make_applier(ab, cfg, creds).verify_harness_image(IMAGE_V1)
+    assert len(cosign_ops(fake_env)) == 5
+
+
+def test_signature_cache_failure_does_not_extend_expired_trust(
+        ab, fake_env, config, creds, tmp_path, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(ab.time, "time", lambda: clock[0])
+    cfg = cache_config(config, tmp_path)
+    make_applier(ab, cfg, creds).verify_harness_image(IMAGE_V1)
+    clock[0] += 300
+    (fake_env.state / "unsigned.json").write_text(json.dumps([IMAGE_V1]))
+    for _ in range(2):
+        with pytest.raises(ab.InstallerError, match="is not signed by"):
+            make_applier(ab, cfg, creds).verify_harness_image(IMAGE_V1)
+    assert len(cosign_ops(fake_env)) == 3
+
+
+def test_signature_cache_is_not_saved_by_dry_run(
+        ab, fake_env, config, creds, tmp_path):
+    cfg = cache_config(config, tmp_path)
+    applier = make_applier(ab, cfg, creds)
+    applier.sh.dry_run = True
+    applier.verify_harness_image(IMAGE_V1)
+    assert not (tmp_path / "ledger.json").exists()
+    make_applier(ab, cfg, creds).verify_harness_image(IMAGE_V1)
+    assert len(cosign_ops(fake_env)) == 2
+
+
+@pytest.mark.parametrize("ttl", [-1, 301, True, "300", 3.5])
+def test_signature_cache_rejects_invalid_ttl(ab, config, tmp_path, ttl):
+    cfg = {**config, "harness": {"cosign": {**config["harness"]["cosign"], "cacheTtlSeconds": ttl}}}
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(cfg))
+    with pytest.raises(ab.InstallerError, match="cacheTtlSeconds"):
+        ab.load_config(path)
+
+
+def test_mcp_inspection_failure_is_not_silently_skipped(
+        ab, fake_env, config, profiles, creds, monkeypatch, capsys):
+    fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
+    use_ref(profiles, {"image": IMAGE_V1})
+    applier = make_applier(ab, config, creds)
+    applier.apply(profiles)
+    original = applier.cli
+    error = ["connection failed"]
+    def failing_inspection(*args, **kwargs):
+        if any("openclaw plugins inspect " in str(arg) for arg in args):
+            return ab.Result(1, "", error[0])
+        return original(*args, **kwargs)
+    monkeypatch.setattr(applier, "cli", failing_inspection)
+    assert any("could not inspect" in f for f in applier.verify(profiles))
+    error[0] = "error: unknown option '--runtime'"
+    assert applier.verify(profiles) == []
+    assert "registration is unverified" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("report", [
+    {"plugin": {"status": "loaded"}, "mcpServers": [],
+     "diagnostics": [{"level": "error", "message": "echo failed to start"}]},
+    {"plugin": {"status": "loaded"}, "mcpServers": [{"name": "echo", "unsupported": True}]},
+    {"plugin": {"status": "error", "error": "echo failed"}, "mcpServers": [{"name": "echo"}]},
+])
+def test_inspect_error_text_never_proves_registration(
+        ab, fake_env, config, profiles, creds, monkeypatch, report):
+    fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
+    use_ref(profiles, {"image": IMAGE_V1})
+    applier = make_applier(ab, config, creds)
+    applier.apply(profiles)
+    cli = applier.cli
+    def inspection(*args, **kwargs):
+        if any("openclaw plugins inspect " in str(arg) for arg in args):
+            return ab.Result(0, json.dumps(report))
+        return cli(*args, **kwargs)
+    monkeypatch.setattr(applier, "cli", inspection)
+    assert applier.verify(profiles), "names in diagnostics or unsupported entries cannot pass"
+
+
+def test_inspect_uses_mounted_bundle_id(ab, fake_env, config, profiles, creds):
+    fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
+    use_ref(profiles, {"image": IMAGE_V1})
+    applier = make_applier(ab, config, creds)
+    applier.apply(profiles)
+    (fake_env.state / "plugins-list.json").write_text(live_listing(bundle={"id": "actual-plugin"}))
+    assert applier.verify(profiles) == []
+    calls = fake_env.openshell_calls()
+    assert any("openclaw plugins inspect actual-plugin --runtime --json" in str(c) for c in calls)
 
 
 def test_an_unchanged_image_keeps_the_sandbox(
@@ -761,6 +986,7 @@ def gateway_script(ab, home, refilled=False, cfg=None):
                                       f"OPENCLAW_HOME={home}", refilled=refilled)
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="gateway process detection uses /proc")
 def test_a_running_gateway_is_kept_when_nothing_changed(ab, gateway, tmp_path):
     assert gateway.run(gateway_script(ab, tmp_path)) == 0
     assert len(gateway.started()) == 1
@@ -768,6 +994,7 @@ def test_a_running_gateway_is_kept_when_nothing_changed(ab, gateway, tmp_path):
     assert len(gateway.started()) == 1, "a live gateway (and its sessions) is left alone"
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="gateway process detection uses /proc")
 def test_a_running_gateway_without_a_fingerprint_is_replaced(ab, gateway, tmp_path):
     """A gateway started before the fingerprint existed (or by hand) may run
     other settings: it is replaced once."""
@@ -777,6 +1004,7 @@ def test_a_running_gateway_without_a_fingerprint_is_replaced(ab, gateway, tmp_pa
     assert len(gateway.started()) == 2
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="gateway process detection uses /proc")
 def test_a_refill_replaces_the_running_gateway(ab, gateway, tmp_path):
     assert gateway.run(gateway_script(ab, tmp_path)) == 0
     assert gateway.run(gateway_script(ab, tmp_path, refilled=True)) == 0
@@ -784,6 +1012,7 @@ def test_a_refill_replaces_the_running_gateway(ab, gateway, tmp_path):
     assert len(gateway.running()) == 1
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="gateway process detection uses /proc")
 def test_changed_settings_replace_the_running_gateway(ab, gateway, tmp_path):
     """A new UI origin or auth setting only applies after a restart."""
     assert gateway.run(gateway_script(ab, tmp_path)) == 0

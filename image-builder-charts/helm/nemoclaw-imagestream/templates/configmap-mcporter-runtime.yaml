@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nemoclaw-mcporter-runtime
+  labels:
+    {{- include "nemoclaw-imagestream.labels" . | nindent 4 }}
+data:
+  package.json: |
+{{ .Files.Get "files/mcporter-runtime/package.json" | indent 4 }}
+  package-lock.json: |
+{{ .Files.Get "files/mcporter-runtime/package-lock.json" | indent 4 }}

@@ -119,7 +119,7 @@ fi
 # 4. Wait for CDI golden image import (skip if CDI not available)
 if [[ "${CDI_AVAILABLE}" == "false" ]]; then
   echo "Container image built. Golden image import deferred until OpenShift Virtualization is installed."
-  echo "  Re-run 'make copy-images' or 'make build-openshell-gateway' after CNV is ready."
+  echo "  Re-run 'make images-mirror' or 'make gateway-build' after CNV is ready."
   exit 0
 fi
 

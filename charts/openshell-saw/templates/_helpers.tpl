@@ -47,6 +47,67 @@ Priority: explicit oidc.issuerUrl > computed from global.clusterDomain.
 {{- end }}
 
 {{/*
+Hostname of the Keycloak route, taken from the issuer URL, without a port.
+The egress firewall allows this host so the VM can fetch OIDC keys. Empty
+when the issuer URL is not known yet.
+*/}}
+{{- define "openshell-sandbox.keycloakRouteHost" -}}
+{{- $issuer := include "openshell-sandbox.oidcIssuerUrl" . | trim -}}
+{{- if $issuer -}}
+{{- $authority := regexReplaceAll "/.*$" (regexReplaceAll "^https?://" $issuer "") "" -}}
+{{- regexReplaceAll ":[0-9]+$" $authority "" -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+TCP port of the Keycloak issuer URL. 443 when the URL has no port.
+*/}}
+{{- define "openshell-sandbox.keycloakRoutePort" -}}
+{{- $issuer := include "openshell-sandbox.oidcIssuerUrl" . | trim -}}
+{{- if $issuer -}}
+{{- $authority := regexReplaceAll "/.*$" (regexReplaceAll "^https?://" $issuer "") "" -}}
+{{- if regexMatch ":[0-9]+$" $authority -}}
+{{- regexReplaceAll "^.*:" $authority "" -}}
+{{- else -}}443{{- end -}}
+{{- else -}}443{{- end -}}
+{{- end }}
+
+{{/*
+"host port" for a disk URL the CDI importer in this namespace must reach:
+an http(s) URL (http defaults to port 80, https to 443, unless the URL names
+a port), or a docker:// image on a registry outside the cluster (its
+registry host, port 443 unless named). Empty for an in-cluster host (*.svc,
+the internal registry), a docker:// image without a registry host (a Docker
+Hub short name), or anything else. A registry that serves blobs from another
+host (a CDN) needs that host under egress.extraAllow too.
+*/}}
+{{- define "openshell-sandbox.httpHostPort" -}}
+{{- $url := . | trim -}}
+{{- if hasPrefix "docker://" $url -}}
+{{- $authority := regexReplaceAll "/.*$" (trimPrefix "docker://" $url) "" -}}
+{{- $host := regexReplaceAll ":[0-9]+$" $authority "" -}}
+{{- $port := "443" -}}
+{{- if regexMatch ":[0-9]+$" $authority -}}
+{{- $port = regexReplaceAll "^.*:" $authority "" -}}
+{{- end -}}
+{{- if and (contains "." $host) (contains "/" (trimPrefix "docker://" $url)) (not (hasSuffix ".svc" $host)) (not (contains ".svc." $host)) -}}
+{{- printf "%s %s" $host $port -}}
+{{- end -}}
+{{- else if regexMatch "^https?://" $url -}}
+{{- $authority := regexReplaceAll "/.*$" (regexReplaceAll "^https?://" $url "") "" -}}
+{{- $host := regexReplaceAll ":[0-9]+$" $authority "" -}}
+{{- $port := "443" -}}
+{{- if hasPrefix "http://" $url -}}{{- $port = "80" -}}{{- end -}}
+{{- if regexMatch ":[0-9]+$" $authority -}}
+{{- $port = regexReplaceAll "^.*:" $authority "" -}}
+{{- end -}}
+{{- if and $host (not (hasSuffix ".svc" $host)) (not (contains ".svc." $host)) -}}
+{{- printf "%s %s" $host $port -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Validate a Kubernetes secret name (RFC 1123 subdomain).
 */}}
 {{- define "openshell-sandbox.validateSecretName" -}}
@@ -162,6 +223,16 @@ Call with (list $ "webui" .Values.route.webuiHost).
 {{/*
 Governance interceptor gRPC endpoint reachable from the VM.
 */}}
+{{/* interceptor or apf; global.governance.engine (the pattern's switch) wins. */}}
+{{- define "openshell-sandbox.governanceEngine" -}}
+{{- $global := .Values.global | default dict -}}
+{{- $engine := (($global.governance | default dict).engine | default .Values.governance.engine) | toString -}}
+{{- if not (hasKey .Values.governance.bindings $engine) -}}
+{{- fail (printf "governance.engine must be one of the keys of governance.bindings, not %q" $engine) -}}
+{{- end -}}
+{{- $engine -}}
+{{- end -}}
+
 {{- define "openshell-sandbox.governanceEndpoint" -}}
 {{- .Values.governance.endpoint | default (printf "http://governance-interceptor.%s.svc.cluster.local:%v" (.Values.governance.namespace | default .Release.Namespace) (.Values.governance.port | default 18081)) -}}
 {{- end }}
@@ -182,7 +253,23 @@ Provider credential Secrets attached to the VM, de-duplicated, as JSON list.
 {{- range .Values.additionalProviderSecrets -}}
   {{- if and . (not (has . $names)) -}}{{- $names = append $names . -}}{{- end -}}
 {{- end -}}
+{{- with include "openshell-sandbox.caBundleSecret" . -}}
+  {{- if not (has . $names) -}}{{- $names = append $names . -}}{{- end -}}
+{{- end -}}
 {{- toJson $names -}}
+{{- end }}
+
+{{/*
+The Secret holding the cluster's ingress CA (key ca-bundle.crt) the VM trusts
+for the issuer, or "". Only for the in-cluster Keycloak (oidc.issuerUrl
+empty) and only when no explicit oidc.caBundle is set: an external issuer has
+nothing to do with the cluster's ingress CA. Attached like the provider
+Secrets (secret disk, mounted under /run/saw/secrets/<name>).
+*/}}
+{{- define "openshell-sandbox.caBundleSecret" -}}
+{{- if and .Values.oidc.clusterCaSecret (not .Values.oidc.issuerUrl) (not .Values.oidc.caBundle) -}}
+{{- .Values.oidc.clusterCaSecret -}}
+{{- end -}}
 {{- end }}
 
 {{/*
@@ -249,6 +336,9 @@ allow_unauthenticated_users = false
 supervisor_image = {{ .Values.bom.spec.openshell.supervisor.image | quote }}
 sandbox_runtime_image = {{ .Values.bom.spec.openshell.sandbox.image | quote }}
 {{- if .Values.allowDriverConfig }}
+{{- if and .Values.governance.enabled (eq (include "openshell-sandbox.governanceEngine" .) "apf") }}
+{{- fail "allowDriverConfig (harness bundles) needs governance.engine interceptor: the interceptor's guard admits only the installer's read-only harness mount, and APF has no such guard. Turn harness bundles off for this workspace, or use the interceptor engine." }}
+{{- end }}
 # Sandboxes mount their harness volume through caller driver config.
 # Resource admission and enable_bind_mounts keep their defaults (on / off),
 # so only a volume labelled attachable for the caller's workspace can be
@@ -257,30 +347,22 @@ allow_driver_config = true
 {{- end }}
 {{- if .Values.governance.enabled }}
 
+{{- $engine := include "openshell-sandbox.governanceEngine" . }}
+
 [[openshell.gateway.interceptors]]
 name           = "governance"
 grpc_endpoint  = {{ include "openshell-sandbox.governanceEndpoint" . | quote }}
 allow_insecure_transport = {{ .Values.governance.allowInsecureTransport }}
 order          = 10
 failure_policy = {{ .Values.governance.failurePolicy | quote }}
-binding_policy = "allowlist"
+binding_policy = {{ index (.Values.governance.bindingPolicy | default dict) $engine | default "allowlist" | quote }}
 timeout        = {{ .Values.governance.timeout | quote }}
+{{- range (index .Values.governance.bindings $engine) }}
 
 [[openshell.gateway.interceptors.bindings]]
-rpc = "openshell.v1.OpenShell/CreateSandbox"
-phases = ["modify_operation", "validate"]
-
-[[openshell.gateway.interceptors.bindings]]
-rpc = "openshell.v1.OpenShell/CreateProvider"
-phases = ["validate"]
-
-[[openshell.gateway.interceptors.bindings]]
-rpc = "openshell.v1.OpenShell/UpdateConfig"
-phases = ["validate"]
-
-[[openshell.gateway.interceptors.bindings]]
-rpc = "openshell.v1.OpenShell/SubmitPolicyAnalysis"
-phases = ["validate"]
+rpc = {{ printf "openshell.v1.OpenShell/%s" .rpc | quote }}
+phases = [{{ range $i, $p := .phases }}{{ if $i }}, {{ end }}{{ $p | quote }}{{ end }}]
+{{- end }}
 {{- end }}
 {{- end }}
 
@@ -323,4 +405,212 @@ in its first label with 19-character names), or entry.host when set.
       "portName" (printf "ui-%d" $port)) -}}
 {{- end -}}
 {{- toJson $out -}}
+{{- end }}
+
+{{/* NetworkPolicy's outside rule is IPv4. Validate each excluded IPv4 CIDR at
+render time so a typo cannot open part of the pod or service network. */}}
+{{- define "openshell-sandbox.validateNetworkPolicyCIDR" -}}
+{{- $value := . -}}
+{{- if not (kindIs "string" $value) -}}
+  {{- fail (printf "networkPolicy CIDR %v must be an IPv4 CIDR string" $value) -}}
+{{- end -}}
+{{- $parts := splitList "/" $value -}}
+{{- if ne (len $parts) 2 -}}
+  {{- fail (printf "networkPolicy CIDR %q must be an IPv4 CIDR" $value) -}}
+{{- end -}}
+{{- $address := index $parts 0 -}}
+{{- $prefix := index $parts 1 -}}
+{{- if not (regexMatch "^(0|[1-9][0-9]{0,2})(\\.(0|[1-9][0-9]{0,2})){3}$" $address) -}}
+  {{- fail (printf "networkPolicy CIDR %q must be an IPv4 CIDR" $value) -}}
+{{- end -}}
+{{- range splitList "." $address -}}
+  {{- if gt (int .) 255 -}}
+    {{- fail (printf "networkPolicy CIDR %q has an octet above 255" $value) -}}
+  {{- end -}}
+{{- end -}}
+{{- if or (not (regexMatch "^(0|[1-9][0-9]?)$" $prefix)) (gt (int $prefix) 32) -}}
+  {{- fail (printf "networkPolicy CIDR %q has an invalid prefix" $value) -}}
+{{- end -}}
+{{- end }}
+
+{{/* The API Service and its exact IPv4 backends. No hostname or subnet is
+accepted: these addresses are also excluded from the VM's TCP 443 outside
+rule. The list can be empty only while NetworkPolicy is disabled. */}}
+{{- define "openshell-sandbox.cleanupApiTargets" -}}
+{{- $api := .Values.cleanupApi | default dict -}}
+{{- $serviceIP := $api.serviceIP | default "" -}}
+{{- if $serviceIP -}}
+  {{- include "openshell-sandbox.validateNetworkPolicyCIDR" (printf "%s/32" $serviceIP) -}}
+{{- end -}}
+{{- $endpoints := $api.endpoints | default list -}}
+{{- if not (kindIs "slice" $endpoints) -}}
+  {{- fail "cleanupApi.endpoints must be a list of {ip, port} objects" -}}
+{{- end -}}
+{{- $targets := list -}}
+{{- $seen := dict -}}
+{{- range $entry := $endpoints -}}
+  {{- if not (kindIs "map" $entry) -}}
+    {{- fail "cleanupApi.endpoints must contain {ip, port} objects" -}}
+  {{- end -}}
+  {{- $ip := get $entry "ip" | toString -}}
+  {{- include "openshell-sandbox.validateNetworkPolicyCIDR" (printf "%s/32" $ip) -}}
+  {{- $rawPort := get $entry "port" | toString -}}
+  {{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" $rawPort)) (gt (int $rawPort) 65535) -}}
+    {{- fail (printf "cleanupApi endpoint %q has invalid TCP port %q" $ip $rawPort) -}}
+  {{- end -}}
+  {{- $key := printf "%s:%s" $ip $rawPort -}}
+  {{- if not (hasKey $seen $key) -}}
+    {{- $_ := set $seen $key true -}}
+    {{- $targets = append $targets (dict "ip" $ip "cidr" (printf "%s/32" $ip) "port" (int $rawPort)) -}}
+  {{- end -}}
+{{- end -}}
+{{- toJson $targets -}}
+{{- end }}
+
+{{/* Return all outside-rule exclusions as JSON, including link-local. */}}
+{{- define "openshell-sandbox.networkPolicyExcept" -}}
+{{- $np := .Values.networkPolicy -}}
+{{- if or (not (kindIs "slice" $np.clusterNetworkCIDRs)) (eq (len $np.clusterNetworkCIDRs) 0) -}}
+  {{- fail "networkPolicy.clusterNetworkCIDRs must be a non-empty list of IPv4 CIDRs" -}}
+{{- end -}}
+{{- if or (not (kindIs "slice" $np.serviceNetworkCIDRs)) (eq (len $np.serviceNetworkCIDRs) 0) -}}
+  {{- fail "networkPolicy.serviceNetworkCIDRs must be a non-empty list of IPv4 CIDRs" -}}
+{{- end -}}
+{{- if not (kindIs "slice" $np.extraBlockedCIDRs) -}}
+  {{- fail "networkPolicy.extraBlockedCIDRs must be a list of IPv4 CIDRs" -}}
+{{- end -}}
+{{- $api := .Values.cleanupApi | default dict -}}
+{{- $targets := include "openshell-sandbox.cleanupApiTargets" . | fromJsonArray -}}
+{{- if not ($api.serviceIP | default "") -}}
+  {{- fail "cleanupApi.serviceIP is required when networkPolicy.enabled=true" -}}
+{{- end -}}
+{{- if eq (len $targets) 0 -}}
+  {{- fail "cleanupApi.endpoints is required when networkPolicy.enabled=true" -}}
+{{- end -}}
+{{- $cidrs := list "169.254.0.0/16" -}}
+{{- $apiCIDRs := list -}}
+{{- range $targets -}}{{- $apiCIDRs = append $apiCIDRs .cidr -}}{{- end -}}
+{{- range concat $np.clusterNetworkCIDRs $np.serviceNetworkCIDRs $np.extraBlockedCIDRs $apiCIDRs -}}
+  {{- include "openshell-sandbox.validateNetworkPolicyCIDR" . -}}
+  {{- if not (has . $cidrs) -}}{{- $cidrs = append $cidrs . -}}{{- end -}}
+{{- end -}}
+{{- toJson $cidrs -}}
+{{- end }}
+
+{{/* External host/port actually contacted by CDI for the selected disk
+source. A node pull and a DataSource clone have no importer outside flow. */}}
+{{- define "openshell-sandbox.diskImportTargets" -}}
+{{- $source := include "openshell-sandbox.diskSource" . -}}
+{{- $url := "" -}}
+{{- if eq $source "http" -}}
+  {{- $url = .Values.source.httpURL | default "" -}}
+{{- else if eq $source "registry" -}}
+  {{- $candidate := include "openshell-sandbox.diskImageURL" . -}}
+  {{- if or (not (hasPrefix "docker://" $candidate)) (eq (.Values.source.pullMethod | default "node") "pod") -}}
+    {{- $url = $candidate -}}
+  {{- end -}}
+{{- end -}}
+{{- $targets := list -}}
+{{- $pair := include "openshell-sandbox.httpHostPort" $url | trim -}}
+{{- if $pair -}}
+  {{- $parts := splitList " " $pair -}}
+  {{- $targets = append $targets (dict "host" (index $parts 0) "port" (int (index $parts 1))) -}}
+{{- end -}}
+{{- toJson $targets -}}
+{{- end }}
+
+{{/* Ports the EgressFirewall may allow outside the cluster, plus operator
+extensions. Keep the firewall's unconditional 443/80 node rule in parity. */}}
+{{- define "openshell-sandbox.networkPolicyExternalPorts" -}}
+{{- $np := .Values.networkPolicy -}}
+{{- if not (kindIs "slice" $np.externalPorts) -}}
+  {{- fail "networkPolicy.externalPorts must be a list of TCP ports" -}}
+{{- end -}}
+{{- $ports := list 443 80 -}}
+{{- range $np.externalPorts -}}
+  {{- $raw := toString . -}}
+  {{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" $raw)) (gt (int $raw) 65535) -}}
+    {{- fail (printf "networkPolicy.externalPorts contains invalid TCP port %q" $raw) -}}
+  {{- end -}}
+  {{- if not (has (int $raw) $ports) -}}{{- $ports = append $ports (int $raw) -}}{{- end -}}
+{{- end -}}
+{{- if (include "openshell-sandbox.keycloakRouteHost" . | trim) -}}
+  {{- $port := int (include "openshell-sandbox.keycloakRoutePort" . | trim) -}}
+  {{- if not (has $port $ports) -}}{{- $ports = append $ports $port -}}{{- end -}}
+{{- end -}}
+{{- range include "openshell-sandbox.diskImportTargets" . | fromJsonArray -}}
+  {{- if not (has .port $ports) -}}{{- $ports = append $ports .port -}}{{- end -}}
+{{- end -}}
+{{- toJson $ports -}}
+{{- end }}
+
+{{/* DNS, registry, ingress-controller, and outside egress shared by the VM
+and CDI. The caller controls the outside ports: CDI only gets import ports. */}}
+{{- define "openshell-sandbox.commonEgressRules" -}}
+{{- $root := index . 0 -}}
+{{- $outsidePorts := index . 1 -}}
+{{- $np := $root.Values.networkPolicy -}}
+{{- $rules := list -}}
+{{- if $np.allow.dns -}}
+  {{- $peer := dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" "openshift-dns")) -}}
+  {{- $rules = append $rules (dict "to" (list $peer) "ports" (list (dict "protocol" "UDP" "port" 5353) (dict "protocol" "TCP" "port" 5353))) -}}
+{{- end -}}
+{{- if $np.allow.internalRegistry -}}
+  {{- $peer := dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" "openshift-image-registry")) "podSelector" (dict "matchLabels" (dict "docker-registry" "default")) -}}
+  {{- $rules = append $rules (dict "to" (list $peer) "ports" (list (dict "protocol" "TCP" "port" 5000))) -}}
+{{- end -}}
+{{- if $np.allow.ingressController -}}
+  {{- $peer := dict "namespaceSelector" (dict "matchLabels" (dict "policy-group.network.openshift.io/ingress" "")) "podSelector" (dict) -}}
+  {{- $rules = append $rules (dict "to" (list $peer) "ports" (list (dict "protocol" "TCP" "port" 443) (dict "protocol" "TCP" "port" 80))) -}}
+{{- end -}}
+{{- if gt (len $outsidePorts) 0 -}}
+  {{- $except := include "openshell-sandbox.networkPolicyExcept" $root | fromJsonArray -}}
+  {{- $peer := dict "ipBlock" (dict "cidr" "0.0.0.0/0" "except" $except) -}}
+  {{- $ports := list -}}
+  {{- range $outsidePorts -}}{{- $ports = append $ports (dict "protocol" "TCP" "port" .) -}}{{- end -}}
+  {{- $rules = append $rules (dict "to" (list $peer) "ports" $ports) -}}
+{{- end -}}
+{{- toYaml $rules -}}
+{{- end }}
+
+{{/* Reject extra rules that silently allow everything. A specific same-
+namespace podSelector is permitted; an empty namespaceSelector is not. */}}
+{{- define "openshell-sandbox.validateNetworkPolicyRule" -}}
+{{- $direction := index . 0 -}}
+{{- $rule := index . 1 -}}
+{{- if not (kindIs "map" $rule) -}}
+  {{- fail (printf "networkPolicy.extra%s entries must be rules" (title $direction)) -}}
+{{- end -}}
+{{- $key := "to" -}}
+{{- if eq $direction "ingress" -}}{{- $key = "from" -}}{{- end -}}
+{{- $peers := get $rule $key -}}
+{{- if not (kindIs "slice" $peers) -}}
+  {{- fail (printf "networkPolicy.extra%s rule must have a non-empty %s list" (title $direction) $key) -}}
+{{- end -}}
+{{- if eq (len $peers) 0 -}}
+  {{- fail (printf "networkPolicy.extra%s rule must have a non-empty %s list" (title $direction) $key) -}}
+{{- end -}}
+{{- range $peer := $peers -}}
+  {{- if not (kindIs "map" $peer) -}}
+    {{- fail (printf "networkPolicy.extra%s peers must be objects" (title $direction)) -}}
+  {{- end -}}
+  {{- if eq (len $peer) 0 -}}
+    {{- fail (printf "networkPolicy.extra%s has an empty allow-all peer" (title $direction)) -}}
+  {{- end -}}
+  {{- if hasKey $peer "namespaceSelector" -}}
+    {{- $selector := get $peer "namespaceSelector" -}}
+    {{- if or (not (kindIs "map" $selector)) (and (empty (get $selector "matchLabels")) (empty (get $selector "matchExpressions"))) -}}
+      {{- fail (printf "networkPolicy.extra%s has an empty namespaceSelector" (title $direction)) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- if hasKey $peer "ipBlock" -}}
+    {{- $block := get $peer "ipBlock" -}}
+    {{- if not (kindIs "map" $block) -}}
+      {{- fail (printf "networkPolicy.extra%s ipBlock must be an object" (title $direction)) -}}
+    {{- end -}}
+    {{- if and (has (get $block "cidr") (list "0.0.0.0/0" "::/0")) (empty (get $block "except")) -}}
+      {{- fail (printf "networkPolicy.extra%s has an allow-all ipBlock without except" (title $direction)) -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
 {{- end }}

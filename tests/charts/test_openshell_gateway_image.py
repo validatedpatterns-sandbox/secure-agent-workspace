@@ -105,3 +105,14 @@ def test_the_two_verify_bundle_copies_are_identical():
         "image-builder-charts/helm/openshell-gateway-image/files/verify-bundle "
         "have drifted; the golden image bakes in the second one, so a fix to "
         "only the first never actually ships")
+
+
+def test_ci_installs_verification_tools_in_both_runtime_images():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/build-openshell-gateway.yml").read_text())
+    customizers = [s for s in workflow["jobs"]["build"]["steps"]
+                   if s.get("name", "").startswith("Customize guest image")]
+    assert len(customizers) == 2
+    for step in customizers:
+        assert "bash scripts/install-gateway-verification.sh" in step["run"]
+        assert "SIGNING_FLOOR" in step["env"] and "COSIGN_SHA256" in step["env"]
+        assert step["run"].index("install-gateway-verification.sh") < step["run"].index("sudo guestunmount")

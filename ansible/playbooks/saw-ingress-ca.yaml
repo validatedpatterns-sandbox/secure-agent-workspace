@@ -1,0 +1,97 @@
+# Imperative job: copy the cluster's ingress CA (openshift-config-managed
+# default-ingress-cert, public data) to Vault at
+# <kv_mount>/<prefix_base>/cluster-ingress-ca, key ca-bundle.crt. Each user's
+# pattern-secrets app syncs it into their namespace (Secret saw-ingress-ca),
+# and their workspace VM trusts it for the in-cluster Keycloak when the
+# cluster's *.apps certificate is OpenShift's self-signed default. Writes only
+# when it changed, so a rotated CA reaches Vault within one run. Idempotent;
+# the imperative CronJob runs it every 10 minutes.
+- name: The cluster's ingress CA in Vault
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    vault_addr: https://vault.vault.svc:8200
+    # Vault's in-cluster certificate is issued by OpenShift's service CA.
+    # OpenShift adds service-ca.crt (ConfigMap openshift-service-ca.crt) to
+    # every pod's default service-account volume, next to ca.crt. Verified:
+    # this play sends Vault's root token.
+    vault_ca: /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt
+    keys_ns: imperative
+    kv_mount: secret
+    prefix_base: hub
+    key_name: cluster-ingress-ca
+  tasks:
+    - name: Read the cluster's ingress CA
+      kubernetes.core.k8s_info:
+        kind: ConfigMap
+        namespace: openshift-config-managed
+        name: default-ingress-cert
+      register: ingress_ca
+
+    - name: Skip when the cluster publishes no ingress CA (or a bundle with a key in it)
+      ansible.builtin.meta: end_play
+      when: >-
+        ingress_ca.resources | length == 0 or
+        'BEGIN CERTIFICATE' not in (ingress_ca.resources[0].data['ca-bundle.crt'] | default('')) or
+        'PRIVATE KEY-----' in (ingress_ca.resources[0].data['ca-bundle.crt'] | default(''))
+
+    - name: The service CA to verify Vault with
+      ansible.builtin.stat:
+        path: "{{ vault_ca }}"
+      register: vault_ca_file
+
+    - name: Refuse to send the root token to an unverified Vault
+      ansible.builtin.fail:
+        msg: >-
+          {{ vault_ca }} is missing, so Vault's certificate cannot be verified;
+          not sending the root token. Mount ConfigMap openshift-service-ca.crt
+          (key service-ca.crt) at that path.
+      when: not vault_ca_file.stat.exists
+
+    - name: Read the Vault root token
+      kubernetes.core.k8s_info:
+        kind: Secret
+        namespace: "{{ keys_ns }}"
+        name: vaultkeys
+      register: vaultkeys
+      no_log: true
+
+    - name: Skip until Vault is initialised
+      ansible.builtin.meta: end_play
+      when: vaultkeys.resources | length == 0
+
+    - name: Set the root token and the CA
+      ansible.builtin.set_fact:
+        vault_token: "{{ (vaultkeys.resources[0].data.vault_data_json | b64decode | from_json).root_token }}"
+        ca_pem: "{{ ingress_ca.resources[0].data['ca-bundle.crt'] }}"
+      no_log: true
+
+    - name: Read the CA Vault has now
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/{{ kv_mount }}/data/{{ prefix_base }}/{{ key_name }}"
+        headers:
+          X-Vault-Token: "{{ vault_token }}"
+        status_code: [200, 404]
+        validate_certs: true
+        ca_path: "{{ vault_ca }}"
+      register: current
+      no_log: true
+
+    - name: Write the CA to Vault
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/{{ kv_mount }}/data/{{ prefix_base }}/{{ key_name }}"
+        method: POST
+        headers:
+          X-Vault-Token: "{{ vault_token }}"
+        body_format: json
+        body:
+          data:
+            ca-bundle.crt: "{{ ca_pem }}"
+        status_code: [200, 204]
+        validate_certs: true
+        ca_path: "{{ vault_ca }}"
+      when: >-
+        current.status == 404 or
+        (current.json.data.data['ca-bundle.crt'] | default('')) != ca_pem
+      no_log: true

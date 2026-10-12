@@ -7,6 +7,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CHARTS_DIR="${REPO_ROOT}/charts"
+helm() {
+  local arg
+  for arg in "$@"; do
+    if [[ "${arg}" == "${CHARTS_DIR}/openshell-saw" ]]; then
+      command helm "$@" -f "${REPO_ROOT}/tests/fixtures/saw-network-topology.yaml"
+      return
+    fi
+  done
+  command helm "$@"
+}
 PASS=0
 FAIL=0
 ERRORS=""

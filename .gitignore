@@ -18,3 +18,5 @@ __pycache__/
 *.py[cod]
 .venv
 *.pyc
+# Local nested checkout
+/secure-agent-workspace/

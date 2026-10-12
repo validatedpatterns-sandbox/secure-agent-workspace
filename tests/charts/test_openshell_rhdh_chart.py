@@ -127,6 +127,24 @@ def test_the_generator_gets_valid_saw_users_defaults(docs):
     assert values["global"]["vpArgoNamespace"] == "vp-gitops"
 
 
+def generator_defaults(docs):
+    deploy = one(docs, "Deployment", "saw-workspaces-generator")
+    env = {e["name"]: e.get("value") for e in deploy["spec"]["template"]["spec"]["containers"][0]["env"]}
+    return json.loads(env["SAW_USERS_VALUES"])
+
+
+def test_portal_workspaces_get_the_governance_engine():
+    """A portal workspace's gateway must use the pattern's engine: without
+    global.governance, saw-users renders interceptor bindings against APF."""
+    values = generator_defaults(render("--set", "global.governance.engine=apf"))
+    assert values["global"]["governance"] == {"engine": "apf"}
+    assert "governance" in yaml.safe_load((ROOT / "charts" / "saw-users" / "values.yaml").read_text())["machineGlobals"]
+
+
+def test_portal_workspaces_without_governance_keep_the_default(docs):
+    assert "governance" not in generator_defaults(docs)["global"]
+
+
 def test_the_pipeline_task_runs_portal_py(docs):
     task = one(docs, "Task", "saw-workspace")
     step = task["spec"]["steps"][0]

@@ -40,16 +40,19 @@ import secrets
 import shlex
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import tarfile
 import tempfile
 import time
 import traceback
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.error import URLError
 from urllib.parse import urlsplit
+from urllib.request import urlopen
 
 import yaml
 
@@ -434,7 +437,20 @@ def load_config(path):
                 raise InstallerError(f"installer config: dashboard.{key} is required when the dashboard is enabled")
     merged["sandboxUi"], merged["sandboxUiProxy"] = check_sandbox_ui(
         merged.get("sandboxUi"), merged.get("sandboxUiProxy"))
+    harness_signature_cache_ttl(merged)
     return merged
+
+
+def harness_signature_cache_ttl(cfg):
+    """Bound the grace period for an already verified digest to five minutes."""
+    harness = cfg.get("harness") or {}
+    sig = (harness.get("cosign") or {}) if isinstance(harness, dict) else None
+    if not isinstance(sig, dict):
+        raise InstallerError("installer config: harness.cosign must be an object")
+    ttl = sig.get("cacheTtlSeconds", 300)
+    if type(ttl) is not int or not 0 <= ttl <= 300:
+        raise InstallerError("installer config: harness.cosign.cacheTtlSeconds must be an integer from 0 to 300")
+    return ttl
 
 
 HOST_RE = re.compile(r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$")
@@ -803,6 +819,7 @@ def describe_harness_tree(files, inline=False):
       agentPluginsBundle   plugin.json at the root (OpenClaw loads skills/ and
                            mcp.json from the bundle root)
        mcp                  the bundle has mcp.json
+       mcpServers           server names declared in mcp.json
        pluginDirs           native plugins under plugins/
        governance           [{kind, name, governanceProfile, hosts}] to check
                             against the gateway's catalog and the sandbox's
@@ -819,6 +836,7 @@ def describe_harness_tree(files, inline=False):
     doc = _yaml(files["harness.yaml"][0].decode("utf-8"), "harness.yaml")
     spec = doc.get("spec") or {}
     name = (doc.get("metadata") or {}).get("name", "")
+    mcp_server_names = []
     if "mcp.json" in files and "plugin.json" not in files:
         raise InstallerError(
             f"harness '{name}': mcp.json with no plugin.json at the bundle root; OpenClaw only "
@@ -854,6 +872,7 @@ def describe_harness_tree(files, inline=False):
             servers = json.loads(files["mcp.json"][0]).get("mcpServers") or {}
         except ValueError as exc:
             raise InstallerError(f"harness '{name}': mcp.json is not valid JSON ({exc})") from None
+        mcp_server_names = sorted(servers)
         for server, conf in sorted(servers.items()):
             if not isinstance(conf, dict) or conf.get("type") not in ("stdio", "streamable-http", "sse"):
                 raise InstallerError(
@@ -913,6 +932,7 @@ def describe_harness_tree(files, inline=False):
         "skills": any(rel.startswith("skills/") for rel in files),
         "agentPluginsBundle": "plugin.json" in files,
         "mcp": "mcp.json" in files,
+        "mcpServers": mcp_server_names,
         "pluginDirs": plugin_dirs,
         "governance": governance,
     }
@@ -968,6 +988,33 @@ def openclaw_harness_config(info):
     if paths:
         config["plugins.load.paths"] = paths
     return config
+
+
+def mcp_registration_failures(output, declared):
+    """Inspect reports configuration registration, never MCP process readiness.
+
+    Kept pure so the E2E script can apply the same checks to inspection JSON.
+    Names in descriptions or diagnostics are not evidence of registration.
+    """
+    try:
+        report = json.loads(output)
+        plugin = report["plugin"]
+        servers = report["mcpServers"]
+        diagnostics = report.get("diagnostics") or []
+        if not isinstance(plugin, dict) or not isinstance(servers, list) or not isinstance(diagnostics, list):
+            raise ValueError("invalid inspection shape")
+        if plugin.get("status") != "loaded" or plugin.get("enabled") is False or plugin.get("error"):
+            return ["OpenClaw bundle runtime inspection reports an error or disabled bundle"]
+        if any(isinstance(d, dict) and d.get("level") == "error" for d in diagnostics):
+            return ["OpenClaw bundle runtime inspection reports error diagnostics"]
+        registered = {entry["name"] for entry in servers
+                      if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+                      and not entry.get("unsupported")}
+    except (ValueError, TypeError, KeyError):
+        return ["could not parse OpenClaw MCP registration inspection JSON"]
+    missing = sorted(set(declared) - registered)
+    return ([f"OpenClaw does not list MCP server(s) {', '.join(missing)} as registered"]
+            if missing else [])
 
 
 def parse_harness_files(files):
@@ -1718,6 +1765,235 @@ def allow_guest_agent_ssh_keys(shell):
     result = shell.run(["setsebool", "-P", "virt_qemu_ga_manage_ssh", "on"], check=False)
     if not result.ok:
         log("WARN: could not enable virt_qemu_ga_manage_ssh; SSH keys may not reach the VM")
+
+
+# Where releases before the trust was scoped put the issuer CA: the VM's
+# system trust store, trusted by every TLS client on the VM (podman pulls
+# included). Removed when found.
+LEGACY_CA_ANCHOR = Path(os.environ.get("SAW_CA_ANCHOR",
+                                       "/etc/pki/ca-trust/source/anchors/saw-ca-bundle.crt"))
+# The public CAs Fedora ships; the gateway's private trust file starts from it.
+SYSTEM_CA_BUNDLE = Path(os.environ.get("SAW_SYSTEM_CA_BUNDLE",
+                                       "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"))
+# The issuer CA is trusted only by the gateway and the oauth2-proxies, never
+# by the system store: the cluster's ingress CA has no name constraints, and
+# a certificate it signed for quay.io must not verify for podman.
+#   issuer-ca.pem     the CA certificates alone: the oauth2-proxies'
+#                     OAUTH2_PROXY_PROVIDER_CA_FILES (issuer calls only)
+#   issuer-trust.pem  the public CAs plus those: the gateway's SSL_CERT_FILE
+# Both in the runtime user's config dir (owned by it, like the dashboard's
+# gateway CA), so rootless podman can mount issuer-ca.pem with :z.
+ISSUER_CA_NAME = "issuer-ca.pem"
+ISSUER_TRUST_NAME = "issuer-trust.pem"
+TRUST_DROPIN = Path(".config/systemd/user/openshell-gateway.service.d/issuer-ca.conf")
+PEM_CERT_RE = re.compile(r"-----BEGIN CERTIFICATE-----\s.*?-----END CERTIFICATE-----", re.S)
+
+
+def cert_is_ca(pem):
+    """True when the certificate says it is a CA (basicConstraints CA:TRUE)."""
+    try:
+        out = subprocess.run(["openssl", "x509", "-noout", "-ext", "basicConstraints"],
+                             input=pem, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise InstallerError(f"caBundle: cannot inspect a certificate: {exc}") from None
+    if out.returncode != 0:
+        raise InstallerError("caBundle: a certificate in it cannot be parsed")
+    return re.search(r"\bCA:TRUE\b", out.stdout) is not None
+
+
+def issuer_ca_certs(pem, is_ca=cert_is_ca):
+    """The CA certificates of a caBundle, as PEM, or "" for none. Refuses a
+    bundle with a private key in it (someone pasted the TLS Secret instead of
+    its ca-bundle.crt: config.json and the VM would expose the key) and one
+    without a CA. Leaf certificates are dropped: only a CA can sign the
+    issuer's certificate, so a leaf adds nothing but a pinned name."""
+    pem = (pem or "").strip()
+    if not pem:
+        return ""
+    if "PRIVATE KEY-----" in pem:
+        raise InstallerError(
+            "caBundle contains a private key; give only the CA certificate(s), "
+            "e.g. the ca-bundle.crt of default-ingress-cert, never a TLS Secret")
+    certs = PEM_CERT_RE.findall(pem)
+    if not certs:
+        raise InstallerError("caBundle is not a PEM certificate bundle")
+    cas = [c for c in certs if is_ca(c)]
+    if not cas:
+        raise InstallerError("caBundle has no CA certificate (basicConstraints CA:TRUE)")
+    if len(cas) < len(certs):
+        log(f"caBundle: ignoring {len(certs) - len(cas)} certificate(s) that are not a CA")
+    return "\n".join(cas) + "\n"
+
+
+def issuer_trust_paths(home):
+    config = Path(home) / ".config" / "openshell"
+    return config / ISSUER_CA_NAME, config / ISSUER_TRUST_NAME
+
+
+def trust_dropin(trust_file):
+    return f"[Service]\nEnvironment=SSL_CERT_FILE={trust_file}\n"
+
+
+def trust_issuer_ca(shell, pem, home, owner=None, dry_run=False, is_ca=cert_is_ca):
+    """Let the gateway and the oauth2-proxies (and nothing else on the VM)
+    trust the issuer's CA (configured_ca_bundle): for example the cluster's
+    ingress CA when its *.apps certificate is not from a public CA. The
+    gateway fetches the issuer at startup with rustls' native roots and
+    exits when it cannot verify it; SSL_CERT_FILE in a drop-in points those
+    at the public CAs plus the issuer CA. Written on every run (cloud-init
+    runs once per VM), so an emptied setting removes it. Also removes what
+    older releases put in the system trust store. True when anything
+    changed (the gateway must restart)."""
+    cas = issuer_ca_certs(pem, is_ca)
+    home = Path(home)
+    ca_file, trust_file = issuer_trust_paths(home)
+    dropin = home / TRUST_DROPIN
+    changed = False
+    if LEGACY_CA_ANCHOR.exists():
+        if dry_run:
+            log(f"would remove {LEGACY_CA_ANCHOR} from the system trust store")
+        else:
+            LEGACY_CA_ANCHOR.unlink()
+            shell.run(["update-ca-trust", "extract"])
+            log(f"Removed {LEGACY_CA_ANCHOR}: the issuer CA is no longer trusted system-wide")
+        changed = True
+    if not cas:
+        for path in (ca_file, trust_file, dropin):
+            if path.exists():
+                if not dry_run:
+                    path.unlink()
+                changed = True
+        if changed and not dry_run:
+            log("No issuer CA configured; the gateway and the proxies use the public CAs")
+        return changed
+    try:
+        public = SYSTEM_CA_BUNDLE.read_text(encoding="utf-8")
+    except OSError:
+        public = ""
+    if public and not public.endswith("\n"):
+        public += "\n"
+    wanted = {ca_file: cas, trust_file: public + cas, dropin: trust_dropin(trust_file)}
+    if dry_run:
+        stale = [str(p) for p, text in wanted.items()
+                 if not p.is_file() or p.read_text(encoding="utf-8") != text]
+        if stale:
+            log(f"[dry-run] issuer trust files to update: {stale}")
+        return changed or bool(stale)
+    wrote_ca = False
+    for path, text in wanted.items():
+        if write_if_changed(path, text, 0o644, owner):
+            changed = True
+            wrote_ca = wrote_ca or path == ca_file
+    if owner and os.geteuid() == 0:
+        for directory in (dropin.parent.parent, dropin.parent):
+            if directory.is_dir():
+                os.chown(directory, *owner)
+    if wrote_ca:
+        log(f"Trusting the issuer CA ({cas.count('BEGIN CERTIFICATE')} certificate(s)) "
+            f"for the gateway and the oauth2-proxies only: {ca_file}")
+    return changed
+
+
+CA_BUNDLE_HELP = (
+    "set oidc.caBundle to the issuer's CA (PEM) and restart the VM. For the "
+    "in-cluster Keycloak the validated pattern does this itself (saw-users "
+    "clusterCaSecret, the saw-ingress-ca imperative job); with the quickstart: "
+    "oc get cm default-ingress-cert -n openshift-config-managed "
+    "-o jsonpath='{.data.ca-bundle\\.crt}'. See docs/deployment-guide.md, "
+    "\"The issuer's certificate\"")
+
+
+def probe_issuer(issuer, cafile=None, timeout=10, opener=urlopen):
+    """Fetch the issuer's OIDC configuration, verifying its certificate with
+    cafile alone (None: the VM's public CAs). Returns ("ok", ""),
+    ("untrusted", reason) or ("unreachable", reason)."""
+    url = issuer.rstrip("/") + "/.well-known/openid-configuration"
+    try:
+        context = ssl.create_default_context(cafile=str(cafile)) if cafile else None
+    except (OSError, ssl.SSLError) as exc:
+        return "untrusted", f"cannot load the CA file: {exc}"
+    try:
+        with opener(url, timeout=timeout, context=context) as resp:
+            resp.read(1)
+        return "ok", ""
+    except ssl.SSLCertVerificationError as exc:
+        return "untrusted", exc.verify_message or str(exc)
+    except URLError as exc:
+        if isinstance(exc.reason, ssl.SSLCertVerificationError):
+            return "untrusted", exc.reason.verify_message or str(exc.reason)
+        return "unreachable", str(exc.reason)
+    except (OSError, ValueError) as exc:
+        return "unreachable", str(exc)
+
+
+def select_issuer_ca(issuer, cas, timeout=10, opener=urlopen, public_cafile=None):
+    """The issuer CA to install: cas when it signs the issuer's certificate,
+    "" when the issuer is publicly trusted anyway (an extra CA would only
+    widen the gateway's trust: the automatic cluster CA on a cluster whose
+    *.apps certificate is public), and an error when neither verifies it.
+    Verified with the extra CA alone, so a bundle that signs nothing is
+    never installed. Unreachable issuer: keep cas, the gateway reports it."""
+    if not issuer or not cas:
+        return cas
+    url = issuer.rstrip("/") + "/.well-known/openid-configuration"
+    with tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False) as tmp:
+        tmp.write(cas)
+    try:
+        verdict, reason = probe_issuer(issuer, tmp.name, timeout, opener)
+    finally:
+        os.unlink(tmp.name)
+    if verdict == "ok":
+        return cas
+    if verdict == "unreachable":
+        log(f"WARN: cannot reach the OIDC issuer {url} to check the issuer CA: {reason}")
+        return cas
+    public, _ = probe_issuer(issuer, public_cafile, timeout, opener)
+    if public == "ok":
+        log(f"The OIDC issuer {url} is publicly trusted; not installing the configured "
+            "issuer CA, which does not sign its certificate")
+        return ""
+    raise InstallerError(
+        f"the configured issuer CA does not sign the OIDC issuer's certificate "
+        f"({url}: {reason}); {CA_BUNDLE_HELP}")
+
+
+def check_issuer_trusted(issuer, timeout=10, opener=urlopen, cafile=None):
+    """Fetch the issuer's OIDC configuration with the gateway's trust (the
+    public CAs, plus the issuer CA when one is installed), as the gateway
+    does at startup, before starting it. The gateway only says
+    "OIDC discovery request failed" and exits, and install then times out
+    waiting for its port; an untrusted certificate is the usual cause and
+    oidc.caBundle the fix, so say that. Other failures (DNS, timeouts) are
+    only warned about: the gateway reports them itself."""
+    if not issuer:
+        return
+    url = issuer.rstrip("/") + "/.well-known/openid-configuration"
+    verdict, reason = probe_issuer(issuer, cafile, timeout, opener)
+    if verdict == "untrusted":
+        raise InstallerError(
+            f"cannot verify the OIDC issuer's certificate ({url}: {reason}); {CA_BUNDLE_HELP}")
+    if verdict == "unreachable":
+        log(f"WARN: cannot reach the OIDC issuer {url}: {reason}")
+
+
+def configured_ca_bundle(cfg, secrets_dir):
+    """The PEM the VM should trust for the issuer: config.json's caBundle, or
+    else the cluster's ingress CA from the caBundleSecret Secret (key
+    ca-bundle.crt, mounted under secrets_dir like the provider Secrets), or
+    "". The chart only sets caBundleSecret for the in-cluster Keycloak."""
+    pem = (cfg.get("caBundle") or "").strip()
+    name = cfg.get("caBundleSecret") or ""
+    if pem or not name:
+        return pem
+    if not NAME_RE.match(name):
+        raise InstallerError(f"installer config: invalid caBundleSecret {name!r}")
+    path = Path(secrets_dir) / name / "ca-bundle.crt"
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        raise InstallerError(
+            f"the cluster CA Secret {name} is not mounted ({path}); it is "
+            "filled from Vault by the saw-ingress-ca imperative job") from None
 
 
 def ensure_user_manager(shell, env, timeout=90, sleep=1.0):
@@ -2515,32 +2791,51 @@ class ProfileApplier:
         return self.sh.run(["podman", *args], **kw)
 
     def verify_harness_image(self, image):
-        """Fail closed unless `image` is signed by cfg harness.cosign.
-
-        Digest pin is not enough: anyone with registry write can push that
-        digest. CI already signs with cosign; this is the check at pull.
-        """
+        """Fail closed, with bounded reuse of successful digest verification."""
         sig = (self.cfg.get("harness") or {}).get("cosign") or {}
         identity, issuer = sig.get("identity") or "", sig.get("issuer") or ""
+        ttl = harness_signature_cache_ttl(self.cfg)
         if not identity or not issuer:
             raise InstallerError(
                 f"harness image {image} has no cosign identity/issuer configured; "
                 "refusing to use it")
+        policy = {"identity": identity, "issuer": issuer}
+        now = time.time()
+        cache = self.ledger.data.get("harnessSignatures", {}) if self.ledger is not None else {}
+        if not isinstance(cache, dict):
+            cache = {}
+        entry = cache.get(image)
+        if ttl and isinstance(entry, dict) and entry.get("policy") == policy:
+            verified_at = entry.get("verifiedAt")
+            if type(verified_at) in (int, float) and 0 <= now - verified_at < ttl:
+                log(f"Harness signature for {image}: using verified digest cache "
+                    f"(age {int(now - verified_at)}s, maximum {ttl}s)")
+                return
         result = self.sh.run(
             ["cosign", "verify", "--certificate-identity", identity,
              "--certificate-oidc-issuer", issuer, image],
             check=False, quiet=True, force=True, timeout=120)
         if not result.ok:
+            if self.ledger is not None and not self.sh.dry_run:
+                cache.pop(image, None)
+                self.ledger.data["harnessSignatures"] = cache
+                self.ledger.save()
             raise InstallerError(f"harness image {image} is not signed by {identity}")
+        if self.ledger is not None and not self.sh.dry_run and ttl:
+            cache[image] = {"policy": policy, "verifiedAt": now}
+            self.ledger.data["harnessSignatures"] = cache
+            self.ledger.save()
 
     def image_tree(self, image):
         """The bundle tree of a harness image (with file modes). Pulled by
         digest when it is not present yet.
 
+        The signature is checked by the caller (prepare_harness), on every
+        apply rather than only on the one that reaches here.
+
         Runs even under --dry-run (force): dry-run must refuse a bad image the
         same way a real apply would, before it claims success.
         """
-        self.verify_harness_image(image)
         if not self._podman("image", "exists", image, check=False, quiet=True, force=True).ok:
             self._podman("pull", "--quiet", image, timeout=900, force=True)
         created = self._podman("create", image, "/harness.yaml", force=True)
@@ -2558,7 +2853,7 @@ class ProfileApplier:
     def sandbox_harness_mount(self, ws, sb):
         """(type, source, writable) of what the sandbox's container mounts at
         HARNESS_MOUNT; None when it mounts nothing there; False when there
-        is no container to look at.
+        is no container to look at or its mounts cannot be inspected.
 
         Read from podman, which OpenShell's podman driver runs the sandbox
         container in:
@@ -2586,11 +2881,15 @@ class ProfileApplier:
         name = found
         got = self._podman("inspect", "--format", "{{json .Mounts}}", name[0],
                            check=False, quiet=True)
+        if not got.ok:
+            return False
         try:
-            mounts = json.loads(got.out) if got.ok else []
+            mounts = json.loads(got.out)
         except ValueError:
-            mounts = []
-        for mount in mounts or []:
+            return False
+        if not isinstance(mounts, list) or any(not isinstance(m, dict) for m in mounts):
+            return False
+        for mount in mounts:
             if mount.get("Destination") == HARNESS_MOUNT:
                 kind = (mount.get("Type") or "").lower()
                 source = mount.get("Name") if kind == "volume" else mount.get("Source")
@@ -2693,6 +2992,30 @@ class ProfileApplier:
         if source is None:
             return None
         if bundle is None:
+            # Check trust before using a cached tree or pulling an image.
+            # A successful signature may be reused for the bounded cache
+            # period; changed signing policy invalidates it immediately.
+            # Verified before it joins harness_images: an
+            # image that fails here must not be kept, or cleanup_harness_images
+            # (previous - self.harness_images) would never remove it.
+            try:
+                self.verify_harness_image(source)
+            except InstallerError:
+                # Refusing a new apply is insufficient when revoked code is
+                # still mounted in an existing sandbox. Recreate without it;
+                # keep the requested source refused so a later apply must
+                # pass verification before restoring the mount.
+                seen = None if self.sh.dry_run else self.sandbox_harness_mount(ws, sb)
+                # False means the container inspection was inconclusive;
+                # an existing sandbox cannot keep running untrusted code
+                # merely because podman inspection failed.
+                if seen is not None and (seen is not False or self.sandbox_state(ws, sb) != "missing"):
+                    log(f"Removing untrusted harness from sandbox '{sb.name}'")
+                    self.delete_sandbox_and_wait(ws, sb)
+                    self.harness_info.pop((ws.name, sb.name), None)
+                    self.harness_refilled.pop((ws.name, sb.name), None)
+                    self.apply_sandbox(ws, replace(sb, harness_ref={}))
+                raise
             self.harness_images.add(source)
         volume = harness_volume_name(ws.name, sb.name)
         self.harness_volumes.add(volume)
@@ -3042,6 +3365,25 @@ class ProfileApplier:
         if missing:
             return [f"OpenClaw does not list enabled plugin(s) {', '.join(missing)} "
                     f"from {source}"]
+        if info["mcpServers"]:
+            plugin_id = bundle.get("id") or bundle.get("name") or info["name"]
+            listed = self.cli(*exec_cmd, "sh", "-c",
+                              f"{OPENCLAW_EXEC_ENV} openclaw plugins inspect "
+                              f"{shlex.quote(plugin_id)} --runtime --json",
+                              check=False, quiet=True)
+            detail = (listed.err + "\n" + listed.out).lower()
+            unsupported = (not listed.ok and any(marker in detail for marker in (
+                "unknown command", "unknown option", "unexpected argument")))
+            if unsupported:
+                log(f"WARN: harness {info['name']!r}: sandbox {sb.name!r} "
+                    "does not support runtime plugin inspection; MCP registration is unverified "
+                    "and MCP process readiness is not checked")
+            elif not listed.ok:
+                return ["could not inspect OpenClaw MCP registration"]
+            else:
+                failures = mcp_registration_failures(listed.out, info["mcpServers"])
+                if failures:
+                    return [f"{failure} from {source}" for failure in failures]
         desired = openclaw_harness_config(info)
         for key in HARNESS_CONFIG_KEYS:
             got = self.cli(*exec_cmd, "sh", "-c",
@@ -3089,6 +3431,10 @@ class ProfileApplier:
             if self._podman("rmi", image, check=False, quiet=True).ok:
                 log(f"Removed harness image {image}; no sandbox uses it any more")
         self.ledger.data["harnessImages"] = sorted(self.harness_images)
+        cache = self.ledger.data.get("harnessSignatures", {})
+        if isinstance(cache, dict):
+            self.ledger.data["harnessSignatures"] = {
+                image: entry for image, entry in cache.items() if image in self.harness_images}
         self.ledger.save()
 
     def install_keepalive(self, ws, sb):
@@ -3963,8 +4309,10 @@ if __name__ == "__main__":
 
 
 
-def sandbox_ui_units(cfg, home, cookie, gateway):
+def sandbox_ui_units(cfg, home, cookie, gateway, issuer_ca=None):
     """{unit file name: content} plus {file: content} for every sandbox UI.
+    issuer_ca: the issuer CA file (issuer_trust_paths), when one is
+    configured; each proxy then verifies the issuer against it alone.
 
     Per entry of cfg["sandboxUi"] (rendered by the openshell-saw chart):
       saw-ui-forward-<ws>-<sb>  `openshell forward service`: VM
@@ -3988,6 +4336,9 @@ def sandbox_ui_units(cfg, home, cookie, gateway):
     users = "".join(f"{u}\n" for u in proxy.get("allowedUsers") or [])
     units, files = {}, {}
     limiter = config_dir / "saw-ui-limit.py"
+    # Only the proxy's calls to the issuer use the CA (provider CA files),
+    # not its system store. :z, not :Z: every proxy mounts the same file.
+    ca_mount = f"-v {issuer_ca}:/etc/saw/issuer-ca.pem:ro,z " if issuer_ca else ""
     if cfg.get("sandboxUi"):
         files[limiter] = SANDBOX_UI_LIMIT_PY
     for e in cfg.get("sandboxUi") or []:
@@ -4023,6 +4374,7 @@ def sandbox_ui_units(cfg, home, cookie, gateway):
             "OAUTH2_PROXY_SKIP_PROVIDER_BUTTON": "true",
             "OAUTH2_PROXY_REVERSE_PROXY": "true",
             "OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY": str(bool(proxy.get("insecureSkipTlsVerify"))).lower(),
+            **({"OAUTH2_PROXY_PROVIDER_CA_FILES": "/etc/saw/issuer-ca.pem"} if issuer_ca else {}),
         }.items())
         internal = e["forwardPort"] + FORWARD_INTERNAL_OFFSET
         limit_unit = f"saw-ui-limit-{tag}.service"
@@ -4051,6 +4403,7 @@ def sandbox_ui_units(cfg, home, cookie, gateway):
             f"ExecStartPre=-/usr/bin/podman rm -f saw-ui-proxy-{tag}\n"
             f"ExecStart=/usr/bin/podman run --rm --name saw-ui-proxy-{tag} --network host "
             f"--env-file={env_file} -v {users_file}:/etc/saw/sandbox-ui-users:ro,Z "
+            f"{ca_mount}"
             f"{proxy.get('image', 'quay.io/oauth2-proxy/oauth2-proxy:v7.9.0')}\n"
             f"ExecStop=/usr/bin/podman stop -t 5 saw-ui-proxy-{tag}\n"
             f"Restart=on-failure\nRestartSec=5s\n\n[Install]\nWantedBy=default.target\n")
@@ -4083,7 +4436,9 @@ def setup_sandbox_ui(shell, cfg, home):
                 cookie_file.write_text(cookie, encoding="utf-8")
                 os.chmod(cookie_file, 0o600)
             shell.add_secret(cookie)
-            units, files = sandbox_ui_units(cfg, home, cookie, cfg.get("mtlsGateway", "saw-installer"))
+            issuer_ca = issuer_trust_paths(home)[0]
+            units, files = sandbox_ui_units(cfg, home, cookie, cfg.get("mtlsGateway", "saw-installer"),
+                                            issuer_ca if issuer_ca.is_file() else None)
     stale = sorted(existing - set(units))
     for name in stale:
         log(f"Removing sandbox UI unit {name}; its sandbox no longer has a UI route")
@@ -4132,6 +4487,7 @@ def setup_dashboard(shell, cfg, script, home):
         cookie_file.write_text(cookie, encoding="utf-8")
         os.chmod(cookie_file, 0o600)
     shell.add_secret(cookie)
+    issuer_ca = issuer_trust_paths(home)[0]
     result = shell.run(["bash", str(script)], check=False, timeout=600, env={
         "RUNTIME": "podman",
         "DASHBOARD_ENABLED": "true",
@@ -4142,6 +4498,7 @@ def setup_dashboard(shell, cfg, script, home):
         "DASHBOARD_REDIRECT_URL": dash["redirectUrl"],
         "DASHBOARD_INSECURE_SKIP_TLS": str(bool(dash.get("insecureSkipTlsVerify"))).lower(),
         "OIDC_ISSUER": cfg["oidcIssuer"],
+        "DASHBOARD_ISSUER_CA": str(issuer_ca) if issuer_ca.is_file() else "",
     })
     if not result.ok:
         log("WARN: dashboard setup failed (the workspaces are still usable)")
@@ -4310,15 +4667,23 @@ def cmd_install(args):
         config_changed = sync_gateway_config(inputs, cfg, args.etc_dir, home, owner,
                                              dry_run=args.dry_run)
         allow_guest_agent_ssh_keys(shell)
+        issuer_ca = issuer_ca_certs(configured_ca_bundle(cfg, inputs.secrets))
+        if not args.dry_run:
+            issuer_ca = select_issuer_ca(cfg.get("oidcIssuer", ""), issuer_ca)
+        trust_changed = trust_issuer_ca(shell, issuer_ca, home, owner, dry_run=args.dry_run)
         # Remember that a restart is owed until it has actually happened, so
         # a failure between here and the restart cannot leave the old
         # gateway running on a retry.
         state = read_json(state_file, {"components": {}})
-        if {"gateway", "supervisor"} & set(changed) or config_changed:
+        if {"gateway", "supervisor"} & set(changed) or config_changed or trust_changed:
             state["gatewayRestartPending"] = True
             if not args.dry_run:
                 write_json_atomic(state_file, state)
         if not args.skip_gateway:
+            if not args.dry_run:
+                trust_file = issuer_trust_paths(home)[1]
+                check_issuer_trusted(cfg.get("oidcIssuer", ""),
+                                     cafile=trust_file if trust_file.is_file() else None)
             ensure_gateway(shell, cfg["runtimeUser"], env,
                            restart=bool(state.get("gatewayRestartPending")))
         if state.pop("gatewayRestartPending", None) and not args.dry_run:

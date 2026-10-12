@@ -4,12 +4,16 @@ on:
   push:
     branches: [main]
     paths:
+      - .github/actions/build-push-image/**
+      - .github/actions/verify-public-image/**
+      - .github/workflows/build-nemoclaw-sandbox.yml
       - image-builder-charts/helm/nemoclaw-imagestream/**
-      - image-builder-charts/nemoclaw-sandbox/**
   pull_request:
     paths:
+      - .github/actions/build-push-image/**
+      - .github/actions/verify-public-image/**
+      - .github/workflows/build-nemoclaw-sandbox.yml
       - image-builder-charts/helm/nemoclaw-imagestream/**
-      - image-builder-charts/nemoclaw-sandbox/**
   workflow_dispatch:
 
 permissions:
@@ -37,6 +41,8 @@ jobs:
             >> "$GITHUB_OUTPUT"
           echo "target_arch=$(yq '.build.targetArch' "$VALUES")" \
             >> "$GITHUB_OUTPUT"
+          echo "discovery_node_version=$(yq '.build.discoveryNodeVersion' "$VALUES")" \
+            >> "$GITHUB_OUTPUT"
           echo "base_image=$(yq '.build.baseImage' "$VALUES")" \
             >> "$GITHUB_OUTPUT"
           echo "model=$(yq '.build.model' "$VALUES")" \
@@ -57,8 +63,7 @@ jobs:
             >> "$GITHUB_OUTPUT"
           echo "web_search_enabled=$(yq '.build.webSearchEnabled' "$VALUES")" \
             >> "$GITHUB_OUTPUT"
-          # otelEnabled is referenced in the BuildConfig but not yet
-          # defined in values.yaml — default to empty until resolved
+          # otelEnabled is optional — default to empty when not configured
           echo "otel_enabled=$(yq '.build.otelEnabled // ""' "$VALUES")" \
             >> "$GITHUB_OUTPUT"
 
@@ -78,11 +83,28 @@ jobs:
           git checkout -q FETCH_HEAD
           echo "UPSTREAM_DIR=${UPSTREAM_DIR}" >> "${GITHUB_ENV}"
 
-      - name: Inject install-reviewed-runtime.sh into build context
+      - name: Inject reviewed runtimes into build context
         run: |
-          mkdir -p "${UPSTREAM_DIR}/tools/mcp-tool-discovery-runtime"
-          cp image-builder-charts/nemoclaw-sandbox/install-reviewed-runtime.sh \
+          mkdir -p "${UPSTREAM_DIR}/tools/mcp-tool-discovery-runtime/reviewed-runtime-bundle/mcp-tool-discovery"
+          cp image-builder-charts/helm/nemoclaw-imagestream/files/install-reviewed-runtime.sh \
             "${UPSTREAM_DIR}/tools/mcp-tool-discovery-runtime/"
+          cp image-builder-charts/helm/nemoclaw-imagestream/files/discovery-runtime/package*.json \
+            "${UPSTREAM_DIR}/tools/mcp-tool-discovery-runtime/"
+          mkdir -p "${UPSTREAM_DIR}/agents/openclaw/mcporter-runtime"
+          cp image-builder-charts/helm/nemoclaw-imagestream/files/mcporter-runtime/package*.json \
+            "${UPSTREAM_DIR}/agents/openclaw/mcporter-runtime/"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.params.outputs.discovery_node_version }}
+
+      - name: Build and audit the shared discovery runtime
+        run: |
+          cd "${UPSTREAM_DIR}/tools/mcp-tool-discovery-runtime"
+          export NEMOCLAW_MCP_REVIEWED_ARTIFACT=1
+          export NEMOCLAW_MCP_BUNDLE_FILENAME=mcp-tool-discovery.bundle
+          export NEMOCLAW_MCP_BUNDLE_OUTPUT_DIR=reviewed-runtime-bundle/mcp-tool-discovery
+          sh install-reviewed-runtime.sh
 
       # dockerfile omitted -> use the upstream checkout's own Dockerfile.
       - uses: ./.github/actions/build-push-image

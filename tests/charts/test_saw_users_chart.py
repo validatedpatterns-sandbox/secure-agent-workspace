@@ -29,7 +29,8 @@ BOB = {
     "ownerSubject": "3f2c-subject",
     "vaultPrefix": "secret/data/hub/saw-bob",
     "profiles": ["custom"],
-    "values": {"dashboard": {"insecureSkipIssuerTlsVerify": False}},
+    "values": {"dashboard": {"insecureSkipIssuerTlsVerify": True},
+               "oidc": {"issuerUrl": "https://sso.example.com/realms/corp"}},
 }
 
 
@@ -87,10 +88,17 @@ def test_two_users_get_labelled_namespaces_and_six_apps(tmp_path):
         assert application["metadata"]["namespace"] == "vp-gitops"
         assert "finalizers" not in application["metadata"]
         assert application["spec"]["destination"]["name"] == "in-cluster"
+        # Server-side apply, and nothing else (no CreateNamespace: the chart
+        # makes the namespaces): client-side apply's last-applied annotation
+        # would hold the whole installer ConfigMap, past the 256 KiB limit.
         assert application["spec"]["syncPolicy"] == {"automated": {"selfHeal": True},
-                                                      "retry": {"limit": 20}}
+                                                      "retry": {"limit": 20},
+                                                      "syncOptions": ["ServerSideApply=true"]}
+        # Found on the GB200: without server-side diff the VM stayed
+        # OutOfSync on the fields KubeVirt defaults.
+        assert (application["metadata"]["annotations"]["argocd.argoproj.io/compare-options"]
+                == "ServerSideDiff=true")
         assert "ignoreMissingValueFiles" not in application["spec"]["source"]["helm"]
-        assert "syncOptions" not in application["spec"]["syncPolicy"]
 
 
 def test_waves_release_names_and_value_overrides(tmp_path):
@@ -103,12 +111,14 @@ def test_waves_release_names_and_value_overrides(tmp_path):
     assert secrets["spec"]["destination"]["namespace"] == "saw-alice"
     assert helm_values(secrets) == {"vaultPrefix": "secret/data/hub",
                                     "sshVaultPrefix": "secret/data/hub",
-                                    "secrets": ["inference", "web-search"]}
+                                    "secrets": ["inference", "web-search"],
+                                    "clusterCaSecret": "saw-ingress-ca"}
 
     bob_secrets = helm_values(app(docs, "saw-bob-secrets"))
     assert bob_secrets == {"vaultPrefix": "secret/data/hub/saw-bob",
                            "sshVaultPrefix": "secret/data/hub",
-                           "secrets": ["inference", "web-search"]}
+                           "secrets": ["inference", "web-search"],
+                           "clusterCaSecret": "saw-ingress-ca"}
 
     bom = app(docs, "saw-alice-bom")
     assert bom["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "0"
@@ -125,14 +135,53 @@ def test_waves_release_names_and_value_overrides(tmp_path):
     alice_values = helm_values(alice)
     assert alice_values["accessControl"] == {"owner": "alice", "ownerSubject": ""}
     assert "job" not in alice_values      # no prepare Job to tune
-    assert alice_values["dashboard"]["insecureSkipIssuerTlsVerify"] is True
+    # The proxies verify the issuer; the VM trusts the cluster's ingress CA.
+    assert "insecureSkipIssuerTlsVerify" not in alice_values.get("dashboard", {})
+    assert alice_values["oidc"] == {"clusterCaSecret": "saw-ingress-ca"}
     assert alice_values["global"]["clusterDomain"] == "example.com"
     assert "originURL" not in alice_values["global"]
     assert "mtalvi" not in alice["spec"]["source"]["repoURL"]
 
     bob_values = helm_values(app(docs, "saw-bob"))
     assert bob_values["accessControl"] == {"owner": "bob", "ownerSubject": "3f2c-subject"}
-    assert bob_values["dashboard"]["insecureSkipIssuerTlsVerify"] is False
+    assert bob_values["dashboard"]["insecureSkipIssuerTlsVerify"] is True
+    # A user's own values win; openshell-saw ignores clusterCaSecret for an
+    # external issuer.
+    assert bob_values["oidc"]["issuerUrl"] == "https://sso.example.com/realms/corp"
+
+
+def test_apf_engine_reaches_per_user_saw_policy(tmp_path):
+    docs = docs_from(render_file(tmp_path, [ALICE], {
+        "global": {"governance": {"engine": "apf"}}}))
+    values = helm_values(app(docs, "saw-alice"))
+    assert values["global"]["governance"]["engine"] == "apf"
+    path = tmp_path / "saw-values.yaml"
+    path.write_text(yaml.safe_dump(values))
+    rendered = helm("template", "alice", str(SAW_CHART), "-n", "saw-alice",
+                    "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
+                    "-f", str(path))
+    assert rendered.returncode == 0, rendered.stderr
+    policies = [doc for doc in yaml.safe_load_all(rendered.stdout) if doc
+                and doc.get("kind") == "NetworkPolicy"
+                and doc["metadata"]["name"] == "saw-vm"]
+    # The pattern stages this off by default; select the first user here.
+    assert not policies
+    topology = yaml.safe_load((ROOT / "tests/fixtures/saw-network-topology.yaml").read_text())
+    values["networkPolicy"]["enabled"] = True
+    values["networkPolicy"].update(topology["networkPolicy"])
+    values["cleanupApi"].update(topology["cleanupApi"])
+    path.write_text(yaml.safe_dump(values))
+    rendered = helm("template", "alice", str(SAW_CHART), "-n", "saw-alice",
+                    "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
+                    "-f", str(path))
+    assert rendered.returncode == 0, rendered.stderr
+    vm_policy = next(doc for doc in yaml.safe_load_all(rendered.stdout) if doc
+                     and doc.get("kind") == "NetworkPolicy"
+                     and doc["metadata"]["name"] == "saw-vm")
+    assert any(peer.get("podSelector", {}).get("matchLabels") == {
+        "app.kubernetes.io/name": "apf",
+        "app.kubernetes.io/instance": "governance-interceptor"}
+        for rule in vm_policy["spec"]["egress"] for peer in rule["to"])
 
 
 def test_empty_global_values_are_left_out(tmp_path):
@@ -208,9 +257,11 @@ def test_only_the_globals_openshell_saw_reads_are_passed(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE], extra={
         "global": {"repoURL": "https://example.com/repo.git", "targetRevision": "main",
                    "vpArgoNamespace": "vp-gitops", "clusterDomain": "example.com",
-                   "deletePattern": "no", "multiSourceSupport": True, "sshPublicKey": "ssh-ed25519 AAA"}}))
+                   "deletePattern": "no", "multiSourceSupport": True, "sshPublicKey": "ssh-ed25519 AAA",
+                   "governance": {"engine": "apf"}}}))
     assert helm_values(app(docs, "saw-alice"))["global"] == {
-        "clusterDomain": "example.com", "sshPublicKey": "ssh-ed25519 AAA"}
+        "clusterDomain": "example.com", "sshPublicKey": "ssh-ed25519 AAA",
+        "governance": {"engine": "apf"}}
 
 
 @pytest.mark.parametrize("name,message", [

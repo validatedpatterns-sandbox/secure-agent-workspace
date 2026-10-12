@@ -1,0 +1,49 @@
+{{- if and .Values.enabled (eq (include "governance.engine" .) "apf") .Values.apf.application.enabled }}
+# Installs the APF chart as release governance-interceptor, in this namespace,
+# once the inputs above exist.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: governance-apf
+  namespace: {{ include "governance.argoNamespace" . }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  # Switching the engine back prunes this Application; the finalizer makes
+  # Argo CD delete APF's objects with it, so the interceptor can take the
+  # governance-interceptor Service name again.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: {{ .Values.argo.project }}
+  source:
+    repoURL: {{ .Values.apf.chart.repoURL }}
+    chart: {{ .Values.apf.chart.name }}
+    targetRevision: {{ .Values.apf.chart.version | quote }}
+    helm:
+      releaseName: {{ .Values.apf.values.fullnameOverride }}
+      valuesObject:
+        {{- include "governance.apfValues" . | nindent 8 }}
+  destination:
+    name: {{ .Values.argo.destinationName }}
+    namespace: {{ .Release.Namespace }}
+  # The APF chart generates this token with lookup, which Argo CD cannot run,
+  # so every render has a new one. Keep the one on the cluster.
+  ignoreDifferences:
+    - kind: Secret
+      name: {{ .Values.apf.values.fullnameOverride }}-httptoken
+      jsonPointers:
+        - /data
+        - /stringData
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 20
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m
+{{- end }}

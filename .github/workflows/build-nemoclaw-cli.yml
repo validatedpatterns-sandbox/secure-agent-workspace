@@ -4,12 +4,16 @@ on:
   push:
     branches: [main]
     paths:
+      - .github/actions/build-push-image/**
+      - .github/actions/verify-public-image/**
+      - .github/workflows/build-nemoclaw-cli.yml
       - image-builder-charts/helm/nemoclaw-cli-imagestream/**
-      - image-builder-charts/nemoclaw-cli/**
   pull_request:
     paths:
+      - .github/actions/build-push-image/**
+      - .github/actions/verify-public-image/**
+      - .github/workflows/build-nemoclaw-cli.yml
       - image-builder-charts/helm/nemoclaw-cli-imagestream/**
-      - image-builder-charts/nemoclaw-cli/**
   workflow_dispatch:
 
 permissions:
@@ -62,7 +66,7 @@ jobs:
         with:
           image_name: nemoclaw-cli
           context: ${{ env.UPSTREAM_DIR }}
-          dockerfile: image-builder-charts/nemoclaw-cli/Dockerfile
+          dockerfile: image-builder-charts/helm/nemoclaw-cli-imagestream/files/Dockerfile
           cache_scope: nemoclaw-cli
           build_args: |
             NODE_IMAGE=${{ steps.params.outputs.node_image }}

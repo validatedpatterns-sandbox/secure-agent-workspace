@@ -129,7 +129,7 @@ spec:
           smm: {}
       # Dynamic SSH key provisioning: the guest agent keeps cloud-user's
       # authorized_keys in sync with this Secret, also while the VM runs.
-      # `make openshell-saw-vm-ssh` adds the caller's key to it.
+      # `make saw-vm-ssh` adds the caller's key to it.
       accessCredentials:
         - sshPublicKey:
             source:

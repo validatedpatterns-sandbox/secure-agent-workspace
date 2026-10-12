@@ -29,7 +29,7 @@ jobs:
         run: |
           set -euo pipefail
           pip install -q pyyaml
-          helm template saw-sign charts/openshell-saw --namespace saw-sign --set sandboxName=saw-sign > /tmp/rendered.yaml
+          helm template saw-sign charts/openshell-saw --namespace saw-sign -f tests/fixtures/saw-network-topology.yaml --set sandboxName=saw-sign > /tmp/rendered.yaml
           python3 scripts/build-installer-manifest.py /tmp/rendered.yaml /tmp/installer-manifest.txt
           cat /tmp/installer-manifest.txt
       - name: Sign the manifest

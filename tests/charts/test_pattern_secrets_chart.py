@@ -63,3 +63,19 @@ def test_the_inference_template_needs_only_what_every_workspace_has():
         if "inference" in profile["secrets"]:
             keys = {f["key"] for f in profile["secrets"]["inference"]["fields"]} | {"provider"}
             assert required <= keys, name
+
+
+def test_the_cluster_ca_comes_from_the_shared_prefix(tmp_path):
+    """saw-users sets clusterCaSecret: the cluster's ingress CA, which the
+    saw-ingress-ca imperative job writes once for the whole hub, not per user."""
+    values = tmp_path / "v.yaml"
+    values.write_text(yaml.safe_dump({"vaultPrefix": "secret/data/hub/saw-bob",
+                                      "sshVaultPrefix": "secret/data/hub", "secrets": [],
+                                      "clusterCaSecret": "saw-ingress-ca"}))
+    got = keys("-f", str(values))
+    assert got["saw-ingress-ca"] == {"secret/data/hub/cluster-ingress-ca"}
+    out = subprocess.run([HELM, "template", "x", str(CHART), "-f", str(values)],
+                         capture_output=True, text=True, check=True).stdout
+    (es,) = [d for d in yaml.safe_load_all(out) if d and d["metadata"]["name"] == "saw-ingress-ca"]
+    assert es["spec"]["data"] == [{"secretKey": "ca-bundle.crt", "remoteRef": {
+        "key": "secret/data/hub/cluster-ingress-ca", "property": "ca-bundle.crt"}}]

@@ -53,6 +53,12 @@ bundle never holds a key. The agent sees a server's tools as
 A remote server must be declared in `harness.yaml` with a governance profile,
 and its host must be one of that profile's endpoints:
 
+When the remote server is inside the cluster, also add a narrow
+`networkPolicy.extraEgress` rule to the SAW values for its namespace, pods, and
+port. The profile controls the sandbox proxy; NetworkPolicy controls whether
+the VM can reach the Service at all. An outside server additionally needs its
+exact hostname in `egress.extraAllow`.
+
 ```yaml
 spec:
   mcpServers:
@@ -170,13 +176,13 @@ pushes `ghcr.io/<owner>/saw-harness-<bundle>:<version>` on `main`, signs the
 digest with cosign, and prints the `harnessRef` in the job summary. Locally:
 
 ```bash
-make -f Makefile-quickstart harness-bundle-build HARNESS_BUNDLE=ds-default
-make -f Makefile-quickstart harness-bundle-push  HARNESS_BUNDLE=ds-default \
+make harness-bundle-build HARNESS_BUNDLE=ds-default
+make harness-bundle-push  HARNESS_BUNDLE=ds-default \
      HARNESS_REPO=ghcr.io/<owner>/saw-harness-ds-default
 ```
 
 The gateway VM pulls as its runtime user, so the package must be public, or
-the VM needs pull credentials for it. `make copy-images` does not mirror
+the VM needs pull credentials for it. `make images-mirror` does not mirror
 harness images; a disconnected cluster needs them in a reachable registry.
 
 ### Inline, in the saw-bom chart
@@ -276,19 +282,104 @@ OpenClaw config (values only, never bundle bytes through `exec`):
 | Sandbox created before `harnessRef` | Recreated with the mount |
 | Volume edited on the VM | Verify fails; next apply refills |
 | `harnessRef` removed | Sandbox recreated without the mount; volume removed when unused |
+| Image signature refused | Existing sandbox with a harness is recreated without it; rejected content is cleaned up and apply fails. A later successful verification restores the mount. |
+
+### Signature rechecks and network access
+
+The installer checks image trust before using either a cached volume or a
+new image. Successful verification of a digest may be reused from the trusted
+installer ledger for `harness.cosign.cacheTtlSeconds` (default 300, allowed
+range 0–300). Set it to 0 for a fresh online check on every apply. Changing
+the identity or issuer invalidates cached verification immediately. Applies
+can reuse the last successful verification for up to five minutes; removal
+of a registry signature is detected on the next uncached apply. There is no
+background revocation monitor. Cache use is logged with its age.
+Invalid/future timestamps are refused, dry-run does not save trust, and
+installations without a ledger check every apply.
+
+Once the cache expires, failed verification never extends the old trust.
+The installer removes an active harness even when verification fails because
+of a network outage, then reports the apply failure. Operators must keep
+registry and Sigstore access available for periodic verification: public
+Sigstore uses `rekor.sigstore.dev` and `tuf-repo-cdn.sigstore.dev`, in addition
+to the image registry and its blob/redirect hosts (for GHCR, `ghcr.io` and
+`pkg-containers.githubusercontent.com`). With PR #68's default-deny firewall,
+declare these in `egress.extraAllow` before enabling image harnesses. A
+five-minute cache reduces repeated network checks; it is not offline support.
+Recreation keeps `/sandbox/persist`; other temporary sandbox work is lost,
+as with removing a harness reference or restarting a sandbox.
+
+### MCP registration checks
+
+The installer and H3 inspect the mounted bundle's actual plugin id using
+`openclaw plugins inspect <id> --runtime --json`. They match declared names
+against supported `mcpServers` entries exactly, and reject inspection errors
+and error diagnostics. A name appearing in a description or error message
+does not count. Older OpenClaw CLIs without runtime inspection produce an
+explicit warning that registration is unverified. Other command failures or
+malformed output fail verification.
+
+This confirms registration, not that an MCP process starts, connects, or
+answers requests. Process readiness requires an MCP initialize/tools-list
+probe or a real agent turn; neither is claimed by this inspection check.
+
+### E2E harness disable/restore drill
+
+`scripts/e2e-harness.sh --gateway <name>` checks H1–H8 without changing
+deployment state. H3 uses the registration checks above and explicitly skips
+process readiness. The opt-in `--revoke-drill` flag runs H9: disable the
+harness, verify the recreated sandbox has no mount or harness load path,
+then restore its original state. This exercises harness disable/restore;
+it does not revoke a signature or test the signature verification cache.
+Sandbox recreation loses work outside persistent data volumes.
+
+For Helm deployments, pass `--bom-release <release>` when the release is
+not `saw-bom`. H9 preserves the original `harnessEnabled` value, including
+`false`. For Argo CD, H9 automatically finds the Application whose source
+path is `charts/saw-bom` and whose destination is the SAW namespace
+(`SAW_NS`, default `saw-<gateway>`). Use `--bom-application <application>`
+and `--argo-namespace <namespace>` to disambiguate or restrict discovery.
+Explicit drills fail when no deployment is found or discovery is ambiguous.
+
+H9 saves the exact Argo Helm parameter list and automated sync settings,
+pauses automation on the BOM Application and any managing Application
+identified by Argo tracking annotations/labels, changes the child desired
+parameter and requests manual sync. It waits for the sandbox's rendered
+`harnessRef` in `saw-bom-profiles` before restarting a VM without live inputs,
+then polls the running sandbox and its OpenClaw config. Multi-source
+Applications, ApplicationSet ownership and unresolvable parent ownership
+are refused. The drill requires permission to inspect and patch the child
+and managing Applications; discovery errors fail rather than guessing.
+
+Normal completion, polling failures, INT and TERM restore the original
+parameters/harness state and automation. Signals terminate the script after
+restoration. If restoration itself fails, the script reports failure and
+retains its temporary JSON snapshot for recovery; automation restoration is
+still attempted. `DRILL_TIMEOUT` controls polling time per phase (default
+1500 seconds), and `DRILL_POLL_INTERVAL` defaults to 15 seconds. The drill
+requires `oc`, Python with PyYAML, the deployment controller's tooling, and
+`virtctl` when VM inputs require a restart.
 
 ### Security properties
 
-- The intended mount is read-only. A writable remount is not prevented at
-  create time when `allowDriverConfig` is on; the next apply **detects** it
-  and recreates the sandbox. That is remediation, not hard immutability.
+- With the governance interceptor enabled, caller driver config requires
+  an mTLS platform admin and permits only the installer's read-only podman
+  harness volume at `/sandbox/harness`. OIDC admins, bind mounts, writable
+  mounts, other targets and other driver options are refused at creation.
+  OpenShell 0.1.2 does not support intercepting `CreateSandboxTemplate`;
+  template-based `CreateSandbox` requests are refused because the gateway
+  resolves their driver config after interception. Templates may be stored,
+  but cannot be used to create sandboxes while this guard is enabled.
+  The installer also detects existing writable/remapped mounts and recreates
+  the sandbox on the next apply.
   Stronger drift protection comes from the combination: RO by default,
   recreate on RW, tree-digest / config verify on drift, and re-setting
   OpenClaw harness config on every apply.
 - Caller driver config can attach only volumes labelled for that workspace
   (admission on, bind mounts off).
 - OCI pin is the digest in `harnessRef`; the installer verifies CI's cosign
-  signature (`harness.cosign`) before using the image.
+  signature (`harness.cosign`) before using the image, subject to the bounded
+  successful-verification cache described above.
 - Governance uses the gateway's live catalog and requires a matching provider
   on the sandbox; keys never enter the sandbox (providers + egress proxy only).
 - `npx`-style servers fetch code at run time, outside the digest — vendor

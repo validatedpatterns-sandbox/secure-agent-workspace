@@ -8,6 +8,9 @@ changes here reach an existing VM after a restart (unlike cloud-init).
 {{- fail (printf "bom.spec.openshell.%s.image must be pinned by digest (repo@sha256:...), got %q" $name ($c.image | default "")) }}
 {{- end }}
 {{- end }}
+{{- if contains "PRIVATE KEY-----" (.Values.oidc.caBundle | default "") }}
+{{- fail "oidc.caBundle contains a private key: give only the CA certificate(s), e.g. the ca-bundle.crt of default-ingress-cert, never a TLS Secret" }}
+{{- end }}
 {{- $oidcIssuer := include "openshell-sandbox.oidcIssuerUrl" . }}
 {{- $webuiHost := include "openshell-sandbox.auxRouteHost" (list . "webui" .Values.route.webuiHost) }}
 {{- $dashboardHost := include "openshell-sandbox.auxRouteHost" (list . "dashboard" .Values.route.dashboardHost) }}
@@ -39,6 +42,8 @@ changes here reach an existing VM after a restart (unlike cloud-init).
       "mtlsGateway" "saw-installer"
       "ownerSubject" (.Values.accessControl.ownerSubject | default "")
       "oidcIssuer" $oidcIssuer
+      "caBundle" (.Values.oidc.caBundle | default "")
+      "caBundleSecret" (include "openshell-sandbox.caBundleSecret" .)
       "routeHost" (include "openshell-sandbox.routeHost" .)
       "sandboxDashboardRoute" $sandboxRoute
       "dashboard" (dict
@@ -51,7 +56,8 @@ changes here reach an existing VM after a restart (unlike cloud-init).
       "signing" (dict "mode" $signMode "trustKeys" $trustKeys "identity" $signIdentity "issuer" $signIssuer)
       "harness" (dict "cosign" (dict
           "identity" (.Values.harness.cosign.identity | default "")
-          "issuer" (.Values.harness.cosign.issuer | default "https://token.actions.githubusercontent.com")))
+          "issuer" (.Values.harness.cosign.issuer | default "https://token.actions.githubusercontent.com")
+          "cacheTtlSeconds" (.Values.harness.cosign.cacheTtlSeconds)))
       "prune" (dict "mode" $pruneMode "sandboxes" (.Values.prune.sandboxes | default false))
       "secrets" (include "openshell-sandbox.providerSecrets" . | fromJsonArray)
       "sandboxUi" (include "openshell-sandbox.sandboxUi" . | fromJsonArray)

@@ -43,7 +43,7 @@ auto_detect_issuer() {
   fi
   local host
   host="$("${SCRIPT_DIR}/keycloak-host.sh" "${NS}")" || \
-    die "OIDC_ISSUER not set and no Keycloak found in namespace ${NS}. Set OIDC_ISSUER or run 'make keycloak' first."
+    die "OIDC_ISSUER not set and no Keycloak found in namespace ${NS}. Set OIDC_ISSUER or run 'make keycloak-deploy' first."
   OIDC_ISSUER="https://${host}/realms/${KEYCLOAK_REALM}"
   echo "Auto-detected OIDC issuer: ${OIDC_ISSUER}"
 }
@@ -360,27 +360,45 @@ do_whoami() {
 
 do_logout() {
   if [[ -f "${OIDC_TOKEN_FILE}" ]]; then
-    local stored_issuer
+    local stored_issuer revocation_rc=0 end_session_ep="" form_file=""
     stored_issuer="$(jq -r '.issuer_url // empty' "${OIDC_TOKEN_FILE}")"
     local refresh_token
     refresh_token="$(jq -r '.refresh_token // empty' "${OIDC_TOKEN_FILE}")"
 
     if [[ -n "${stored_issuer}" && -n "${refresh_token}" ]]; then
-      local end_session_ep=""
-      end_session_ep="$(curl -fsSL ${CURL_TLS_OPTS} --connect-timeout 2 --max-time 3 \
-        "${stored_issuer}/.well-known/openid-configuration" 2>/dev/null \
-        | jq -r '.end_session_endpoint // empty' 2>/dev/null)" || true
+      if ! end_session_ep="$(curl -fsSL ${CURL_TLS_OPTS} --connect-timeout 2 --max-time 3 \
+        "${stored_issuer}/.well-known/openid-configuration" \
+        | jq -r '.end_session_endpoint // empty')"; then
+        revocation_rc=1
+      fi
       if [[ -n "${end_session_ep}" ]]; then
-        curl -fsSL ${CURL_TLS_OPTS} --connect-timeout 2 --max-time 3 -X POST "${end_session_ep}" \
+        umask 077
+        form_file="$(mktemp)"
+        printf 'client_id=%s&refresh_token=%s' \
+          "$(jq -rn --arg v "${OIDC_CLIENT_ID}" '$v | @uri')" \
+          "$(jq -rn --arg v "${refresh_token}" '$v | @uri')" > "${form_file}"
+        if ! curl -fsSL ${CURL_TLS_OPTS} --connect-timeout 2 --max-time 3 \
+          -X POST "${end_session_ep}" \
           -H "Content-Type: application/x-www-form-urlencoded" \
-          -d "client_id=${OIDC_CLIENT_ID}" \
-          -d "refresh_token=${refresh_token}" \
-          2>/dev/null || true
+          --data-binary "@${form_file}" >/dev/null; then
+          revocation_rc=1
+        fi
+        rm -f "${form_file}"
+      else
+        revocation_rc=1
       fi
     fi
 
     rm -f "${OIDC_TOKEN_FILE}"
-    echo "Logged out. Token revoked and cleared."
+    if (( revocation_rc != 0 )); then
+      echo "Local token cleared. Remote revocation could not be verified." >&2
+      return "${revocation_rc}"
+    fi
+    if [[ -n "${stored_issuer}" && -n "${refresh_token}" ]]; then
+      echo "Logged out. Remote token revoked and local token cleared."
+    else
+      echo "Logged out. Local token cleared; no refresh token was available to revoke."
+    fi
   else
     echo "Not logged in."
   fi

@@ -1,13 +1,13 @@
 # Required — must be set at install time. Maximum 19 characters (OpenShell limit).
 sandboxName: ""
-# Operator SSH access (used by `make openshell-saw-configure-gateway` to fetch
+# Operator SSH access (used by `make saw-configure` to fetch
 # the gateway CA). Provisioning does not use SSH. Keys are provisioned
 # dynamically by KubeVirt accessCredentials through the qemu guest agent:
 # updating the Secret updates cloud-user's authorized_keys in the running VM.
 # https://kubevirt.io/user-guide/user_workloads/accessing_virtual_machines/
 #
 # The chart creates an empty <name>-ssh-pubkey Secret for this;
-# `make openshell-saw-vm-ssh` adds your key to it when you need a shell.
+# `make saw-vm-ssh` adds your key to it when you need a shell.
 # Or name an existing Secret instead (every value in it is a public key):
 sshPublicKeySecret: ""
 # Optional: seed the chart-created Secret with one key (key1).
@@ -19,10 +19,10 @@ sshPublicKey: ""
 #
 # 1. Registry (default): import the golden image into the VM's own disk.
 #    Without registryURL, the internal registry's
-#    <dataSourceNamespace>/openshell-gateway:latest (make copy-images, or the
+#    <dataSourceNamespace>/openshell-gateway:latest (make images-mirror, or the
 #    openshell-gateway-image build); the namespace may pull it from there.
 #      source:
-#        registryURL: "docker://quay.io/rh-ai-quickstart/openshell-gateway@sha256:<digest>"
+#        registryURL: "docker://ghcr.io/validatedpatterns-sandbox/openshell-gateway@sha256:<digest>"
 #
 # 2. DataSource: clone a golden image DataSource that already exists (the
 #    openshell-gateway-image chart's goldenImage, or a CDI DataImportCron).
@@ -30,8 +30,13 @@ sshPublicKey: ""
 #        dataSource: openshell-gateway
 #        dataSourceNamespace: openshell-agents
 #
-# 3. HTTP: download a qcow2 disk image from a URL (the VM's namespace must
-#    reach that host; see egress).
+# 3. HTTP: download a qcow2 disk image from a URL. An http(s) host is added
+#    to the namespace egress firewall unless that host and port are already
+#    allowed. A host inside the cluster needs no entry. A docker:// image on
+#    an outside registry with pullMethod: pod gets its registry host added
+#    the same way (pullMethod: node pulls on the node, outside the firewall);
+#    a registry that serves blobs from a CDN host needs that host under
+#    egress.extraAllow.
 #      source:
 #        httpURL: "https://example.com/openshell-gateway.qcow2"
 source:
@@ -97,7 +102,7 @@ bom:
     # data-science profile has one). Remove it if no profile needs it.
     # A tag is accepted here with a warning; pin a digest when one exists.
     nemoclaw:
-      cliImage: quay.io/rh-ai-quickstart/nemoclaw-cli:latest
+      cliImage: ghcr.io/validatedpatterns-sandbox/nemoclaw-cli:latest
 
 # OpenShell gateway runtime configuration inside the VM.
 openshell:
@@ -126,6 +131,10 @@ harness:
   cosign:
     identity: ""
     issuer: "https://token.actions.githubusercontent.com"
+    # Reuse successful digest verification for at most five minutes. Identity
+    # or issuer changes invalidate it immediately; 0 checks every apply.
+    # Expired verification requires registry/Sigstore access and fails closed.
+    cacheTtlSeconds: 300
 
 # Dropping an object from a SAW-BOM profile. report only logs what would be
 # deleted. on deletes it. Sandboxes are kept unless sandboxes is true, because
@@ -163,6 +172,25 @@ oidc:
   rolesClaim: "realm_access.roles"
   adminRole: "openshell-admin"
   userRole: "openshell-user"
+  # Extra CAs (PEM) the gateway and the oauth2-proxies trust for the issuer,
+  # never the VM's system trust store; a private key in it is refused. The
+  # gateway fetches the issuer at startup and exits when it cannot verify its
+  # certificate. Only needed when the issuer's certificate is not from a
+  # public CA. For the in-cluster
+  # Keycloak on a cluster with OpenShift's self-signed *.apps certificate the
+  # pattern does it for you (clusterCaSecret below); set caBundle for an
+  # external issuer (issuerUrl) with a private CA, e.g. your corporate root CA,
+  # or for the quickstart. Wins over clusterCaSecret. See
+  # docs/deployment-guide.md, "The issuer's certificate".
+  caBundle: ""
+  # For the in-cluster Keycloak (issuerUrl empty) and no caBundle: a Secret in
+  # this namespace with the cluster's ingress CA (key ca-bundle.crt), which
+  # the VM trusts. Needed when the cluster's *.apps certificate is not from a
+  # public CA (OpenShift's self-signed default); harmless otherwise. The
+  # pattern fills it in every user namespace (saw-users sets
+  # saw-ingress-ca; the saw-ingress-ca imperative job and pattern-secrets).
+  # The VM waits for the Secret to exist, like the provider Secrets.
+  clusterCaSecret: ""
 
 # Sandbox owner. `owner` is used for labels; `ownerSubject` is the owner's
 # OIDC subject (`openshell whoami`) and, when set, is added as admin to every
@@ -202,7 +230,7 @@ sandboxUiProxy:
   # asking for its gateway token, and approves their UI devices. Only
   # requests from `cidrs` are trusted; the forward arrives over loopback.
   # The CLI and TUI in the sandbox use the gateway secret as a password.
-  # Off: the UI asks for the token (make sandbox-ui prints it).
+  # Off: the UI asks for its token. make sandbox-ui lists routes only.
   trustedProxy:
     enabled: true
     cidrs: ["127.0.0.1/32", "::1/128"]
@@ -215,6 +243,10 @@ dashboard:
   image: "quay.io/gkrumbach07/openshell-dashboard:latest"
   proxyImage: "quay.io/oauth2-proxy/oauth2-proxy:v7.9.0"
   clientId: "openshell-dashboard"
+  # The dashboard and sandbox-UI oauth2-proxies verify the issuer: with the
+  # issuer CA (oidc.caBundle / oidc.clusterCaSecret) when one is configured,
+  # else with the image's public CAs.
+  # Skipping verification is only for debugging.
   insecureSkipIssuerTlsVerify: false
 
 # Governance interceptor — enforces signed sandbox policies.
@@ -224,9 +256,11 @@ dashboard:
 # gateway keeps resource admission on and bind mounts off, so a caller can
 # only attach a podman volume labelled openshell.ai/sandbox-attachable for
 # its own workspace (the installer labels each harness volume that way);
-# image and host-path mounts stay refused. Default off: turning it on lets
-# any signed-in user attach a labelled volume to a sandbox they create, so
-# set true only when a selected profile has a sandbox with a harnessRef
+# image and host-path mounts stay refused. With governance enabled, the
+# interceptor additionally requires an mTLS admin and exactly the installer's
+# read-only harness volume/target. Keep governance fail-closed when enabling
+# this switch; without it the gateway switch applies to all callers.
+# Default off: set true only when a selected profile has a harnessRef
 # (e.g. saw-bom's harnessEnabled). The installer fails fast with a clear error
 # if a harnessRef is applied while this is off.
 allowDriverConfig: false
@@ -241,6 +275,31 @@ governance:
   allowInsecureTransport: true
   failurePolicy: "fail_closed"
   timeout: "500ms"
+  # Which interceptor answers at that endpoint: interceptor (the OpenShell
+  # governance interceptor) or apf (NVIDIA Agent Policy Fabric).
+  # global.governance.engine (the pattern's switch) wins.
+  engine: interceptor
+  # How the gateway combines its bindings with the ones the interceptor
+  # declares (OpenShell binding_policy):
+  #   allowlist  only the RPCs and phases listed below; the interceptor must
+  #              declare exactly one binding per listed RPC
+  #   dynamic    the interceptor's own declarations (RPCs, phases, and a
+  #              failure policy per binding, e.g. fail_open for post_commit),
+  #              limited to the RPCs OpenShell allows interceptors on; the
+  #              list below may only narrow them
+  # APF declares one binding per phase (three for CreateSandbox and for
+  # UpdateConfig), which allowlist rejects ("declared multiple bindings"),
+  # so APF uses dynamic.
+  bindingPolicy:
+    interceptor: allowlist
+    apf: dynamic
+  bindings:
+    interceptor:
+      - { rpc: CreateSandbox, phases: [modify_operation, validate] }
+      - { rpc: CreateProvider, phases: [validate] }
+      - { rpc: UpdateConfig, phases: [validate] }
+      - { rpc: SubmitPolicyAnalysis, phases: [validate] }
+    apf: []
 
 # Delete the VM and its disks when this release is deleted (a pre-delete
 # hook; Argo CD runs it when the Application is deleted, too). The pattern's
@@ -254,4 +313,96 @@ job:
 
 # Each SAW is installed into its own namespace (the release namespace), e.g.
 # saw-<name>. Label that namespace openshell.pattern/saw=true so the shared
-# governance interceptor accepts its VM (make openshell-saw-create does this).
+# governance interceptor accepts its VM (make saw-create does this).
+
+# Default-deny egress for every pod in the sandbox namespace, including the
+# VM. Needs OVN-Kubernetes (k8s.ovn.org/v1 EgressFirewall, the OpenShift
+# default); on another network plugin set egress.enabled: false, or the
+# workspace's sync fails on the unknown kind. OpenShell's own allowlist is a separate layer and does not replace this.
+# Exact hostnames only: a wildcard needs the DNSNameResolver feature gate.
+# The Keycloak route host is added automatically from the OIDC issuer URL.
+# Add an enterprise system or a custom inference host under extraAllow
+# (pattern: defaults.openshellSaw.egress.extraAllow, or one user's values).
+# A host inside the cluster (*.svc) needs no entry.
+egress:
+  enabled: true
+  allow:
+    # Registries the VM pulls from and their blob CDN hosts.
+    - quay.io
+    - cdn.quay.io
+    - cdn01.quay.io
+    - cdn02.quay.io
+    - cdn03.quay.io
+    - cdn04.quay.io
+    - cdn05.quay.io
+    - cdn06.quay.io
+    - ghcr.io
+    - pkg-containers.githubusercontent.com
+    - registry.fedoraproject.org
+    # Exact hosts from charts/governance-policy/profiles. A test fails if a
+    # shipped profile grows a host that is not listed here.
+    # *-aiplatform.googleapis.com is not here: a dnsName rule cannot express it.
+    - integrate.api.nvidia.com
+    - api.search.brave.com
+    - api.openai.com
+    - api.tavily.com
+    - registry.npmjs.org
+    - github.com
+    - api.github.com
+    - api-1.github.com
+    - slack.com
+    - generativelanguage.googleapis.com
+    - cloudcode-pa.googleapis.com
+    - accounts.google.com
+    - oauth2.googleapis.com
+    - www.googleapis.com
+    - iamcredentials.googleapis.com
+    # The personal-assistant demo's Gmail provider.
+    - gmail.googleapis.com
+  # Added when harness bundles are on (allowDriverConfig): the installer
+  # re-verifies a harness image's cosign signature on every apply (keyless:
+  # Sigstore's Rekor and TUF root). GHCR and its blob host are always allowed
+  # above for NemoClaw. Without the Sigstore hosts the first apply
+  # fails verification and the harness is removed from the sandbox. A harness
+  # image on another registry needs that registry under extraAllow.
+  harnessAllow:
+    - rekor.sigstore.dev
+    - tuf-repo-cdn.sigstore.dev
+  # Added when signing.mode is enforce. warn only logs, so it needs nothing.
+  # The OpenShell images are already on Quay; a keyless check talks to Sigstore.
+  signingAllow:
+    - rekor.sigstore.dev
+    - tuf-repo-cdn.sigstore.dev
+  extraAllow: []
+
+# Backend addresses of the `default/kubernetes` Service. Quickstart discovers
+# these before creating a SAW. For direct Helm and GitOps installs, read the
+# Service and its EndpointSlices from the target cluster; API endpoint changes
+# require a values update before cleanup can reach the new address. Exact IPs
+# also keep an API on TCP 443 out of the VM/CDI outside rule.
+cleanupApi:
+  serviceIP: ""
+  endpoints: []  # [{ip: 192.0.2.10, port: 6443}]
+
+# Namespaced default-deny for the VM, CDI importer, and cleanup hook. These
+# CIDRs have no portable default. Quickstart discovers them. A direct Helm
+# render with NetworkPolicy enabled fails until the target cluster's values
+# are supplied; an incomplete exclusion could allow in-cluster traffic.
+networkPolicy:
+  enabled: true
+  clusterNetworkCIDRs: []
+  serviceNetworkCIDRs: []
+  extraBlockedCIDRs: []
+  allow:
+    dns: true
+    governanceInterceptor: true
+    internalRegistry: true
+    ingressController: true
+  # TCP 443/80 are always included for EgressFirewall parity. Add another
+  # outside port here only when its EgressFirewall host rule also allows it.
+  # The issuer and external disk URL ports are included automatically.
+  externalPorts: [443, 80]
+  # Raw Kubernetes NetworkPolicy rules for site-specific endpoints, such as
+  # an in-cluster inference Service or npm mirror.
+  extraEgress: []
+  extraIngress: []

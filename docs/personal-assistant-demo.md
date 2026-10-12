@@ -40,8 +40,8 @@ The pattern path of the README (Option A), from this branch:
 
 ```bash
 oc login --server=https://api.<cluster>:6443 -u <admin>
-make generate-keys        # SSH keys, and ~/values-secret.yaml from the template
-make copy-images          # the golden VM image (openshell-gateway), into the internal registry (~5 min)
+make ssh-key-generate        # SSH keys, and ~/values-secret.yaml from the template
+make images-mirror          # the golden VM image (openshell-gateway), into the internal registry (~5 min)
 export TARGET_BRANCH=feat/demo TARGET_ORIGIN=origin   # the branch must be pushed to origin
 ./pattern.sh make install
 ```
@@ -72,15 +72,17 @@ the install (see the README, step 4), or remove the entry from
 Developer Hub does not create Keycloak accounts. An administrator does:
 
 ```bash
-make -f Makefile-quickstart keycloak-add-user KC_USER=dana
+make keycloak-add-user KC_USER=dana
 ```
 
-This prints dana's generated password, and keeps it in the Secret
-`openshell-keycloak-users` in `saw-keycloak`. Show it again later:
+This keeps dana's generated password in the Secret
+`openshell-keycloak-users` in `saw-keycloak`; it is not printed. Read it with:
 
 ```bash
-make -f Makefile-quickstart keycloak-password KC_USER=dana
+oc -n saw-keycloak extract secret/openshell-keycloak-users --keys=dana --to=-
 ```
+
+(`make keycloak-password KC_USER=dana` says which Secret holds it.)
 
 dana is a plain user (role `openshell-user`). Do not use `alice` or `bob`
 for this step: they are built-in test users, and alice already has a
@@ -154,15 +156,15 @@ Then, in the OpenClaw chat:
 | The run fails at "Submit the request" with HTTP 500 | Developer Hub cannot verify the Kubernetes API's certificate | `oc logs -n rhdh deploy/backstage-developer-hub -c saw-ca-bundle` should list `added: Kubernetes API CA` |
 | "Start the VM" takes long, the VM shows `Starting` | the VM waits until its provider Secrets exist (External Secrets creates them from Vault) | `oc get events -n saw-dana \| grep FailedMount` |
 | 403 on the assistant UI after signing in | signed in as someone other than dana | use a private window, sign in as dana |
-| "Invalid parameter: redirect_uri" | the UI's redirect URI is not registered in Keycloak yet | the redirect registrar adds it within 15 seconds of the route appearing; check with `make -f Makefile-quickstart keycloak-redirects`, register with `make -f Makefile-quickstart keycloak-register KC_USER=dana` |
+| "Invalid parameter: redirect_uri" | the UI's redirect URI is not registered in Keycloak yet | the redirect registrar adds it within 15 seconds of the route appearing; check with `make keycloak-redirects`, register with `make keycloak-register KC_USER=dana` |
 | The agent has no `slack-reader` / `gmail-reader` tools | the bundle is not mounted, or OpenClaw did not load it | see Limits in [daily-briefing.md](daily-briefing.md#limits) |
 
 From the command line, as an administrator:
 
 ```bash
 # 5. The installer's status, the providers' token refresh, the sandbox log
-make -f Makefile-quickstart openshell-saw-status OPENSHELL_SAW_NAME=dana
-make -f Makefile-quickstart openshell-saw-configure-gateway OPENSHELL_SAW_NAME=dana
+make saw-status OPENSHELL_SAW_NAME=dana
+make saw-configure OPENSHELL_SAW_NAME=dana
 openshell gateway login dana              # sign in as dana in the browser
 openshell provider refresh status slack --workspace personal-assistant
 openshell provider refresh status gmail --workspace personal-assistant

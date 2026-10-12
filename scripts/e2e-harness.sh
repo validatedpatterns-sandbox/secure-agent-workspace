@@ -12,11 +12,14 @@
 #       sandbox has a provider of that type
 #   H7  cosign signature (image refs only; inline refs report SKIP)
 #   H8  audit: volume admission labels present
-#   H9  revocation drill (opt-in --revoke-drill): harnessRef removed ->
-#       sandbox recreated without the mount, volume cleaned up
+#   H9  disable/restore drill (opt-in --revoke-drill): harnessEnabled=false ->
+#       sandbox recreated without the mount, then original harness state
+#       restored. Executed, not printed.
 #
-# Read-only by default: H1-H8 change nothing. H9 recreates the sandbox
-# (agent work outside /sandbox/persist is lost, like any pod restart).
+# Read-only by default: H1-H8 change nothing. H9 updates the BOM controller
+# twice, restarts the VM twice when vm.liveInputs is off, and recreates the
+# sandbox (agent work outside /sandbox/persist is lost, like any pod restart).
+# It restores the original harness and controller settings on exit, including signals.
 #
 # Platform gaps from the PR review are OUT OF SCOPE here and tracked
 # separately (upstream OpenShell, not this repo's installer):
@@ -36,7 +39,9 @@
 #
 # Usage:
 #   ./scripts/e2e-harness.sh [--gateway NAME] [--workspace WS]
-#                            [--sandbox SB] [--bundle B] [--revoke-drill]
+#                            [--sandbox SB] [--bundle B]
+#                            [--revoke-drill [--bom-release NAME]]
+#                            [--bom-application NAME] [--argo-namespace NS]
 #   make test-harness-e2e OPENSHELL_SAW_NAME=my-saw [--revoke-drill via E2E_ARGS]
 
 set -euo pipefail
@@ -46,6 +51,10 @@ WORKSPACE="${WORKSPACE:-default}"
 SANDBOX="${HARNESS_SANDBOX:-notebook}"
 BUNDLE="${HARNESS_BUNDLE_EXPECT:-ds-default}"
 REVOKE_DRILL="no"
+BOM_RELEASE="${BOM_RELEASE:-saw-bom}"
+BOM_APPLICATION="${BOM_APPLICATION:-}"
+ARGO_NAMESPACE="${ARGO_NAMESPACE:-}"
+SCRIPT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -54,8 +63,11 @@ while [[ $# -gt 0 ]]; do
     --sandbox)   SANDBOX="$2"; shift 2 ;;
     --bundle)    BUNDLE="$2"; shift 2 ;;
     --revoke-drill) REVOKE_DRILL="yes"; shift ;;
+    --bom-release)  BOM_RELEASE="$2"; shift 2 ;;
+    --bom-application) BOM_APPLICATION="$2"; shift 2 ;;
+    --argo-namespace) ARGO_NAMESPACE="$2"; shift 2 ;;
     -h|--help)
-      sed -n '1,32p' "$0"; exit 0 ;;
+      sed -n '/^# Usage:/,/^$/p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1 (see --help)"; exit 2 ;;
   esac
 done
@@ -188,6 +200,44 @@ print('  enabled plugins:', ' '.join(sorted(by_id)) or '<none>')
     || fail "bundle row missing/disabled/capability-short in plugins list --json"
 fi
 
+# Registration is structured inspection of the actual mounted bundle row.
+# Inspection does not prove MCP process readiness or network reachability.
+MCP_DECLARED=$(sb_exec sh -c 'cat /sandbox/harness/mcp.json' 2>/dev/null \
+  | python3 -c "import json,sys; print(json.dumps(list(json.load(sys.stdin).get('mcpServers') or {})))" 2>/dev/null || true)
+BUNDLE_ID=$(echo "${PLUGINS_JSON}" | python3 -c "
+import json,sys
+rows=json.load(sys.stdin).get('plugins') or []
+b=next((p for p in rows if isinstance(p,dict) and p.get('format')=='bundle' and p.get('rootDir')=='/sandbox/harness'),{})
+print(b.get('id') or '')" 2>/dev/null || true)
+if [[ -z "${MCP_DECLARED}" ]]; then
+  fail "cannot parse mounted MCP declarations"
+elif [[ "${MCP_DECLARED}" == "[]" ]]; then
+  skip "bundle declares no MCP servers"
+elif [[ -z "${BUNDLE_ID}" ]]; then
+  fail "mounted bundle row has no inspection id"
+else
+  if MCP_INSPECT=$(sb_exec sh -c 'OPENCLAW_HOME=/sandbox openclaw plugins inspect "$1" --runtime --json' sh "${BUNDLE_ID}" 2>&1); then
+    if echo "${MCP_INSPECT}" | python3 -c '
+import importlib.util,json,sys
+spec=importlib.util.spec_from_file_location("saw_installer",sys.argv[1])
+m=importlib.util.module_from_spec(spec); sys.modules[spec.name]=m; spec.loader.exec_module(m)
+errors=m.mcp_registration_failures(sys.stdin.read(),json.loads(sys.argv[2]))
+for error in errors: print("  "+error)
+sys.exit(bool(errors))
+' "${SCRIPT_ROOT}/charts/openshell-saw/files/installer/apply_bom.py" "${MCP_DECLARED}"; then
+      pass "declared MCP servers registered in bundle runtime inspection"
+    else
+      fail "MCP registration inspection failed"
+    fi
+  elif echo "${MCP_INSPECT}" | grep -qiE 'unknown (command|option)|unsupported (command|option)|unrecognized (command|option|arguments)|unexpected argument'; then
+    echo "  WARNING: runtime inspection unsupported; MCP registration verification degraded"
+    skip "MCP registration inspection unavailable"
+  else
+    fail "MCP runtime inspection command failed: ${MCP_INSPECT}"
+  fi
+fi
+skip "MCP process readiness is not checked by registration inspection"
+
 step "H4: OpenClaw harness config points at the mount"
 PATHS=$(sb_exec sh -c 'openclaw config get plugins.load.paths' 2>/dev/null || true)
 if echo "${PATHS}" | grep -q "/sandbox/harness"; then
@@ -255,7 +305,7 @@ if [[ -n "${STATUS_JSON}" ]] && command -v virtctl >/dev/null 2>&1; then
     --identity-file="${SSH_KEY_PATH}" \
     --local-ssh-opts=-oStrictHostKeyChecking=no \
     --local-ssh-opts=-oUserKnownHostsFile=/dev/null \
-    --command="podman volume inspect saw-harness-${WORKSPACE}-${SANDBOX}-* --format '{{.Labels}}' 2>/dev/null" 2>/dev/null || true)
+    --command="podman volume ls --filter name=^saw-harness-${WORKSPACE}-${SANDBOX}- --format '{{.Name}}' | xargs -r podman volume inspect --format '{{.Labels}}' 2>/dev/null" 2>/dev/null || true)
   if echo "${LABELS}" | grep -q "sandbox-attachable"; then
     pass "harness volume carries admission labels"
   else
@@ -266,15 +316,106 @@ else
 fi
 
 if [[ "${REVOKE_DRILL}" == "yes" ]]; then
-  step "H9: revocation drill (DESTRUCTIVE: recreates '${SANDBOX}')"
-  echo -e "  ${YELLOW}Remove the harnessRef from the profile, re-apply, then re-run this script:${NC}"
-  echo "  1. helm upgrade saw-bom charts/saw-bom --set harnessEnabled=false"
-  echo "     (or drop harnessRef from the sandbox) + restart the VM installer"
-  echo "  2. expect: sandbox recreated WITHOUT /sandbox/harness,"
-  echo "     'openclaw config get plugins.load.paths' no longer lists it,"
-  echo "     unused harness volume removed."
-  echo "  3. restore: re-add the harnessRef, re-apply, re-run without --revoke-drill."
-  skip "manual drill: instructions printed above (not executed by the script)"
+  step "H9: harness disable/restore drill (DESTRUCTIVE: recreates '${SANDBOX}')"
+  SAW_NS="${SAW_NS:-saw-${GATEWAY}}"
+  BOM_CHART="$(cd "$(dirname "$0")/.." && pwd)/charts/saw-bom"
+  # An apply + recreate can take minutes; poll rather than guess a sleep.
+  DRILL_TIMEOUT="${DRILL_TIMEOUT:-1500}"
+
+  # The BOM reaches the VM over virtiofs only with vm.liveInputs; otherwise it
+  # is an iso9660 disk KubeVirt re-renders on VM start, so the drill restarts
+  # the VM after each helm upgrade.
+  LIVE_INPUTS="no"
+  if oc -n "${SAW_NS}" get vm "${GATEWAY}" \
+      -o jsonpath='{.spec.template.spec.domain.devices.filesystems[*].name}' 2>/dev/null \
+      | grep -q saw-profiles; then
+    LIVE_INPUTS="yes"
+  fi
+
+  STATE_FILE=$(mktemp)
+  CONTROLLER=(python3 "${SCRIPT_ROOT}/scripts/e2e-harness-controller.py"
+    --state "${STATE_FILE}" --namespace "${SAW_NS}" --release "${BOM_RELEASE}"
+    --chart "${BOM_CHART}" --gateway "${GATEWAY}" --workspace "${WORKSPACE}"
+    --sandbox "${SANDBOX}" --application "${BOM_APPLICATION}"
+    --argo-namespace "${ARGO_NAMESPACE}" --timeout "${DRILL_TIMEOUT}"
+    --interval "${DRILL_POLL_INTERVAL:-15}")
+  [[ "${LIVE_INPUTS}" == "yes" ]] && CONTROLLER+=(--live-inputs)
+  RESTORED=no
+  cleanup_drill() {
+    local code=$?
+    if [[ "${RESTORED}" != "yes" ]]; then
+      echo "  restoring original BOM controller state"
+      if "${CONTROLLER[@]}" restore && {
+        [[ ! -s "${STATE_FILE}" ]] || wait_mount "$("${CONTROLLER[@]}" original)"
+      }; then
+        RESTORED=yes
+      else
+        echo "  ERROR: restoration failed; snapshot retained at ${STATE_FILE}" >&2
+        [[ "${code}" -ne 0 ]] || code=1
+      fi
+    fi
+    [[ "${RESTORED}" != "yes" ]] || rm -f "${STATE_FILE}"
+    return "${code}"
+  }
+  trap cleanup_drill EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  # want=gone: the sandbox must come back without /sandbox/harness.
+  # want=present: it must come back with it. An unreachable gateway or a
+  # missing sandbox is "not yet" in both directions, since the VM is
+  # restarting and the installer is recreating the sandbox underneath.
+  wait_mount() { # wait_mount gone|present
+    local want="$1" deadline=$((SECONDS + DRILL_TIMEOUT)) have
+    while [[ "${SECONDS}" -lt "${deadline}" ]]; do
+      sleep "${DRILL_POLL_INTERVAL:-15}"
+      "${GW[@]}" sandbox list --workspace "${WORKSPACE}" >/dev/null 2>&1 || continue
+      sb_exec true >/dev/null 2>&1 || continue
+      have=$(sb_exec sh -c 'if test -d /sandbox/harness; then printf present; else printf gone; fi' 2>/dev/null) || continue
+      if [[ "${have}" == "${want}" ]]; then
+        local paths
+        if ! paths=$(sb_exec sh -c 'OPENCLAW_HOME=/sandbox openclaw config get plugins.load.paths' 2>&1); then
+          if [[ "${want}" == "gone" && "${paths}" == 'Config path is valid but unset: plugins.load.paths. The runtime default applies until you set an authored value with openclaw config set plugins.load.paths <value>.' ]]; then
+            paths='[]'
+          else
+            continue
+          fi
+        fi
+        if [[ "${want}" == "gone" ]] && echo "${paths}" | grep -q "/sandbox/harness"; then continue; fi
+        if [[ "${want}" == "present" ]] && ! echo "${paths}" | grep -q "/sandbox/harness"; then continue; fi
+        return 0
+      fi
+    done
+    return 1
+  }
+
+  if ! command -v oc >/dev/null 2>&1; then
+    fail "disable/restore drill requires oc"
+    exit 1
+  elif [[ "${LIVE_INPUTS}" != "yes" ]] && ! command -v virtctl >/dev/null 2>&1; then
+    fail "disable/restore drill requires virtctl when vm.liveInputs is off"
+    exit 1
+  fi
+  "${CONTROLLER[@]}" prepare || exit 1
+  ORIGINAL_MOUNT=$("${CONTROLLER[@]}" original)
+  echo "  disabling harness through the deployment controller"
+  "${CONTROLLER[@]}" disable || exit 1
+  if wait_mount gone; then
+    pass "harness disabled: sandbox recreated without /sandbox/harness, plugins.load.paths clean"
+  else
+    fail "harness still mounted or plugins.load.paths stale after disable (timeout ${DRILL_TIMEOUT}s)"
+    exit 1
+  fi
+  echo "  restoring original harness and controller settings"
+  "${CONTROLLER[@]}" restore || exit 1
+  if wait_mount "${ORIGINAL_MOUNT}"; then
+    pass "original harness state restored"
+    RESTORED=yes
+    rm -f "${STATE_FILE}"
+    trap - EXIT INT TERM
+  else
+    fail "harness not restored (timeout ${DRILL_TIMEOUT}s)"
+    exit 1
+  fi
 fi
 
 echo ""

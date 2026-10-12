@@ -39,8 +39,8 @@ if [ -n "${NEMOCLAW_CORPORATE_CA_B64:-}" ]; then
   export NODE_EXTRA_CA_CERTS="$ca_file"
 fi
 npm ci --ignore-scripts --no-audit --no-fund --no-progress
+npm audit --audit-level=high
 npm audit signatures
 npm test
 npm run typecheck
 npm run bundle
-echo "[nemoclaw] skipping npm audit (upstream advisory gap — fast-uri/hono/ip-address)"

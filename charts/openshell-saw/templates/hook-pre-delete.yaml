@@ -56,6 +56,7 @@ metadata:
   name: {{ include "openshell-sandbox.fullname" . }}-cleanup
   labels:
     {{- include "openshell-sandbox.labels" . | nindent 4 }}
+    openshell.pattern/role: cleanup
   annotations:
     helm.sh/hook: pre-delete
     helm.sh/hook-weight: "5"
@@ -63,6 +64,7 @@ metadata:
 spec:
   serviceAccountName: {{ include "openshell-sandbox.fullname" . }}-cleanup
   restartPolicy: Never
+  activeDeadlineSeconds: 240
   securityContext:
     runAsNonRoot: true
     seccompProfile:
@@ -86,18 +88,30 @@ spec:
           CACERT="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 
           kube() {
-            curl -sf --cacert "${CACERT}" -H "Authorization: Bearer ${TOKEN}" "$@"
+            local method="$1" url="$2" status
+            if ! status="$(curl -sS --connect-timeout 5 --max-time 20 \
+              --cacert "${CACERT}" -H "Authorization: Bearer ${TOKEN}" \
+              -X "${method}" -o /tmp/saw-cleanup-response.json \
+              -w '%{http_code}' "${url}")"; then
+              echo "Kubernetes API ${method} failed: ${url}" >&2
+              return 1
+            fi
+            case "${status}" in
+              2??) [[ "${method}" != GET ]] || cat /tmp/saw-cleanup-response.json ;;
+              404) [[ "${method}" == DELETE ]] || { echo "Kubernetes API GET returned 404: ${url}" >&2; return 1; } ;;
+              *) echo "Kubernetes API ${method} returned HTTP ${status}: ${url}" >&2; return 1 ;;
+            esac
           }
 
           echo "Deleting VM ${VM_NAME}..."
-          kube -X DELETE "${API_SERVER}/apis/kubevirt.io/v1/namespaces/${NS}/virtualmachines/${VM_NAME}" || echo "VM not found (already deleted)"
+          kube DELETE "${API_SERVER}/apis/kubevirt.io/v1/namespaces/${NS}/virtualmachines/${VM_NAME}"
 
           echo "Deleting PVCs for ${VM_NAME}..."
-          PVCS=$(kube "${API_SERVER}/api/v1/namespaces/${NS}/persistentvolumeclaims" \
-            | grep -o "\"${VM_NAME}[^\"]*\"" | tr -d '"' | sort -u || true)
+          PVC_JSON="$(kube GET "${API_SERVER}/api/v1/namespaces/${NS}/persistentvolumeclaims")"
+          PVCS=$(printf '%s' "${PVC_JSON}" | grep -o "\"${VM_NAME}[^\"]*\"" | tr -d '"' | sort -u || true)
           for pvc in ${PVCS}; do
             echo "  deleting PVC ${pvc}"
-            kube -X DELETE "${API_SERVER}/api/v1/namespaces/${NS}/persistentvolumeclaims/${pvc}" || true
+            kube DELETE "${API_SERVER}/api/v1/namespaces/${NS}/persistentvolumeclaims/${pvc}"
           done
 
           echo "Cleanup complete."

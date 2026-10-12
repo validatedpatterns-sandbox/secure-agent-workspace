@@ -1,0 +1,39 @@
+[openshell]
+version = 2
+
+[openshell.gateway]
+compute_driver = "podman"
+# Only the governance interceptor vends provider profiles; imported
+# profiles are not used.
+provider_profile_sources = [
+  { type = "interceptor", name = "governance" },
+]
+
+[openshell.drivers.podman]
+supervisor_image = "quay.io/opendatahub/odh-openshell-supervisor@sha256:0179eb17dcc0098d3fce360035c0be0c26a39949ce09a397c7c259bf728170ff"
+sandbox_runtime_image = "quay.io/opendatahub/odh-openshell-sandbox@sha256:283838f9787bdd876ec8f110a5d5b5c752082a410f75173f0abf2533ae651989"
+
+[[openshell.gateway.interceptors]]
+name           = "governance"
+grpc_endpoint  = "http://governance-interceptor.openshell-agents.svc.cluster.local:18081"
+allow_insecure_transport = true
+order          = 10
+failure_policy = "fail_closed"
+binding_policy = "allowlist"
+timeout        = "500ms"
+
+[[openshell.gateway.interceptors.bindings]]
+rpc = "openshell.v1.OpenShell/CreateSandbox"
+phases = ["modify_operation", "validate"]
+
+[[openshell.gateway.interceptors.bindings]]
+rpc = "openshell.v1.OpenShell/CreateProvider"
+phases = ["validate"]
+
+[[openshell.gateway.interceptors.bindings]]
+rpc = "openshell.v1.OpenShell/UpdateConfig"
+phases = ["validate"]
+
+[[openshell.gateway.interceptors.bindings]]
+rpc = "openshell.v1.OpenShell/SubmitPolicyAnalysis"
+phases = ["validate"]

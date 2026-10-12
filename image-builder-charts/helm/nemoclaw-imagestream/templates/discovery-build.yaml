@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nemoclaw-discovery-build-inputs
+  labels:
+    {{- include "nemoclaw-imagestream.labels" . | nindent 4 }}
+data:
+  package.json: |
+{{ .Files.Get "files/discovery-runtime/package.json" | indent 4 }}
+  package-lock.json: |
+{{ .Files.Get "files/discovery-runtime/package-lock.json" | indent 4 }}
+  install-reviewed-runtime.sh: |
+{{ .Files.Get "files/install-reviewed-runtime.sh" | indent 4 }}
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: nemoclaw-discovery-runtime
+  labels:
+    {{- include "nemoclaw-imagestream.labels" . | nindent 4 }}
+spec:
+  lookupPolicy:
+    local: true
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: nemoclaw-discovery-runtime
+  labels:
+    {{- include "nemoclaw-imagestream.labels" . | nindent 4 }}
+spec:
+  source:
+    type: Git
+    dockerfile: |
+{{ .Files.Get "files/discovery-runtime/Dockerfile" | indent 6 }}
+    git:
+      uri: {{ .Values.source.git.uri }}
+      ref: {{ .Values.source.git.ref }}
+    configMaps:
+      - configMap:
+          name: nemoclaw-discovery-build-inputs
+        destinationDir: tools/mcp-tool-discovery-runtime
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+      buildArgs:
+        - name: NODE_VERSION
+          value: {{ .Values.build.discoveryNodeVersion | quote }}
+  output:
+    to:
+      kind: ImageStreamTag
+      name: nemoclaw-discovery-runtime:latest
+  triggers: []

@@ -4,11 +4,17 @@ on:
   push:
     branches: [main]
     paths:
-      - image-builder-charts/governance-interceptor/**
+      - .github/actions/verify-public-image/**
+      - .github/workflows/build-governance-interceptor.yml
+      - .github/actions/build-push-image/**
+      - tests/charts/test_governance_interceptor_image.py
       - image-builder-charts/helm/governance-interceptor-image/**
   pull_request:
     paths:
-      - image-builder-charts/governance-interceptor/**
+      - .github/actions/verify-public-image/**
+      - .github/workflows/build-governance-interceptor.yml
+      - .github/actions/build-push-image/**
+      - tests/charts/test_governance_interceptor_image.py
       - image-builder-charts/helm/governance-interceptor-image/**
   workflow_dispatch:
 
@@ -31,18 +37,64 @@ jobs:
         id: params
         run: |
           VALUES="image-builder-charts/helm/governance-interceptor-image/values.yaml"
-          echo "openshell_ref=$(yq '.source.git.ref' "$VALUES")" \
-            >> "$GITHUB_OUTPUT"
+          REF=$(yq '.source.git.ref' "$VALUES")
+          DEFAULT_REF=$(sed -n 's/^ARG OPENSHELL_REF=//p' image-builder-charts/helm/governance-interceptor-image/files/Dockerfile)
+          test "$REF" = "$DEFAULT_REF"
+          test "$REF" = "v0.1.2"
+          echo "openshell_ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "openshell_uri=$(yq '.source.git.uri' "$VALUES")" >> "$GITHUB_OUTPUT"
+          echo "builder_image=$(yq '.build.builderImage' "$VALUES")" >> "$GITHUB_OUTPUT"
+          echo "runtime_image=$(yq '.build.ghcrRuntimeImage' "$VALUES")" >> "$GITHUB_OUTPUT"
+          echo "context_dir=$(yq '.build.contextDir' "$VALUES")" >> "$GITHUB_OUTPUT"
 
       - uses: ./.github/actions/build-push-image
         with:
           image_name: governance-interceptor
-          context: image-builder-charts/governance-interceptor
-          dockerfile: image-builder-charts/governance-interceptor/Dockerfile
+          context: image-builder-charts/helm/governance-interceptor-image/files
+          dockerfile: image-builder-charts/helm/governance-interceptor-image/files/Dockerfile
           cache_scope: governance-interceptor
           build_args: |
             OPENSHELL_REF=${{ steps.params.outputs.openshell_ref }}
+            OPENSHELL_URI=${{ steps.params.outputs.openshell_uri }}
+            BUILDER_IMAGE=${{ steps.params.outputs.builder_image }}
+            RUNTIME_IMAGE=${{ steps.params.outputs.runtime_image }}
+            CONTEXT_DIR=${{ steps.params.outputs.context_dir }}
           # The chart pins ghcr.io/<owner>/governance-interceptor:<OpenShell ref>;
           # the interceptor must match the SAW gateways' OpenShell release.
           extra_tag: ${{ steps.params.outputs.openshell_ref }}
           registry_token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Compile the OpenShift build source too, including its behavioral tests.
+      # This targets the builder stage; no registry credentials or push required.
+      - uses: azure/setup-helm@v4
+
+      - name: Render OpenShift builder Dockerfile
+        shell: bash
+        run: |
+          python -m pip install pyyaml
+          helm template img image-builder-charts/helm/governance-interceptor-image > "$RUNNER_TEMP/governance-build.yaml"
+          python - <<'PY_RENDER'
+          import os
+          from pathlib import Path
+          import yaml
+          root = Path(os.environ["RUNNER_TEMP"])
+          documents = yaml.safe_load_all((root / "governance-build.yaml").read_text())
+          build = next(d for d in documents if d and d["kind"] == "BuildConfig")
+          (root / "governance-build.Dockerfile").write_text(build["spec"]["source"]["dockerfile"])
+          PY_RENDER
+
+      - name: Compile and test OpenShift interceptor builder
+        uses: docker/build-push-action@v6
+        with:
+          context: image-builder-charts/helm/governance-interceptor-image/files
+          file: ${{ runner.temp }}/governance-build.Dockerfile
+          target: builder
+          build-args: |
+            OPENSHELL_REF=${{ steps.params.outputs.openshell_ref }}
+            OPENSHELL_URI=${{ steps.params.outputs.openshell_uri }}
+            BUILDER_IMAGE=${{ steps.params.outputs.builder_image }}
+            CONTEXT_DIR=${{ steps.params.outputs.context_dir }}
+          push: false
+          cache-from: type=gha,scope=governance-interceptor-openshift
+          cache-to: type=gha,mode=max,scope=governance-interceptor-openshift,ignore-error=true
+          provenance: false

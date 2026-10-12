@@ -30,7 +30,7 @@ spec:
       type: nemoclaw
       enabled: false
       agent: openclaw
-      image: quay.io/rh-ai-quickstart/nemoclaw-sandbox:latest
+      image: ghcr.io/validatedpatterns-sandbox/nemoclaw-sandbox:latest
       providers:
         - nvidia
     - name: toolbox

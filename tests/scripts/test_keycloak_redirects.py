@@ -320,4 +320,3 @@ def test_keycloak_is_found_without_status_external_url(world):
         mod.keycloak_url("saw-keycloak", "openshell-keycloak")
     oc.keycloak_cr = {"status": {"externalURL": url + "/"}}
     assert mod.keycloak_url("saw-keycloak", "openshell-keycloak") == url
-

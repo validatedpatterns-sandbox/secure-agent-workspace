@@ -7,13 +7,16 @@ build:
   contextDir: "examples/governance-interceptor"
   # OpenShell 0.1.x needs Rust 1.94 (rust-version in its Cargo.toml).
   builderImage: "rust:1.94-bookworm"
+  runtimeImage: "registry.access.redhat.com/ubi9-micro:latest"
+  # Shared Dockerfile stage with Debian and its CA certificates installed.
+  ghcrRuntimeImage: "debian-runtime"
 
 output:
   # One tag per OpenShell release. The interceptor must match the gateway
   # (0.1.x negotiates PeerMetadata), and pushing :latest would change the
   # interceptor under SAWs still on another release.
-  externalImage: "quay.io/rh-ai-quickstart/governance-interceptor:v0.1.2"
-  pushSecretName: "quay-push-secret"
-  # Set (e.g. "governance-interceptor:v0.1.2") to build into this cluster's
-  # internal registry instead of pushing externalImage.
-  imageStreamTag: ""
+  externalImage: ""
+  pushSecretName: "ghcr-push-secret"
+  # Build into the internal registry by default. To publish elsewhere, clear
+  # this and explicitly set externalImage plus pushSecretName.
+  imageStreamTag: "governance-interceptor:v0.1.2"

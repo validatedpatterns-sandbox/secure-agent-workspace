@@ -11,7 +11,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 | VM-per-user isolation | One persistent VM per user | One KubeVirt VM per sandbox, cloned from bootc golden image | Implemented |
 | OIDC / SSO | Trusted access broker with SSO | Red Hat Build of Keycloak with OIDC, PKCE, device code flow | Implemented |
 | GitOps control plane | ArgoCD for policy and config | Red Hat Validated Patterns with ArgoCD | Implemented |
-| Network boundary controls | NetworkPolicy, EgressFirewall, EgressIP | TLS passthrough route + auth proxy; NetworkPolicy not yet configured | Partial |
+| Network boundary controls | NetworkPolicy, EgressFirewall, EgressIP | Namespaced default-deny NetworkPolicy for pod ingress and egress, plus EgressFirewall with an explicit hostname allowlist in Git. No EgressIP | Partial |
 | Agent runtime | OpenShell or equivalent runtime sandbox | OpenShell Gateway + OpenClaw/NemoClaw agents | Implemented |
 | Secret management | Credential proxy / external secret boundary | HashiCorp Vault + External Secrets Operator | Implemented |
 | Policy distribution | Signed policy bundles via NFS | Not implemented (Phase II feature) | Gap |
@@ -25,7 +25,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 
 **Reference:** "One VM per user, no shared agent process space."
 
-**Implementation:** Each `make sandbox-create` or ArgoCD-deployed sandbox creates a dedicated `VirtualMachine` resource cloned from the golden image DataSource. The VM runs Fedora 44 with the OpenShell gateway, a container-based agent sandbox, and per-user cloud-init configuration. VMs are isolated at the KubeVirt/QEMU level.
+**Implementation:** Each `make saw-create` or ArgoCD-deployed sandbox creates a dedicated `VirtualMachine` resource cloned from the golden image DataSource. The VM runs Fedora 44 with the OpenShell gateway, a container-based agent sandbox, and per-user cloud-init configuration. VMs are isolated at the KubeVirt/QEMU level.
 
 **Alignment:** Full. The fundamental invariant of single-tenant workspaces is preserved.
 
@@ -63,9 +63,10 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 **Implementation:**
 - TLS passthrough on the gateway route preserves gRPC/HTTP2
 - Auth proxy restricts dashboard access to the sandbox owner
-- No NetworkPolicy or EgressFirewall resources are deployed by default
+- Each sandbox namespace gets an OpenShift `EgressFirewall` named `default`. The VM uses masquerade, so traffic leaving the guest is traffic leaving that pod. Undeclared internet hosts are denied. The allowlist is `egress.allow` plus `egress.extraAllow` in [`charts/openshell-saw/values.yaml`](../charts/openshell-saw/values.yaml), and the Keycloak route host from the OIDC issuer. See [Deployment guide](deployment-guide.md#egress-from-the-vm).
+- An enabled sandbox namespace gets four `NetworkPolicy` objects: default-deny, a narrow VM allow policy, CDI importer access, and exact API egress for the pre-delete cleanup hook. The VM may reach DNS, the selected governance engine, the internal registry, the Keycloak issuer Route through ingress, and outside TCP ports permitted by the EgressFirewall. Pod and Service CIDRs, exact API endpoint IPs, and link-local CIDRs are excluded from the outside rule. GitOps stages the policy off per user until an administrator checks live topology and in-cluster destinations. CI checks profile host and port parity with rendered firewall and policy rules.
 
-**Gap:** The reference design calls for default-deny egress with explicit allowlists. This implementation does not configure network policies. Adding `NetworkPolicy` resources to restrict VM egress to approved inference endpoints and enterprise systems would close this gap.
+**Residual risk:** NetworkPolicy and EgressFirewall cannot filter by Route host. Cluster Routes on TCP 443 remain reachable behind their own authentication. A fixed source address still needs EgressIP; an optional AdminNetworkPolicy could add a cluster-level guardrail.
 
 ### 5. Agent Runtime
 
@@ -123,7 +124,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 - Stop VM: `helm uninstall <sandbox>` or `virtctl stop <vm>`
 - Revoke SSO: Remove user from Keycloak or delete the sandbox's OIDC token
 - Remove route: Managed by helm; deleted with the sandbox release
-- Rebake image: `make build-gateway-image` rebuilds the bootc image
+- Rebake image: `make gateway-build` rebuilds the bootc image
 
 **Alignment:** Full. All kill switch capabilities are available through standard OpenShift and helm operations.
 
@@ -147,7 +148,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 
 ## Recommendations for Closing Gaps
 
-1. **NetworkPolicy:** Add default-deny egress policies to sandbox namespaces with allowlists for inference provider endpoints and enterprise systems.
+1. **Network guardrails:** The sandbox namespace now has default-deny NetworkPolicy and an external hostname EgressFirewall. Consider EgressIP if a fixed source address is required, and an AdminNetworkPolicy for a cluster-wide boundary independent of namespaced policy edits.
 2. **Image admission:** The guest already checks component signatures and can verify an installer bundle with cosign. What is still missing is an admission controller (e.g., Kyverno) that rejects an unapproved golden image, and the publisher public key in `/etc/saw/trust`.
 3. **Audit pipeline:** Deploy OpenShift's cluster logging operator with OCSF-compatible log normalization.
 4. **Policy bundles (Phase II):** Implement when OpenShell's policy API stabilizes — requires NFS storage, a signing pipeline, and an in-VM policy agent.

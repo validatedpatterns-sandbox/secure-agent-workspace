@@ -7,7 +7,7 @@ set -euo pipefail
 
 NS="${NS:-openshell-agents}"
 GOLDEN_IMAGE_NAME="${GOLDEN_IMAGE_NAME:-openshell-gateway}"
-GOLDEN_IMAGE_URL="${GOLDEN_IMAGE_URL:-docker://quay.io/rh-ai-quickstart/openshell-gateway:latest}"
+GOLDEN_IMAGE_URL="${GOLDEN_IMAGE_URL:-docker://${IMAGE_REPO:-ghcr.io/validatedpatterns-sandbox}/${GOLDEN_IMAGE_NAME}:${IMAGE_TAG:-latest}}"
 DISK_SIZE="${DISK_SIZE:-40Gi}"
 
 echo "============================================="

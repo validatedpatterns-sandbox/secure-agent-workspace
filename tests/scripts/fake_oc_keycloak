@@ -1,12 +1,31 @@
 #!/usr/bin/env python3
-"""Fake oc for keycloak-host.sh: answers `get keycloak|route -n NS -o jsonpath=...`
+"""Fake oc for keycloak-host.sh: answers Keycloak and Route list queries
 from $FAKE_KC (JSON: {"ownURL": <openshell-keycloak's status URL>, "externalURL": ..,
 "hostname": .., "labelledRoute": .., "route": ..})."""
 import json, os, sys
 kc = json.loads(os.environ.get("FAKE_KC", "{}"))
 args = sys.argv[1:]
 out = next((a for a in args if a.startswith("jsonpath=")), args[args.index("-o") + 1] if "-o" in args else "")
-if args[:3] == ["get", "keycloak", "openshell-keycloak"]:
+if args[:2] == ["get", "keycloaks"]:
+    items = []
+    if kc.get("ownURL"):
+        items.append({"metadata": {"name": "openshell-keycloak"},
+                      "status": {"externalURL": kc["ownURL"]}})
+    if kc.get("externalURL") or kc.get("hostname"):
+        items.append({"metadata": {"name": "other-keycloak"},
+                      "status": {"externalURL": kc.get("externalURL", "")},
+                      "spec": {"hostname": {"hostname": kc.get("hostname", "")}}})
+    print(json.dumps({"items": items}))
+elif args[:2] == ["get", "routes"]:
+    items = []
+    if kc.get("labelledRoute"):
+        items.append({"metadata": {"name": "keycloak-labelled", "labels": {"app": "keycloak"}},
+                      "spec": {"host": kc["labelledRoute"]}})
+    if kc.get("route"):
+        items.append({"metadata": {"name": "keycloak", "labels": {}},
+                      "spec": {"host": kc["route"]}})
+    print(json.dumps({"items": items}))
+elif args[:3] == ["get", "keycloak", "openshell-keycloak"]:
     print(kc.get("ownURL", ""), end="")
 elif args[:2] == ["get", "keycloak"]:
     print(kc.get("externalURL" if "externalURL" in out else "hostname", ""), end="")

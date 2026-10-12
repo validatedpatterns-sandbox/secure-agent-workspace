@@ -139,6 +139,10 @@ Called by the gateway to fetch the current set of provider profiles from the int
 ### Adding a new provider profile
 
 1. Admin creates `charts/governance-policy/profiles/jira.yaml`
+   and adds each exact external endpoint host to `charts/openshell-saw/values.yaml`
+   `egress.allow` (or `egress.extraAllow` for a site-specific host). An in-cluster
+   endpoint also needs `networkPolicy.extraEgress` for its namespace, pods, and
+   port. CI checks shipped profile hosts and ports against the chart allowlist.
 2. Admin commits and pushes to Git
 3. ArgoCD detects the change and syncs the `governance-policy` application
 4. The `governance-interceptor-profiles` ConfigMap is updated with the new key
@@ -182,7 +186,7 @@ rpc = "openshell.v1.OpenShell/CreateProvider"
 phases = ["validate"]
 ```
 
-The interceptor must be built from the same OpenShell release as the gateways (0.1.x negotiates `PeerMetadata`), and for 0.1.2 it carries a two-line patch for [NVIDIA/OpenShell#3929](https://github.com/NVIDIA/OpenShell/issues/3929): it keeps only the profile-signature annotation, because the gateway hashes profiles with more than one annotation non-deterministically and no sandbox with a provider becomes ready. See `image-builder-charts/governance-interceptor/Dockerfile`.
+The interceptor must be built from the same OpenShell release as the gateways (0.1.x negotiates `PeerMetadata`), and for 0.1.2 it carries a two-line patch for [NVIDIA/OpenShell#3929](https://github.com/NVIDIA/OpenShell/issues/3929): it keeps only the profile-signature annotation, because the gateway hashes profiles with more than one annotation non-deterministically and no sandbox with a provider becomes ready. See `image-builder-charts/helm/governance-interceptor-image/files/Dockerfile`.
 
 The `binding_policy = "allowlist"` means only the explicitly listed RPCs are intercepted. The `failure_policy = "fail_closed"` means if the interceptor is unreachable, all intercepted operations are denied.
 
@@ -207,27 +211,27 @@ gateway interceptor evaluated
 ### List active profiles
 
 ```bash
-make governance-list-profiles OPENSHELL_SAW_NAME=alice
+make governance-profile-list OPENSHELL_SAW_NAME=alice
 ```
 
 ### Add a profile from a YAML file
 
 ```bash
-make governance-create-profile OPENSHELL_SAW_NAME=alice \
+make governance-profile-create OPENSHELL_SAW_NAME=alice \
   PROFILE_NAME=jira PROFILE_FILE=/path/to/jira.yaml
 ```
 
 ### Remove a profile
 
 ```bash
-make governance-remove-profile OPENSHELL_SAW_NAME=alice \
+make governance-profile-remove OPENSHELL_SAW_NAME=alice \
   PROFILE_NAME=github
 ```
 
 ### Restore a previously removed profile
 
 ```bash
-make governance-add-profile OPENSHELL_SAW_NAME=alice \
+make governance-profile-add OPENSHELL_SAW_NAME=alice \
   PROFILE_NAME=github
 ```
 
@@ -248,4 +252,4 @@ helm upgrade --install governance-policy charts/governance-policy \
   --namespace openshell-agents
 ```
 
-`governance-list-profiles` queries the gateway named by `OPENSHELL_SAW_NAME` (default `openshell-saw`).
+`make governance-profile-list` lists local profiles without a name. Set `OPENSHELL_SAW_NAME` to query that gateway.

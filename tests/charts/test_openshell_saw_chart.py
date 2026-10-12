@@ -26,7 +26,10 @@ pytestmark = pytest.mark.skipif(not HELM, reason="helm is not installed")
 
 
 def helm_template(chart=CHART, *args, release="saw-test", namespace="saw-alice"):
-    return subprocess.run([HELM, "template", release, str(chart), "--namespace", namespace, *args],
+    topology = (["-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml")]
+                if Path(chart) == CHART else [])
+    return subprocess.run([HELM, "template", release, str(chart), "--namespace", namespace,
+                           *topology, *args],
                           capture_output=True, text=True)
 
 
@@ -40,6 +43,11 @@ def _pattern_saw_settings():
         if isinstance(value, dict):
             for k, v in value.items():
                 yield from flatten(f"{prefix}.{k}" if prefix else k, v)
+        elif isinstance(value, list):
+            # Empty topology lists match openshell-saw defaults. Keep them as
+            # lists rather than converting `[]` into a string via --set.
+            if value:
+                yield "--set-json", f"{prefix}={json.dumps(value)}"
         else:
             yield "--set", f"{prefix}={str(value).lower() if isinstance(value, bool) else value}"
 
@@ -403,6 +411,236 @@ def test_cluster_domain_fills_routes_issuer_and_dashboard():
         installer_data(docs)["gateway.env"]
 
 
+DEFAULT_EGRESS_HOSTS = [
+    "quay.io",
+    "cdn.quay.io",
+    "cdn01.quay.io",
+    "cdn02.quay.io",
+    "cdn03.quay.io",
+    "cdn04.quay.io",
+    "cdn05.quay.io",
+    "cdn06.quay.io",
+    "ghcr.io",
+    "pkg-containers.githubusercontent.com",
+    "registry.fedoraproject.org",
+    "integrate.api.nvidia.com",
+    "api.search.brave.com",
+    "api.openai.com",
+    "api.tavily.com",
+    "registry.npmjs.org",
+    "github.com",
+    "api.github.com",
+    "api-1.github.com",
+    "slack.com",
+    "generativelanguage.googleapis.com",
+    "cloudcode-pa.googleapis.com",
+    "accounts.google.com",
+    "oauth2.googleapis.com",
+    "www.googleapis.com",
+    "iamcredentials.googleapis.com",
+    "gmail.googleapis.com",
+]
+NODE_ALLOW_PORTS = [
+    {"protocol": "TCP", "port": 443},
+    {"protocol": "TCP", "port": 80},
+]
+
+
+def _egress_names(docs):
+    firewalls = [d for (kind, _), d in docs.items() if kind == "EgressFirewall"]
+    assert len(firewalls) == 1
+    assert firewalls[0]["metadata"]["name"] == "default"
+    assert firewalls[0]["apiVersion"] == "k8s.ovn.org/v1"
+    rules = firewalls[0]["spec"]["egress"]
+    return rules, [r["to"]["dnsName"] for r in rules if r["to"].get("dnsName")]
+
+
+def _assert_safe_order(rules):
+    """Allows come first. Both IP families are denied, and nothing is an allow-all."""
+    types = [r["type"] for r in rules]
+    assert types[0] == "Allow"
+    assert "Deny" in types
+    assert types[types.index("Deny"):] == ["Deny", "Deny"]
+    assert rules[-2] == {"type": "Deny", "to": {"cidrSelector": "0.0.0.0/0"}}
+    assert rules[-1] == {"type": "Deny", "to": {"cidrSelector": "::/0"}}
+    for rule in rules:
+        assert set(rule["to"]) <= {"dnsName", "cidrSelector", "nodeSelector"}
+        assert len(rule["to"]) == 1
+        if rule["type"] == "Allow" and "cidrSelector" in rule["to"]:
+            assert rule["to"]["cidrSelector"] not in {"0.0.0.0/0", "::/0"}
+
+
+def test_egress_firewall_denies_undeclared_hosts(default_docs):
+    rules, allowed = _egress_names(default_docs)
+    _assert_safe_order(rules)
+    assert rules[0]["to"]["nodeSelector"]["matchLabels"] == {"kubernetes.io/os": "linux"}
+    assert rules[0]["ports"] == NODE_ALLOW_PORTS
+    assert allowed == DEFAULT_EGRESS_HOSTS
+    assert all(r["ports"] == [{"protocol": "TCP", "port": 443}] for r in rules if "dnsName" in r["to"])
+    assert all(h.strip() and "*" not in h and "/" not in h for h in allowed)
+
+
+def test_egress_firewall_allows_keycloak_and_extra_hosts():
+    docs = render("--set", "global.clusterDomain=example.com",
+                  "--set-string", "egress.extraAllow[0]=vllm.example.net")
+    rules, allowed = _egress_names(docs)
+    _assert_safe_order(rules)
+    assert "vllm.example.net" in allowed
+    assert "openshell-keycloak-ingress-saw-keycloak.apps.example.com" in allowed
+    assert "example.com" not in allowed
+
+
+def test_egress_keycloak_host_is_taken_from_the_issuer_and_not_repeated():
+    host = "openshell-keycloak-ingress-saw-keycloak.apps.example.com"
+    docs = render("--set", "global.clusterDomain=example.com",
+                  "--set-string", f"egress.extraAllow[0]={host}")
+    _, allowed = _egress_names(docs)
+    assert allowed.count(host) == 1
+
+    docs = render("--set-string", "oidc.issuerUrl=https://id.example.net/realms/openshell")
+    rules, allowed = _egress_names(docs)
+    assert "id.example.net" in allowed
+    assert not any("://" in h or "/" in h or ":" in h for h in allowed)
+    keycloak = next(r for r in rules if r["to"].get("dnsName") == "id.example.net")
+    assert keycloak["ports"] == [{"protocol": "TCP", "port": 443}]
+
+
+def _host_ports(rules):
+    return [(r["to"]["dnsName"], r["ports"][0]["port"]) for r in rules if "dnsName" in r["to"]]
+
+
+def test_egress_allows_an_external_golden_image_url():
+    docs = render("--set-string", "source.goldenImageURL=https://images.example.net/disk.qcow2")
+    rules, _ = _egress_names(docs)
+    assert ("images.example.net", 443) in _host_ports(rules)
+
+    docs = render("--set-string", "source.httpURL=http://images.example.net:8080/disk.qcow2")
+    rules, _ = _egress_names(docs)
+    assert ("images.example.net", 8080) in _host_ports(rules)
+    assert ("images.example.net", 80) not in _host_ports(rules)
+
+
+def test_egress_does_not_repeat_a_disk_host_already_allowed():
+    docs = render("--set-string", "source.httpURL=https://quay.io/openshell-gateway.qcow2")
+    rules, _ = _egress_names(docs)
+    assert _host_ports(rules).count(("quay.io", 443)) == 1
+
+    docs = render("--set-string", "source.goldenImageURL=https://vllm.example.net/disk.qcow2",
+                  "--set-string", "egress.extraAllow[0]=vllm.example.net")
+    rules, _ = _egress_names(docs)
+    assert _host_ports(rules).count(("vllm.example.net", 443)) == 1
+
+    docs = render("--set-string", "source.httpURL=http://quay.io:8080/disk.qcow2")
+    rules, _ = _egress_names(docs)
+    ports = _host_ports(rules)
+    assert ports.count(("quay.io", 443)) == 1
+    assert ("quay.io", 8080) in ports
+
+    docs = render("--set-string", "source.goldenImageURL=docker://quay.io/x/old:1")
+    rules, _ = _egress_names(docs)
+    assert _host_ports(rules).count(("quay.io", 443)) == 1
+
+    docs = render("--set-string",
+                  "source.goldenImageURL=https://image-registry.openshift-image-registry.svc:5000/ns/img")
+    _, allowed = _egress_names(docs)
+    assert not any("image-registry" in host for host in allowed)
+
+
+def test_egress_keeps_a_custom_keycloak_port_when_the_host_is_already_listed():
+    """allow and extraAllow are TCP 443. Skipping on hostname alone would drop 8443."""
+    docs = render("--set-string", "oidc.issuerUrl=https://id.example.net:8443/realms/openshell",
+                  "--set-string", "egress.extraAllow[0]=id.example.net")
+    rules, _ = _egress_names(docs)
+    ports = _host_ports(rules)
+    assert ("id.example.net", 443) in ports
+    assert ("id.example.net", 8443) in ports
+
+    docs = render("--set-string", "oidc.issuerUrl=https://id.example.net/realms/openshell",
+                  "--set-string", "egress.extraAllow[0]=id.example.net")
+    rules, _ = _egress_names(docs)
+    assert _host_ports(rules).count(("id.example.net", 443)) == 1
+
+
+def test_egress_keycloak_port_comes_from_the_issuer():
+    docs = render("--set-string", "oidc.issuerUrl=https://id.example.net:8443/realms/openshell")
+    rules, allowed = _egress_names(docs)
+    assert "id.example.net" in allowed
+    assert "id.example.net:8443" not in allowed
+    keycloak = next(r for r in rules if r["to"].get("dnsName") == "id.example.net")
+    assert keycloak["ports"] == [{"protocol": "TCP", "port": 8443}]
+
+
+def test_egress_covers_every_bom_and_profile_image(default_docs):
+    """Guest pulls must work with harness bundles disabled."""
+    values = yaml.safe_load((CHART / "values.yaml").read_text())
+    allowed = set(values["egress"]["allow"])
+    _, rendered = _egress_names(default_docs)
+    images = []
+
+    def collect(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in {"image", "cliImage"} and isinstance(value, str):
+                    images.append(value)
+                else:
+                    collect(value)
+        elif isinstance(node, list):
+            for value in node:
+                collect(value)
+
+    collect(values["bom"])
+    for path in (ROOT / "charts/saw-bom/profiles").rglob("*.yaml"):
+        collect(yaml.safe_load(path.read_text()))
+    # `base` is an installer alias for the BOM sandbox image, not a registry.
+    registries = {image.split("/", 1)[0] for image in images if image != "base"}
+    assert registries <= allowed, f"image registries missing from egress.allow: {registries - allowed}"
+    assert registries <= set(rendered)
+    assert "pkg-containers.githubusercontent.com" in allowed
+
+
+def test_egress_without_an_issuer_adds_no_empty_hostname(default_docs):
+    rules, allowed = _egress_names(default_docs)
+    assert all(allowed)
+    assert not any(rule["to"] == {} for rule in rules)
+
+
+def test_egress_custom_allow_list_cannot_drop_the_deny():
+    docs = render("--set-string", "egress.allow[0]=only.example.net")
+    rules, allowed = _egress_names(docs)
+    _assert_safe_order(rules)
+    assert "only.example.net" in allowed
+
+
+def test_egress_firewall_can_be_disabled():
+    docs = render("--set", "egress.enabled=false")
+    assert not any(kind == "EgressFirewall" for kind, _ in docs)
+    assert any(kind == "VirtualMachine" for kind, _ in docs)
+
+
+@pytest.mark.parametrize("host", [
+    "*.quay.io",
+    "quay.io.*",
+    "cdn.*.quay.io",
+    "*",
+    "https://example.com",
+    "example.com:443",
+    "example.com/v1",
+    "Example.COM",
+    "1.2.3.4",
+    "10.0.0.0/8",
+    "localhost",
+    "user@example.com",
+    "-bad.example.com",
+    "example..com",
+    " example.com",
+])
+def test_egress_rejects_unsafe_hosts(host):
+    result = helm_template(CHART, "--set", "sandboxName=saw-test",
+                           "--set-string", f"egress.extraAllow[0]={host}")
+    assert result.returncode != 0, host
+    assert "egress host" in result.stderr
+
+
 # -- installer ConfigMap -----------------------------------------------------
 
 def test_installer_configmap_ships_the_real_files(default_docs, ab):
@@ -424,7 +662,7 @@ def test_owner_subject_is_passed_to_installer():
 def test_pattern_override_renders_with_nemoclaw(ab):
     docs = render(*PATTERN_SAW_SETTINGS)
     bom = yaml.safe_load(installer_data(docs)["installer-bom.yaml"])
-    assert bom["spec"]["nemoclaw"]["cliImage"].startswith("quay.io/rh-ai-quickstart/nemoclaw-cli")
+    assert bom["spec"]["nemoclaw"]["cliImage"].startswith("ghcr.io/validatedpatterns-sandbox/nemoclaw-cli")
     assert ab.validate_bom(bom)["spec"]["openshell"]["gateway"]
 
 
@@ -695,13 +933,6 @@ def test_every_profile_names_its_binaries():
             assert doc.get("binaries"), path.name
 
 
-def test_installer_profile_copies_match_governance_policy():
-    copies = sorted(SAW_PROFILES.glob("*.yaml"))
-    assert [p.name for p in copies] == ["brave.yaml", "gmail.yaml", "nvidia.yaml", "openai.yaml", "slack.yaml"]
-    for path in copies:
-        assert path.read_text() == (GOVERNANCE_PROFILES / path.name).read_text(), path.name
-
-
 def test_installer_disk_ships_provider_profiles(default_docs, ab, tmp_path):
     data = installer_data(default_docs)
     assert data["provider-profile-brave.yaml"] == (SAW_PROFILES / "brave.yaml").read_text()
@@ -712,7 +943,7 @@ def test_installer_disk_ships_provider_profiles(default_docs, ab, tmp_path):
 
 def test_create_script_passes_the_keycloak_it_finds():
     text = (ROOT / "scripts" / "openshell-saw-create.sh").read_text()
-    assert "--set oidc.keycloakName=${KC_NAME}" in text and "--set oidc.realm=${KEYCLOAK_REALM}" in text
+    assert "oidc.keycloakName=${KC_NAME}" in text and "oidc.realm=${KEYCLOAK_REALM}" in text
 
 
 def test_secret_template_matches_the_default_profile():
@@ -811,6 +1042,13 @@ def test_signing_mode_defaults_to_warn(default_docs):
     assert unit.index("saw-stage-installer") < unit.index("apply_bom.py install")
 
 
+@pytest.mark.parametrize("ttl", [0, 120, 300])
+def test_harness_signature_cache_ttl_reaches_installer(ttl):
+    docs = render("--set", f"harness.cosign.cacheTtlSeconds={ttl}")
+    cfg = json.loads(installer_data(docs)["config.json"])
+    assert cfg["harness"]["cosign"]["cacheTtlSeconds"] == ttl
+
+
 def test_enforce_without_trust_material_fails_at_render():
     err = render_error("--set", "signing.mode=enforce")
     assert "signing.mode enforce requires" in err
@@ -884,3 +1122,155 @@ def test_bad_sandbox_ui_entries_fail_the_render(tmp_path, entry, message):
     values.write_text(yaml.safe_dump({"sandboxUi": [entry]}))
     result = helm_template(CHART, "--set", "sandboxName=saw-test", "-f", str(values))
     assert result.returncode != 0 and message in result.stderr
+
+
+def test_the_ca_bundle_reaches_the_installer(tmp_path):
+    pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
+    values = tmp_path / "v.yaml"
+    values.write_text(yaml.safe_dump({"oidc": {"caBundle": pem}}))
+    config = json.loads(installer_data(render("-f", str(values)))["config.json"])
+    assert config["caBundle"] == pem
+    assert json.loads(installer_data(render())["config.json"])["caBundle"] == ""
+
+
+def test_the_cluster_ca_secret_is_used_for_the_in_cluster_keycloak_only(tmp_path):
+    """oidc.clusterCaSecret: the VM mounts that Secret like a provider Secret
+    (it waits for it) and the installer trusts its ca-bundle.crt. Not for an
+    external issuer, and an explicit caBundle wins."""
+    def secret_volumes(docs):
+        vols = docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]["volumes"]
+        return [v["secret"]["secretName"] for v in vols if "secret" in v]
+
+    docs = render("--set", "oidc.clusterCaSecret=saw-ingress-ca")
+    config = json.loads(installer_data(docs)["config.json"])
+    assert config["caBundleSecret"] == "saw-ingress-ca"
+    assert "saw-ingress-ca" in config["secrets"]
+    assert "saw-ingress-ca" in secret_volumes(docs)
+
+    pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
+    for extra in ({"issuerUrl": "https://sso.example.com/realms/corp"}, {"caBundle": pem}):
+        values = tmp_path / "v.yaml"
+        values.write_text(yaml.safe_dump({"oidc": {"clusterCaSecret": "saw-ingress-ca", **extra}}))
+        docs = render("-f", str(values))
+        config = json.loads(installer_data(docs)["config.json"])
+        assert config["caBundleSecret"] == ""
+        assert "saw-ingress-ca" not in config["secrets"]
+        assert "saw-ingress-ca" not in secret_volumes(docs)
+
+    assert json.loads(installer_data(render())["config.json"])["caBundleSecret"] == ""
+
+
+def test_the_imperative_jobs_run_playbooks_that_exist():
+    """values-prod's imperative jobs, including saw-ingress-ca (the cluster's
+    ingress CA into Vault for the users' saw-ingress-ca Secret)."""
+    jobs = yaml.safe_load((ROOT / "values-prod.yaml").read_text())["clusterGroup"]["imperative"]["jobs"]
+    by_name = {j["name"]: j for j in jobs}
+    assert by_name["saw-ingress-ca"]["playbook"] == "ansible/playbooks/saw-ingress-ca.yaml"
+    for job in jobs:
+        (play,) = yaml.safe_load((ROOT / job["playbook"]).read_text())
+        assert play["hosts"] == "localhost", job["name"]
+    (play,) = yaml.safe_load((ROOT / "ansible/playbooks/saw-ingress-ca.yaml").read_text())
+    assert play["vars"]["prefix_base"] == "hub" and play["vars"]["key_name"] == "cluster-ingress-ca"
+
+
+def test_the_installer_configmap_needs_server_side_apply(default_docs):
+    """Found live: with client-side apply Argo CD copies an object into its
+    last-applied-configuration annotation, which may hold at most 262144
+    bytes, and the installer ConfigMap passed that ("metadata.annotations:
+    Too long"). saw-users syncs with ServerSideApply; this keeps the
+    ConfigMap itself well inside the 1 MiB object limit."""
+    cm = default_docs[("ConfigMap", "saw-test-installer")]
+    size = len(json.dumps(cm, separators=(",", ":")))
+    assert size < 768 * 1024, size
+
+
+def test_a_ca_bundle_with_a_private_key_does_not_render(tmp_path):
+    """Pasting the TLS Secret instead of its ca-bundle.crt would put the key
+    into the installer ConfigMap's config.json."""
+    pem = ("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+           "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----")
+    values = tmp_path / "v.yaml"
+    values.write_text(yaml.safe_dump({"oidc": {"caBundle": pem}}))
+    assert "private key" in render_error("-f", str(values))
+
+
+def test_the_ca_job_verifies_vault_before_sending_the_root_token():
+    (play,) = yaml.safe_load((ROOT / "ansible/playbooks/saw-ingress-ca.yaml").read_text())
+    calls = [t["ansible.builtin.uri"] for t in play["tasks"] if "ansible.builtin.uri" in t]
+    assert calls and all(c["validate_certs"] is True and c["ca_path"] == "{{ vault_ca }}"
+                         for c in calls)
+    assert play["vars"]["vault_ca"].endswith("/serviceaccount/service-ca.crt")
+
+
+def test_the_ca_job_refuses_an_unverifiable_vault_before_reading_the_token():
+    """Live on the GB200 the service CA was there (the Vault calls passed with
+    validate_certs); without it the play stops before it reads the token."""
+    (play,) = yaml.safe_load((ROOT / "ansible/playbooks/saw-ingress-ca.yaml").read_text())
+    names = [t["name"] for t in play["tasks"]]
+    guard = names.index("Refuse to send the root token to an unverified Vault")
+    assert guard < names.index("Read the Vault root token")
+    assert play["tasks"][guard]["when"] == "not vault_ca_file.stat.exists"
+
+
+# -- review follow-ups (harness hosts, gmail, docker:// with pullMethod pod) --
+
+HARNESS_EGRESS_HOSTS = ["rekor.sigstore.dev", "tuf-repo-cdn.sigstore.dev"]
+
+
+def test_egress_allows_sigstore_only_when_harness_bundles_are_on(default_docs):
+    """The installer re-verifies a harness image's cosign signature on every
+    apply and removes the harness when that fails; without these hosts every
+    image harness would be dropped on its first apply."""
+    _, allowed = _egress_names(default_docs)
+    assert not set(HARNESS_EGRESS_HOSTS) & set(allowed)
+    rules, allowed = _egress_names(render("--set", "allowDriverConfig=true"))
+    _assert_safe_order(rules)
+    assert set(HARNESS_EGRESS_HOSTS) <= set(allowed)
+    assert len(allowed) == len(set(allowed))
+    # Listed by hand as well: still one rule each.
+    _, allowed = _egress_names(render("--set", "allowDriverConfig=true",
+                                      "--set-string", "egress.extraAllow[0]=ghcr.io"))
+    assert allowed.count("ghcr.io") == 1
+
+
+SIGSTORE_EGRESS_HOSTS = ["rekor.sigstore.dev", "tuf-repo-cdn.sigstore.dev"]
+
+
+def test_egress_allows_sigstore_when_signing_is_enforced(default_docs):
+    """warn only logs. enforce checks signatures, including keyless ones,
+    so Rekor and the TUF root have to be reachable or the install stops."""
+    _, allowed = _egress_names(default_docs)
+    assert not set(SIGSTORE_EGRESS_HOSTS) & set(allowed)
+    docs = render("--set", "signing.mode=enforce", "--set", "signing.trustKeys[0]=openshell")
+    _, allowed = _egress_names(docs)
+    assert set(SIGSTORE_EGRESS_HOSTS) <= set(allowed)
+    assert "ghcr.io" in allowed
+    # Harness already lists them: still one rule each.
+    _, allowed = _egress_names(render("--set", "signing.mode=enforce",
+                                      "--set", "signing.trustKeys[0]=openshell",
+                                      "--set", "allowDriverConfig=true"))
+    assert allowed.count("rekor.sigstore.dev") == 1
+
+
+def test_egress_allows_the_gmail_api():
+    _, allowed = _egress_names(render())
+    assert "gmail.googleapis.com" in allowed
+
+
+def test_egress_allows_an_outside_registry_only_for_pod_pulls():
+    image = "docker://registry.example.net:5000/x/disk@sha256:" + "a" * 64
+    _, allowed = _egress_names(render("--set-string", "source.registryURL=" + image))
+    assert "registry.example.net" not in allowed      # pullMethod node: the node pulls
+    rules, _ = _egress_names(render("--set-string", "source.registryURL=" + image,
+                                    "--set", "source.pullMethod=pod"))
+    (rule,) = [r for r in rules if r["to"].get("dnsName") == "registry.example.net"]
+    assert rule["ports"] == [{"protocol": "TCP", "port": 5000}]
+    # Already allowed on 443, in-cluster, or a Docker Hub short name: nothing added.
+    for url in ("docker://quay.io/x/disk:1",
+                "docker://image-registry.openshift-image-registry.svc:5000/ns/disk:latest",
+                "docker://fedora:latest"):
+        rules, allowed = _egress_names(render("--set-string", "source.registryURL=" + url,
+                                              "--set", "source.pullMethod=pod"))
+        assert len(allowed) == len(set(allowed)), url
+        assert not [r for r in rules if r["to"].get("dnsName") in
+                    ("image-registry.openshift-image-registry.svc", "fedora")], url

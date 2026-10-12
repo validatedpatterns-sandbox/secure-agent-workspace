@@ -13,3 +13,7 @@ sshVaultPrefix: ""
 secrets:
   - inference
   - web-search
+# Secret to sync the cluster's ingress CA into (from the shared
+# <sshVaultPrefix>/cluster-ingress-ca, written by the saw-ingress-ca
+# imperative job); empty = none. saw-users sets saw-ingress-ca.
+clusterCaSecret: ""

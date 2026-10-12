@@ -1,9 +1,12 @@
 source:
+  # Supplied by make sandbox-build only after its discovery build completes.
+  discoveryImage: ""
   git:
     uri: "https://github.com/NVIDIA/NemoClaw.git"
     ref: "6f3cced4230ae9660c049cc11804daf37797c595" # v0.0.124
 
 build:
+  discoveryNodeVersion: "24.19.0"
   targetArch: "amd64"
   # NemoClaw v0.0.124 amd64 base image.
   baseImage: "ghcr.io/nvidia/nemoclaw/sandbox-base:v0.0.124"

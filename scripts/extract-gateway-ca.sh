@@ -14,16 +14,20 @@ OUT_FILE="${OUT_FILE:?OUT_FILE is required}"
 
 echo "Extracting CA certificate from VM '${VM_NAME}'..."
 mkdir -p "$(dirname "${OUT_FILE}")"
+tmp="$(mktemp "${OUT_FILE}.XXXXXX")"
+trap 'rm -f "${tmp}"' EXIT
 
+# The VM shell must expand HOME, not this local shell.
+# shellcheck disable=SC2016
 SAW_NS="${NS}" VM_NAME="${VM_NAME}" SSH_KEY_PATH="${SSH_KEY_PATH}" \
   "$(dirname "$0")/openshell-saw-vm-ssh.sh" \
-  'cat $HOME/.local/state/openshell/tls/ca.crt' > "${OUT_FILE}"
+  'cat $HOME/.local/state/openshell/tls/ca.crt' > "${tmp}"
 
-if [[ ! -s "${OUT_FILE}" ]]; then
+if [[ ! -s "${tmp}" ]]; then
   echo "Error: CA certificate not found on VM. The gateway may not have started yet." >&2
-  echo "  Run 'make openshell-saw-logs' to check, then re-run this target." >&2
-  rm -f "${OUT_FILE}"
+  echo "  Run 'make saw-logs' to check, then re-run this target." >&2
   exit 1
 fi
 
+mv "${tmp}" "${OUT_FILE}"
 echo "CA certificate installed."

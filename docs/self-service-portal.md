@@ -204,7 +204,7 @@ writes for all of them); what keeps a request to its own user's path is
 `saw-portal-vault` creates the policy and the role through Vault's HTTP API
 with the pattern's root token (`ansible/playbooks/saw-portal-vault.yaml`).
 Without the imperative framework, run
-`make -f Makefile-quickstart portal-vault-setup` once as a cluster admin.
+`make portal-vault-setup` once as a cluster admin.
 
 Deleting a workspace also deletes its keys (`portal.deleteVaultSecrets`): the
 keys of the entry's generation only. A delete's cleanup can be overtaken after
@@ -258,8 +258,8 @@ It works for every workspace, from the portal or from `overrides/saw-users.yaml`
   [Web UI sign-in](../README.md#web-ui-sign-in-redirect-uris).
 
 The UI ports are VM interface ports, so adding or removing a UI takes a VM
-restart (`make openshell-saw-restart`).
-`make -f Makefile-quickstart sandbox-ui OPENSHELL_SAW_NAME=<user>` prints
+restart (`make saw-restart`).
+`make sandbox-ui OPENSHELL_SAW_NAME=<user>` prints
 each UI's URL.
 
 ### One sign-in: OpenClaw trusted-proxy auth
@@ -299,9 +299,9 @@ URL.
 With one sign-in, the Keycloak password is all that protects a UI. The
 realm has no default passwords, a strong-password policy and brute-force
 lockout, and no self-registration (README, "Keycloak test users"); on a
-realm imported earlier, run `make -f Makefile-quickstart keycloak-harden`
+realm imported earlier, run `make keycloak-harden`
 once. Only users an admin adds can sign in to RHDH and request a workspace:
-`make -f Makefile-quickstart keycloak-add-users` creates the accounts for
+`make keycloak-add-users` creates the accounts for
 the names in `overrides/saw-users.yaml` (`USERS_FILE=` for another list).
 
 To check after a sync: open the UI route, sign in with Keycloak, and the

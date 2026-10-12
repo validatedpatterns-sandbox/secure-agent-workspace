@@ -1,47 +1,29 @@
 #!/usr/bin/env bash
 # Generate SSH keypair for sandbox provisioning.
-# Keys are stored in ~/.generated-ssh-keys/ and referenced by path
-# in values-secret.yaml (no content copying needed).
+# Keys are stored outside the repository by default.
 
 set -euo pipefail
 
-KEYS_DIR="${KEYS_DIR:-${HOME}/.generated-ssh-keys}"
-KEY_FILE="${KEYS_DIR}/sandbox-ssh"
-VALUES_GLOBAL="values-global.yaml"
+KEY_FILE="${SSH_KEY_PATH:-${KEYS_DIR:-${HOME}/.generated-ssh-keys}/sandbox-ssh}"
 VALUES_SECRET="${VALUES_SECRET:-${HOME}/values-secret.yaml}"
+umask 077
 
-# Generate keys if they don't exist
 if [[ -f "${KEY_FILE}" ]]; then
-  echo "SSH keypair already exists at ${KEY_FILE}"
+  echo "Private SSH key already exists at ${KEY_FILE}."
 else
-  mkdir -p "${KEYS_DIR}"
+  mkdir -p "$(dirname "${KEY_FILE}")"
   ssh-keygen -t ed25519 -f "${KEY_FILE}" -N "" -C "openshell-sandbox"
-  echo "SSH keypair generated at ${KEY_FILE}"
+  echo "Private SSH key generated at ${KEY_FILE}."
 fi
 
-PUB_KEY=$(cat "${KEY_FILE}.pub")
-
-# Update values-global.yaml with the public key
-if [[ -f "${VALUES_GLOBAL}" ]]; then
-  if grep -q "sshPublicKey:" "${VALUES_GLOBAL}"; then
-    sed -i.bak "s|sshPublicKey:.*|sshPublicKey: \"${PUB_KEY}\"|" "${VALUES_GLOBAL}"
-    rm -f "${VALUES_GLOBAL}.bak"
-    echo "Updated ${VALUES_GLOBAL} with SSH public key."
-  fi
+if [[ ! -f "${KEY_FILE}.pub" ]]; then
+  ssh-keygen -y -f "${KEY_FILE}" > "${KEY_FILE}.pub"
+  echo "Public SSH key recovered at ${KEY_FILE}.pub."
 fi
 
-# Create values-secret.yaml from template if it doesn't exist
-if [[ ! -f "${VALUES_SECRET}" ]]; then
-  if [[ -f "values-secret.yaml.template" ]]; then
-    cp values-secret.yaml.template "${VALUES_SECRET}"
-    echo "Created ${VALUES_SECRET} from template."
-  fi
+if [[ ! -f "${VALUES_SECRET}" && -f "values-secret.yaml.template" ]]; then
+  cp values-secret.yaml.template "${VALUES_SECRET}"
+  echo "Created ${VALUES_SECRET} from the template."
 fi
 
-echo ""
-echo "Done. Keys generated at:"
-echo "  ${KEY_FILE} (private key)"
-echo "  ${KEY_FILE}.pub (public key)"
-echo ""
-echo "The values-secret.yaml template references these paths automatically."
-echo "No manual copying needed."
+echo "SSH keys are ready. Existing keys and values files were preserved."

@@ -368,7 +368,6 @@ def test_an_unlabelled_route_elsewhere_keeps_nothing(world):
     reg.run(once=True)
     assert dashboard(kc)["redirectUris"] == []
 
-
 def test_an_entry_removed_by_hand_is_not_put_back(world):
     reg, kc, kube, _ = world
     reg.bootstrap()
@@ -378,4 +377,3 @@ def test_an_entry_removed_by_hand_is_not_put_back(world):
     dashboard(kc)["redirectUris"] = []
     reg.run(once=True)
     assert dashboard(kc)["redirectUris"] == []
-

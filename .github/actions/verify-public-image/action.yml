@@ -1,0 +1,20 @@
+name: Verify public image
+description: Inspect a published image using an empty Docker auth configuration.
+inputs:
+  image:
+    description: Full image reference to verify anonymously
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+      run: |
+        set -euo pipefail
+        auth_dir=$(mktemp -d)
+        trap 'rm -rf "$auth_dir"' EXIT
+        if ! docker --config "$auth_dir" manifest inspect "$IMAGE" > /dev/null; then
+          echo "::error::Image $IMAGE is not anonymously pullable. Set the GHCR package visibility to Public and rerun the workflow."
+          exit 1
+        fi

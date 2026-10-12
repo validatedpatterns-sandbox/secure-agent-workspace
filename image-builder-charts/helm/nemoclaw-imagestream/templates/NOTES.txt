@@ -1,13 +1,8 @@
 nemoclaw-imagestream deployed.
 
-The ImageStream and BuildConfig are ready. To trigger a build:
+Run make sandbox-build BUILD_NS={{ .Release.Namespace }} to build the audited
+discovery runtime, pin its output digest, then build the sandbox.
 
-  make build              # or: oc start-build {{ (split ":" .Values.output.imageStreamTag)._0 }} -n {{ .Release.Namespace }}
-
-Follow build progress:
-
-  make build-follow       # or: oc logs -f bc/{{ (split ":" .Values.output.imageStreamTag)._0 }} -n {{ .Release.Namespace }}
-
-Check the image after the build completes:
-
-  oc get is {{ (split ":" .Values.output.imageStreamTag)._0 }} -n {{ .Release.Namespace }}
+A direct sandbox build requires source.discoveryImage=<image>@sha256:<digest>.
+Without it, only the discovery BuildConfig is created. No image-change triggers
+or automatic tag fallback are configured.

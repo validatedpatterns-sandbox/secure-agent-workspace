@@ -4,7 +4,8 @@
 Usage: build-installer-manifest.py <rendered-chart.yaml> <out-manifest.txt>
 
 <rendered-chart.yaml> is the output of
-`helm template <release> charts/openshell-saw --namespace <ns> --set sandboxName=<release>`.
+`helm template <release> charts/openshell-saw --namespace <ns> \
+  -f <target-cluster-topology.yaml> --set sandboxName=<release>`.
 
 Must match charts/openshell-saw/files/guest/verify-bundle's manifest_text()
 exactly: the same file set (installer-bom.yaml, apply_bom.py,

@@ -1,0 +1,121 @@
+{{- define "openshell-sandbox.validateEgressHost" -}}
+{{- if contains "*" . }}
+{{- fail (printf "egress host %q uses a wildcard; list the exact hostname (DNSNameResolver is not enabled)" .) }}
+{{- end }}
+{{- if regexMatch "^[0-9.]+$" . }}
+{{- fail (printf "egress host %q is an IP address; a dnsName rule does not match an address, so list a hostname" .) }}
+{{- end }}
+{{- if not (regexMatch "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$" .) }}
+{{- fail (printf "egress host %q must be a lowercase DNS name, with no scheme, port, or path" .) }}
+{{- end }}
+{{- end }}
+{{- if .Values.egress.enabled }}
+{{- $hosts := concat (.Values.egress.allow | default list) (.Values.egress.extraAllow | default list) | uniq }}
+{{- if .Values.allowDriverConfig }}
+{{- range (.Values.egress.harnessAllow | default list) }}
+{{- if not (has . $hosts) }}{{- $hosts = append $hosts . }}{{- end }}
+{{- end }}
+{{- end }}
+{{- if eq (.Values.signing.mode | default "warn") "enforce" }}
+{{- range (.Values.egress.signingAllow | default list) }}
+{{- if not (has . $hosts) }}{{- $hosts = append $hosts . }}{{- end }}
+{{- end }}
+{{- end }}
+{{- range $hosts }}
+{{- include "openshell-sandbox.validateEgressHost" . }}
+{{- end }}
+{{- $keycloak := include "openshell-sandbox.keycloakRouteHost" . | trim }}
+{{- $apiTargets := include "openshell-sandbox.cleanupApiTargets" . | fromJsonArray }}
+{{- $importTargets := include "openshell-sandbox.diskImportTargets" . | fromJsonArray }}
+{{- if $keycloak }}
+{{- include "openshell-sandbox.validateEgressHost" $keycloak }}
+{{- end }}
+apiVersion: k8s.ovn.org/v1
+kind: EgressFirewall
+metadata:
+  name: default
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+spec:
+  egress:
+    # The ingress router (443, 80) on node addresses. Kubelet, SSH, and
+    # NodePorts are not open. A load-balancer IP is not a node address, so
+    # this rule does not cover that path; the Keycloak host does.
+    - type: Allow
+      to:
+        nodeSelector:
+          matchLabels:
+            kubernetes.io/os: linux
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+    {{- /* The pre-delete hook must call the API. Keep this exception through
+           a temporary NetworkPolicy rollback so uninstall remains possible. */}}
+    {{- if .Values.cleanupOnDelete }}
+    {{- if $apiTargets }}
+    {{- range $apiTargets }}
+    - type: Allow
+      to:
+        cidrSelector: {{ .cidr | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ .port }}
+    {{- end }}
+    {{- else }}
+    {{- /* Legacy self-managed fallback while NetworkPolicy is disabled. An
+           enabled NetworkPolicy requires exact API endpoints at render time. */}}
+    - type: Allow
+      to:
+        nodeSelector:
+          matchLabels:
+            node-role.kubernetes.io/control-plane: ""
+      ports:
+        - protocol: TCP
+          port: 6443
+    {{- end }}
+    {{- end }}
+    {{- range $hosts }}
+    - type: Allow
+      to:
+        dnsName: {{ . | quote }}
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- end }}
+    {{- /* egress.allow and extraAllow are TCP 443. A custom issuer port still needs its own rule. */}}
+    {{- $kcPort := include "openshell-sandbox.keycloakRoutePort" . | trim }}
+    {{- $keycloakOn443 := and (eq $kcPort "443") (has $keycloak $hosts) }}
+    {{- if and $keycloak (not $keycloakOn443) }}
+    - type: Allow
+      to:
+        dnsName: {{ $keycloak | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ $kcPort }}
+    {{- end }}
+    {{- /* The selected CDI import source is shared with NetworkPolicy's
+           outside ports. A node pull or clone has no external importer flow. */}}
+    {{- range $importTargets }}
+    {{- $diskHost := .host }}
+    {{- $diskPort := .port | toString }}
+    {{- $listed := and (eq $diskPort "443") (has $diskHost $hosts) }}
+    {{- $sameKeycloak := and (eq $diskHost $keycloak) (eq $diskPort $kcPort) }}
+    {{- if and (not $listed) (not $sameKeycloak) }}
+    {{- include "openshell-sandbox.validateEgressHost" $diskHost }}
+    - type: Allow
+      to:
+        dnsName: {{ $diskHost | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ $diskPort }}
+    {{- end }}
+    {{- end }}
+    - type: Deny
+      to:
+        cidrSelector: 0.0.0.0/0
+    - type: Deny
+      to:
+        cidrSelector: "::/0"
+{{- end }}

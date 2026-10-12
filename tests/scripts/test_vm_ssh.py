@@ -89,7 +89,7 @@ def test_command_from_environment_is_passed_as_one_remote_command(env):
 
 def test_make_target_passes_cmd_through_the_environment():
     text = (ROOT / "Makefile-quickstart").read_text()
-    recipe = text.split("openshell-saw-vm-ssh:", 1)[1].split("\n\n", 1)[0]
+    recipe = text.split("saw-vm-ssh:", 1)[1].split("\n\n", 1)[0]
     assert "openshell-saw-vm-ssh.sh" in recipe and "$(CMD)" not in recipe
 
 
@@ -98,7 +98,8 @@ def test_existing_key_is_not_patched_again(env):
               data={"saurabh": base64.b64encode(PUBKEY.encode()).decode()})
     result = run(env, "--add-key-only")
     assert result.returncode == 0, result.stderr
-    assert "already in Secret" in result.stdout
+    assert "already in Secret" in result.stderr
+    assert not result.stdout
     assert not [c for c in log(env, "oc") if c[0] == "patch"]
     assert sessions(env) == []
 
@@ -108,6 +109,22 @@ def test_other_keys_in_the_secret_are_kept(env):
     set_state(env, secret="alice-ssh-pubkey", data={"bob": other})
     assert run(env, "--add-key-only").returncode == 0
     assert state(env)["data"]["bob"] == other and "saurabh" in state(env)["data"]
+
+
+def test_secret_read_error_is_visible(env):
+    set_state(env, secret="alice-ssh-pubkey", secret_error="Forbidden")
+    result = run(env, "--add-key-only")
+    assert result.returncode != 0
+    assert "Forbidden" in result.stderr
+    assert not [c for c in log(env, "oc") if c[0] == "patch"]
+
+
+def test_vmi_permission_error_stops_without_retry(env):
+    set_state(env, secret="alice-ssh-pubkey", vmi_error="Forbidden")
+    result = run(env, "--add-key-only")
+    assert result.returncode != 0
+    assert "Forbidden" in result.stderr
+    assert len([c for c in log(env, "oc") if c[:2] == ["get", "vmi"]]) == 1
 
 
 def test_fails_when_key_never_syncs(env):

@@ -12,7 +12,7 @@
 #     authorization request (Keycloak returns a short-lived code nobody uses)
 #   - realm roles openshell-admin / openshell-user, when a KeycloakRealmImport
 #     for the realm is visible (otherwise reported as not verifiable)
-set -uo pipefail
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 NS="${KEYCLOAK_NS:-saw-keycloak}"
@@ -26,14 +26,22 @@ warn() { echo "  WARN  $*"; }
 
 echo "Keycloak in namespace ${NS}, realm ${REALM}, client ${CLIENT}:"
 
-if ! host="$("${SCRIPT_DIR}/keycloak-host.sh" "${NS}" 2>/dev/null)"; then
-  fail "no Keycloak found in ${NS} (run 'make keycloak', or set KEYCLOAK_NS)"
-  exit 1
+if host="$("${SCRIPT_DIR}/keycloak-host.sh" "${NS}")"; then
+  :
+else
+  rc=$?
+  fail "no Keycloak found in ${NS} (run 'make keycloak-deploy', or set KEYCLOAK_NS)"
+  exit "${rc}"
 fi
 issuer="https://${host}/realms/${REALM}"
 ok "Keycloak at https://${host}"
 
-disc="$(curl -sk --max-time 15 "${issuer}/.well-known/openid-configuration" || true)"
+if disc="$(curl -skS --max-time 15 "${issuer}/.well-known/openid-configuration")"; then
+  :
+else
+  echo "Error: could not query Keycloak discovery at ${issuer}." >&2
+  exit 2
+fi
 if ! jq -e .issuer >/dev/null 2>&1 <<<"${disc}"; then
   fail "realm '${REALM}' not found at ${issuer} (set KEYCLOAK_REALM)"
   exit 1
@@ -57,12 +65,21 @@ else
   # the device authorization request too.
   verifier="$(openssl rand -hex 32)"
   challenge="$(printf '%s' "${verifier}" | openssl dgst -sha256 -binary | openssl base64 -A | tr '+/' '-_' | tr -d '=')"
-  resp="$(curl -sk --max-time 15 -X POST "${device_ep}" -d "client_id=${CLIENT}" \
-    -d "code_challenge=${challenge}" -d "code_challenge_method=S256" || true)"
+  if resp="$(curl -skS --max-time 15 -X POST "${device_ep}" -d "client_id=${CLIENT}" \
+      -d "code_challenge=${challenge}" -d "code_challenge_method=S256")"; then
+    :
+  else
+    echo "Error: could not query the Keycloak device endpoint." >&2
+    exit 2
+  fi
   if jq -e .device_code >/dev/null 2>&1 <<<"${resp}"; then
     ok "client ${CLIENT} exists, is public and allows the device flow"
   else
-    err="$(jq -r '[.error, .error_description] | map(select(. != null)) | join(": ") | if . == "" then "no response" else . end' <<<"${resp}" 2>/dev/null || echo "no response")"
+    if ! jq -e . <<<"${resp}" >/dev/null; then
+      echo "Error: Keycloak device endpoint returned invalid JSON." >&2
+      exit 2
+    fi
+    err="$(jq -r '[.error, .error_description] | map(select(. != null)) | join(": ") | if . == "" then "no response" else . end' <<<"${resp}")"
     case "${err%%:*}" in
       invalid_client) fail "client ${CLIENT} is missing or not public (${err})" ;;
       unauthorized_client) fail "client ${CLIENT} does not allow the device flow (${err})" ;;
@@ -71,8 +88,10 @@ else
   fi
 fi
 
-roles="$(oc get keycloakrealmimport -n "${NS}" -o json 2>/dev/null |
-  jq -r --arg r "${REALM}" '.items[] | select(.spec.realm.realm == $r) | .spec.realm.roles.realm // [] | .[].name' 2>/dev/null || true)"
+realm_imports="$(oc get keycloakrealmimport -n "${NS}" -o json)"
+roles="$(jq -r --arg r "${REALM}" \
+  '.items[] | select(.spec.realm.realm == $r) | .spec.realm.roles.realm // [] | .[].name' \
+  <<<"${realm_imports}")"
 if [[ -z "${roles}" ]]; then
   warn "realm roles not verifiable without admin access; the gateway needs openshell-admin / openshell-user in realm_access.roles"
 else

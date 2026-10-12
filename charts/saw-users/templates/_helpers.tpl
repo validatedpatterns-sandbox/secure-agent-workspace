@@ -93,6 +93,13 @@ user's `values` on top. Nested maps merge; the user's keys win.
 {{- $extra := list -}}
 {{- range $secretNames -}}{{- if ne . "inference" -}}{{- $extra = append $extra . -}}{{- end -}}{{- end -}}
 {{- $_ := set $base "additionalProviderSecrets" $extra -}}
+{{- /* The cluster's ingress CA, synced by pattern-secrets; openshell-saw only
+     uses it for the in-cluster Keycloak without an explicit caBundle. */ -}}
+{{- $oidc := deepCopy (index $base "oidc" | default dict) -}}
+{{- if not (hasKey $oidc "clusterCaSecret") -}}
+{{- $_ := set $oidc "clusterCaSecret" ($root.Values.defaults.clusterCaSecret | default "") -}}
+{{- end -}}
+{{- $_ := set $base "oidc" $oidc -}}
 {{- /* harnessEnabled puts a harnessRef on a sandbox, which OpenShell 0.1.x
      refuses to mount without allow_driver_config; derive it here so the two
      flags can't drift apart. The user's own `values.allowDriverConfig`
@@ -229,7 +236,8 @@ the shared prefix for the SSH key, and only the Secrets their profiles read.
 {{- $root := .root -}}
 {{- toYaml (dict "vaultPrefix" ($user.vaultPrefix | default $root.Values.defaults.vaultPrefix)
       "sshVaultPrefix" $root.Values.defaults.sshVaultPrefix
-      "secrets" (include "saw-users.secretNames" . | fromJsonArray)) -}}
+      "secrets" (include "saw-users.secretNames" . | fromJsonArray)
+      "clusterCaSecret" ($root.Values.defaults.clusterCaSecret | default "")) -}}
 {{- end -}}
 
 {{- define "saw-users.application" -}}
@@ -245,6 +253,11 @@ metadata:
     openshell.pattern/owner: {{ $user.name | quote }}
   annotations:
     argocd.argoproj.io/sync-wave: {{ .wave | quote }}
+    # With ServerSideApply (syncOptions below) there is no last-applied
+    # annotation to diff against, so fields the cluster defaults (KubeVirt
+    # adds the VM's firmware serial/uuid and machine type) would show the
+    # VM OutOfSync forever. Let the API server compute the diff instead.
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
   {{- if include "saw-users.prune" (dict "root" $root "user" $user) }}
   finalizers:
     - {{ $root.Values.argo.finalizer }}
@@ -269,4 +282,11 @@ spec:
       selfHeal: true
     retry:
       limit: {{ $root.Values.argo.retryLimit }}
+    # Server-side apply: client-side apply copies every object into its
+    # kubectl.kubernetes.io/last-applied-configuration annotation, and
+    # annotations may hold at most 256 KiB. The VM's installer ConfigMap
+    # (apply_bom.py and friends) is past that; ConfigMaps themselves may
+    # hold 1 MiB.
+    syncOptions:
+      - ServerSideApply=true
 {{- end -}}

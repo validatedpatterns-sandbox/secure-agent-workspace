@@ -6,26 +6,31 @@ DOCS_URL := https://validatedpatterns.io/blog/2025-08-29-new-common-makefile-str
 .PHONY: help
 help: ## Print this help message
 	@echo "For a complete guide to these targets and the available overrides, please visit $(DOCS_URL)"
-	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^(\s|[a-zA-Z_0-9-])+:.*?##/ { printf "  \033[36m%-35s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9.-]+:.*##/ { if (!seen[$$1]++) printf "  \033[36m%-35s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
+	@if [ -n "$(ALIAS_HELP)" ]; then \
+		printf '\nDeprecated aliases (kept for one release):\n'; \
+		for pair in $(ALIAS_HELP); do \
+			printf '  %-35s use %s\n' "$${pair%%:*}" "$${pair#*:}"; \
+		done; \
+	fi
 
 ##@ Pattern Install Tasks
 .PHONY: show
 show: ## Shows the template that would be applied by the `make install` target
 	@$(ANSIBLE_RUN) rhvp.cluster_utils.show
 
-.PHONY: operator-deploy
-operator-deploy operator-upgrade: ## Installs/updates the pattern on a cluster (DOES NOT load secrets)
+.PHONY: operator-deploy operator-upgrade
+operator-deploy: ## Install the pattern operator without loading secrets
+	@$(ANSIBLE_RUN) rhvp.cluster_utils.operator_deploy
+
+operator-upgrade: ## Upgrade the pattern operator without loading secrets
 	@$(ANSIBLE_RUN) rhvp.cluster_utils.operator_deploy
 
 .PHONY: install
 install: pattern-install ## Installs the pattern onto a cluster (Loads secrets as well if configured)
 
-.PHONY: uninstall
-uninstall: ## (EXPERIMENTAL) See https://validatedpatterns.io/blog/2026-02-16-pattern-uninstall/.
-	@$(ANSIBLE_RUN) rhvp.cluster_utils.uninstall
-
 .PHONY: pattern-install
-pattern-install:
+pattern-install: ## Install the Validated Pattern through the framework
 	@$(ANSIBLE_RUN) rhvp.cluster_utils.install
 
 .PHONY: load-secrets

@@ -386,6 +386,31 @@ elif op == "sandbox exec":
             print(json.dumps(val))
             save()
             sys.exit(0)
+    if "openclaw plugins inspect " in script:
+        # mcp-inspect.json overrides: {"<bundle>": ["server", ...]} (omit the
+        # bundle, or give it an empty list, to simulate a dropped server).
+        m = re.search(r"openclaw plugins inspect (\S+)", script)
+        bundle = m.group(1) if m else ""
+        override = state_dir / "mcp-inspect.json"
+        override_data = json.loads(override.read_text()) if override.exists() else {}
+        if bundle in override_data:
+            servers = override_data[bundle]
+        else:
+            files = harness_files()
+            try:
+                decl = json.loads(files.get("mcp.json", "{}")).get("mcpServers", {})
+            except ValueError:
+                decl = {}
+            servers = sorted(decl)
+        if "--json" in script:
+            print(json.dumps({"plugin": {"id": bundle, "status": "loaded", "enabled": True},
+                              "mcpServers": [{"name": name} for name in servers], "diagnostics": []}))
+        else:
+            print("MCP servers:")
+            for name in servers:
+                print(name)
+        save()
+        sys.exit(0)
     if "openclaw plugins list --json" in script:
         # plugins-list.json overrides the listing (a bundle OpenClaw has not
         # loaded, or output that does not parse).

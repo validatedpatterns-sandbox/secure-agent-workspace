@@ -30,7 +30,7 @@ OpenShell 0.1.x removed managed inference routing (`openshell inference`,
    With the quickstart, one command does steps 1 and 2:
 
    ```bash
-   make openshell-saw-create OPENSHELL_SAW_NAME=<name> PROFILES=custom-inference \
+   make saw-create OPENSHELL_SAW_NAME=<name> PROFILES=custom-inference \
      PROVIDER=openai MODEL=<served model> ENDPOINT_URL=https://<host>/v1 API_KEY=<key>
    ```
 
@@ -43,12 +43,20 @@ OpenShell 0.1.x removed managed inference routing (`openshell inference`,
    | `url` | the OpenAI-compatible base URL, ending in `/v1` |
    | `api_key` | the server's key; any non-empty value if it needs none |
 
-3. Restart the VM (`make openshell-saw-restart`) so the installer applies it.
+3. Restart the VM (`make saw-restart`) so the installer applies it.
 
 ## Requirements
 
 - The **gateway VM** must reach the URL, not your laptop: use a cluster Service
   (`http://vllm.<ns>.svc:8000/v1`) or Route host. `localhost` is refused.
+- If that host is outside the cluster, add it to `egress.extraAllow` in the
+  `openshell-saw` values (see [Egress from the VM](deployment-guide.md#egress-from-the-vm))
+  **before** upgrading a sandbox that already runs. The firewall turns on at
+  the next sync and cannot read the URL from Vault, so inference to that host
+  times out. A `*.svc` address needs a narrow `networkPolicy.extraEgress`
+  rule selecting the endpoint's namespace, pods, and TCP port; it needs no
+  EgressFirewall hostname entry. An `http://` or `https://`
+  golden-image URL is allowed on its own; that does not cover the inference host.
 - `url` must be `http(s)://host[:port][/path]` without credentials, query or
   fragment. The installer rejects anything else without logging the value.
 - The `openai` provider profile must name the endpoint's host. With

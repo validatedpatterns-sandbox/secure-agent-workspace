@@ -1,0 +1,19 @@
+[project]
+name = "secure-agent-workspace-tests"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "PyYAML>=6",
+    "cryptography>=41",
+    "openshell-saw",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+openshell-saw = { path = "cli", editable = true }

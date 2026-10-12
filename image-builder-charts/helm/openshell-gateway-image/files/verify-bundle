@@ -130,12 +130,19 @@ fi
 # (PR #54 review, 3). Each file's hash is checked independently below, so a
 # boundary shift like that changes two lines and is caught. Must match
 # scripts/build-installer-manifest.py exactly (same file set, same line
-# format), or a genuine, unmodified installer fails enforce.
+# format, including tool-actions.yaml, tool-gate.mjs and
+# tool-gate-plugin.mjs when those files are in the tree), or a genuine,
+# unmodified installer fails enforce.
 manifest_text() {
   local dir="$1" files=(installer-bom.yaml apply_bom.py setup-dashboard.sh) extra f
   shopt -s nullglob
   for extra in "${dir}"/provider-profile-*.yaml; do
     files+=("$(basename "$extra")")
+  done
+  # Present on a chart render; absent in older unit fixtures. Covered when
+  # shipped so a signed bundle includes the tool-action gate.
+  for extra in tool-actions.yaml tool-gate.mjs tool-gate-plugin.mjs; do
+    [[ -f "${dir}/${extra}" ]] && files+=("$extra")
   done
   mapfile -t files < <(printf '%s\n' "${files[@]}" | sort)
   for f in "${files[@]}"; do

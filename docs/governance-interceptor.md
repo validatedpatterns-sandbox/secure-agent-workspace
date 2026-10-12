@@ -186,6 +186,24 @@ The interceptor must be built from the same OpenShell release as the gateways (0
 
 The `binding_policy = "allowlist"` means only the explicitly listed RPCs are intercepted. The `failure_policy = "fail_closed"` means if the interceptor is unreachable, all intercepted operations are denied.
 
+## Tool actions
+
+The interceptor above does not see a tool call. OpenShell 0.1.2 only forwards allowlisted control-plane RPCs (`CreateSandbox`, `CreateProvider`, `UpdateConfig`, `SubmitPolicyAnalysis`), and its timeout is too short for a person to approve something. Agent tool calls run inside the sandbox.
+
+`charts/governance-policy/tool-actions.yaml` is the consequential-tool list (`allow`, `deny`, or `approval` per tool; `whenCommandMatches` narrows `exec`). The same file is copied onto the installer disk. `saw-apply` installs it, with the signed-in user (`username` from the VM name, `subject` from `accessControl.ownerSubject`), into each OpenClaw and NemoClaw sandbox. A generic toolbox sandbox is not an agent and does not get the hook.
+
+The OpenClaw `before_tool_call` hook (`saw-tool-gate`) runs before the tool. OpenClaw loads it from the sandbox extension directory. If `plugins.allow` is set, `saw-tool-gate` has to be on that list or the hook never runs; an empty allow list still loads it.
+
+- Every call appends one JSON line to `/sandbox/.saw/audit/tool-actions.jsonl` with the user and the current task. The task id is the OpenClaw session. An optional `/sandbox/.saw/current-task.json` `title` is copied onto that record.
+- `allow` runs the tool.
+- `deny` blocks it.
+- `approval` pauses the tool (`requireApproval`) until the signed-in user approves in the session. Timeout and cancel are recorded as rejected and the tool does not run.
+- A missing policy, a missing user, or a missing session blocks the call. The audit line is still written.
+
+This is not a cluster OCSF pipeline. The JSONL file is the tool-action trail on the sandbox volume.
+
+The gate tests live in `charts/openshell-saw/files/installer/tool-gate.test.mjs` and `tests/installer/test_tool_gate.py`. Run them locally with `make test-tool-gate` (Node on `PATH`). They are not part of the installer CI job (`make test-installer`).
+
 ## Audit Trail
 
 Every interceptor decision is logged by the gateway:

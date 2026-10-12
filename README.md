@@ -522,6 +522,9 @@ make saw-vm-ssh
 make lint
 make test
 
+# Tool-action gate tests (needs node; not part of CI)
+make test-tool-gate
+
 # Run offline template validation (43 checks)
 ./tests/test-oidc-templates.sh
 ```

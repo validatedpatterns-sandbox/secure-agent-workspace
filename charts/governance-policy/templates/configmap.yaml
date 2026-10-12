@@ -9,6 +9,8 @@ metadata:
 data:
   policy.yaml: |
 {{ .Files.Get "policy.yaml" | indent 4 }}
+  tool-actions.yaml: |
+{{ .Files.Get "tool-actions.yaml" | indent 4 }}
 ---
 apiVersion: v1
 kind: ConfigMap

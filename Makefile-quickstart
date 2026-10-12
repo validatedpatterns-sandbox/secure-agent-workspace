@@ -474,16 +474,25 @@ status: ## Show status of all OpenShell resources (every SAW namespace + $(NS))
 
 # --- Local Python tests (no cluster needed) ---
 TEST_PATHS ?= tests/installer tests/charts tests/scripts tests/portal cli/tests
-.PHONY: test-installer
+.PHONY: test-installer test-tool-gate
 test-installer: ## Run the complete local Python test suite with uv
 	@if [ -n "$(PYTHON)" ]; then \
 		PYTHONPATH=cli/src$${PYTHONPATH:+:$$PYTHONPATH} $(PYTHON) -m pytest \
-			-q -p no:cacheprovider $(TEST_PATHS); \
+			-q -p no:cacheprovider --ignore=tests/installer/test_tool_gate.py $(TEST_PATHS); \
 	else \
 		PYTHONPATH=cli/src$${PYTHONPATH:+:$$PYTHONPATH} \
 		uv run --locked pytest -q -p no:cacheprovider \
-			$(TEST_PATHS); \
+			--ignore=tests/installer/test_tool_gate.py $(TEST_PATHS); \
 	fi
+
+test-tool-gate: ## Tool-action gate tests (needs node on PATH; not part of CI)
+	@py="$(PYTHON)"; [ -n "$$py" ] || py=python3; \
+	"$$py" -c "import pytest, yaml" 2>/dev/null || { \
+		echo "Missing test dependencies for $$py. Install them with:"; \
+		echo "  $$py -m pip install -r tests/requirements.txt"; exit 1; }; \
+	command -v node >/dev/null || { echo "node is required for make test-tool-gate"; exit 1; }; \
+	PYTHONPATH=cli/src$${PYTHONPATH:+:$$PYTHONPATH} "$$py" -m pytest -q -p no:cacheprovider \
+		tests/installer/test_tool_gate.py
 
 ##@ Internal Checks
 

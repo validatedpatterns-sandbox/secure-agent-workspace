@@ -1,5 +1,6 @@
 """Registry input boundaries and mirror shell injection regressions."""
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -40,6 +41,7 @@ def test_invalid_mirror_inputs_stop_before_cluster_work(tmp_path, variable, valu
     assert not calls.exists(), "invalid inputs must fail before any cluster mutation"
 
 
+@pytest.mark.skipif(not shutil.which("envsubst"), reason="envsubst (gettext) is not installed")
 def test_mirror_values_are_data_not_shell_source(tmp_path):
     template = (ROOT / "scripts/mirror-images-job.yaml").read_text()
     marker = tmp_path / "injected"

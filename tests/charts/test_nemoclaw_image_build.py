@@ -84,9 +84,13 @@ def test_discovery_build_generates_artifacts_and_sandbox_consumes_digest():
     discovery = next(d for d in docs if d["kind"] == "BuildConfig" and d["metadata"]["name"] == "nemoclaw-discovery-runtime")
     values = yaml.safe_load((CHART / "values.yaml").read_text())
     assert discovery["spec"]["strategy"]["dockerStrategy"]["buildArgs"] == [
-        {"name": "NODE_VERSION", "value": values["build"]["discoveryNodeVersion"]}]
-    assert "discoveryBaseImage" not in values["build"]
-    assert "FROM docker.io/library/node:${NODE_VERSION}-bookworm-slim AS builder" in discovery["spec"]["source"]["dockerfile"]
+        {"name": "NODE_VERSION", "value": values["build"]["discoveryNodeVersion"]},
+        {"name": "NODE_DIGEST", "value": values["build"]["discoveryNodeDigest"]}]
+    dockerfile = discovery["spec"]["source"]["dockerfile"]
+    assert values["build"]["discoveryNodeDigest"] == "sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df"
+    node_digest = values["build"]["discoveryNodeDigest"]
+    assert f"ARG NODE_DIGEST={node_digest}" in dockerfile
+    assert "FROM docker.io/library/node:${NODE_VERSION}-bookworm-slim@${NODE_DIGEST} AS builder" in dockerfile
     assert discovery["spec"]["triggers"] == []
     assert discovery["spec"]["output"]["to"] == {"kind": "ImageStreamTag", "name": "nemoclaw-discovery-runtime:latest"}
     assert not any(d.get("metadata", {}).get("name") == "nemoclaw-discovery-runtime" and d["kind"] == "ConfigMap" for d in docs)

@@ -47,6 +47,8 @@ spec:
       buildArgs:
         - name: NODE_VERSION
           value: {{ .Values.build.discoveryNodeVersion | quote }}
+        - name: NODE_DIGEST
+          value: {{ .Values.build.discoveryNodeDigest | quote }}
   output:
     to:
       kind: ImageStreamTag

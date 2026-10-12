@@ -60,12 +60,17 @@ copies `/reviewed-runtime-bundle/mcp-tool-discovery/.` from that digest into its
 Git context through `source.images`. Without a digest, the chart creates only the
 discovery BuildConfig; tags, image-change triggers, and failed builds cannot
 silently select artifacts from an earlier build. Every invocation builds discovery
-again before building the sandbox.
+again before building the sandbox. The first Helm upgrade clears
+`source.discoveryImage`, removing any existing `nemoclaw-sandbox` BuildConfig and
+its build history; the second upgrade recreates it with the new discovery digest.
 
 CI and the cluster discovery builder use the same Node version from
 `build.discoveryNodeVersion`, the same discovery lockfile, and the same install
 recipe. The cluster builder uses the official Docker Hub Node image for that
-version. This guarantees shared inputs and checks, not byte-identical output
+version, pinned by the multi-platform digest in `build.discoveryNodeDigest`.
+Update the version and digest together, including the Dockerfile defaults. The
+digest prevents tag drift; Docker Hub pull rate limits still apply. This
+guarantees shared inputs and checks, not byte-identical output
 across platforms. Discovery runs `npm ci`, registry-signature verification,
 `npm audit --audit-level=high`, tests, and typechecks. The pinned upstream sandbox
 Dockerfile installs the MCPorter lockfile with `npm ci` and invokes

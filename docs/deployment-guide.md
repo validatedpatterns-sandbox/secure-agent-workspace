@@ -123,6 +123,12 @@ Every web UI has its own route host (each VM's dashboard, and each sandbox UI ro
 
 By default the redirect registrar registers them (`redirectRegistrar` in `openshell-keycloak`): one Deployment, `saw-redirect-registrar` in Keycloak's namespace, every 15 seconds adds the entries of routes it finds and removes those it added for routes that are gone from every SAW namespace. It keeps an entry while its route still exists (labelled or not), keeps entries it did not add (recorded in the client attribute `saw.redhat.com/managed-redirects`), and on its first run adopts the per-VM entries the prepare Jobs used to add. A failed route list removes nothing. It signs in as its own confidential client, `saw-redirect-registrar`, whose service account has only `manage-clients` in the OpenShell realm; its init container sets that client up with the operator's `<keycloak>-initial-admin` Secret and hands the client secret over in memory, so the registrar container never sees the master admin. It reads routes, namespaces and the ingress domain only, and reaches Keycloak in-cluster (`http://<keycloak>-service.<namespace>.svc:8080`; set `redirectRegistrar.keycloakUrl` for an existing Keycloak without HTTP, and `redirectRegistrar.adminSecret` for another admin Secret name). `manage-clients` still covers every client of the realm; Keycloak's fine-grained admin permissions could narrow it to `openshell-dashboard`.
 
+##### Custom web UI route hosts
+
+Set `route.hostTemplate` to give every workspace's web UI and dashboard routes a common hostname pattern. `{app}` is replaced with `<release>-webui` or `<release>-dashboard`, for example `tenant-{app}.apps.example.com`. The chart uses the resulting hostname in each Route's `spec.host` and in the VM's OAuth callback and allowed origin, so they stay aligned. Each DNS label must be at most 63 characters. `route.webuiHost` and `route.dashboardHost` override the template for their respective routes. The gateway passthrough route and sandbox UI routes keep their own hosts.
+
+For a validated pattern, put the template in `defaults.openshellSaw.route.hostTemplate` via a Pattern `extraParameter` or the saw-users values. For quickstart, set `ROUTE_HOST_TEMPLATE` on `make saw-create`, or put `route.hostTemplate` in `SAW_VALUES_FILE`. Quickstart validates the template before changing the cluster and does not overwrite it with its computed web UI hosts.
+
 With `redirectRegistrar.enabled: false`, nothing in the cluster holds Keycloak admin access for this: an administrator runs `make -f Makefile-quickstart keycloak-register KC_USER=<user>` once the workspace exists (it also creates the Keycloak account if it is new) and `keycloak-redirects-sync` after deleting workspaces (`scripts/keycloak-redirects.py`, with the administrator's `oc` session and Keycloak's admin Secret, like `scripts/keycloak-users.sh`). The script applies the registrar's rules. See the README's [Web UI sign-in](../README.md#web-ui-sign-in-redirect-uris).
 
 #### The issuer's certificate
@@ -167,6 +173,8 @@ No workspace needs RBAC on `openshift-config-managed`, and nothing reads a priva
 - **First install.** The VM waits for the Secret, as it does for the provider Secrets, so a VM created before the job's first run starts within about 10 minutes. To skip the wait, run the job once: `oc create job -n imperative --from=cronjob/<the saw-ingress-ca cronjob> saw-ingress-ca-now`.
 - **Rotation.** A rotated CA reaches Vault and the Secret on its own, and each VM on its next restart.
 - **Turning it off.** Set saw-users `defaults.clusterCaSecret: ""`, for example when the issuer is external or the cluster has a public certificate.
+
+If `oidc.issuerUrl` explicitly names a route served by this same cluster and the route's certificate is signed by the cluster ingress CA, set `oidc.trustClusterCaForExplicitIssuer: true`. The default is `false` because an external issuer should not inherit this CA. `oidc.caBundle` still takes precedence. Verify the intended host against `default-ingress-cert` first; a DNS name alone does not establish which CA signs it.
 
 ##### Setting oidc.caBundle
 

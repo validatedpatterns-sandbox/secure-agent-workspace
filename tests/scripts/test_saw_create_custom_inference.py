@@ -19,6 +19,8 @@ case "$1" in
          [[ -n "${EXISTING_SECRETS:-}" ]] && echo "namespace/$3"
        elif [[ "$2" == network.config ]]; then
          echo '{"status":{"clusterNetwork":[{"cidr":"10.232.0.0/14"}],"serviceNetwork":["172.231.0.0/16"]}}'
+       elif [[ "$2" == ingress.config.openshift.io ]]; then
+         echo "${TEST_APPS_DOMAIN:-}"
        elif [[ "$2" == service && "$3" == kubernetes ]]; then
          echo '{"spec":{"clusterIP":"172.231.0.1","ports":[{"port":443,"protocol":"TCP"}]}}'
        elif [[ "$2" == endpointslice ]]; then
@@ -111,6 +113,27 @@ def test_values_overlay_and_discovered_topology_are_passed_to_saw_chart(run, tmp
         "cleanupApi": {"serviceIP": "172.231.0.1",
                        "endpoints": [{"ip": "10.10.10.10", "port": 6443}]}}
     assert log.index("oc get endpointslice") < log.index("oc create")
+
+
+def test_route_template_overrides_quickstart_auto_hosts(run):
+    template = "custom-{app}.apps.example.test"
+    log, _ = run(PROVIDER="build", MODEL="m", API_KEY="k",
+                 ROUTE_HOST_TEMPLATE=template, TEST_APPS_DOMAIN="apps.example.test")
+    saw = _saw_helm(log)
+    assert f"route.hostTemplate={template}" in saw
+    assert "route.webuiHost=" not in saw
+    assert "route.dashboardHost=" not in saw
+
+
+def test_route_template_from_values_file_survives_quickstart_auto_hosts(run, tmp_path):
+    values = tmp_path / "route.yaml"
+    values.write_text(yaml.safe_dump({"route": {"hostTemplate": "tenant-{app}.apps.example.test"}}))
+    log, _ = run(PROVIDER="build", MODEL="m", API_KEY="k",
+                 SAW_VALUES_FILE=str(values), TEST_APPS_DOMAIN="apps.example.test")
+    saw = _saw_helm(log)
+    assert f"-f {values}" in saw
+    assert "route.webuiHost=" not in saw
+    assert "route.dashboardHost=" not in saw
 
 
 def test_conflicting_topology_fails_before_cluster_write(tmp_path):

@@ -1182,6 +1182,51 @@ def test_the_cluster_ca_secret_is_used_for_the_in_cluster_keycloak_only(tmp_path
     assert json.loads(installer_data(render())["config.json"])["caBundleSecret"] == ""
 
 
+def test_explicit_issuer_can_opt_in_to_the_cluster_ingress_ca():
+    docs = render("--set-string", "oidc.issuerUrl=https://keycloak.apps.example.test/realms/openshell",
+                  "--set-string", "oidc.clusterCaSecret=saw-ingress-ca",
+                  "--set", "oidc.trustClusterCaForExplicitIssuer=true")
+    config = json.loads(installer_data(docs)["config.json"])
+    assert config["caBundleSecret"] == "saw-ingress-ca"
+    assert "saw-ingress-ca" in config["secrets"]
+
+    docs = render("--set-string", "oidc.issuerUrl=https://keycloak.apps.example.test/realms/openshell",
+                  "--set-string", "oidc.clusterCaSecret=saw-ingress-ca",
+                  "--set", "oidc.trustClusterCaForExplicitIssuer=true",
+                  "--set-string", "oidc.caBundle=public-ca")
+    config = json.loads(installer_data(docs)["config.json"])
+    assert config["caBundleSecret"] == ""
+
+
+def test_auxiliary_routes_and_installer_share_host_template():
+    template = "custom-{app}.apps.example.test"
+    docs = render("--set-string", f"route.hostTemplate={template}")
+    config = json.loads(installer_data(docs)["config.json"])
+    webui = "custom-saw-test-webui.apps.example.test"
+    dashboard = "custom-saw-test-dashboard.apps.example.test"
+    assert docs[("Route", "saw-test-webui")]["spec"]["host"] == webui
+    assert docs[("Route", "saw-test-dashboard")]["spec"]["host"] == dashboard
+    assert config["dashboard"]["redirectUrl"] == f"https://{webui}/oauth2/callback"
+    assert config["sandboxDashboardRoute"] == dashboard
+
+    docs = render("--set-string", f"route.hostTemplate={template}",
+                  "--set-string", "route.webuiHost=chosen.apps.example.test")
+    config = json.loads(installer_data(docs)["config.json"])
+    assert docs[("Route", "saw-test-webui")]["spec"]["host"] == "chosen.apps.example.test"
+    assert config["dashboard"]["redirectUrl"] == "https://chosen.apps.example.test/oauth2/callback"
+
+
+@pytest.mark.parametrize("template,message", [
+    ("static.apps.example.test", "must contain {app} exactly once"),
+    ("{app}.{app}.example.test", "must contain {app} exactly once"),
+    ("this-prefix-makes-the-first-label-far-too-long-for-dns-{app}.example.test", "invalid DNS label"),
+])
+def test_bad_auxiliary_route_template_fails_to_render(tmp_path, template, message):
+    values = tmp_path / "route.yaml"
+    values.write_text(yaml.safe_dump({"route": {"hostTemplate": template}}))
+    assert message in render_error("-f", str(values))
+
+
 def test_the_imperative_jobs_run_playbooks_that_exist():
     """values-prod's imperative jobs, including saw-ingress-ca (the cluster's
     ingress CA into Vault for the users' saw-ingress-ca Secret)."""

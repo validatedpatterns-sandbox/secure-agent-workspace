@@ -204,15 +204,33 @@ Priority: explicit sshPublicKey > global.sshPublicKey.
 
 {{/*
 Hostname of an auxiliary route (webui/dashboard). Priority: explicit value >
-computed from global.clusterDomain (OpenShift's default <name>-<ns>.apps.<domain>).
+route.hostTemplate > computed from global.clusterDomain (OpenShift's default
+<name>-<ns>.apps.<domain>). The template's {app} is <name>-webui or
+<name>-dashboard.
 Call with (list $ "webui" .Values.route.webuiHost).
 */}}
 {{- define "openshell-sandbox.auxRouteHost" -}}
 {{- $root := index . 0 -}}
 {{- $suffix := index . 1 -}}
 {{- $explicit := index . 2 -}}
+{{- $template := $root.Values.route.hostTemplate | default "" -}}
 {{- if $explicit -}}
   {{- $explicit -}}
+{{- else if $template -}}
+  {{- if ne (len (splitList "{app}" $template)) 2 -}}
+    {{- fail "route.hostTemplate must contain {app} exactly once" -}}
+  {{- end -}}
+  {{- $app := printf "%s-%s" (include "openshell-sandbox.fullname" $root) $suffix -}}
+  {{- $host := replace "{app}" $app $template -}}
+  {{- if gt (len $host) 253 -}}
+    {{- fail (printf "route.hostTemplate produces a hostname over 253 characters: %q" $host) -}}
+  {{- end -}}
+  {{- range $label := splitList "." $host -}}
+    {{- if or (gt (len $label) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $label)) -}}
+      {{- fail (printf "route.hostTemplate produces an invalid DNS label %q (maximum 63 characters)" $label) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- $host -}}
 {{- else if $root.Values.global -}}
   {{- if $root.Values.global.clusterDomain -}}
     {{- printf "%s-%s-%s.apps.%s" (include "openshell-sandbox.fullname" $root) $suffix $root.Release.Namespace $root.Values.global.clusterDomain -}}
@@ -261,13 +279,12 @@ Provider credential Secrets attached to the VM, de-duplicated, as JSON list.
 
 {{/*
 The Secret holding the cluster's ingress CA (key ca-bundle.crt) the VM trusts
-for the issuer, or "". Only for the in-cluster Keycloak (oidc.issuerUrl
-empty) and only when no explicit oidc.caBundle is set: an external issuer has
-nothing to do with the cluster's ingress CA. Attached like the provider
-Secrets (secret disk, mounted under /run/saw/secrets/<name>).
+for the issuer, or "". An explicit issuer uses it only with the opt-in flag;
+an explicit oidc.caBundle always wins. Attached like the provider Secrets
+(secret disk, mounted under /run/saw/secrets/<name>).
 */}}
 {{- define "openshell-sandbox.caBundleSecret" -}}
-{{- if and .Values.oidc.clusterCaSecret (not .Values.oidc.issuerUrl) (not .Values.oidc.caBundle) -}}
+{{- if and .Values.oidc.clusterCaSecret (or (not .Values.oidc.issuerUrl) .Values.oidc.trustClusterCaForExplicitIssuer) (not .Values.oidc.caBundle) -}}
 {{- .Values.oidc.clusterCaSecret -}}
 {{- end -}}
 {{- end }}

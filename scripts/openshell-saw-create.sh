@@ -6,7 +6,8 @@
 # Optional: OWNER, OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_TOKEN_DIR, NS, SAW_NS,
 #           KEYCLOAK_NS, ENDPOINT_URL, WEB_SEARCH, SCRIPTS_DIR,
 #           PROFILES (comma-separated SAW-BOM profiles, default: the chart's),
-#           SAW_VALUES_FILE (other Helm settings; topology is discovered)
+#           SAW_VALUES_FILE (other Helm settings; topology is discovered),
+#           ROUTE_HOST_TEMPLATE (webui/dashboard hostname pattern)
 #
 # Custom OpenAI-compatible endpoint (vLLM, Ollama, ...):
 #   PROVIDER=openai MODEL=<served model> ENDPOINT_URL=https://<host>/v1 \
@@ -35,10 +36,34 @@ WEB_SEARCH_API_KEY="${WEB_SEARCH_API_KEY:-}"
 "$(dirname "$0")/check-saw-name.sh"
 SAW_CHART="${SAW_CHART:?SAW_CHART is required}"
 SAW_VALUES_FILE="${SAW_VALUES_FILE:-}"
+ROUTE_HOST_TEMPLATE="${ROUTE_HOST_TEMPLATE:-}"
 if [[ -n "${SAW_VALUES_FILE}" && ! -f "${SAW_VALUES_FILE}" ]]; then
   echo "Error: SAW_VALUES_FILE does not exist: ${SAW_VALUES_FILE}" >&2
   exit 1
 fi
+if ! python3 -c 'import yaml' >/dev/null 2>&1; then
+  echo "Error: python3 with PyYAML is required for network topology discovery." >&2
+  exit 1
+fi
+EFFECTIVE_ROUTE_HOST_TEMPLATE="$(python3 - "${SAW_VALUES_FILE}" "${ROUTE_HOST_TEMPLATE}" "${OPENSHELL_SAW_NAME}" <<'PY'
+import re
+import sys
+import yaml
+
+path, override, name = sys.argv[1:]
+values = yaml.safe_load(open(path)) if path else {}
+template = override or ((values or {}).get("route") or {}).get("hostTemplate", "")
+if template:
+    if not isinstance(template, str) or template.count("{app}") != 1:
+        raise SystemExit("Error: route.hostTemplate must contain {app} exactly once")
+    for suffix in ("webui", "dashboard"):
+        host = template.replace("{app}", f"{name}-{suffix}")
+        labels = host.split(".")
+        if len(host) > 253 or any(len(label) > 63 or not re.fullmatch(r"[a-z0-9](?:[-a-z0-9]*[a-z0-9])?", label) for label in labels):
+            raise SystemExit(f"Error: route.hostTemplate produces an invalid hostname for {suffix} (DNS labels must be at most 63 characters)")
+    print(template)
+PY
+)"
 PROVIDER="${PROVIDER:-}"
 MODEL="${MODEL:-}"
 API_KEY="${API_KEY:-}"
@@ -68,10 +93,6 @@ if [[ -n "${WEB_SEARCH}" ]]; then
 fi
 if ! command -v uv >/dev/null 2>&1; then
   echo "Error: uv is required. Install uv before running make saw-create." >&2
-  exit 1
-fi
-if ! python3 -c 'import yaml' >/dev/null 2>&1; then
-  echo "Error: python3 with PyYAML is required for network topology discovery." >&2
   exit 1
 fi
 if [[ "${DASHBOARD}" != true && "${DASHBOARD}" != false ]]; then
@@ -281,12 +302,15 @@ if [[ "${dashboard_enabled}" != true ]]; then
 fi
 [[ -z "${OWNER_SUBJECT}" ]] || helm_opts+=(--set-string "accessControl.ownerSubject=${OWNER_SUBJECT}")
 [[ -z "${ROUTE_HOST}" ]] || helm_opts+=(--set-string "route.host=${ROUTE_HOST}")
+[[ -z "${ROUTE_HOST_TEMPLATE}" ]] || helm_opts+=(--set-string "route.hostTemplate=${ROUTE_HOST_TEMPLATE}")
 if [[ -n "${APPS_DOMAIN}" ]]; then
-  helm_opts+=(--set-string "route.webuiHost=${OPENSHELL_SAW_NAME}-webui-${DEPLOY_NS}.${APPS_DOMAIN}")
+  if [[ -z "${EFFECTIVE_ROUTE_HOST_TEMPLATE}" ]]; then
+    helm_opts+=(--set-string "route.webuiHost=${OPENSHELL_SAW_NAME}-webui-${DEPLOY_NS}.${APPS_DOMAIN}")
+  fi
   if [[ "${APPS_DOMAIN}" == apps.* ]]; then
     helm_opts+=(--set-string "global.clusterDomain=${APPS_DOMAIN#apps.}")
   fi
-  if [[ "${dashboard_enabled}" == true ]]; then
+  if [[ "${dashboard_enabled}" == true && -z "${EFFECTIVE_ROUTE_HOST_TEMPLATE}" ]]; then
     helm_opts+=(--set-string "route.dashboardHost=${OPENSHELL_SAW_NAME}-dashboard-${DEPLOY_NS}.${APPS_DOMAIN}")
   fi
 fi

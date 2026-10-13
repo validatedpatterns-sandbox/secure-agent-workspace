@@ -174,6 +174,8 @@ image. Priority: explicit source.dataSource > derived from containerRuntime.
 {{- .Values.source.dataSource -}}
 {{- else if eq .Values.containerRuntime "docker" -}}
 openshell-gateway-docker
+{{- else if .Values.vm.gpu.enabled -}}
+openshell-gateway-gpu
 {{- else -}}
 openshell-gateway
 {{- end -}}

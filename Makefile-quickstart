@@ -20,11 +20,21 @@ OPENSHELL_SAW_NAME ?=
 SANDBOX_IMAGE  ?=
 CONTAINER_RUNTIME ?= podman
 IMAGE_NAME      = $(if $(filter docker,$(CONTAINER_RUNTIME)),openshell-gateway-docker,openshell-gateway)
+GATEWAY_GPU ?= false
+GATEWAY_PODMAN_IMAGE = $(if $(filter true,$(GATEWAY_GPU)),openshell-gateway-gpu,openshell-gateway)
 GOVERNANCE_ENABLED ?= true
 # interceptor (OpenShell governance interceptor) or apf (docs/apf.md)
 GOVERNANCE_ENGINE ?= interceptor
 # Python for the APF bundle tooling (scripts/apf-bundle.py needs cryptography).
 APF_PYTHON ?= python3
+# Preserve whether callers explicitly set GPU options; chart defaults and
+# SAW_VALUES_FILE must not be overwritten by Make's convenience defaults.
+GPU_ENABLED_OVERRIDE := $(if $(filter undefined,$(origin GPU_ENABLED)),false,true)
+GPU_COUNT_OVERRIDE := $(if $(filter undefined,$(origin GPU_COUNT)),false,true)
+GPU_DEVICE_NAME_OVERRIDE := $(if $(filter undefined,$(origin GPU_DEVICE_NAME)),false,true)
+GPU_ENABLED ?= false
+GPU_COUNT ?= 1
+GPU_DEVICE_NAME ?=
 PROVIDER       ?=
 MODEL          ?=
 API_KEY        ?=
@@ -60,6 +70,7 @@ WORKSPACE      ?= default
 # in credentials do not become parts of a shell command.
 export NS BUILD_NS IMAGE_REPO MIRROR_IMAGES IMAGE_TAG OPENSHELL_INTERCEPTOR_REF
 export OPENSHELL_SAW_NAME SANDBOX_IMAGE CONTAINER_RUNTIME GOVERNANCE_ENABLED GOVERNANCE_ENGINE
+export GPU_ENABLED GPU_COUNT GPU_DEVICE_NAME GPU_ENABLED_OVERRIDE GPU_COUNT_OVERRIDE GPU_DEVICE_NAME_OVERRIDE
 export PROVIDER MODEL API_KEY ENDPOINT_URL PROFILES WEB_SEARCH WEB_SEARCH_API_KEY GCP_SA_JSON
 export OIDC_ISSUER OIDC_CLIENT_ID OIDC_FLOW OIDC_TOKEN_DIR SSH_KEY_PATH OWNER OWNER_SUBJECT
 export SAW_NS SAW_CHART SAW_VALUES_FILE KEYCLOAK_NS KEYCLOAK_CHART KEYCLOAK_REALM KEYCLOAK_NAME SANDBOX_NAME
@@ -179,25 +190,26 @@ gateway-build-docker: .check-image-repo ## Build the Docker gateway image in-clu
 		$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openshell-gateway-docker "$$PUSH_IMAGE_REPO" $(IMAGE_TAG); \
 	else echo "Image kept in $(BUILD_NS); set IMAGE_REPO to your own namespace to push."; fi
 
-gateway-build-podman: .check-image-repo ## Build the Podman gateway image in-cluster (IMAGE_REPO opts into pushing)
-	@echo "Building Podman gateway image (openshell-gateway)..."
+gateway-build-podman: .check-image-repo ## Build the Podman gateway image (GATEWAY_GPU=true makes a separate image)
+	@if [ "$(GATEWAY_GPU)" != true ] && [ "$(GATEWAY_GPU)" != false ]; then echo "Error: GATEWAY_GPU must be true or false." >&2; exit 1; fi
+	@echo "Building Podman gateway image ($(GATEWAY_PODMAN_IMAGE))..."
 	@oc create namespace "$(BUILD_NS)" --dry-run=client -o yaml | oc apply -f -
-	@oc delete dv openshell-gateway-golden -n "$(BUILD_NS)" --ignore-not-found=true
-	@oc delete datasource openshell-gateway -n "$(BUILD_NS)" --ignore-not-found=true
-	@oc delete pvc openshell-gateway-golden -n "$(BUILD_NS)" --ignore-not-found=true
-	@oc delete builds -l buildconfig=openshell-gateway -n "$(BUILD_NS)" --ignore-not-found=true
-	@oc delete is openshell-gateway -n "$(BUILD_NS)" --ignore-not-found=true
+	@oc delete dv $(GATEWAY_PODMAN_IMAGE)-golden -n "$(BUILD_NS)" --ignore-not-found=true
+	@oc delete datasource $(GATEWAY_PODMAN_IMAGE) -n "$(BUILD_NS)" --ignore-not-found=true
+	@oc delete pvc $(GATEWAY_PODMAN_IMAGE)-golden -n "$(BUILD_NS)" --ignore-not-found=true
+	@oc delete builds -l buildconfig=$(GATEWAY_PODMAN_IMAGE) -n "$(BUILD_NS)" --ignore-not-found=true
+	@oc delete is $(GATEWAY_PODMAN_IMAGE) -n "$(BUILD_NS)" --ignore-not-found=true
 	@resources=$$(oc api-resources --api-group=cdi.kubevirt.io -o name) || exit $$?; \
 	GOLDEN_FLAG=""; \
 	if ! printf '%s\n' "$$resources" | grep -q '^datavolumes.cdi.kubevirt.io$$'; then \
 		GOLDEN_FLAG="--set goldenImage.enabled=false"; \
 	fi; \
-	helm upgrade --install openshell-gateway-image $(HELM_DIR)openshell-gateway-image \
+	helm upgrade --install $(GATEWAY_PODMAN_IMAGE)-image $(HELM_DIR)openshell-gateway-image \
 		--namespace $(BUILD_NS) --create-namespace $$GOLDEN_FLAG \
-		--set containerRuntime=podman
-	oc start-build openshell-gateway -n $(BUILD_NS) --follow
+		--set containerRuntime=podman --set gpu.enabled=$(GATEWAY_GPU)
+	oc start-build $(GATEWAY_PODMAN_IMAGE) -n $(BUILD_NS) --follow
 	@if [ -n "$$PUSH_IMAGE_REPO" ]; then \
-		$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) openshell-gateway "$$PUSH_IMAGE_REPO" $(IMAGE_TAG); \
+		$(SCRIPTS_DIR)/push-image.sh $(BUILD_NS) $(GATEWAY_PODMAN_IMAGE) "$$PUSH_IMAGE_REPO" $(IMAGE_TAG); \
 	else echo "Image kept in $(BUILD_NS); set IMAGE_REPO to your own namespace to push."; fi
 
 

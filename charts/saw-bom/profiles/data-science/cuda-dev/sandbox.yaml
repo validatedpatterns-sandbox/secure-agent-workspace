@@ -14,6 +14,18 @@ spec:
       # gets its own route like the notebook's (see default/sandbox.yaml).
       ui:
         route: true
+      # Container-level GPU request (`openshell sandbox create --gpu`).
+      # Independent of the gateway VM's vm.gpu.enabled (KubeVirt hostDevices).
+      # A real GPU is attached only when the VM received a passed-through
+      # device and the guest Podman runtime has the NVIDIA CDI spec.
+      # See docs/gpu-passthrough.md.
+      #
+      # Off by default. cuda-sandbox is enabled in the default data-science
+      # profile, so shipping this as true would pass --gpu on every default
+      # deploy and fail verification on clusters without passthrough.
+      gpu:
+        enabled: false
+        count: 1
     - name: toolbox
       type: generic
       enabled: false

@@ -2,6 +2,10 @@
 {{- if ne .Values.containerRuntime "podman" }}
 {{- fail "containerRuntime: the in-guest installer supports podman only" }}
 {{- end }}
+{{- if .Values.vm.gpu.enabled }}
+{{- if not .Values.vm.gpu.deviceName }}{{- fail "vm.gpu.deviceName is required when vm.gpu.enabled=true" }}{{- end }}
+{{- if lt (int .Values.vm.gpu.count) 1 }}{{- fail "vm.gpu.count must be at least 1" }}{{- end }}
+{{- end }}
 {{- $secrets := include "openshell-sandbox.providerSecrets" . | fromJsonArray }}
 {{- range $secrets }}{{- include "openshell-sandbox.validateSecretName" . }}{{- end }}
 apiVersion: kubevirt.io/v1
@@ -54,12 +58,28 @@ spec:
         {{- end }}
         openshell.pattern/cloudinit-checksum: {{ include (print $.Template.BasePath "/secret-cloudinit.yaml") . | sha256sum | trunc 16 | quote }}
     spec:
+      {{- if .Values.vm.architecture }}
+      architecture: {{ .Values.vm.architecture | quote }}
+      {{- end }}
       domain:
         cpu:
           cores: {{ .Values.vm.cores }}
+          {{- if .Values.vm.dedicatedCpuPlacement }}
+          dedicatedCpuPlacement: true
+          {{- end }}
+        {{- if .Values.vm.machineType }}
+        machine:
+          type: {{ .Values.vm.machineType | quote }}
+        {{- end }}
         resources:
           requests:
             memory: {{ .Values.vm.memory }}
+          {{- if or .Values.vm.gpu.enabled .Values.vm.dedicatedCpuPlacement }}
+          # KubeVirt requires an explicit memory limit (== request) on VMs that
+          # request hostDevices, so the scheduler can account for the device.
+          limits:
+            memory: {{ .Values.vm.memory }}
+          {{- end }}
         devices:
           # Send the serial console (where saw-install/saw-apply log) to the
           # virt-launcher pod's guest-console-log container, even when the
@@ -120,6 +140,15 @@ spec:
                   port: {{ $e.proxyPort }}
                   protocol: TCP
                 {{- end }}
+          {{- if .Values.vm.gpu.enabled }}
+          # deviceName must match a resourceName in the cluster HyperConverged
+          # permittedHostDevices.pciHostDevices list. See docs/gpu-passthrough.md.
+          hostDevices:
+            {{- range $i := until (.Values.vm.gpu.count | int) }}
+            - deviceName: {{ $.Values.vm.gpu.deviceName | quote }}
+              name: gpu{{ $i }}
+            {{- end }}
+          {{- end }}
         firmware:
           bootloader:
             efi:

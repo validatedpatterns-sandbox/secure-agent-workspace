@@ -1,4 +1,4 @@
-{{- $imageName := ternary "openshell-gateway-docker" "openshell-gateway" (eq .Values.containerRuntime "docker") -}}
+{{- $imageName := include "openshell-gateway-image.imageName" . -}}
 {{- $signingFloor := .Values.signing.floor | default "" -}}
 {{- if and $signingFloor (not (or (eq $signingFloor "off") (eq $signingFloor "warn") (eq $signingFloor "enforce"))) }}
 {{- fail (printf "signing.floor must be off, warn, enforce, or empty, got %q" $signingFloor) }}
@@ -224,6 +224,83 @@ spec:
       # (PR #54 review round 2, 1).
       RUN printf '%s' {{ $signingFloor | quote }} > /build/saw/signing-mode
       {{- end }}
+      {{- if .Values.gpu.enabled }}
+      # Install packages for the guest architecture while customizing the disk.
+      # The module itself must be built for the running VM kernel on first boot.
+      RUN cat > /build/install-gpu-packages.sh <<'GPUPACKAGES'
+      #!/usr/bin/env bash
+      set -euo pipefail
+      case "$(uname -m)" in
+        x86_64) repo={{ .Values.gpu.driverRepoUrlX86_64 | quote }} ;;
+        aarch64) repo={{ .Values.gpu.driverRepoUrlAarch64 | quote }} ;;
+        *) echo "Unsupported GPU guest architecture: $(uname -m)" >&2; exit 1 ;;
+      esac
+      dnf config-manager addrepo --from-repofile="$repo"
+      dnf config-manager addrepo --from-repofile={{ .Values.gpu.containerToolkitRepoUrl | quote }}
+      dnf install -y kernel-devel dkms {{ .Values.gpu.openDkmsPackage }} {{ .Values.gpu.driverPackage }} {{ .Values.gpu.smiPackage }} nvidia-container-toolkit
+      GPUPACKAGES
+
+      RUN cat > /build/nvidia-driver-setup.sh <<'GPUSETUP'
+      #!/usr/bin/env bash
+      set -euo pipefail
+      echo "Building NVIDIA kernel module against the running kernel..."
+      if command -v akmods >/dev/null 2>&1; then
+        akmods --force || true
+      else
+        dkms autoinstall || true
+      fi
+      for _ in $(seq 1 60); do
+        if lsmod | grep -q '^nvidia '; then break; fi
+        modprobe nvidia 2>/dev/null || true
+        sleep 5
+      done
+      if ! lsmod | grep -q '^nvidia '; then
+        echo "WARNING: nvidia kernel module did not load after 5 minutes." >&2
+        echo "The VM may not have a passed-through GPU, or the driver failed to build." >&2
+        exit 1
+      fi
+      if ! command -v nvidia-smi >/dev/null 2>&1; then
+        echo "WARNING: nvidia-smi not found even though the kernel module loaded." >&2
+        exit 1
+      fi
+      echo "=== nvidia-smi ==="
+      nvidia-smi || { echo "WARNING: nvidia-smi failed to query the GPU." >&2; exit 1; }
+      echo "NVIDIA driver module setup complete."
+      GPUSETUP
+
+      RUN cat > /build/nvidia-driver-setup.service <<'GPUUNIT'
+      [Unit]
+      Description=NVIDIA driver setup (first boot, GPU passthrough)
+      After=multi-user.target
+      ConditionPathExists=!/var/lib/nvidia-driver-setup.done
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=true
+      ExecStart=/usr/local/sbin/nvidia-driver-setup.sh
+      ExecStartPost=/usr/bin/touch /var/lib/nvidia-driver-setup.done
+
+      [Install]
+      WantedBy=multi-user.target
+      GPUUNIT
+
+      RUN echo '{{ .Files.Get "files/saw-gpu-devices.sh" | b64enc }}' | base64 -d > /build/saw-gpu-devices.sh
+      RUN echo '{{ .Files.Get "files/saw-patch-cdi-caps.py" | b64enc }}' | base64 -d > /build/saw-patch-cdi-caps.py
+      RUN cat > /build/saw-gpu-devices.service <<'GPUDEVICES'
+      [Unit]
+      Description=Prepare NVIDIA devices and CDI for rootless Podman on every boot
+      Wants=nvidia-driver-setup.service
+      After=nvidia-driver-setup.service systemd-udev-settle.service
+      Before=saw-install.service
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/sbin/saw-gpu-devices.sh
+
+      [Install]
+      WantedBy=multi-user.target
+      GPUDEVICES
+      {{- end }}
 
       # Bake system packages + OpenShell binaries into the qcow2
       RUN virt-customize -a base.qcow2 \
@@ -241,11 +318,25 @@ spec:
             --run-command 'loginctl enable-linger cloud-user || mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/cloud-user' \
             --run-command 'systemctl enable podman.socket' \
             {{- end }}
+            {{- if .Values.gpu.enabled }}
+            --run-command 'mkdir -p /usr/local/sbin' \
+            --copy-in /build/install-gpu-packages.sh:/usr/local/sbin/ \
+            --run-command 'chmod 755 /usr/local/sbin/install-gpu-packages.sh && /usr/local/sbin/install-gpu-packages.sh' \
+            {{- end }}
             --mkdir /usr/lib/systemd/user \
             --copy-in /build/openshell-gateway.service:/usr/lib/systemd/user/ \
             --copy-in /build/openshell-gateway-setup.service:/etc/systemd/system/ \
             --run-command 'mkdir -p /usr/local/sbin /usr/libexec/saw /etc/saw/trust /etc/containers/registries.d' \
             --copy-in /build/openshell-gateway-user-setup.sh:/usr/local/sbin/ \
+            {{- if .Values.gpu.enabled }}
+            --copy-in /build/nvidia-driver-setup.sh:/usr/local/sbin/ \
+            --copy-in /build/nvidia-driver-setup.service:/etc/systemd/system/ \
+            --copy-in /build/saw-gpu-devices.sh:/usr/local/sbin/ \
+            --copy-in /build/saw-patch-cdi-caps.py:/usr/local/sbin/ \
+            --copy-in /build/saw-gpu-devices.service:/etc/systemd/system/ \
+            --run-command 'chmod 755 /usr/local/sbin/nvidia-driver-setup.sh /usr/local/sbin/saw-gpu-devices.sh /usr/local/sbin/saw-patch-cdi-caps.py' \
+            --run-command 'systemctl enable nvidia-driver-setup.service saw-gpu-devices.service' \
+            {{- end }}
             --copy-in /build/saw/verify-bundle:/usr/libexec/saw/ \
             --copy-in /build/saw/saw.yaml:/etc/containers/registries.d/ \
             --copy-in /build/saw/cosign:/usr/local/bin/ \

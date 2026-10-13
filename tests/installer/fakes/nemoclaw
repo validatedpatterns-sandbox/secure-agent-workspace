@@ -8,5 +8,7 @@ from pathlib import Path
 state = Path(os.environ["FAKE_STATE"])
 with open(state / "nemoclaw.log", "a") as log:
     log.write(json.dumps({"args": sys.argv[1:],
-                          "has_key": bool(os.environ.get("NEMOCLAW_PROVIDER_KEY"))}) + "\n")
+                          "has_key": bool(os.environ.get("NEMOCLAW_PROVIDER_KEY")),
+                          "gpu": os.environ.get("NEMOCLAW_GPU_ENABLED", ""),
+                          "gpu_count": os.environ.get("NEMOCLAW_GPU_COUNT", "")}) + "\n")
 sys.exit(1 if (state / "nemoclaw-fail").exists() else 0)

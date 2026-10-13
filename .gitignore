@@ -4,6 +4,7 @@
 # Secret values (never commit)
 values-secret.yaml
 .env
+.cursor/plans/
 .vscode/
 .DS_Store
 jira/

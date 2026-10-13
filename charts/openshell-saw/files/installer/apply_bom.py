@@ -542,6 +542,11 @@ class Sandbox:
     providers: list = field(default_factory=list)
     model: str = ""
     harness_ref: dict = field(default_factory=dict)
+    # Container-level GPU request (`openshell sandbox create --gpu`).
+    # Independent of the gateway VM's vm.gpu.enabled (KubeVirt hostDevices).
+    # Off unless the BOM sandbox sets gpu.enabled. See docs/gpu-passthrough.md.
+    gpu_enabled: bool = False
+    gpu_count: int = 1
 
 
 @dataclass
@@ -1138,6 +1143,17 @@ def parse_profiles(files):
                 for s in (_yaml(text, key).get("spec") or {}).get("sandboxes") or []:
                     if "name" not in s:
                         raise InstallerError(f"{key}: every sandbox needs a name")
+                    gpu = s.get("gpu") or {}
+                    if not isinstance(gpu, dict):
+                        raise InstallerError(f"{key}: sandbox '{s['name']}' gpu must be a mapping")
+                    raw_count = gpu.get("count", 1)
+                    if raw_count is None or raw_count == "":
+                        raw_count = 1
+                    try:
+                        gpu_count = int(raw_count)
+                    except (TypeError, ValueError):
+                        raise InstallerError(
+                            f"{key}: sandbox '{s['name']}' gpu.count must be an integer") from None
                     ws.sandboxes.append(Sandbox(
                         name=s["name"], type=s.get("type", "generic"),
                         enabled=s.get("enabled", True),
@@ -1145,7 +1161,9 @@ def parse_profiles(files):
                         image=s.get("image", ""),
                         providers=list(s.get("providers") or []),
                         model=s.get("model", ""),
-                        harness_ref=dict(s.get("harnessRef") or {})))
+                        harness_ref=dict(s.get("harnessRef") or {}),
+                        gpu_enabled=bool(gpu.get("enabled", False)),
+                        gpu_count=gpu_count))
             profile.workspaces.append(ws)
         profiles.append(profile)
     return profiles
@@ -1298,6 +1316,8 @@ def validate_profiles(profiles):
                     errors.append(f"{where}: sandbox '{s.name}' uses provider '{ref}' which is not an enabled provider in this workspace")
             if s.type in ("openclaw", "nemoclaw") and not provider_names:
                 errors.append(f"{where}: {s.type} sandbox '{s.name}' needs at least one provider")
+            if s.gpu_enabled and s.gpu_count < 1:
+                errors.append(f"{where}: sandbox '{s.name}' gpu.count must be at least 1")
     if errors:
         raise InstallerError("invalid profiles:\n  - " + "\n  - ".join(errors))
 
@@ -3048,6 +3068,11 @@ class ProfileApplier:
                 log(f"WARN: sandbox '{sb.name}' created without skipped provider '{prov}'")
                 continue
             args += ["--provider", prov]
+        if sb.gpu_enabled:
+            # Native openshell flag (confirmed on openshell 0.0.103+rhaiv.0).
+            # Asks the Podman driver to attach GPU devices via CDI. A no-op
+            # request unless the VM itself received a passed-through GPU.
+            args += ["--gpu", str(sb.gpu_count)]
         # Keep the sandbox Ready for the follow-up `sandbox exec` setup.
         args += ["--no-tty", "--detach", "--", "sh", "-c", "sleep infinity"]
         self.cli(*args, timeout=900)
@@ -3096,6 +3121,8 @@ class ProfileApplier:
             env["NEMOCLAW_MODEL"] = sb.model or provider.model
         if PROVIDER_CRED_MAP.get(nc_provider):
             env[PROVIDER_CRED_MAP[nc_provider]] = credential
+        # GPU attachment is openshell sandbox create --gpu in create_sandbox().
+        # nemoclaw onboard does not read NEMOCLAW_GPU_* and has no count flag.
         result = self.sh.run(["nemoclaw", "onboard", "--fresh", "--non-interactive",
                               "--name", sb.name, "--agent", sb.agent or "openclaw",
                               "--yes", "--yes-i-accept-third-party-software"],
@@ -3671,6 +3698,13 @@ class ProfileApplier:
                 if not self.cli("sandbox", "get", sb.name, *ws_args(ws.name), check=False, quiet=True).ok:
                     failures.append(f"sandbox '{sb.name}' in '{ws.name}' is missing")
                     continue
+                if sb.gpu_enabled:
+                    gpu = self.cli("sandbox", "exec", "-n", sb.name, *ws_args(ws.name),
+                                   "--no-tty", "--", "nvidia-smi", "-L",
+                                   check=False, quiet=True)
+                    if not gpu.ok:
+                        detail = (gpu.err or gpu.out).strip().splitlines()[-1:] or [f"exit {gpu.rc}"]
+                        failures.append(f"GPU unavailable in sandbox '{sb.name}': {detail[0]}")
                 if sb.type in ("openclaw", "nemoclaw"):
                     # The agent setup steps are best effort; this is what
                     # catches an image whose OpenClaw cannot run under the

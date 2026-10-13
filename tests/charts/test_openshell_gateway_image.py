@@ -1,7 +1,10 @@
 """Render the openshell-gateway-image BuildConfig and check what gets baked
 into the golden image for signing (PR #54 review)."""
 
+import importlib.util
+import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -88,6 +91,56 @@ def test_invalid_signing_floor_fails_the_render():
         capture_output=True, text=True)
     assert result.returncode != 0
     assert "signing.floor must be off, warn, enforce, or empty" in result.stderr
+
+
+def test_nvidia_repos_are_omitted_unless_gpu_enabled():
+    text = dockerfile()
+    assert "nvidia-container-toolkit" not in text
+    assert "nvidia-ctk" not in text
+    assert "kmod-nvidia-open-dkms" not in text
+
+
+def test_gpu_enabled_bakes_podman_cdi_not_a_docker_runtime():
+    text = dockerfile("--set", "gpu.enabled=true")
+    assert "kmod-nvidia-open-dkms-610.57.04 nvidia-driver-610.57.04 nvidia-driver-cuda-610.57.04 nvidia-container-toolkit" in text
+    assert "cuda-fedora44.repo" in text and "cuda-rhel10.repo" in text
+    assert "systemctl enable nvidia-driver-setup.service" in text
+    assert "saw-gpu-devices.service" in text
+    assert "nvidia-ctk runtime configure" not in text
+
+
+def test_gpu_image_variant_has_distinct_objects():
+    docs = render("--set", "gpu.enabled=true")
+    names = {(d["kind"], d["metadata"]["name"]) for d in docs}
+    assert ("ImageStream", "openshell-gateway-gpu") in names
+    assert ("BuildConfig", "openshell-gateway-gpu") in names
+    assert ("DataVolume", "openshell-gateway-gpu-golden") in names
+    assert ("DataSource", "openshell-gateway-gpu") in names
+    assert ("ImageStream", "openshell-gateway") not in names
+
+
+def test_capability_cdi_numbers_come_from_live_device():
+    path = CHART / "files" / "saw-patch-cdi-caps.py"
+    spec = importlib.util.spec_from_file_location("saw_patch_cdi_caps", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    class Device:
+        st_mode = stat.S_IFCHR | 0o666
+        st_rdev = os.makedev(508, 7)
+
+    class Cap:
+        def __str__(self):
+            return "/dev/nvidia-caps/nvidia-cap1"
+
+        def stat(self):
+            return Device()
+
+    cap = Cap()
+    original = "containerEdits:\n  deviceNodes:\n    - path: /dev/nvidiactl\n      major: 195\n      minor: 255\n"
+    patched = module.patch_cdi(original, [cap])
+    assert "major: 508" in patched and "minor: 7" in patched
+    assert module.patch_cdi(patched, [cap]) == patched
 
 
 def test_the_two_verify_bundle_copies_are_identical():

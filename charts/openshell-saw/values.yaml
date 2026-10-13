@@ -58,6 +58,10 @@ vm:
   cores: 4
   memory: 8Gi
   diskSize: 40Gi
+  # Grace/NUMA passthrough requires dedicated CPUs and the arm64 virt machine.
+  dedicatedCpuPlacement: false
+  machineType: ""
+  architecture: ""
   # Share the installer ConfigMap, profiles, and provider Secrets over
   # virtiofs so a change is visible without restarting the VM. Off until
   # the guest units from a new cloud-init are in place: turning it on
@@ -67,6 +71,18 @@ vm:
   # Uses a guest-agent exec probe (`test -f /var/lib/saw/ready`). Off by
   # default: it needs qemu-guest-agent with guest-exec allowed in the image.
   readinessProbe: false
+  # GPU passthrough (KubeVirt hostDevices) into the gateway VM. Requires:
+  #   1. Bare-metal nodes (or a hypervisor that exposes an IOMMU). Standard
+  #      cloud GPU VMs such as AWS g5.2xlarge do not.
+  #   2. The GPU bound to vfio-pci on a node (NVIDIA GPU Operator
+  #      vfio-manager, label nvidia.com/gpu.workload.config=vm-passthrough).
+  #   3. A matching permittedHostDevices entry on the HyperConverged CR
+  #      (charts/openshift-cnv). deviceName must match that resourceName.
+  # Off by default. Set deviceName to the permittedHostDevices resourceName.
+  gpu:
+    enabled: false
+    count: 1
+    deviceName: ""
 
 # Versioned Bill of Materials for the software installed inside the VM.
 # The in-guest installer (files/installer/apply_bom.py) pulls each image by

@@ -1,6 +1,20 @@
+{{- if and .Values.gpu.enabled (empty .Values.gpu.pciHostDevices) -}}
+{{- fail "gpu.pciHostDevices must contain an exact PCI selector when gpu.enabled=true" -}}
+{{- end -}}
 apiVersion: hco.kubevirt.io/v1beta1
 kind: HyperConverged
 metadata:
   name: kubevirt-hyperconverged
   namespace: openshift-cnv
-spec: {}
+spec:{{ if not .Values.gpu.enabled }} {}{{ else }}
+  permittedHostDevices:
+    pciHostDevices:
+      {{- range .Values.gpu.pciHostDevices }}
+      {{- if or (empty .pciDeviceSelector) (empty .resourceName) }}
+      {{- fail "every gpu.pciHostDevices entry needs pciDeviceSelector and resourceName" }}
+      {{- end }}
+      - pciDeviceSelector: {{ .pciDeviceSelector | quote }}
+        resourceName: {{ .resourceName | quote }}
+        externalResourceProvider: true
+      {{- end }}
+{{- end }}

@@ -1070,6 +1070,29 @@ def test_harness_signature_cache_ttl_reaches_installer(ttl):
     assert cfg["harness"]["cosign"]["cacheTtlSeconds"] == ttl
 
 
+def test_gpu_vm_requires_explicit_device_name():
+    assert "vm.gpu.deviceName is required" in render_error("--set", "vm.gpu.enabled=true")
+
+
+def test_gpu_vm_uses_separate_image_and_grace_shape():
+    docs = render("--set", "vm.gpu.enabled=true", "--set", "vm.gpu.count=2",
+                  "--set", "vm.gpu.deviceName=example.com/gpu",
+                  "--set", "vm.dedicatedCpuPlacement=true",
+                  "--set", "vm.architecture=arm64", "--set", "vm.machineType=virt")
+    vm = docs[("VirtualMachine", "saw-test")]["spec"]
+    assert "openshell-gateway-gpu:latest" in vm["dataVolumeTemplates"][0]["spec"]["source"]["registry"]["url"]
+    spec = vm["template"]["spec"]
+    assert spec["architecture"] == "arm64"
+    assert spec["domain"]["machine"]["type"] == "virt"
+    assert spec["domain"]["cpu"]["dedicatedCpuPlacement"] is True
+    assert spec["domain"]["resources"]["limits"]["memory"] == "8Gi"
+    assert spec["domain"]["devices"]["hostDevices"] == [
+        {"deviceName": "example.com/gpu", "name": "gpu0"},
+        {"deviceName": "example.com/gpu", "name": "gpu1"}]
+    assert "Requires=saw-gpu-devices.service" in written(
+        cloud_config(docs), "/etc/systemd/system/saw-install.service.d/gpu.conf")
+
+
 def test_enforce_without_trust_material_fails_at_render():
     err = render_error("--set", "signing.mode=enforce")
     assert "signing.mode enforce requires" in err

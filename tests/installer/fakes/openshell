@@ -276,7 +276,8 @@ elif op == "sandbox create":
     missing = [p for p in providers if f"{ws}/{p}" not in state["providers"]]
     if missing:
         fail(f"Error: provider '{missing[0]}' not found")
-    state["sandboxes"][key] = {"image": opt("--from"), "providers": providers, "phase": "Ready"}
+    state["sandboxes"][key] = {"image": opt("--from"), "providers": providers, "phase": "Ready",
+                               "gpu": opt("--gpu")}
     remember_labels("sandbox", ws, opt("--name"))
     if opt("--driver-config-json"):
         state["sandboxes"][key]["driverConfig"] = json.loads(opt("--driver-config-json"))

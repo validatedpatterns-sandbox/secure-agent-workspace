@@ -1,0 +1,13 @@
+# GPU passthrough (KubeVirt hostDevices). Off by default. Enabling this only
+# makes sense on bare-metal (or IOMMU-capable) clusters where a GPU is already
+# bound to vfio-pci on at least one node. See docs/gpu-passthrough.md.
+#
+# pciDeviceSelector is VENDOR:DEVICE from `lspci -nnk` on the target node.
+# Configure the exact PCI ID and resource name from the target cluster when
+# enabling this feature. resourceName must match vm.gpu.deviceName.
+gpu:
+  enabled: false
+  pciHostDevices: []
+  # pciHostDevices:
+  #   - pciDeviceSelector: "<vendor>:<device>"
+  #     resourceName: "example.com/gpu"

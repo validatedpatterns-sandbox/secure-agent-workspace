@@ -43,7 +43,8 @@ def test_reviewed_lock_contains_fixed_dependencies():
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
 def test_openshift_supplies_the_reviewed_runtime_to_the_upstream_dockerfile():
     rendered = subprocess.check_output([HELM, "template", "image", str(CHART),
-        "--set-string", "source.discoveryImage=image-registry.example/build/nemoclaw-discovery-runtime@sha256:" + "a" * 64], text=True)
+        "--set-string", "source.discoveryImage=image-registry.example/build/nemoclaw-discovery-runtime@sha256:" + "a" * 64,
+        "--set-string", "build.targetArch=arm64"], text=True)
     resources = [d for d in yaml.safe_load_all(rendered) if d]
     build = next(d for d in resources if d["kind"] == "BuildConfig" and d["metadata"]["name"] == "nemoclaw-sandbox")
     source = next(s for s in build["spec"]["source"]["configMaps"]
@@ -53,6 +54,9 @@ def test_openshift_supplies_the_reviewed_runtime_to_the_upstream_dockerfile():
     for name in ("package.json", "package-lock.json"):
         assert config["data"][name] == (RUNTIME / name).read_text()
     assert build["spec"]["strategy"]["dockerStrategy"]["dockerfilePath"] == "Dockerfile"
+    assert build["spec"]["nodeSelector"] == {"kubernetes.io/arch": "arm64"}
+    args = {a["name"]: a["value"] for a in build["spec"]["strategy"]["dockerStrategy"]["buildArgs"]}
+    assert args["TARGETARCH"] == "arm64"
 
 
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
@@ -76,7 +80,8 @@ def test_cli_builds_share_one_dockerfile_and_values():
 def test_discovery_build_generates_artifacts_and_sandbox_consumes_digest():
     image = "image-registry.example/build/nemoclaw-discovery-runtime@sha256:" + "a" * 64
     rendered = subprocess.check_output([HELM, "template", "image", str(CHART),
-        "--set-string", f"source.discoveryImage={image}"], text=True)
+        "--set-string", f"source.discoveryImage={image}",
+        "--set-string", "build.targetArch=amd64"], text=True)
     docs = [d for d in yaml.safe_load_all(rendered) if d]
     build = next(d for d in docs if d["kind"] == "BuildConfig" and d["metadata"]["name"] == "nemoclaw-sandbox")
     assert build["spec"]["source"]["images"] == [{
@@ -84,6 +89,7 @@ def test_discovery_build_generates_artifacts_and_sandbox_consumes_digest():
         "paths": [{"sourcePath": "/reviewed-runtime-bundle/mcp-tool-discovery/.",
                    "destinationDir": "tools/mcp-tool-discovery-runtime/reviewed-runtime-bundle/mcp-tool-discovery"}],
     }]
+    assert build["spec"]["nodeSelector"] == {"kubernetes.io/arch": "amd64"}
     discovery = next(d for d in docs if d["kind"] == "BuildConfig" and d["metadata"]["name"] == "nemoclaw-discovery-runtime")
     values = yaml.safe_load((CHART / "values.yaml").read_text())
     assert discovery["spec"]["strategy"]["dockerStrategy"]["buildArgs"] == [
@@ -117,6 +123,15 @@ def test_sandbox_build_is_not_created_without_a_discovery_digest():
         result = subprocess.run([HELM, "template", "image", str(CHART), "--set-string", f"source.discoveryImage={image}"], capture_output=True, text=True)
         assert result.returncode != 0
         assert "digest" in result.stderr
+
+
+@pytest.mark.skipif(not HELM, reason="helm is not installed")
+def test_sandbox_build_requires_an_explicit_target_architecture():
+    image = "image-registry.example/build/discovery@sha256:" + "a" * 64
+    result = subprocess.run([HELM, "template", "image", str(CHART),
+        "--set-string", f"source.discoveryImage={image}"], capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "build.targetArch must be amd64 or arm64" in result.stderr
 
 
 def test_ci_generates_discovery_before_building_from_the_same_recipe():

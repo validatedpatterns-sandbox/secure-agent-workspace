@@ -20,8 +20,8 @@ user_role = "openshell-user"
 allow_unauthenticated_users = false
 
 [openshell.drivers.podman]
-supervisor_image = "quay.io/opendatahub/odh-openshell-supervisor@sha256:0179eb17dcc0098d3fce360035c0be0c26a39949ce09a397c7c259bf728170ff"
-sandbox_runtime_image = "quay.io/opendatahub/odh-openshell-sandbox@sha256:283838f9787bdd876ec8f110a5d5b5c752082a410f75173f0abf2533ae651989"
+supervisor_image = "quay.io/opendatahub/odh-openshell-supervisor@sha256:f2178e5ef0948c145b7cc3a7ab3b3238aaf36d2c13a2826aae39b601e987bd7b"
+sandbox_runtime_image = "quay.io/opendatahub/odh-openshell-sandbox@sha256:acc2e36f4b05d494714aaa0a10392d2148bda3c26bbf75078f6b3c3cdf7c67ea"
 
 [[openshell.gateway.interceptors]]
 name           = "governance"

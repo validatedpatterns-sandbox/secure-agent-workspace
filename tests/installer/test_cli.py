@@ -122,7 +122,7 @@ def test_new_bom_needs_install_before_apply(world):
     (world.inputs / "installer" / "installer-bom.yaml").write_text(yaml.safe_dump(world.bom))
     result = world.run("apply")
     assert result.returncode == 1
-    assert "install has not finished for BOM openshell-next (install: Done for openshell-0-1-2-rhaiv-0)" in result.stdout
+    assert "install has not finished for BOM openshell-next (install: Done for openshell-0-1-2-rhaiv-6)" in result.stdout
     assert not (world.state / "ready").exists()
 
 

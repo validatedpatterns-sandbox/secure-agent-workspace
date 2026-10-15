@@ -30,6 +30,19 @@ inputs:
     description: Optional extra tag pushed with :latest and :sha-<commit> (e.g. the upstream version)
     required: false
     default: ""
+  platform:
+    description: >-
+      One platform to build (e.g. linux/arm64) on a runner of that architecture.
+      The image is pushed by digest only, and the digest uploaded as an artifact
+      for the merge-image action to join into one multi-arch tag. Empty -> build
+      for the runner's platform and push the tags directly.
+    required: false
+    default: ""
+
+outputs:
+  digest:
+    description: Digest of the pushed single-platform image (platform builds only)
+    value: ${{ steps.digest-build.outputs.digest }}
 
 runs:
   using: composite
@@ -65,6 +78,7 @@ runs:
 
     - name: Build and push ${{ inputs.image_name }}
       id: build
+      if: inputs.platform == ''
       uses: docker/build-push-action@v6
       with:
         context: ${{ inputs.context }}
@@ -78,7 +92,46 @@ runs:
         provenance: false
 
     - uses: ./.github/actions/verify-public-image
-      if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+      if: ${{ inputs.platform == '' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
       with:
-        # Verify the published tag so this also checks a merged multi-platform manifest.
         image: ghcr.io/${{ steps.meta.outputs.owner }}/${{ inputs.image_name }}:sha-${{ github.sha }}
+
+    - name: Platform suffix
+      if: inputs.platform != ''
+      id: plat
+      shell: bash
+      run: echo "suffix=${PLATFORM//\//-}" >> "$GITHUB_OUTPUT"
+      env:
+        PLATFORM: ${{ inputs.platform }}
+
+    - name: Build and push ${{ inputs.image_name }} (${{ inputs.platform }}) by digest
+      if: inputs.platform != ''
+      id: digest-build
+      uses: docker/build-push-action@v6
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.dockerfile }}
+        build-args: ${{ inputs.build_args }}
+        platforms: ${{ inputs.platform }}
+        tags: ghcr.io/${{ steps.meta.outputs.owner }}/${{ inputs.image_name }}
+        outputs: type=image,push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+        cache-from: type=gha,scope=${{ inputs.cache_scope }}-${{ steps.plat.outputs.suffix }}
+        cache-to: type=gha,mode=max,scope=${{ inputs.cache_scope }}-${{ steps.plat.outputs.suffix }},ignore-error=true
+        provenance: false
+
+    - name: Record digest
+      if: inputs.platform != '' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+      shell: bash
+      run: |
+        mkdir -p "$RUNNER_TEMP/digests"
+        touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+      env:
+        DIGEST: ${{ steps.digest-build.outputs.digest }}
+
+    - uses: actions/upload-artifact@v4
+      if: inputs.platform != '' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+      with:
+        name: digests-${{ inputs.image_name }}-${{ steps.plat.outputs.suffix }}
+        path: ${{ runner.temp }}/digests/*
+        if-no-files-found: error
+        retention-days: 1

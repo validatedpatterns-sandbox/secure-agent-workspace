@@ -1,0 +1,61 @@
+name: Merge per-platform images
+description: >-
+  Joins the per-platform digests that build-push-image (with `platform`)
+  uploaded into one multi-arch tag set: :latest, :sha-<commit> and extra_tag.
+  Run it in a job that needs all the platform builds, and only where they
+  pushed (main, not pull_request).
+
+inputs:
+  image_name:
+    description: Image name published under ghcr.io/<owner>/
+    required: true
+  registry_token:
+    description: Token for ghcr.io login (pass secrets.GITHUB_TOKEN)
+    required: true
+  extra_tag:
+    description: Optional extra tag, as in build-push-image
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@v4
+      with:
+        path: ${{ runner.temp }}/digests
+        pattern: digests-${{ inputs.image_name }}-*
+        merge-multiple: true
+
+    - uses: docker/setup-buildx-action@v3
+
+    - name: Log in to ghcr.io
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ inputs.registry_token }}
+
+    - name: Create the multi-arch tags
+      id: meta
+      shell: bash
+      working-directory: ${{ runner.temp }}/digests
+      run: |
+        owner=${OWNER,,}
+        echo "owner=$owner" >> "$GITHUB_OUTPUT"
+        repo="ghcr.io/$owner/$IMAGE"
+        tags=(-t "$repo:latest" -t "$repo:sha-$SHA")
+        if [ -n "$EXTRA_TAG" ]; then tags+=(-t "$repo:$EXTRA_TAG"); fi
+        sources=()
+        for d in *; do sources+=("$repo@sha256:$d"); done
+        [ "${#sources[@]}" -ge 2 ] || { echo "expected a digest per platform, got: ${sources[*]}" >&2; exit 1; }
+        docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+        docker buildx imagetools inspect "$repo:latest"
+      env:
+        OWNER: ${{ github.repository_owner }}
+        IMAGE: ${{ inputs.image_name }}
+        SHA: ${{ github.sha }}
+        EXTRA_TAG: ${{ inputs.extra_tag }}
+
+    - uses: ./.github/actions/verify-public-image
+      with:
+        image: ghcr.io/${{ steps.meta.outputs.owner }}/${{ inputs.image_name }}:sha-${{ github.sha }}

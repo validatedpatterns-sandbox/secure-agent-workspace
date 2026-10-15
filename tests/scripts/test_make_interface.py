@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -263,7 +264,9 @@ def test_prereqs_reject_incompatible_openshell_cli(tmp_path):
     env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}")
     result = run_make("prereqs-check", env=env)
     assert result.returncode != 0
-    assert "does not match gateway BOM 0.1.2-rhaiv.0" in result.stderr
+    values = yaml.safe_load((ROOT / "charts/openshell-saw/values.yaml").read_text())
+    expected = values["bom"]["spec"]["openshell"]["cli"]["version"]
+    assert f"does not match gateway BOM {expected}" in result.stderr
     assert "oc must not run" not in result.stderr
 
 
@@ -428,6 +431,8 @@ esac
     env.pop("IMAGE_REPO", None)
     env.pop("PUSH_IMAGE_REPO", None)
     args = [target, f"SCRIPTS_DIR={scripts}"]
+    if target in ("sandbox-build", "build-nemoclaw"):
+        args.append("BUILD_ARCH=amd64")
     if repo is not None:
         args.append(f"IMAGE_REPO={repo}")
     result = run_make(*args, env=env)
@@ -468,6 +473,7 @@ case "$*" in
       *status.phase*) printf '%s' "$DISCOVERY_PHASE" ;;
       *imageDigest*) printf '%s' "$DISCOVERY_DIGEST" ;;
     esac ;;
+  "get nodes -o json") echo '{"items":[{"spec":{},"status":{"nodeInfo":{"architecture":"arm64"}}}]}' ;;
 esac
 ''')
     executable(bindir / "helm", 'echo "helm $*" >> "$CALLS"\n')
@@ -486,6 +492,7 @@ esac
         start = next(i for i, line in enumerate(calls) if "start-build nemoclaw-sandbox " in line)
         assert pinned < start
         assert f"source.discoveryImage=image-registry.openshift-image-registry.svc:5000/test-build/nemoclaw-discovery-runtime@{digest}" in calls[pinned]
+        assert "build.targetArch=arm64" in calls[pinned]
         assert any("get build.build.openshift.io/nemoclaw-discovery-runtime-7 " in line and "imageDigest" in line for line in calls)
         assert not any("get bc/" in line for line in calls)
 
@@ -514,7 +521,7 @@ esac
     env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", CALLS=str(log),
                TERMINAL_PHASE=terminal, PHASE_COUNT=str(tmp_path / "phase-count"))
     env.pop("PUSH_IMAGE_REPO", None)
-    result = run_make("sandbox-build", "IMAGE_REPO=", "BUILD_NS=test-build", env=env)
+    result = run_make("sandbox-build", "IMAGE_REPO=", "BUILD_NS=test-build", "BUILD_ARCH=amd64", env=env)
     calls = log.read_text().splitlines()
     assert sum("status.phase" in line for line in calls) >= 2
     assert not any("oc wait " in line for line in calls)

@@ -7,8 +7,8 @@ openshell:
   # Informational: the in-VM installer installs OpenShell from the SAW's
   # InstallerBOM (charts/openshell-saw values `bom:`), not from these.
   version: "0.1.2"
-  gatewayImage: "quay.io/opendatahub/odh-openshell-gateway:v0.1.2-rhaiv.0"
-  supervisorImage: "quay.io/opendatahub/odh-openshell-supervisor:v0.1.2-rhaiv.0"
+  gatewayImage: "quay.io/opendatahub/odh-openshell-gateway:v0.1.2-rhaiv.6"
+  supervisorImage: "quay.io/opendatahub/odh-openshell-supervisor:v0.1.2-rhaiv.6"
   pipIndexUrl: "https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6-EA1/cpu-ubi9-test/simple/"
 
 # Pinned cosign used only to verify the installer bundle. The OpenShell
@@ -22,10 +22,14 @@ openshell:
 # to say whether the installer is genuine. sha256 pulled from cosign's own
 # published checksums file for this release; re-verify against
 # https://github.com/sigstore/cosign/releases/tag/v2.4.1 when bumping the version.
+# One entry per architecture: the build picks its own (uname -m).
 cosign:
   version: "v2.4.1"
   url: "https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64"
   sha256: "8b24b946dd5809c6bd93de08033bcf6bc0ed7d336b7785787c080f574b89249b"
+  aarch64:
+    url: "https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-arm64"
+    sha256: "3b2e2e3854d0356c45fe6607047526ccd04742d20bd44afb5be91fa2a6e7cb4a"
 
 # Minimum signing.mode this image enforces at /etc/saw/signing-mode,
 # regardless of what config.json (in the installer ConfigMap, which a
@@ -39,7 +43,11 @@ signing:
 
 build:
   builderImage: "registry.fedoraproject.org/fedora:44"
+  # The build runs on a node of the cluster's architecture and picks its
+  # base image by `uname -m`: an arm64 cluster builds an aarch64 VM image
+  # (KubeVirt runs only guests of the host's architecture).
   fedoraCloud: "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"
+  fedoraCloudAarch64: "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/aarch64/images/Fedora-Cloud-Base-Generic-44-1.7.aarch64.qcow2"
   memoryLimit: "4Gi"
 
 output:

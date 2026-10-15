@@ -2,6 +2,10 @@
 {{- if not (regexMatch "^[^[:space:]@]+@sha256:[a-f0-9]{64}$" .Values.source.discoveryImage) }}
 {{- fail "source.discoveryImage must be an image pinned by sha256 digest" }}
 {{- end }}
+{{- $arch := .Values.build.targetArch | toString }}
+{{- if not (has $arch (list "amd64" "arm64")) }}
+{{- fail "build.targetArch must be amd64 or arm64 for an OpenShift sandbox build" }}
+{{- end }}
 apiVersion: build.openshift.io/v1
 kind: BuildConfig
 metadata:
@@ -9,6 +13,8 @@ metadata:
   labels:
     {{- include "nemoclaw-imagestream.labels" . | nindent 4 }}
 spec:
+  nodeSelector:
+    kubernetes.io/arch: {{ $arch | quote }}
   source:
     type: Git
     git:
@@ -31,7 +37,7 @@ spec:
       dockerfilePath: Dockerfile
       buildArgs:
         - name: TARGETARCH
-          value: {{ .Values.build.targetArch | quote }}
+          value: {{ $arch | quote }}
         - name: BASE_IMAGE
           value: {{ .Values.build.baseImage | quote }}
         - name: NEMOCLAW_MODEL

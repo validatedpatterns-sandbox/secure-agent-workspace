@@ -1,6 +1,9 @@
 # Shared namespace: golden image, image builds, governance interceptor.
 NS             ?= openshell-agents
 BUILD_NS       ?= openshell-agents
+# NemoClaw sandbox architecture. Empty detects one architecture among
+# schedulable nodes; set amd64/arm64 explicitly on mixed-architecture clusters.
+BUILD_ARCH     ?=
 # Only an explicit destination opts manual builds into publishing.
 ifeq ($(origin PUSH_IMAGE_REPO),undefined)
 PUSH_IMAGE_REPO := $(IMAGE_REPO)
@@ -117,8 +120,14 @@ sandbox-build: .check-image-repo ## Build audited discovery artifacts, then the 
 	if ! printf '%s\n' "$$digest" | grep -Eq '^sha256:[0-9a-f]{64}$$'; then \
 		echo "Error: discovery build $$discovery_build has no valid output digest." >&2; exit 1; fi; \
 	discovery_image="image-registry.openshift-image-registry.svc:5000/$(BUILD_NS)/nemoclaw-discovery-runtime@$$digest"; \
+	build_arch="$(BUILD_ARCH)"; \
+	if [ -z "$$build_arch" ]; then \
+		build_arch=$$(oc get nodes -o json | jq -r '[.items[] | select(.spec.unschedulable != true) | .status.nodeInfo.architecture] | unique | if length == 1 then .[0] else "" end'); \
+	fi; \
+	case "$$build_arch" in amd64|arm64) ;; *) echo "Error: set BUILD_ARCH=amd64 or arm64 for the sandbox build." >&2; exit 1 ;; esac; \
 	helm upgrade --install nemoclaw-imagestream $(HELM_DIR)nemoclaw-imagestream \
 		--namespace "$(BUILD_NS)" --set-string "source.discoveryImage=$$discovery_image" \
+		--set-string "build.targetArch=$$build_arch" \
 		$(if $(filter 1,$(OTEL)),--set build.otelEnabled=1)
 	oc start-build nemoclaw-sandbox -n $(BUILD_NS) --follow --wait
 	@if [ -n "$$PUSH_IMAGE_REPO" ]; then \

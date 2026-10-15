@@ -20,7 +20,13 @@ spec:
       RUN dnf install -y libguestfs-tools-c qemu-img curl && dnf clean all
 
       WORKDIR /build
-      RUN curl -fL --retry 3 -o base.qcow2 "{{ .Values.build.fedoraCloud }}"
+      # The base image of this build node's architecture.
+      RUN case "$(uname -m)" in \
+            x86_64) url={{ .Values.build.fedoraCloud | quote }} ;; \
+            aarch64) url={{ .Values.build.fedoraCloudAarch64 | quote }} ;; \
+            *) echo "unsupported architecture $(uname -m)" >&2; exit 1 ;; \
+          esac \
+          && curl -fL --retry 3 -o base.qcow2 "$url"
 
       # Write the gateway systemd user service
       RUN cat > /build/openshell-gateway.service <<'GWUNIT'
@@ -212,8 +218,13 @@ spec:
       RUN echo '{{ .Files.Get "files/verify-bundle" | b64enc }}' | base64 -d > /build/saw/verify-bundle
       RUN echo '{{ .Files.Get "files/registries.yaml" | b64enc }}' | base64 -d > /build/saw/saw.yaml
       RUN chmod 755 /build/saw/verify-bundle
-      RUN curl -fsSL -o /build/saw/cosign {{ .Values.cosign.url | quote }} \
-          && echo "{{ .Values.cosign.sha256 }}  /build/saw/cosign" | sha256sum -c - \
+      RUN case "$(uname -m)" in \
+            x86_64) url={{ .Values.cosign.url | quote }}; sum={{ .Values.cosign.sha256 | quote }} ;; \
+            aarch64) url={{ .Values.cosign.aarch64.url | quote }}; sum={{ .Values.cosign.aarch64.sha256 | quote }} ;; \
+            *) echo "unsupported architecture $(uname -m)" >&2; exit 1 ;; \
+          esac \
+          && curl -fsSL -o /build/saw/cosign "$url" \
+          && echo "$sum  /build/saw/cosign" | sha256sum -c - \
           && chmod 755 /build/saw/cosign
       {{- if $signingFloor }}
       # A minimum signing.mode this image enforces, regardless of what

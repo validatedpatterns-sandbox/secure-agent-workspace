@@ -133,9 +133,10 @@ spec:
           bootloader:
             efi:
               secureBoot: false
+        # No smm: it is x86-only and only needed for Secure Boot (off here),
+        # and an arm64 cluster refuses it.
         features:
           acpi: {}
-          smm: {}
       # Dynamic SSH key provisioning: the guest agent keeps cloud-user's
       # authorized_keys in sync with this Secret, also while the VM runs.
       # `make saw-vm-ssh` adds the caller's key to it.

@@ -73,7 +73,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 **Reference:** "OpenShell or equivalent runtime sandboxing."
 
 **Implementation:**
-- The golden image is built with `virt-customize`; the in-VM BOM installer installs the OpenShell gateway and CLI at boot (OpenShell `0.1.2-rhaiv.0`)
+- The golden image is built with `virt-customize`; the in-VM BOM installer installs the OpenShell gateway and CLI at boot (OpenShell `0.1.2-rhaiv.6`)
 - OpenClaw, Hermes, and Deep Agents Code agents supported
 - Agents run inside container sandboxes managed by the OpenShell gateway
 - Inference routed through user-configured provider endpoints

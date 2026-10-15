@@ -25,8 +25,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # One native build per architecture (no QEMU), each pushed by digest; the
+  # merge job joins them into one multi-arch :latest / :sha-<commit> tag.
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - uses: actions/checkout@v4
@@ -115,7 +125,6 @@ jobs:
           context: ${{ env.UPSTREAM_DIR }}
           cache_scope: nemoclaw-sandbox
           build_args: |
-            TARGETARCH=${{ steps.params.outputs.target_arch }}
             BASE_IMAGE=${{ steps.params.outputs.base_image }}
             NEMOCLAW_MODEL=${{ steps.params.outputs.model }}
             NEMOCLAW_INFERENCE_BASE_URL=${{ steps.params.outputs.inference_base_url }}
@@ -127,4 +136,17 @@ jobs:
             NEMOCLAW_AGENT_TIMEOUT=${{ steps.params.outputs.agent_timeout }}
             NEMOCLAW_WEB_SEARCH_ENABLED=${{ steps.params.outputs.web_search_enabled }}
             NEMOCLAW_OPENCLAW_OTEL=${{ steps.params.outputs.otel_enabled }}
+          platform: ${{ matrix.platform }}
+          registry_token: ${{ secrets.GITHUB_TOKEN }}
+
+  merge:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/merge-image
+        with:
+          image_name: nemoclaw-sandbox
           registry_token: ${{ secrets.GITHUB_TOKEN }}

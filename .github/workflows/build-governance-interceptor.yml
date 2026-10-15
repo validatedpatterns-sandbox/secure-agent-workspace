@@ -27,8 +27,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # One native build per architecture (no QEMU), each pushed by digest; the
+  # merge job joins them into one multi-arch :latest / :sha-<commit> tag.
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - uses: actions/checkout@v4
@@ -61,6 +71,26 @@ jobs:
             CONTEXT_DIR=${{ steps.params.outputs.context_dir }}
           # The chart pins ghcr.io/<owner>/governance-interceptor:<OpenShell ref>;
           # the interceptor must match the SAW gateways' OpenShell release.
+          extra_tag: ${{ steps.params.outputs.openshell_ref }}
+          platform: ${{ matrix.platform }}
+          registry_token: ${{ secrets.GITHUB_TOKEN }}
+
+  merge:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the extra tag from values.yaml
+        id: params
+        run: |
+          echo "openshell_ref=$(yq '.source.git.ref' image-builder-charts/helm/governance-interceptor-image/values.yaml)" \
+            >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/merge-image
+        with:
+          image_name: governance-interceptor
           extra_tag: ${{ steps.params.outputs.openshell_ref }}
           registry_token: ${{ secrets.GITHUB_TOKEN }}
 

@@ -25,8 +25,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # One native build per architecture (no QEMU), each pushed by digest; the
+  # merge job joins them into one multi-arch :latest / :sha-<commit> tag.
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - uses: actions/checkout@v4
@@ -75,4 +85,17 @@ jobs:
             SOURCE_REVISION=${{ steps.params.outputs.git_ref }}
             NODE_IMAGE=${{ steps.params.outputs.node_image }}
             MAX_OPENSHELL_VERSION=${{ steps.params.outputs.max_openshell_version }}
+          platform: ${{ matrix.platform }}
+          registry_token: ${{ secrets.GITHUB_TOKEN }}
+
+  merge:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/merge-image
+        with:
+          image_name: nemoclaw-cli
           registry_token: ${{ secrets.GITHUB_TOKEN }}

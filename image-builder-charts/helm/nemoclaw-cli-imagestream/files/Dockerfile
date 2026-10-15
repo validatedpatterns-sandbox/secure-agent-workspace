@@ -16,6 +16,17 @@ RUN printf '%s\n' "$SOURCE_REVISION" | grep -Eq '^[0-9a-f]{40}$' \
     && printf '%s\n' "$NEMOCLAW_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
     && printf '%s\n' "$SOURCE_REVISION" > .source-revision \
     && printf '%s\n' "$NEMOCLAW_VERSION" > .version
+# Decorate both native create plans; CLI/SDK transport and identity labels stay upstream-owned.
+# Remove this downstream patch when the pinned release supplies these role labels.
+RUN node -e ' \
+    const fs = require("node:fs"); \
+    const path = "src/lib/onboard/sandbox-create-plan-materialization.ts"; \
+    const before = "      sandboxName: intent.sandboxName,\n      source: Object.freeze({ reference: fromRef }),"; \
+    const after = before + "\n      labels: Object.freeze({\n        \"sandbox.type\": \"agent\",\n        \"sandbox.agent\": intent.policy.options.agentName ?? \"openclaw\",\n      }),"; \
+    const source = fs.readFileSync(path, "utf8"); \
+    if (source.split(before).length !== 3 || /\blabels\s*:/.test(source)) throw new Error("NemoClaw create-plan changed; review sandbox labels patch"); \
+    fs.writeFileSync(path, source.split(before).join(after)); \
+    '
 RUN npm run build:cli
 
 FROM ${NODE_IMAGE}

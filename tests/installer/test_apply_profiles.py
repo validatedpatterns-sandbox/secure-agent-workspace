@@ -91,6 +91,48 @@ def test_nemoclaw_gets_the_provider_key_via_environment(ab, fake_env, config, pr
     assert calls[0]["has_key"]
 
 
+@pytest.mark.parametrize("native_fails", [False, True])
+def test_direct_agent_creation_labels_the_actual_openclaw_runtime(
+        ab, fake_env, config, profiles, creds, native_fails):
+    if native_fails:
+        (fake_env.state / "nemoclaw-fail").touch()
+    # Native onboarding may request Hermes, but SAW's direct fallback runs OpenClaw.
+    for _, ws in ab.enabled_workspaces(profiles):
+        for sb in ws.sandboxes:
+            if sb.type == "nemoclaw":
+                sb.agent = "hermes"
+    make_applier(ab, config, creds).apply(profiles)
+    for name in ("default/notebook", "cuda-dev/cuda-sandbox"):
+        labels = fake_env.openshell_state()["labels"][f"sandbox/{name}"]
+        assert "saw.redhat.com/managed=true" in labels
+        assert "sandbox.type=agent" in labels
+        assert "sandbox.agent=openclaw" in labels
+
+
+def test_generic_sandbox_does_not_claim_an_agent_role(ab, fake_env, config):
+    applier = ab.ProfileApplier(ab.Shell(), config, {})
+    applier.register_gateway()
+    applier.create_sandbox(ab.Workspace(name="default"), ab.Sandbox(name="generic"))
+    labels = fake_env.openshell_state()["labels"]["sandbox/default/generic"]
+    assert labels == ["saw.redhat.com/managed=true"]
+
+
+def test_existing_agent_without_role_labels_is_not_recreated(ab, fake_env, config):
+    applier = ab.ProfileApplier(ab.Shell(), config, {})
+    applier.register_gateway()
+    workspace = ab.Workspace(name="default")
+    sandbox = ab.Sandbox(name="existing-agent", type="openclaw")
+    applier.create_sandbox(workspace, sandbox)
+    state = fake_env.openshell_state()
+    state["labels"]["sandbox/default/existing-agent"] = ["saw.redhat.com/managed=true"]
+    fake_env.set_openshell_state(state)
+    before = len(fake_env.openshell_calls())
+    applier.create_sandbox(workspace, sandbox)
+    assert not [c for c in fake_env.openshell_calls()[before:]
+                if c[:2] in (["sandbox", "create"], ["sandbox", "delete"])]
+    assert fake_env.openshell_state()["labels"] == state["labels"]
+
+
 def test_keepalive_units_are_written_for_agent_sandboxes(ab, fake_env, config, profiles, creds):
     make_applier(ab, config, creds).apply(profiles)
     tees = [c for c in fake_env.other_calls("sudo") if c["args"][:2] == ["-n", "tee"]]

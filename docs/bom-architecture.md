@@ -134,6 +134,18 @@ charts/saw-bom/profiles/
 | openclaw | quay.io/aipcc/base-images/agentic/openclaw:2026.9.6 | Standalone OpenClaw agent | OpenClaw via sandbox exec | CSB entrypoint (wrapped) |
 | generic | base | Plain sandbox for tools/scripts | None | OpenShell supervisor |
 
+New agent sandboxes also carry OpenShell resource labels `sandbox.type=agent`
+and `sandbox.agent=<agent name>` for dashboard identification. The downstream
+NemoClaw CLI build labels its native create plans with the selected agent;
+SAW's direct creation path uses `sandbox.agent=openclaw`, including after failed
+NemoClaw onboarding, because that path starts OpenClaw. Generic sandboxes do not
+receive agent-role labels. These labels describe the workload and grant no access.
+
+Existing sandboxes are reused without label backfilling or recreation. Tool and
+sub-agent roles, parent IDs, and conversation session IDs must be supplied by the
+agent integration when it creates child sandboxes; the installer does not create
+those children or assign session identities.
+
 ## Inference (OpenShell 0.1.x: no inference routes)
 
 ```

@@ -3075,6 +3075,9 @@ class ProfileApplier:
         if sb.image and ("/" in sb.image or ":" in sb.image):
             self.sh.run(["podman", "pull", sb.image], check=False, timeout=900)
         args = ["sandbox", "create", "--name", sb.name, "--label", MANAGED_LABEL]
+        if sb.type in ("nemoclaw", "openclaw"):
+            # This direct path starts OpenClaw even after a different native agent failed.
+            args += ["--label", "sandbox.type=agent", "--label", "sandbox.agent=openclaw"]
         if sb.image:
             args += ["--from", sb.image]
         args += ws_args(ws.name)

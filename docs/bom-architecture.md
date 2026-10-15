@@ -136,7 +136,7 @@ charts/saw-bom/profiles/
 
 New agent sandboxes also carry OpenShell resource labels `sandbox.type=agent`
 and `sandbox.agent=<agent name>` for dashboard identification. The downstream
-NemoClaw CLI build labels its native create plans with the selected agent;
+NemoClaw source labels its native create plans with the selected agent;
 SAW's direct creation path uses `sandbox.agent=openclaw`, including after failed
 NemoClaw onboarding, because that path starts OpenClaw. Generic sandboxes do not
 receive agent-role labels. These labels describe the workload and grant no access.
@@ -145,6 +145,11 @@ Existing sandboxes are reused without label backfilling or recreation. Tool and
 sub-agent roles, parent IDs, and conversation session IDs must be supplied by the
 agent integration when it creates child sandboxes; the installer does not create
 those children or assign session identities.
+
+The CLI and sandbox image builds pin the same [NemoClaw source commit](https://github.com/LinoyBitan1/NemoClaw/commit/123b790d99f265f940bf568f85a2786c08b1d1ab),
+based on v0.0.133. The label change and its tests live in that source repository;
+the SAW Dockerfile builds the checkout without rewriting TypeScript. This fork
+pin is temporary until the change is available in an upstream release.
 
 ## Inference (OpenShell 0.1.x: no inference routes)
 

@@ -2,7 +2,6 @@
 
 import json
 import os
-import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -15,61 +14,13 @@ CHART = ROOT / "image-builder-charts/helm/nemoclaw-imagestream"
 RUNTIME = CHART / "files/mcporter-runtime"
 CLI_CHART = ROOT / "image-builder-charts/helm/nemoclaw-cli-imagestream"
 HELM = shutil.which("helm")
-NODE = shutil.which("node")
 
 
-def sandbox_label_patch_command():
-    recipe = (CLI_CHART / "files/Dockerfile").read_text().replace("\\\n", "")
-    commands = [shlex.split(line[4:]) for line in recipe.splitlines()
-                if line.startswith("RUN node -e ") and "sandbox.type" in line]
-    assert len(commands) == 1, "shared CLI Dockerfile must label native NemoClaw sandboxes"
-    return commands[0]
-
-
-@pytest.mark.skipif(not NODE, reason="node is not installed")
-@pytest.mark.parametrize("agent", [None, "openclaw", "hermes", "langchain-deepagents-code"])
-def test_cli_build_labels_both_native_create_plans(tmp_path, agent):
-    path = tmp_path / "src/lib/onboard/sandbox-create-plan-materialization.ts"
-    path.parent.mkdir(parents=True)
-    # Both upstream constructors must be patched; retain neighboring request fields.
-    constructor = '''({
-      sandboxName: intent.sandboxName,
-      source: Object.freeze({ reference: fromRef }),
-      providers: ["nvidia"],
-    })'''
-    path.write_text("const plans = [" + constructor + "," + constructor + "];\n")
-    subprocess.run(sandbox_label_patch_command(), cwd=tmp_path, check=True)
-    result = subprocess.check_output([NODE, "-e",
-        "const intent = {sandboxName: 'assistant', policy: {options: "
-        + json.dumps({"agentName": agent} if agent else {})
-        + "}}; const fromRef = 'image@sha256:abc';\n"
-        + path.read_text() + "\nconsole.log(JSON.stringify(plans));"], text=True)
-    plans = json.loads(result)
-    assert len(plans) == 2
-    for plan in plans:
-        assert plan == {"sandboxName": "assistant", "source": {"reference": "image@sha256:abc"},
-                        "providers": ["nvidia"],
-                        "labels": {"sandbox.type": "agent", "sandbox.agent": agent or "openclaw"}}
-
-
-@pytest.mark.skipif(not NODE, reason="node is not installed")
-@pytest.mark.parametrize("original", [
-    "changed upstream create-plan format\n",
-    '''({
-      sandboxName: intent.sandboxName,
-      source: Object.freeze({ reference: fromRef }),
-      labels: {existing: "preserve-me"},
-    })''' * 2,
-], ids=["changed-shape", "upstream-labels"])
-def test_cli_label_patch_rejects_changed_upstream_source(tmp_path, original):
-    path = tmp_path / "src/lib/onboard/sandbox-create-plan-materialization.ts"
-    path.parent.mkdir(parents=True)
-    path.write_text(original)
-    result = subprocess.run(sandbox_label_patch_command(), cwd=tmp_path,
-                            capture_output=True, text=True)
-    assert result.returncode != 0
-    assert "review sandbox labels patch" in result.stderr
-    assert path.read_text() == original
+def test_cli_dockerfile_builds_source_without_rewriting_sandbox_code():
+    recipe = (CLI_CHART / "files/Dockerfile").read_text()
+    assert "RUN npm run build:cli" in recipe
+    assert "sandbox-create-plan-materialization.ts" not in recipe
+    assert "fs.writeFileSync" not in recipe
 
 
 def test_github_supplies_the_same_reviewed_runtime(tmp_path):

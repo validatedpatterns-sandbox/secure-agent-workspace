@@ -2,8 +2,8 @@ source:
   # Supplied by make sandbox-build only after its discovery build completes.
   discoveryImage: ""
   git:
-    uri: "https://github.com/NVIDIA/NemoClaw.git"
-    ref: "ef5d55d19e2da33c2474db158588613828e1a9be" # v0.0.133
+    uri: "https://github.com/LinoyBitan1/NemoClaw.git"
+    ref: "123b790d99f265f940bf568f85a2786c08b1d1ab" # v0.0.133 + main-agent labels
 
 build:
   discoveryNodeVersion: "24.19.0"

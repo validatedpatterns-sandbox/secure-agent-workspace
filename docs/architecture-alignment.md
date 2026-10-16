@@ -14,10 +14,10 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 | Network boundary controls | NetworkPolicy, EgressFirewall, EgressIP | Namespaced default-deny NetworkPolicy for pod ingress and egress, plus EgressFirewall with an explicit hostname allowlist in Git. No EgressIP | Partial |
 | Agent runtime | OpenShell or equivalent runtime sandbox | OpenShell Gateway + OpenClaw/NemoClaw agents | Implemented |
 | Secret management | Credential proxy / external secret boundary | HashiCorp Vault + External Secrets Operator | Implemented |
-| Policy distribution | Signed policy bundles via NFS | Not implemented (Phase II feature) | Gap |
-| OCSF-compatible audit | Lifecycle events, broker sessions, tool events | Not implemented | Gap |
+| Policy distribution | Signed policy bundles via NFS | Signed APF bundle (Ed25519, monotonic `policy_revision`), served in-cluster as the optional `apf` governance engine; no NFS transport | Partial |
+| OCSF-compatible audit | Lifecycle events, broker sessions, tool events | Governance decisions are logged (interceptor audit log; APF JSONL audit trail); no unified OCSF pipeline | Partial |
 | Operator kill switch | Stop VM, remove route, revoke SSO, rotate policy | VM lifecycle via OpenShift API; SSO revocation via Keycloak | Implemented |
-| Image governance | Only approved images deployed | Bootc golden image built via BuildConfig; no signing/attestation | Partial |
+| Image governance | Only approved images deployed | Bootc golden image via BuildConfig; the installer bundle and BOM components are signature-checked (cosign + per-pull podman policy, `signing.mode: warn` by default); no admission control on the VM image | Partial |
 
 ## Detailed Alignment
 
@@ -78,7 +78,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 - Agents run inside container sandboxes managed by the OpenShell gateway
 - Inference routed through user-configured provider endpoints
 
-**Alignment:** Full for Phase I. The reference design's Phase II runtime sandboxing (per-tool enforcement, credential proxying, filesystem scoping) is an OpenShell-internal capability not configured by this deployment.
+**Alignment:** Largely implemented. Phase II runtime enforcement is now configured through the governance layer: a governance service — the OpenShell interceptor by default (policy served unsigned from ConfigMaps), or NVIDIA APF (policy served from an Ed25519-signed bundle) — injects a per-sandbox policy with filesystem (landlock), process and network rules, and the in-VM sandbox proxy injects provider credentials at request time so the real keys never enter the sandbox. See [Governance interceptor](governance-interceptor.md) and [APF governance](apf.md).
 
 ### 6. Secret Management
 
@@ -98,18 +98,15 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 
 **Reference:** "Signed policy bundles are mounted or fetched read-only by the workspace." GitOps publishes policy-release metadata; an in-VM agent validates signatures and applies policy via the OpenShell API.
 
-**Implementation:** Not implemented. No policy bundle signing, NFS-based distribution, or in-VM policy agent exists in this deployment.
+**Implementation:** Implemented as the optional `apf` governance engine (NVIDIA Agent Policy Fabric). `make apf-bundle` signs the policy in `charts/governance-policy` into a bundle: each file is hashed, the manifest is signed with Ed25519, and a monotonic `policy_revision` guards against rollback. The bundle is served in-cluster (as a ConfigMap, not over NFS); APF refuses any policy change that does not arrive through a signed bundle and stamps provenance (`apf.nvidia.com/*`) on every sandbox. The default engine remains the OpenShell interceptor, which serves the same `charts/governance-policy` files from ConfigMaps without signing. See [APF governance](apf.md).
 
-**Gap:** This is the reference design's Phase II capability. The current deployment relies on Phase I perimeter controls (VM isolation, OIDC, network). Implementing policy distribution would require:
-1. A policy bundle build/sign pipeline
-2. NFS or ConfigMap-based distribution to VMs
-3. An in-VM agent that watches for policy updates and applies them via `openshell policy set`
+**Remaining gap:** The transport is in-cluster (ConfigMap), not the reference design's read-only NFS mount with an in-VM policy agent, and APF's anti-rollback counter is not yet durable across pod restarts (see [APF governance — Rollback](apf.md#rollback)). After a new bundle, a gateway refreshes its provider catalog when its VM restarts, and each sandbox keeps the policy it was created with until it is recreated.
 
 ### 8. Audit
 
 **Reference:** "OCSF-compatible audit path captures workspace lifecycle events, broker sessions, policy-release activity and runtime/tool events."
 
-**Implementation:** Not implemented. OpenShift's built-in audit logging captures API server events, and Keycloak logs authentication events, but there is no unified OCSF-compatible audit pipeline.
+**Implementation:** Partial. The governance interceptor logs its allow/deny decisions, and APF writes a JSONL audit trail; OpenShift's built-in audit logging captures API-server events and Keycloak logs authentication events. What is missing is a unified, OCSF-compatible pipeline that normalizes and forwards these.
 
 **Gap:** Adding structured audit logging would require:
 1. Forwarding OpenShift audit logs, Keycloak events, and OpenShell gateway logs to a central collector
@@ -143,12 +140,12 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 
 | Reference Design Phase | This Implementation |
 |---|---|
-| **Phase I: Perimeter-based enforcement** | Largely implemented — VM isolation, OIDC, image governance, secret management, GitOps, operator controls |
-| **Phase II: Runtime-based enforcement** | Not yet implemented — policy bundles, credential proxying, per-tool enforcement, runtime reporting |
+| **Phase I: Perimeter-based enforcement** | Implemented — VM isolation, OIDC, image governance, secret management, GitOps, operator controls |
+| **Phase II: Runtime-based enforcement** | Largely implemented — signed policy bundles (APF), credential proxying, and per-tool/endpoint, filesystem and process enforcement through the governance layer; remaining: a unified OCSF audit pipeline, NFS policy transport, and a durable anti-rollback counter |
 
 ## Recommendations for Closing Gaps
 
 1. **Network guardrails:** The sandbox namespace now has default-deny NetworkPolicy and an external hostname EgressFirewall. Consider EgressIP if a fixed source address is required, and an AdminNetworkPolicy for a cluster-wide boundary independent of namespaced policy edits.
 2. **Image admission:** The guest already checks component signatures and can verify an installer bundle with cosign. What is still missing is an admission controller (e.g., Kyverno) that rejects an unapproved golden image, and the publisher public key in `/etc/saw/trust`.
 3. **Audit pipeline:** Deploy OpenShift's cluster logging operator with OCSF-compatible log normalization.
-4. **Policy bundles (Phase II):** Implement when OpenShell's policy API stabilizes — requires NFS storage, a signing pipeline, and an in-VM policy agent.
+4. **Policy bundles (Phase II):** Implemented via APF — signed Ed25519 bundles, see [APF governance](apf.md). Remaining: a durable anti-rollback counter and, if the reference design's read-only NFS transport is required, an in-VM policy agent.

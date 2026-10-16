@@ -450,8 +450,7 @@ It requires confirmation for interactive TUI and GUI checks. It runs
 inference and access checks and records their status codes. See
 [the deployment guide](docs/deployment-guide.md#live-deployment-test).
 
-The existing Python CLI has a smaller command set than Make. See
-[CLI migration gaps](docs/cli-migration-gaps.md) before moving an operation.
+The existing Python CLI has a smaller command set than Make.
 
 #### Supported inference providers
 
@@ -586,7 +585,7 @@ While APF is not running the gateways refuse write operations (fail closed). If 
 
 ### Self-service workspaces and sandbox web UIs
 
-Users can create their own workspace from Red Hat Developer Hub: they pick a SAW-BOM profile and enter only the keys it needs; the keys go to Vault under `secret/data/hub/saw-<user>`, and an Argo CD ApplicationSet builds the workspace like any `overrides/saw-users.yaml` entry. A sandbox with `ui: {route: true}` in its profile gets its own route to the OpenClaw / NemoClaw web UI, signed in with Keycloak and open to the workspace owner only (its sign-in is registered by the redirect registrar: [Web UI sign-in](#web-ui-sign-in-redirect-uris)). Details: [docs/self-service-portal.md](docs/self-service-portal.md); how it fits together: [docs/rhdh-architecture.md](docs/rhdh-architecture.md); step-by-step test: [docs/rhdh-user-guide.md](docs/rhdh-user-guide.md).
+Users can create their own workspace from Red Hat Developer Hub: they pick a SAW-BOM profile and enter only the keys it needs; the keys go to Vault under `secret/data/hub/saw-<user>`, and an Argo CD ApplicationSet builds the workspace like any `overrides/saw-users.yaml` entry. A sandbox with `ui: {route: true}` in its profile gets its own route to the OpenClaw / NemoClaw web UI, signed in with Keycloak and open to the workspace owner only (its sign-in is registered by the redirect registrar: [Web UI sign-in](#web-ui-sign-in-redirect-uris)). Details: [docs/self-service-portal.md](docs/self-service-portal.md); step-by-step test: [docs/rhdh-user-guide.md](docs/rhdh-user-guide.md).
 
 ### Agent harness: skills, MCP servers and tools
 

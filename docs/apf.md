@@ -11,7 +11,7 @@ bundle, and writes a JSONL audit trail.
 | | `interceptor` (default) | `apf` |
 |---|---|---|
 | Serves | `governance-policy` ConfigMaps | signed bundle built from the same files |
-| Images | `ghcr.io/validatedpatterns-sandbox/governance-interceptor` (public) | `ghcr.io/mkhaas/apf/*:0.1.0-driverconfig.3` (private, amd64 and arm64; chart 0.2.2-driverconfig) |
+| Images | `ghcr.io/validatedpatterns-sandbox/governance-interceptor` (public) | `ghcr.io/mkhaas/apf/*:0.1.0-driverconfig.3` (private for now, public later; amd64 and arm64; chart 0.2.2-driverconfig) |
 | Policy change | edit `charts/governance-policy`, push | edit, **re-sign** (`make apf-bundle`), push |
 | Runtime `openshell policy update` | validated | refused: "policy is managed by APF" |
 | Gateway bindings | 4 RPCs (`allowlist`) | APF's own declarations (`dynamic`): 10 RPCs, incl. post-commit audit |
@@ -71,8 +71,10 @@ all of them), and `governance.bindingPolicy` sets the mode per engine.
 
 ## Set up (pattern)
 
-1. **GHCR access.** Ask @mkhaas for access to the `ghcr.io/mkhaas/apf` packages, and create a
-   GitHub token (classic) with `read:packages`.
+1. **GHCR access.** The APF images in `ghcr.io/mkhaas/apf` are private for now, so you need
+   read access to those packages and a GitHub token (classic) with `read:packages`. These
+   packages will be published for general public access later; once they are, this step and
+   the image-pull token are no longer needed.
 2. **Signing key.** `make apf-keys` writes the seed to `~/.apf-keys/apf.seed` (mode 600, never in
    git) and the public key to `charts/governance-interceptor/files/apf/apf.pub`.
 3. **Bundle.** `make apf-bundle` signs `charts/governance-policy` into

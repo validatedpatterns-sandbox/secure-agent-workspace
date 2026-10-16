@@ -28,7 +28,6 @@ if [[ -z "${registry}" ]]; then
   echo "Error: image registry route did not become available." >&2
   exit 1
 fi
-oc registry login --registry="${registry}" --insecure=true >/dev/null
 
 log="$(mktemp)"
 trap 'rm -f "${log}"' EXIT

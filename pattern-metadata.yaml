@@ -1,0 +1,24 @@
+metadata_version: "1.0"
+name: secure-agent-workspace
+description: Give each user an isolated AI agent workspace in their own OpenShift Virtualization VM, with NVIDIA OpenShell, OIDC sign-in, and governed sandbox policy.
+pattern_version: "1.0"
+display_name: Secure Agent Workspace
+repo_url: https://github.com/validatedpatterns-sandbox/secure-agent-workspace
+docs_repo_url: https://github.com/validatedpatterns/docs
+issues_url: https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues
+docs_url: https://validatedpatterns.io/patterns/secure-agent-workspace/
+ci_url: https://validatedpatterns.io/ci/?pattern=secure-agent-workspace
+tier: sandbox
+owners: sauagarwa, dminnear-rh
+requirements:
+  hub:
+    compute:
+      platform:
+        aws:
+          replicas: 1
+          type: m5.metal
+    controlPlane:
+      platform:
+        aws:
+          replicas: 3
+          type: m5.xlarge

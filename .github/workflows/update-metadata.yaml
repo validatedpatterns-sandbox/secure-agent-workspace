@@ -1,0 +1,22 @@
+name: Update docs pattern metadata
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "pattern-metadata.yaml"
+      - ".github/workflows/update-metadata.yml"
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  update-metadata:
+    uses: validatedpatterns/docs/.github/workflows/metadata-docs.yml@main # zizmor: ignore[unpinned-uses]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    secrets:
+      METADATA_SYNC_PRIVATE_KEY: ${{ secrets.METADATA_SYNC_PRIVATE_KEY }}

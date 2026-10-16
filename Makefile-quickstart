@@ -80,7 +80,7 @@ export EXTRA_HELM_OPTS := $(EXTRA_HELM_OPTS) --set main.extraParameters[0].name=
 endif
 
 .PHONY: prereqs-check quickstart-prereqs-check check-oidc-ca ssh-key-generate sandbox-build cli-build \
-        gateway-build gateway-build-docker gateway-build-podman images-mirror \
+        gateway-build gateway-build-docker gateway-build-podman images-mirror registry-token \
         governance-interceptor-build governance-interceptor-build-local \
         keycloak-deploy keycloak-delete keycloak-check keycloak-issuer \
         keycloak-register keycloak-redirects keycloak-redirects-sync \
@@ -219,7 +219,15 @@ gateway-build: ## Build the gateway with CONTAINER_RUNTIME=podman or docker
 	@case "$$CONTAINER_RUNTIME" in podman|docker) ;; *) echo "Error: CONTAINER_RUNTIME must be podman or docker." >&2; exit 1;; esac
 	@$(MAKE) "gateway-build-$$CONTAINER_RUNTIME"
 
-images-mirror: ## Mirror prebuilt images from GHCR to the internal registry
+# Credentials for the internal registry live in a HOME-based file (outside the
+# repo, like SSH_KEY_PATH) scoped to just these targets so other oc/podman targets
+# are unaffected. registry-token is a prerequisite, so it inherits this value.
+images-mirror registry-token: export REGISTRY_AUTH_FILE := $(HOME)/.generated-registry-auth/auth.json
+
+registry-token: ## Create the image-mirror SA + registry auth file (if no usable token)
+	@$(SCRIPTS_DIR)/registry-token.sh
+
+images-mirror: registry-token ## Mirror prebuilt images from GHCR to the internal registry
 	@$(SCRIPTS_DIR)/images-mirror.sh
 
 ##@ Pattern Lifecycle
@@ -240,8 +248,9 @@ pre-uninstall: ## Delete pattern VMs before framework uninstall
 	@$(SCRIPTS_DIR)/pattern-pipelines-mark.sh
 	@$(SCRIPTS_DIR)/pattern-pre-uninstall.sh
 
-# Generate SSH keys before install. No deletions — safe to run repeatedly.
-pattern-install: ssh-key-generate
+# Override install to generate the ssh keys and mirror images to internal registry
+# before installing the pattern.
+install: ssh-key-generate images-mirror
 
 # Handle a missing pattern CR without changing the framework install target.
 # OLM cleanup runs AFTER rhvp.cluster_utils.uninstall removes the ArgoCD apps

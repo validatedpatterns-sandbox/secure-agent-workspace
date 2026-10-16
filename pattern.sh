@@ -9,6 +9,59 @@ function version {
     echo "$1" | awk -F. '{ printf("%d%03d%03d%03d\n", $1,$2,$3,$4); }'
 }
 
+# We need this check mostly for CI testing, we do not want to run container in container
+function is_container() {
+    [ -n "${KUBERNETES_SERVICE_HOST:-}" ] && return 0
+    [ -f /.dockerenv ] && return 0
+    [ -f /run/.containerenv ] && return 0
+    return 1
+}
+
+function verify_image() {
+    local image="$1"
+
+    case "${image}" in
+        quay.io/validatedpatterns/*|quay.io/hybridcloudpatterns/*)
+            ;;
+        *)
+            echo "Skipping image verification for third-party registry"
+            return 0
+            ;;
+    esac
+
+    if ! command -v cosign >/dev/null 2>&1; then
+        echo "WARNING: cosign is not installed, cannot verify image signature"
+        echo "Install cosign to enable image verification: https://docs.sigstore.dev/cosign/system_config/installation/"
+        return 0
+    fi
+
+    echo "Verifying image signature for ${image}..."
+    local output rc
+    local oidc_issuer="${VP_COSIGN_OIDC_ISSUER:-https://token.actions.githubusercontent.com}"
+    local cert_identity="${VP_COSIGN_CERT_IDENTITY:-https://github.com/validatedpatterns/utility-container/.*}"
+    output=$(cosign verify \
+        --certificate-oidc-issuer "${oidc_issuer}" \
+        --certificate-identity-regexp "${cert_identity}" \
+        "${image}" 2>&1) && rc=$? || rc=$?
+
+    if [ "${rc}" -eq 0 ]; then
+        echo "Image signature verified successfully"
+    elif [ "${rc}" -ge 10 ] && [ "${rc}" -le 13 ]; then
+        echo "ERROR: Image signature verification failed for ${image} (exit code ${rc})"
+        echo "${output}"
+        echo "Set VP_VERIFY_IMAGE=false to skip this check"
+        exit 1
+    else
+        echo "WARNING: Could not verify image signature for ${image} (likely a network issue)"
+        echo "Set VP_VERIFY_IMAGE=false to skip this check"
+    fi
+}
+
+if is_container; then
+    echo "Already running in a container"
+    exec "$@"
+fi
+
 if [ -z "${PATTERN_UTILITY_CONTAINER:-}" ]; then
 	PATTERN_UTILITY_CONTAINER="quay.io/validatedpatterns/utility-container"
 fi
@@ -86,12 +139,15 @@ if [ -n "${EXTRA_ARGS:-}" ]; then
     EXTRA_ARGS_ARRAY=(${EXTRA_ARGS})
 fi
 
+if [ "${VP_VERIFY_IMAGE:-true}" != "false" ]; then
+    verify_image "$PATTERN_UTILITY_CONTAINER"
+fi
+
 # Copy Kubeconfig from current environment. The utilities will pick up ~/.kube/config if set so it's not mandatory
 # $HOME is mounted as itself for any files that are referenced with absolute paths
 # $HOME is mounted to /root because the UID in the container is 0 and that's where SSH looks for credentials
 
 podman run -it --rm --pull=newer \
-    --platform linux/amd64 \
     --security-opt label=disable \
     -e ANSIBLE_STDOUT_CALLBACK \
     -e DISABLE_VALIDATE_ORIGIN \
@@ -116,11 +172,12 @@ podman run -it --rm --pull=newer \
     -e TOKEN_SECRET \
     -e UUID_FILE \
     -e VALUES_SECRET \
+    -e 'VP_*' \
     ${PKI_HOST_MOUNT_ARGS[@]+"${PKI_HOST_MOUNT_ARGS[@]}"} \
     -v "$(pwd -P)":"$(pwd -P)" \
     -v "${HOME}":"${HOME}" \
     -v "${HOME}":/pattern-home \
-    ${PODMAN_ARGS[@]+"${PODMAN_ARGS[@]}"} \
+    "${PODMAN_ARGS[@]}" \
     ${EXTRA_ARGS_ARRAY[@]+"${EXTRA_ARGS_ARRAY[@]}"} \
     -w "$(pwd -P)" \
     "$PATTERN_UTILITY_CONTAINER" \

@@ -42,6 +42,7 @@ spec:
         - name: scripts
           mountPath: /opt/saw
           readOnly: true
+      computeResources: {}
       env:
         - name: NAMESPACE
           value: {{ .Values.portal.namespace }}
@@ -58,7 +59,9 @@ spec:
         - name: ARGO_NAMESPACE
           value: {{ include "openshell-rhdh.argoNamespace" . }}
         - name: PORTAL_ADMINS
-          value: {{ .Values.portal.admins | default list | join "," | quote }}
+          {{- with .Values.portal.admins }}
+          value: {{ . | join "," | quote }}
+          {{- end }}
         - name: VAULT_ADDR
           value: {{ .Values.vault.addr }}
         - name: VAULT_SKIP_VERIFY

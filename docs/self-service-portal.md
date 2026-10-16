@@ -6,11 +6,28 @@ get namespace `saw-<user>` with a VM, the profile's OpenShell sandboxes, and
 routes to the sandbox web UIs. Nothing goes into Git: the keys go to Vault,
 and the workspace is an entry in an in-cluster registry that Argo CD builds.
 
-The parts and how they connect: [rhdh-architecture.md](rhdh-architecture.md).
-Step-by-step test: [rhdh-user-guide.md](rhdh-user-guide.md).
+The step-by-step walkthrough and manual test is in [rhdh-user-guide.md](rhdh-user-guide.md).
 
 This replaces the Helm-install flow of PR #33 (RHDH portal, by @pmatouse) with
 the pattern's current way of creating a workspace, the `saw-users` chart.
+
+## Components
+
+| Component | Where | What it does |
+|---|---|---|
+| Red Hat Developer Hub | namespace `rhdh`, `Backstage` CR `developer-hub` (RHDH operator) | The portal. Shows the two templates (create, delete) and one catalog entry per workspace. Users sign in with Keycloak. |
+| Keycloak realm `openshell` | namespace `saw-keycloak` | One identity for RHDH, the OpenShell gateway and the sandbox UIs. No self-registration; an admin adds users with generated passwords. Client `rhdh` (confidential) for RHDH, `openshell-dashboard` (public, PKCE) for the web UIs. |
+| Request API | RHDH proxy endpoints `/saw-requests`, `/saw-pipelineruns` | The only cluster changes the templates make: create a request Secret, start a pipeline. They use RHDH's service account `rhdh-portal`, which can only *create* those two kinds in `saw-portal`. A third endpoint, `/saw-status` (GET), reads progress from the generator. |
+| Portal pipelines | namespace `saw-portal`, Tekton `saw-workspace-create` / `saw-workspace-delete` | Run `portal.py` as service account `saw-portal-provisioner`. The first task verifies who the request is for and writes the keys and the registry entry (or marks it for deletion and deletes the Application); each later task waits for one stage of what Argo CD does, so a workspace's whole life shows as one pipeline. |
+| Tekton tab | RHDH Kubernetes and Tekton plugins, service account `rhdh-kubernetes-reader` | Each workspace's catalog page shows its create and delete pipeline runs (label `backstage.io/kubernetes-id: saw-<user>`) as a graph with each task's log. Reads only `saw-portal`. |
+| Admission policies | `ValidatingAdmissionPolicy` `saw-portal-*` | Pin what `rhdh-portal` may create (Secrets `saw-req-*`, PipelineRuns of the two pipelines with one parameter) and which Argo CD applications the provisioner may delete (`portal-ws-*`, labelled as the portal's). |
+| Workspace registry | ConfigMaps `saw-ws-<user>` in `saw-portal` (label `saw.redhat.com/workspace=true`) | One entry per workspace: user name, profile, values for the `saw-users` chart. |
+| Generator | Deployment `saw-workspaces-generator` in `saw-portal` | Reads the registry (a malformed entry is skipped and logged). Serves the Argo CD ApplicationSet plugin API (token), the RHDH catalog with each workspace's status (`/catalog.yaml`, no token) and the progress the create template follows (`/status`, the user's Backstage token, through the RHDH proxy endpoint `/saw-status`); a NetworkPolicy admits only RHDH and Argo CD. |
+| ApplicationSet `saw-portal-workspaces` | Argo CD namespace (`vp-gitops`) | One Application `portal-ws-<user>` per registry entry, rendering `charts/saw-users` for that one user. Creates and updates only; deleting is done by the delete pipeline. |
+| `saw-users` -> `openshell-saw` | namespace `saw-<user>` | The same charts as a Git-declared user in `overrides/saw-users.yaml`: External Secrets for the user's keys, the BOM, the VM, the gateway and UI routes. |
+| Vault | `secret/data/hub/saw-<user>/<generation>/<secret>` | The user's keys, under the registration's generation (a new one per registration, so a deleted workspace's cleanup never reaches a replacement's keys). The provisioner writes them through the `hub` Kubernetes auth mount with role `saw-portal-writer`, whose policy covers only `secret/*/hub/saw-*` (every portal user's path: the token check in `portal.py` keeps a request to its own). |
+| In-VM installer | `apply_bom.py` in the VM | Creates the sandboxes, starts OpenClaw, and runs one OAuth proxy and one port forward per sandbox UI. |
+| Cleanup | CronJob `saw-portal-cleanup` | Deletes request Secrets that no pipeline handled. |
 
 ## How it works
 
@@ -31,6 +48,81 @@ ApplicationSet saw-portal-workspaces (plugin generator: portal.py serve; create 
 saw-users → namespace saw-<user> (label saw.redhat.com/portal=true)
             saw-<user>-secrets (External Secrets from the entry's vaultPrefix)
             saw-<user>-bom, saw-<user> (the VM), exactly as for overrides/saw-users.yaml
+```
+
+Overall flow:
+
+```mermaid
+flowchart LR
+  user([User browser])
+  subgraph kc[saw-keycloak]
+    keycloak[Keycloak realm openshell]
+  end
+  subgraph rhdhns[rhdh]
+    rhdh[RHDH<br/>templates + catalog]
+  end
+  subgraph portal[saw-portal]
+    req[(Secret saw-req-*)]
+    tekton[Tekton pipeline<br/>portal.py]
+    reg[(ConfigMap saw-ws-user)]
+    gen[Generator]
+  end
+  vault[(Vault<br/>hub/saw-user)]
+  subgraph argo[vp-gitops]
+    aset[ApplicationSet<br/>saw-portal-workspaces]
+  end
+  subgraph ws[saw-user]
+    eso[ExternalSecrets]
+    vm[VM user<br/>OpenShell gateway + sandboxes]
+    route[UI route]
+  end
+
+  user -- sign in --> keycloak
+  user -- template form --> rhdh
+  rhdh -- proxy: create --> req
+  rhdh -- proxy: start --> tekton
+  tekton -- verify token --> rhdh
+  tekton -- keys --> vault
+  tekton -- entry --> reg
+  gen -- reads --> reg
+  aset -- plugin generator --> gen
+  rhdh -- catalog.yaml --> gen
+  aset -- Application portal-ws-user --> ws
+  eso -- reads --> vault
+  user -- sandbox UI --> route --> vm
+```
+
+Creating a workspace (Argo CD builds it; the pipeline watches it after its first task):
+
+```mermaid
+sequenceDiagram
+  actor U as User
+  participant R as RHDH
+  participant K as Kubernetes API (saw-portal)
+  participant P as Pipeline (portal.py)
+  participant V as Vault
+  participant A as Argo CD
+  participant VM as VM in saw-user
+
+  U->>R: Create > "Create or update my agent workspace" (profile + keys)
+  R->>K: POST Secret saw-req-xxxx (form + user's Backstage token)
+  R->>K: POST PipelineRun saw-workspace-create (request=saw-req-xxxx)
+  K->>P: run as saw-portal-provisioner
+  P->>R: fetch JWKS, verify token signatures and expiry
+  Note over P: user = the token's subject, never the form
+  P->>P: check form against the profile catalog,<br/>refuse names taken by Git users or other apps
+  P->>V: write secret/data/hub/saw-user/<generation>/<secret>
+  P->>K: ConfigMap saw-ws-user (registry entry), delete the request
+  A->>K: ApplicationSet asks the generator for workspaces
+  A->>A: Application portal-ws-user (charts/saw-users)
+  A->>VM: namespace, ExternalSecrets, BOM, VM, routes
+  P->>K: tasks argo-cd-apps, vm, vm-running: wait for each
+  VM->>VM: installer creates sandboxes, starts OpenClaw, UI proxy
+  P->>VM: task sandboxes: wait until every sandbox UI route answers
+  R->>K: catalog refresh: Component saw-user with status and UI links
+  loop run page, one step per pipeline task
+    R->>K: GET /saw-status (generator): task state, then the pipeline's log
+  end
 ```
 
 The generator also serves the RHDH catalog (`/catalog.yaml`, without a
@@ -212,7 +304,35 @@ it has checked that the entry is still its own (a later delete takes over and
 finishes, then a create registers a replacement); the replacement has a new
 generation, so the older cleanup cannot destroy its keys.
 
+## TLS
+
+Every connection the portal makes is verified. RHDH, the generator and the
+Keycloak setup Job build a CA bundle when their pod starts
+(`files/ca-bundle.py`, an init container): the image's system CAs, the
+cluster's trusted CA bundle (`config.openshift.io/inject-trusted-cabundle`:
+proxy CAs), the Kubernetes API and service CAs, the router's CA
+(`openshift-config-managed/default-ingress-cert`, for Keycloak's route when
+the default ingress certificate is self-signed) and `tls.extraCaBundle`.
+RHDH's Node runtime adds it with `NODE_EXTRA_CA_CERTS`; its proxy endpoints
+(`secure: true`) and Kubernetes plugin (`caFile`, the service account's CA)
+verify. The pipeline checks Vault's certificate against the service CA.
+`tls.insecureSkipVerify: true` turns all of it off, for a throwaway test
+cluster only.
+
 ## Sandbox web UIs
+
+The path from the browser to OpenClaw:
+
+```mermaid
+flowchart LR
+  b([Browser]) --> r[Route<br/>edge TLS]
+  r --> p["oauth2-proxy in the VM<br/>0.0.0.0:420x"]
+  p -. sign in .-> k[Keycloak]
+  p -- "allowed users file<br/>(owner + allowedUsers)" --> l["relay, at most 16 connections<br/>127.0.0.1:1420x"]
+  l --> f["openshell forward<br/>127.0.0.1:2420x"]
+  f -- loopback --> g["OpenClaw gateway<br/>in the sandbox :18789"]
+```
+
 
 A sandbox in a SAW-BOM `sandbox.yaml` can publish its agent's web UI (the
 OpenClaw control UI, also in NemoClaw sandboxes):
@@ -351,6 +471,37 @@ characters (they name the VM).
 | `vault.addr`, `vault.authMount`, `vault.role` | `https://vault.vault.svc:8200`, `hub`, `saw-portal-writer` | |
 | `applicationSet.namespace` | `global.vpArgoNamespace` | where the ApplicationSet lives |
 | `sawUsers` | `{}` | extra `saw-users` values for portal workspaces |
+
+## Names
+
+| Thing | Name |
+|---|---|
+| Namespace | `saw-<user>` (label `saw.redhat.com/portal=true`) |
+| VM | `<user>` |
+| Argo CD applications | `portal-ws-<user>` -> `saw-<user>-secrets`, `saw-<user>-bom`, `saw-<user>` |
+| Registry entry | ConfigMap `saw-ws-<user>` in `saw-portal` |
+| Keys | `secret/data/hub/saw-<user>/<generation>/<secret>` (e.g. `inference`, `web-search`); the entry's `vaultPrefix` names the generation |
+| OpenShell web UI | `https://<user>-webui-saw-<user>.apps.<domain>` |
+| Sandbox UI | `https://<user>-<workspace>-<sandbox>-ui.apps.<domain>` |
+| RHDH | `https://backstage-developer-hub-rhdh.apps.<domain>` |
+
+User names are lowercase DNS labels of at most 19 characters (they name the VM).
+
+## Status
+
+Checked on a live cluster (OpenShift with RHDH operator 1.10, OpenClaw 2026.9.5):
+
+- the Keycloak changes: policy, lockout, registration off, generated
+  passwords, adding and resetting users;
+- the sandbox UI: the Keycloak sign-in through the route, the owner admitted
+  and another user refused by oauth2-proxy;
+- the RHDH `Backstage` resource against the operator's `v1alpha4` and
+  `v1alpha5` schemas;
+- the installer across VM restarts.
+
+The [user guide](rhdh-user-guide.md) walks through these checks. The parts
+still to confirm on a cluster are listed under
+[Limits and open items](#limits-and-open-items).
 
 ## Limits and open items
 

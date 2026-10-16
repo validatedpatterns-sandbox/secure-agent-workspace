@@ -2,7 +2,7 @@
 
 Step by step: get the portal ready, open Red Hat Developer Hub (RHDH),
 request a workspace, open its sandbox, and check each step on the way. How
-the parts fit together is in [rhdh-architecture.md](rhdh-architecture.md).
+the parts fit together is in [self-service-portal.md](self-service-portal.md).
 
 Commands run from the repository root, logged in with `oc` as a cluster
 admin. `<domain>` is the cluster's apps domain

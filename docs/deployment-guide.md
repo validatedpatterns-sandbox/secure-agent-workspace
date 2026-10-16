@@ -1,41 +1,5 @@
 # Secure Agent Workspace — End-to-End Deployment Guide
 
-## NetworkPolicy upgrade procedure
-
-This release introduces default-deny NetworkPolicy. The standalone
-`openshell-saw` chart enables it by default and refuses to render until pod
-CIDRs, Service CIDRs, the Kubernetes API Service IP, and exact API EndpointSlice
-backend IPs and ports are supplied. `make saw-create` discovers these values
-before writing any namespace or Secret. `SAW_VALUES_FILE` remains a Helm
-overlay for other settings; conflicting topology values in it are rejected.
-
-For an existing GitOps deployment, `saw-users` starts with NetworkPolicy off
-for each user, so a sync does not cut off active VMs. Roll it out one user at a
-time:
-
-1. Audit that user's in-cluster inference, MCP, registry, and package-mirror
-   destinations. Add each required namespace, pod selector, and TCP port under
-   that user's `networkPolicy.extraEgress`.
-2. Run `make prereqs-check`. It reads the live Network resource, the
-   `default/kubernetes` Service, and its EndpointSlices. Paste the printed
-   `defaults.openshellSaw` snippet into `overrides/saw-users.yaml`. An enabled
-   user's effective topology must match the live topology or this command
-   fails with a replacement snippet.
-3. Set that user's `values.networkPolicy.enabled: true`, sync its Argo CD
-   Application, and run `tests/test-network-policy.sh` with a dedicated peer.
-   Check the user's actual in-cluster workflows before enabling the next user.
-
-Argo CD cannot discover topology during Helm rendering. Run the preflight
-before each enablement and after API EndpointSlice changes; update the values
-and sync before an old endpoint is removed. Hosted control planes can expose
-the API on TCP 443 or another port, so use the discovered endpoint ports, not
-an assumed control-plane node port. On a hosted cluster with
-`cleanupOnDelete: true` and NetworkPolicy off, supply exact `cleanupApi`
-endpoints too; the legacy control-plane node fallback has no target there.
-The exact API exception remains in EgressFirewall through a temporary
-NetworkPolicy rollback, so restore isolation as soon as its scoped rules are
-correct. See [network troubleshooting](troubleshooting.md).
-
 ## Overview
 
 The Secure Agent Workspace (SAW) deploys a per-user AI agent sandbox running inside a KubeVirt virtual machine on OpenShift. The deployment is fully GitOps-driven via Red Hat Validated Patterns and ArgoCD. Production has no demo users. For an explicit demo and separate browser sign-in steps, see [Keycloak production and demo users](../README.md#keycloak-production-and-demo-users).
@@ -318,6 +282,42 @@ A workspace that stays Starting is usually waiting on a provider Secret. The vir
 oc get events -n saw-<user> | grep FailedMount
 ```
 
+## NetworkPolicy upgrade procedure
+
+This release introduces default-deny NetworkPolicy. The standalone
+`openshell-saw` chart enables it by default and refuses to render until pod
+CIDRs, Service CIDRs, the Kubernetes API Service IP, and exact API EndpointSlice
+backend IPs and ports are supplied. `make saw-create` discovers these values
+before writing any namespace or Secret. `SAW_VALUES_FILE` remains a Helm
+overlay for other settings; conflicting topology values in it are rejected.
+
+For an existing GitOps deployment, `saw-users` starts with NetworkPolicy off
+for each user, so a sync does not cut off active VMs. Roll it out one user at a
+time:
+
+1. Audit that user's in-cluster inference, MCP, registry, and package-mirror
+   destinations. Add each required namespace, pod selector, and TCP port under
+   that user's `networkPolicy.extraEgress`.
+2. Run `make prereqs-check`. It reads the live Network resource, the
+   `default/kubernetes` Service, and its EndpointSlices. Paste the printed
+   `defaults.openshellSaw` snippet into `overrides/saw-users.yaml`. An enabled
+   user's effective topology must match the live topology or this command
+   fails with a replacement snippet.
+3. Set that user's `values.networkPolicy.enabled: true`, sync its Argo CD
+   Application, and run `tests/test-network-policy.sh` with a dedicated peer.
+   Check the user's actual in-cluster workflows before enabling the next user.
+
+Argo CD cannot discover topology during Helm rendering. Run the preflight
+before each enablement and after API EndpointSlice changes; update the values
+and sync before an old endpoint is removed. Hosted control planes can expose
+the API on TCP 443 or another port, so use the discovered endpoint ports, not
+an assumed control-plane node port. On a hosted cluster with
+`cleanupOnDelete: true` and NetworkPolicy off, supply exact `cleanupApi`
+endpoints too; the legacy control-plane node fallback has no target there.
+The exact API exception remains in EgressFirewall through a temporary
+NetworkPolicy rollback, so restore isolation as soon as its scoped rules are
+correct. See [network troubleshooting](troubleshooting.md).
+
 ## Upgrading from the single-user layout
 
 Before the `saw-users` chart, `values-prod.yaml` defined Alice's SAW directly:
@@ -394,6 +394,8 @@ egress:
 **Upgrading an existing sandbox.** The next sync turns this firewall on. A custom-inference URL that is outside the cluster lives only in Vault, so the chart cannot see it. Before upgrading, put that host in `egress.extraAllow`, or set `egress.enabled: false` on that user until you do. Calls to that URL time out. OpenShell does not report a policy denial.
 
 ### In-cluster NetworkPolicy
+
+> Rolling default-deny NetworkPolicy out on an existing deployment is a staged, one-user-at-a-time procedure — see [NetworkPolicy upgrade procedure](#networkpolicy-upgrade-procedure).
 
 The `openshell-saw` chart renders `saw-default-deny`, `saw-vm`, `saw-cdi-import`, and (when `cleanupOnDelete` is true) `saw-cleanup-hook` after NetworkPolicy is enabled for that SAW. These stable names make policy inspection and rollback consistent. The default-deny selects every pod; the VM allow policy selects only the `virt-launcher` pod carrying `openshell.pattern/role: gateway`. CDI importer pods get DNS, registry, router, and ingress from the CDI namespace; outside egress is added only for an HTTP import or a pod-pulled external registry. The cleanup hook has exact API Service and backend peers while deleting the VM and PVCs.
 
@@ -658,7 +660,7 @@ Set only one source mode. Keep `source.dataSourceNamespace` at
 
 The `<name>-dashboard` Route forwards to the gateway Service on VM port 18789, but OpenClaw listens inside the sandbox container, which on OpenShell 0.1.x runs in its own network namespace with only loopback (network mode `none`, no port mappings). The Route therefore does not reach the OpenClaw UI and answers 503. Each sandbox has its own namespace, so several OpenClaw sandboxes all listen on 18789 without conflict.
 
-On the pattern path (Option A, including workspaces created in the self-service portal), a sandbox whose profile sets `ui: {route: true}` gets its own Route, `<user>-<workspace>-<sandbox>-ui.apps.<domain>`, signed in through Keycloak and open only to the workspace owner. The local-Keycloak quickstart path (Option B) also creates these Routes for enabled profile UIs. They reach OpenClaw through `openshell forward`, so they work on 0.1.x; see [Opening a sandbox UI](rhdh-architecture.md#opening-a-sandbox-ui). Use `make sandbox-ui` to list them. `make openclaw-gui` and `make nemoclaw-gui` port-forward to the sandbox UI as another access method.
+On the pattern path (Option A, including workspaces created in the self-service portal), a sandbox whose profile sets `ui: {route: true}` gets its own Route, `<user>-<workspace>-<sandbox>-ui.apps.<domain>`, signed in through Keycloak and open only to the workspace owner. The local-Keycloak quickstart path (Option B) also creates these Routes for enabled profile UIs. They reach OpenClaw through `openshell forward`, so they work on 0.1.x; see [Opening a sandbox UI](self-service-portal.md#sandbox-web-uis). Use `make sandbox-ui` to list them. `make openclaw-gui` and `make nemoclaw-gui` port-forward to the sandbox UI as another access method.
 
 ### Web search in the default sandbox
 

@@ -1,0 +1,27 @@
+# Dedicated integration-test VM; no static provider credentials. Set a unique
+# testRunID and the installed trustDomain before deploying.
+spiffe:
+  testMode: true
+  testRunID: ""
+  enabled: true
+  trustDomain: ""
+vm:
+  cores: 2
+  memory: 4Gi
+  readinessProbe: true
+# Omit bom.spec.nemoclaw (null is treated as absent by the installer).
+inference:
+  secretName: ""
+additionalProviderSecrets: []
+dashboard:
+  enabled: false
+route:
+  enabled: false
+  dashboard: false
+  webui: false
+oidc:
+  issuerUrl: ""
+governance:
+  enabled: false
+internalRegistry:
+  allowAnonymousPull: false

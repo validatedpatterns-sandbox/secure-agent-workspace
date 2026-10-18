@@ -18,5 +18,9 @@ __pycache__/
 *.py[cod]
 .venv
 *.pyc
+# Go binaries
+go.mod
+go.sum
+
 # Local nested checkout
 /secure-agent-workspace/

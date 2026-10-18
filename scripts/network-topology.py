@@ -139,30 +139,33 @@ def topology_snippet(live):
     return yaml.safe_dump({"defaults": {"openshellSaw": live}}, sort_keys=False).rstrip()
 
 
-def discover(output, overlay_path):
+def discover(output, overlay_paths):
     live = live_topology()
-    if overlay_path:
-        overlay = read_yaml(overlay_path)
-        for section, keys in (("networkPolicy", ("clusterNetworkCIDRs", "serviceNetworkCIDRs")),
-                              ("cleanupApi", ("serviceIP", "endpoints"))):
-            supplied = overlay.get(section) or {}
-            if not isinstance(supplied, dict):
-                raise TopologyError(f"{section} in {overlay_path} must be an object")
-            for key in keys:
-                if key not in supplied:
-                    continue
-                got = supplied[key]
-                expected = live[section][key]
-                if key == "endpoints":
-                    same = endpoint_pairs(got) == endpoint_pairs(expected)
-                elif key.endswith("CIDRs"):
-                    same = set(got) == set(expected) if isinstance(got, list) else False
-                else:
-                    same = got == expected
-                if not same:
-                    raise TopologyError(
-                        f"{overlay_path} sets {section}.{key}={got!r}, but the cluster reports "
-                        f"{expected!r}; remove or correct that override")
+    if overlay_paths:
+        if isinstance(overlay_paths, (str, Path)):
+            overlay_paths = [overlay_paths]
+        for overlay_path in overlay_paths:
+            overlay = read_yaml(overlay_path)
+            for section, keys in (("networkPolicy", ("clusterNetworkCIDRs", "serviceNetworkCIDRs")),
+                                  ("cleanupApi", ("serviceIP", "endpoints"))):
+                supplied = overlay.get(section) or {}
+                if not isinstance(supplied, dict):
+                    raise TopologyError(f"{section} in {overlay_path} must be an object")
+                for key in keys:
+                    if key not in supplied:
+                        continue
+                    got = supplied[key]
+                    expected = live[section][key]
+                    if key == "endpoints":
+                        same = endpoint_pairs(got) == endpoint_pairs(expected)
+                    elif key.endswith("CIDRs"):
+                        same = set(got) == set(expected) if isinstance(got, list) else False
+                    else:
+                        same = got == expected
+                    if not same:
+                        raise TopologyError(
+                            f"{overlay_path} sets {section}.{key}={got!r}, but the cluster reports "
+                            f"{expected!r}; remove or correct that override")
     Path(output).write_text(json.dumps(live, indent=2) + "\n")
     print("Discovered cluster pod/Service CIDRs and exact Kubernetes API endpoints.")
 
@@ -227,7 +230,7 @@ def main():
     sub = parser.add_subparsers(dest="action", required=True)
     discover_parser = sub.add_parser("discover")
     discover_parser.add_argument("--output", required=True)
-    discover_parser.add_argument("--values-file")
+    discover_parser.add_argument("--values-file", action="append", default=[])
     pattern_parser = sub.add_parser("check-pattern")
     pattern_parser.add_argument("--values-file", default=str(ROOT / "overrides/saw-users.yaml"))
     args = parser.parse_args()

@@ -1,0 +1,5 @@
+enabled: true
+# Supply the installed SPIRE OIDC issuer and only the SAW prefix under test.
+# See README.md; the demo chart rejects empty values.
+spiffeIssuer: ""
+allowedPrefixes: []

@@ -562,4 +562,3 @@ def test_a_bundle_without_plugin_json_declares_nothing(ab):
     info = ab.describe_harness_tree({"harness.yaml": (manifest.encode(), False),
                                      "skills/x/SKILL.md": (b"---\nname: x\n---\n", False)})
     assert ab.harness_mcp_servers(info) == {}
-

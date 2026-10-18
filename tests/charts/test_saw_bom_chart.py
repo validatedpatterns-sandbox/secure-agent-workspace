@@ -89,6 +89,28 @@ def test_demo_harness_true_ships_the_bundle_and_ref():
     assert "harness-index.yaml" in data
 
 
+def test_inline_profile_obeys_harness_gate_and_ships_its_bundle(tmp_path):
+    """Operator-supplied profiles get the same harness handling as chart profiles."""
+    path = "profiles/identity/default/sandbox.yaml"
+    profile = {"apiVersion": "saw.redhat.com/v1alpha1", "kind": "Sandboxes",
+               "spec": {"sandboxes": [{"name": "agent", "type": "generic",
+                                      "harnessRef": {"name": "ds-default"}}]}}
+    values = tmp_path / "inline-values.yaml"
+    values.write_text(yaml.safe_dump({"profiles": [], "profileFiles": {
+        path: yaml.safe_dump(profile)}}))
+
+    off = render(CHART, "-f", str(values), demo_harness=False)
+    off_data = off[("ConfigMap", "saw-bom-profiles")]["data"]
+    assert "harnessRef" not in off_data[path.replace("/", "__")]
+    assert "harness-index.yaml" not in off_data
+
+    on = render(CHART, "-f", str(values), demo_harness=True)
+    on_data = on[("ConfigMap", "saw-bom-profiles")]["data"]
+    assert "harnessRef" in on_data[path.replace("/", "__")]
+    assert harness_key("ds-default", "harness.yaml") in on_data
+    assert "harness-index.yaml" in on_data
+
+
 def test_no_governance_list_is_kept_in_the_chart():
     """Governance is checked in the guest against the gateway's live catalog;
     a copy of the profile names here would only drift."""

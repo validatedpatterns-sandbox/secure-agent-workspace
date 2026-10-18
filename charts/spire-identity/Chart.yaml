@@ -1,0 +1,5 @@
+apiVersion: v2
+name: spire-identity
+description: Shared ZTWIM infrastructure for SAW workload identity
+type: application
+version: 0.1.0

@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: saw-bom-profiles
+# UBI supplies sh and curl; its policy-free image lets OpenShell 0.1.2 compose
+# the restrictive baseline with the protected provider policy.
+data:
+  profiles__identity-demo__default__workspace.yaml: "apiVersion: saw.redhat.com/v1alpha1\n\
+    kind: Workspace\nmetadata:\n  name: default\nspec:\n  enabled: true\n"
+  profiles__identity-demo__default__providers.yaml: "apiVersion: saw.redhat.com/v1alpha1\n\
+    kind: Providers\nspec:\n  providers:\n  - name: protected\n    runtimeCredentials:\
+    \ true\n    type: saw-demo-cc\n"
+  profiles__identity-demo__default__sandbox.yaml: "apiVersion: saw.redhat.com/v1alpha1\n\
+    kind: Sandboxes\nspec:\n  sandboxes:\n  - image: registry.access.redhat.com/ubi9/ubi@sha256:dec374e05cc13ebbc0975c9f521f3db6942d27f8ccdf06b180160490eef8bdbc\n\
+    \    name: agent\n    providers:\n    - protected\n    type: generic\n"
+  profiles__identity-demo__research__workspace.yaml: "apiVersion: saw.redhat.com/v1alpha1\n\
+    kind: Workspace\nmetadata:\n  name: research\nspec:\n  enabled: true\n"
+  profiles__identity-demo__research__providers.yaml: "apiVersion: saw.redhat.com/v1alpha1\n\
+    kind: Providers\nspec:\n  providers:\n  - name: protected\n    runtimeCredentials:\
+    \ true\n    type: saw-demo-cc\n"
+  profiles__identity-demo__research__sandbox.yaml: "apiVersion: saw.redhat.com/v1alpha1\n\
+    kind: Sandboxes\nspec:\n  sandboxes:\n  - image: registry.access.redhat.com/ubi9/ubi@sha256:dec374e05cc13ebbc0975c9f521f3db6942d27f8ccdf06b180160490eef8bdbc\n\
+    \    name: agent\n    providers:\n    - protected\n    type: generic\n"

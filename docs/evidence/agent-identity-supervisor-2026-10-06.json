@@ -1,0 +1,81 @@
+{
+  "scenario": "supervisor-identity",
+  "executed": true,
+  "acceptanceComplete": true,
+  "status": "pass",
+  "timestamp": "2026-10-06T17:43:27.634204+00:00",
+  "vmUid": "565d45f5-0f5a-47ad-bc4d-d5b6ee8eac4b",
+  "generation": "1",
+  "agentHash": "b8ac0ea46cba",
+  "registeredPaths": [
+    "default",
+    "gateway",
+    "research"
+  ],
+  "parentHash": "b8ac0ea46cba",
+  "selectors": {
+    "gateway": [
+      "unix:path:/usr/local/bin/openshell-gateway",
+      "unix:uid:1000"
+    ],
+    "default": [
+      "docker:label:openshell.ai/sandbox-name:agent",
+      "docker:label:openshell.ai/sandbox-workspace:default",
+      "docker:label:openshell.managed:true"
+    ],
+    "research": [
+      "docker:label:openshell.ai/sandbox-name:agent",
+      "docker:label:openshell.ai/sandbox-workspace:research",
+      "docker:label:openshell.managed:true"
+    ]
+  },
+  "probes": {
+    "default": {
+      "gateway": {
+        "ok": false,
+        "denied": true,
+        "error": "PermissionDenied: no identity issued"
+      },
+      "default": {
+        "ok": true,
+        "sub": "spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-u/identity-u/ws/default/sandbox/agent",
+        "aud": "http://identity-demo.saw-identity-demo.svc.cluster.local:8080",
+        "exp": 1791308934
+      },
+      "research": {
+        "ok": false,
+        "denied": true,
+        "error": "PermissionDenied: no identity issued"
+      }
+    },
+    "research": {
+      "gateway": {
+        "ok": false,
+        "denied": true,
+        "error": "PermissionDenied: no identity issued"
+      },
+      "default": {
+        "ok": false,
+        "denied": true,
+        "error": "PermissionDenied: no identity issued"
+      },
+      "research": {
+        "ok": true,
+        "sub": "spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-u/identity-u/ws/research/sandbox/agent",
+        "aud": "http://identity-demo.saw-identity-demo.svc.cluster.local:8080",
+        "exp": 1791308939
+      }
+    }
+  },
+  "workloadSockets": {
+    "default": {
+      "hidden": true,
+      "probeExit": 1
+    },
+    "research": {
+      "hidden": true,
+      "probeExit": 1
+    }
+  },
+  "result": "supervisor own identities succeed; gateway and peer identities are rejected"
+}

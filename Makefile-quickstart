@@ -44,6 +44,9 @@ SAW_NS         ?= saw-$(OPENSHELL_SAW_NAME)
 HELM_DIR       := image-builder-charts/helm/
 SAW_CHART  := charts/openshell-saw
 SAW_VALUES_FILE ?=
+DYNAMIC_PROVIDERS ?= false
+SAW_VALUES ?=
+SAW_BOM_VALUES ?=
 KEYCLOAK_CHART := charts/openshell-keycloak
 # Keycloak (and the RHBK operator) can live in any namespace.
 KEYCLOAK_NS    ?= saw-keycloak
@@ -63,7 +66,8 @@ export NS BUILD_NS IMAGE_REPO MIRROR_IMAGES IMAGE_TAG OPENSHELL_INTERCEPTOR_REF
 export OPENSHELL_SAW_NAME SANDBOX_IMAGE CONTAINER_RUNTIME GOVERNANCE_ENABLED GOVERNANCE_ENGINE
 export PROVIDER MODEL API_KEY ENDPOINT_URL PROFILES WEB_SEARCH WEB_SEARCH_API_KEY GCP_SA_JSON
 export OIDC_ISSUER OIDC_CLIENT_ID OIDC_FLOW OIDC_TOKEN_DIR SSH_KEY_PATH OWNER OWNER_SUBJECT
-export SAW_NS SAW_CHART SAW_VALUES_FILE KEYCLOAK_NS KEYCLOAK_CHART KEYCLOAK_REALM KEYCLOAK_NAME SANDBOX_NAME
+export SAW_NS SAW_CHART SAW_VALUES_FILE DYNAMIC_PROVIDERS SAW_VALUES SAW_BOM_VALUES
+export KEYCLOAK_NS KEYCLOAK_CHART KEYCLOAK_REALM KEYCLOAK_NAME SANDBOX_NAME
 export USE_EXISTING_KEYCLOAK SCRIPTS_DIR GUI_PORT WORKSPACE CMD DASHBOARD
 
 # Pattern install: `./pattern.sh make install GOVERNANCE_ENGINE=apf` selects the
@@ -618,3 +622,23 @@ $(eval $(call deprecated_alias,governance-create-profile,governance-profile-crea
 .PHONY: .check-image-repo
 .check-image-repo:
 	@$(SCRIPTS_DIR)/check-build-repo.sh "$$PUSH_IMAGE_REPO"
+
+# --- SPIFFE/SPIRE identity ---
+IDENTITY_CONTEXT ?=
+IDENTITY_NAMESPACE_PREFIX ?= saw-identity-test
+IDENTITY_TRANSPORT ?= tcp
+IDENTITY_ARTIFACT_DIR ?= artifacts/agent-identity
+IDENTITY_VALUES ?=
+PROVIDER_PROFILE ?=
+.PHONY: deploy-spire-identity test-agent-identity-live openshell-saw-token-provider
+deploy-spire-identity: ## Deploy SPIRE infrastructure (set IDENTITY_CONTEXT and IDENTITY_VALUES)
+	uv run --locked python scripts/deploy-spire-identity.py --context "$(IDENTITY_CONTEXT)" --values "$(IDENTITY_VALUES)"
+
+test-agent-identity-live: ## Run the live identity suite on the selected cluster
+	uv run --locked python scripts/test-agent-identity-live.py --context "$(IDENTITY_CONTEXT)" \
+		--namespace-prefix "$(IDENTITY_NAMESPACE_PREFIX)" --transport "$(IDENTITY_TRANSPORT)" \
+		--artifact-dir "$(IDENTITY_ARTIFACT_DIR)"
+
+openshell-saw-token-provider: ## Create a token-exchange provider from laptop OIDC credentials
+	@test "$(origin WORKSPACE)" != "file" || { echo 'Set WORKSPACE explicitly'; exit 1; }
+	@uv run --locked python $(SCRIPTS_DIR)/openshell-saw-token-provider.py --gateway "$(OPENSHELL_SAW_NAME)" --workspace "$(WORKSPACE)" --provider "$(PROVIDER)" --profile "$(PROVIDER_PROFILE)"

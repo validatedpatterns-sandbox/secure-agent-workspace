@@ -1,0 +1,13 @@
+# Apply through the Pattern only after bootstrap has installed the CRDs.
+# The Subscription stays owned by the bootstrap release. Do not create a second
+# Helm/Argo owner for it or for the cluster-scoped operands. For a Pattern-owned
+# installation, bootstrap only the operator, then create this application.
+clusterGroup:
+  applications:
+    spire-identity:
+      name: spire-identity
+      namespace: zero-trust-workload-identity-manager
+      path: charts/spire-identity
+      extraValueFiles:
+        - /examples/agent-identity/cluster-values.yaml
+        - /examples/agent-identity/operands-values.yaml

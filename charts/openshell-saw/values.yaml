@@ -158,6 +158,18 @@ inference:
 additionalProviderSecrets:
   - web-search
 
+# A published image digest is required before rendering this chart. Build the
+# source in credential-proxy/ and set this to repo@sha256:<digest>.
+credentialProxy:
+  image: ""
+  replicas: 1
+  secrets:
+    - {name: inference, key: api_key, providers: [nvidia, build, openai, anthropic]}
+    - {name: web-search, key: api_key, providers: [brave]}
+
+gatewayPki:
+  generation: 1
+
 # Keycloak/OIDC for end users. The gateway accepts OIDC bearer tokens from
 # users (roles from realm_access.roles) and mTLS from the local installer.
 # The installer never logs in to Keycloak.

@@ -10,6 +10,7 @@ def main() -> int:
     rendered = subprocess.run(
         ["helm", "template", "saw-lint", "charts/openshell-saw",
          "--namespace", "saw-lint", "-f", "tests/fixtures/saw-network-topology.yaml",
+         "-f", "tests/fixtures/credential-proxy-values.yaml",
          "--set", "sandboxName=saw-lint"],
         capture_output=True, text=True, check=False,
     )

@@ -29,6 +29,9 @@ sandbox_runtime_image = "quay.io/opendatahub/odh-openshell-sandbox@sha256:283838
 # so only a volume labelled attachable for the caller's workspace can be
 # attached, and no host path or image.
 allow_driver_config = true
+https_proxy = "http://saw-test-credential-proxy.saw-alice.svc.cluster.local:3128"
+proxy_ca_bundle = "/etc/openshell/credential-proxy-ca.pem"
+proxy_connect_by_hostname = true
 
 [[openshell.gateway.interceptors]]
 name           = "governance"

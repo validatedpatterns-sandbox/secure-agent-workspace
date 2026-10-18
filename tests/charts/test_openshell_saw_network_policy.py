@@ -18,6 +18,7 @@ def helm_template(*args):
     return subprocess.run(
         [HELM, "template", "saw-test", str(CHART), "-n", "saw-alice",
          "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
+         "-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml"),
          "--set", "sandboxName=saw-test", *args],
         capture_output=True, text=True,
     )
@@ -54,12 +55,14 @@ def only_peer(rule):
 def test_default_deny_and_policy_scopes():
     docs = render()
     ps = policies(docs)
-    assert set(ps) == {"saw-default-deny", "saw-vm", "saw-cdi-import", "saw-cleanup-hook"}
+    assert set(ps) == {"saw-default-deny", "saw-vm", "saw-credential-proxy",
+                       "saw-cdi-import", "saw-cleanup-hook", "saw-credential-proxy-ca-hook"}
     for doc in ps.values():
         assert doc["apiVersion"] == "networking.k8s.io/v1"
         assert "namespace" not in doc["metadata"]
-        assert doc["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "-1"
-        assert doc["metadata"]["labels"]["app.kubernetes.io/part-of"] == "openshell-cnv-fedora"
+        if doc["metadata"]["name"] != "saw-credential-proxy-ca-hook":
+            assert doc["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "-1"
+            assert doc["metadata"]["labels"]["app.kubernetes.io/part-of"] == "openshell-cnv-fedora"
     assert ps["saw-default-deny"]["spec"] == {
         "podSelector": {}, "policyTypes": ["Ingress", "Egress"]}
     vm_labels = docs[("VirtualMachine", "saw-test")]["spec"]["template"]["metadata"]["labels"]
@@ -107,7 +110,8 @@ def test_cleanup_api_firewall_exception_survives_network_policy_rollback():
 
 
 def test_topology_is_required_for_standalone_chart(tmp_path):
-    bare = subprocess.run([HELM, "template", "saw-test", str(CHART), "-n", "saw-alice"],
+    bare = subprocess.run([HELM, "template", "saw-test", str(CHART), "-n", "saw-alice",
+                           "-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml")],
                           capture_output=True, text=True)
     assert bare.returncode != 0
     assert "networkPolicy.clusterNetworkCIDRs must be a non-empty list" in bare.stderr
@@ -262,7 +266,8 @@ def test_route_ingress_ports_match_service_and_sandbox_ui(tmp_path):
 def test_toggles_and_custom_namespaces():
     assert not policies(render("--set", "networkPolicy.enabled=false"))
     assert set(policies(render("--set", "egress.enabled=false"))) == {
-        "saw-default-deny", "saw-vm", "saw-cdi-import", "saw-cleanup-hook"}
+        "saw-default-deny", "saw-vm", "saw-credential-proxy", "saw-cdi-import",
+        "saw-cleanup-hook", "saw-credential-proxy-ca-hook"}
     assert "saw-cleanup-hook" not in policies(render("--set", "cleanupOnDelete=false"))
     assert ("Pod", "saw-test-cleanup") not in render("--set", "cleanupOnDelete=false")
     for flag, port in (("dns", 5353), ("governanceInterceptor", 18081),

@@ -39,6 +39,14 @@ if [[ -n "${SAW_VALUES_FILE}" && ! -f "${SAW_VALUES_FILE}" ]]; then
   echo "Error: SAW_VALUES_FILE does not exist: ${SAW_VALUES_FILE}" >&2
   exit 1
 fi
+CREDENTIAL_PROXY_IMAGE="${CREDENTIAL_PROXY_IMAGE:-}"
+if [[ -z "${CREDENTIAL_PROXY_IMAGE}" && -n "${SAW_VALUES_FILE}" ]]; then
+  CREDENTIAL_PROXY_IMAGE="$(python3 -c 'import sys,yaml; d=yaml.safe_load(open(sys.argv[1])) or {}; print((d.get("credentialProxy") or {}).get("image") or "")' "${SAW_VALUES_FILE}")"
+fi
+if [[ ! "${CREDENTIAL_PROXY_IMAGE}" =~ @sha256:[0-9a-f]{64}$ ]]; then
+  echo "Error: set CREDENTIAL_PROXY_IMAGE or credentialProxy.image in SAW_VALUES_FILE to a published image digest." >&2
+  exit 1
+fi
 PROVIDER="${PROVIDER:-}"
 MODEL="${MODEL:-}"
 API_KEY="${API_KEY:-}"
@@ -232,8 +240,7 @@ if [[ -n "${APPS_DOMAIN}" ]]; then
 fi
 
 # --- Provider credential Secret ---
-# The VM's installer reads provider keys only from mounted Secrets, so the
-# key goes into the "inference" Secret instead of the Helm release values.
+# Provider keys stay in cluster Secrets; the VM receives metadata-only copies.
 if [[ -n "${API_KEY}" || "${inference_exists}" == false ]]; then
   umask 077
   inference_key_file="$(mktemp)"
@@ -252,6 +259,12 @@ if [[ -n "${API_KEY}" || "${inference_exists}" == false ]]; then
   echo "Secret 'inference' updated in ${DEPLOY_NS}."
 fi
 
+if [[ -n "$(oc get secret inference -n "${DEPLOY_NS}" -o name --ignore-not-found)" ]]; then
+  oc get secret inference -n "${DEPLOY_NS}" -o json |
+    jq '{apiVersion:"v1",kind:"Secret",metadata:{name:"inference-meta",namespace:.metadata.namespace},type:"Opaque",data:(.data | with_entries(select(.key == "provider" or .key == "model" or .key == "url")))}' |
+    oc apply -f - >/dev/null
+fi
+
 if [[ -n "${WEB_SEARCH_API_KEY}" ]]; then
   umask 077
   web_search_key_file="$(mktemp)"
@@ -262,6 +275,10 @@ if [[ -n "${WEB_SEARCH_API_KEY}" ]]; then
   rm -f "${web_search_key_file}"
   web_search_key_file=""
   echo "Secret 'web-search' updated in ${DEPLOY_NS}."
+fi
+if [[ -n "$(oc get secret web-search -n "${DEPLOY_NS}" -o name --ignore-not-found)" ]]; then
+  oc create secret generic web-search-meta -n "${DEPLOY_NS}" \
+    --from-literal=provider=brave --dry-run=client -o yaml | oc apply -f - >/dev/null
 fi
 
 # The chart lists inference and web-search by default. Do not wait for an
@@ -293,6 +310,7 @@ echo "Provisioning sandbox '${OPENSHELL_SAW_NAME}' for owner '${OWNER}' in names
 
 helm_opts=(
   --set-string "sandboxName=${OPENSHELL_SAW_NAME}"
+  --set-string "credentialProxy.image=${CREDENTIAL_PROXY_IMAGE}"
   --set "oidc.enabled=${oidc_enabled}"
   --set-string "accessControl.owner=${OWNER}"
   --set-string "oidc.keycloakNamespace=${KEYCLOAK_NS}"
@@ -338,6 +356,17 @@ if [[ "${dashboard_enabled}" == true ]]; then
 fi
 helm_opts+=(${OIDC_OPTS[@]+"${OIDC_OPTS[@]}"})
 helm_opts+=(${SECRET_SET[@]+"${SECRET_SET[@]}"})
+proxy_bindings='[]'
+if [[ -n "${SAW_VALUES_FILE}" ]]; then
+  proxy_bindings="$(python3 -c 'import json,sys,yaml; d=yaml.safe_load(open(sys.argv[1])) or {}; print(json.dumps((d.get("credentialProxy") or {}).get("secrets") or []))' "${SAW_VALUES_FILE}")"
+fi
+if grep -qx 'secret/inference' <<<"${secret_names}"; then
+  proxy_bindings="$(jq -c 'if any(.[]; .name == "inference" and .key == "api_key") then . else . + [{name:"inference",key:"api_key",providers:["nvidia","build","openai","anthropic"]}] end' <<<"${proxy_bindings}")"
+fi
+if grep -qx 'secret/web-search' <<<"${secret_names}"; then
+  proxy_bindings="$(jq -c 'if any(.[]; .name == "web-search" and .key == "api_key") then . else . + [{name:"web-search",key:"api_key",providers:["brave"]}] end' <<<"${proxy_bindings}")"
+fi
+helm_opts+=(--set-json "credentialProxy.secrets=${proxy_bindings}")
 helm upgrade --install "${OPENSHELL_SAW_NAME}" "${SAW_CHART}" \
   --namespace "${DEPLOY_NS}" --create-namespace \
   "${helm_opts[@]}"
@@ -346,6 +375,7 @@ echo ""
 echo "Sandbox '${OPENSHELL_SAW_NAME}' resources created. Wait for the VM installer before connecting."
 echo "  Owner:     ${OWNER}"
 echo "  Namespace: ${DEPLOY_NS}"
+echo "  Credential proxy: $(oc get deploy "${OPENSHELL_SAW_NAME}-credential-proxy" -n "${DEPLOY_NS}" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)/1 ready (check again after the CA hook and Secrets sync)"
 
 GW_URL=$(oc get route "${OPENSHELL_SAW_NAME}-gateway" -n "${DEPLOY_NS}" -o jsonpath='https://{.spec.host}')
 if [[ -n "${GW_URL}" ]]; then

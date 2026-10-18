@@ -1,4 +1,5 @@
 """The tool gate is filled by the host and mounted into agent sandboxes."""
+from conftest import TEST_PROXY
 
 import hashlib
 import json
@@ -23,7 +24,7 @@ def applier_for(ab, config, creds, **changes):
 def test_agent_gate_files_come_from_read_only_volume(
         ab, fake_env, config, shipped_profile_files, secrets_dir):
     profiles = ab.parse_profiles(shipped_profile_files)
-    creds = ab.resolve_credentials(profiles, secrets_dir)
+    creds = ab.resolve_credentials(profiles, secrets_dir, TEST_PROXY)
     applier = applier_for(ab, config, creds)
     applier.apply(profiles)
     state = fake_env.openshell_state()["sandboxes"]
@@ -60,7 +61,7 @@ def test_generic_sandbox_has_no_gate(ab, fake_env, config):
         ab.Sandbox(name="notebook", type="openclaw", image="base", providers=["nvidia"]),
     ])
     profile = ab.Profile(name="data-science", workspaces=[workspace])
-    creds = {"default": {"nvidia": "nvapi-TEST-KEY-123"}}
+    creds = {"default": {"nvidia": "saw-cred.inference.api_key"}}
     applier_for(ab, config, creds).apply([profile])
     assert "driverConfig" not in fake_env.openshell_state()["sandboxes"]["default/toolbox"]
     assert len(fake_env.openshell_state()["sandboxes"]["default/notebook"]["driverConfig"]["podman"]["mounts"]) == 2
@@ -75,14 +76,14 @@ def test_missing_owner_or_subject_fails_apply(ab, fake_env, config, change):
     profile = ab.Profile(name="demo", workspaces=[ab.Workspace(
         name="default", providers=[provider], sandboxes=[sandbox])])
     with pytest.raises(ab.InstallerError, match="dashboard.owner|ownerSubject"):
-        applier_for(ab, config, {"default": {"nvidia": "nvapi-test"}}, **change).apply([profile])
+        applier_for(ab, config, {"default": {"nvidia": "saw-cred.inference.api_key"}}, **change).apply([profile])
     assert "default/notebook" not in fake_env.openshell_state()["sandboxes"]
 
 
 def test_harness_paths_and_restrictive_plugin_allow_keep_the_gate(
         ab, fake_env, config, shipped_profile_files, secrets_dir):
     profiles = ab.parse_profiles(shipped_profile_files)
-    creds = ab.resolve_credentials(profiles, secrets_dir)
+    creds = ab.resolve_credentials(profiles, secrets_dir, TEST_PROXY)
     applier_for(ab, config, creds).apply(profiles)
     state = fake_env.openshell_state()
     cfg = state["sandboxes"]["default/notebook"]["openclawConfig"]
@@ -100,7 +101,7 @@ def test_harness_paths_and_restrictive_plugin_allow_keep_the_gate(
 def test_missing_gate_mount_recreates_the_agent_sandbox(
         ab, fake_env, config, shipped_profile_files, secrets_dir):
     profiles = ab.parse_profiles(shipped_profile_files)
-    creds = ab.resolve_credentials(profiles, secrets_dir)
+    creds = ab.resolve_credentials(profiles, secrets_dir, TEST_PROXY)
     applier_for(ab, config, creds).apply(profiles)
     state = fake_env.openshell_state()
     mounts = state["sandboxes"]["default/notebook"]["driverConfig"]["podman"]["mounts"]

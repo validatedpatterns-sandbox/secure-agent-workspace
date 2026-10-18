@@ -190,7 +190,8 @@ def test_networkpolicy_selects_the_apf_pod(apf_chart):
 
 def gateway_toml_text(*args):
     result = subprocess.run([HELM, "template", "saw-test", str(SAW_CHART), "--namespace", "saw-alice",
-                             "--set", "sandboxName=saw-test", "-f", str(TOPOLOGY), *args],
+                             "--set", "sandboxName=saw-test", "-f", str(TOPOLOGY),
+                             "-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml"), *args],
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     for doc in yaml.safe_load_all(result.stdout):
@@ -308,7 +309,8 @@ def test_interceptor_engine_keeps_agent_driver_config():
 
 def test_unknown_engine_fails_in_openshell_saw():
     result = subprocess.run([HELM, "template", "saw-test", str(SAW_CHART), "--set", "sandboxName=x",
-                             "--set", "governance.engine=opa"], capture_output=True, text=True)
+                             "--set", "governance.engine=opa",
+                             "-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml")], capture_output=True, text=True)
     assert result.returncode != 0
     assert "governance.engine" in result.stderr
 

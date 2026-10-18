@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Generate the gateway CA only in the user's runtime tmpfs. Persist only the
+# certificates and non-admin identities needed by the running gateway.
+set -euo pipefail
+umask 077
+
+runtime="${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR must point to /run/user/<uid>}"
+[[ "${runtime}" == /run/user/* || "${SAW_PKI_TEST_MODE:-}" == 1 ]] && [[ -d "${runtime}" ]] || {
+  echo "saw-gateway-pki: runtime directory is not tmpfs" >&2; exit 1;
+}
+if [[ "${SAW_PKI_TEST_MODE:-}" != 1 && "$(stat -f -c %T "${runtime}")" != tmpfs ]]; then
+  echo "saw-gateway-pki: runtime directory is not tmpfs" >&2; exit 1
+fi
+config_dir="${SAW_PKI_CONFIG_DIR:-/etc/openshell}"
+gateway_bin="${SAW_GATEWAY_BIN:-/usr/local/bin/openshell-gateway}"
+base="${HOME}/.local/state/openshell"
+final="${base}/tls"
+generation="$(cat "${config_dir}/pki-generation")"
+
+complete() {
+  [[ ! -e "${final}/ca.key" && -s "${final}/ca.crt" &&
+     -s "${final}/client-ca.pem" && -s "${final}/server/tls.crt" &&
+     -s "${final}/server/tls.key" && -s "${final}/client/tls.crt" &&
+     -s "${final}/client/tls.key" && -s "${final}/relay/tls.crt" &&
+     -s "${final}/relay/tls.key" &&
+     "$(cat "${final}/pki-generation" 2>/dev/null)" == "${generation}" ]]
+}
+if complete; then
+  # A crashed apply may have left its public admin CA trusted. The key lived
+  # in tmpfs, but drop the stale trust anchor before every gateway start.
+  if ! cmp -s "${final}/ca.crt" "${final}/client-ca.pem"; then
+    cp "${final}/ca.crt" "${final}/client-ca.pem"
+    chmod 0600 "${final}/client-ca.pem"
+  fi
+  exit 0
+fi
+
+mkdir -p "${base}"
+work="$(mktemp -d "${runtime}/saw-pki.XXXXXX")"
+stage="$(mktemp -d "${base}/.tls.XXXXXX")"
+cleanup() { rm -rf "${work}" "${stage}"; }
+trap cleanup EXIT
+
+args=(--output-dir "${work}" --server-san host.openshell.internal)
+while IFS= read -r host; do
+  [[ -z "${host}" ]] || args+=(--server-san "${host}")
+done < "${config_dir}/server-sans"
+"${gateway_bin}" generate-certs "${args[@]}"
+[[ -s "${work}/ca.key" && -s "${work}/ca.crt" &&
+   -s "${work}/server/tls.crt" && -s "${work}/server/tls.key" &&
+   -s "${work}/client/tls.crt" && -s "${work}/client/tls.key" ]] || {
+  echo "saw-gateway-pki: generate-certs produced incomplete TLS material" >&2; exit 1;
+}
+
+mkdir -p "${work}/relay" "${stage}/server" "${stage}/client" "${stage}/relay"
+printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n' > "${work}/relay/ext.cnf"
+openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+  -keyout "${work}/relay/tls.key" -out "${work}/relay/req.csr" \
+  -subj '/O=openshell/OU=openshell-user/CN=saw-relay' >/dev/null 2>&1
+openssl x509 -req -in "${work}/relay/req.csr" -CA "${work}/ca.crt" \
+  -CAkey "${work}/ca.key" -set_serial "0x$(openssl rand -hex 16)" \
+  -days 365 -extfile "${work}/relay/ext.cnf" \
+  -out "${work}/relay/tls.crt" >/dev/null 2>&1
+
+cp "${work}/ca.crt" "${stage}/ca.crt"
+cp "${work}/ca.crt" "${stage}/client-ca.pem"
+for part in server client relay; do
+  cp "${work}/${part}/tls.crt" "${stage}/${part}/tls.crt"
+  cp "${work}/${part}/tls.key" "${stage}/${part}/tls.key"
+done
+printf '%s\n' "${generation}" > "${stage}/pki-generation"
+chmod 0700 "${stage}" "${stage}/server" "${stage}/client" "${stage}/relay"
+chmod 0600 "${stage}"/{server,client,relay}/tls.key
+if [[ -d "${final}" ]]; then rm -rf "${final}"; fi
+mv "${stage}" "${final}"
+stage=""
+# The only generated CA private key was in /run/user/<uid> and is removed by
+# the EXIT trap. No write of ca.key or an admin private key reaches home.

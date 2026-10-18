@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import secrets
 import stat
 import subprocess
 import sys
@@ -26,6 +27,10 @@ FAKES = Path(__file__).resolve().parent / "fakes"
 GATEWAY_ENV = "OPENSHELL_SERVER_PORT=17670\nOPENSHELL_ENABLE_MTLS_AUTH=true\n"
 GATEWAY_TOML = ('[openshell.drivers.podman]\nsupervisor_image = "quay.io/x/supervisor@sha256:abc"\n'
                 'allow_driver_config = true\n')
+TEST_PROXY = {"url": "http://proxy.test.svc.cluster.local:3128",
+              "markerPrefix": "saw-cred", "secrets": [
+                  {"name": "inference", "key": "api_key", "providers": ["nvidia", "build", "openai", "anthropic"]},
+                  {"name": "web-search", "key": "api_key", "providers": ["brave"]}]}
 
 
 def _load_module():
@@ -124,16 +129,41 @@ def fake_env(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
     monkeypatch.setenv("FAKE_STATE", str(state))
     monkeypatch.setenv("FAKE_PYTHON", sys.executable)
-    # The runtime user's home with the gateway's CA, as the golden image's
-    # first-boot setup leaves it (a real throwaway CA: the installer signs
-    # its admin client certificate with it).
+    # Gateway PKI after the tmpfs generator: the CA private key is gone;
+    # persistent client and relay certificates have only the user role.
     home = tmp_path / "home"
     ca_dir = home / ".local" / "state" / "openshell" / "tls"
     ca_dir.mkdir(parents=True)
+    ca_key = tmp_path / "gateway-ca.key"
     subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
-                    "-nodes", "-keyout", str(ca_dir / "ca.key"), "-out", str(ca_dir / "ca.crt"),
+                    "-nodes", "-keyout", str(ca_key), "-out", str(ca_dir / "ca.crt"),
                     "-subj", "/O=openshell/CN=openshell-ca", "-days", "30"],
                    check=True, capture_output=True)
+    for name, subject, ext_text in (
+        ("relay", "/O=openshell/OU=openshell-user/CN=saw-relay",
+         "extendedKeyUsage=clientAuth\n"),
+        ("client", "/O=openshell/OU=openshell-user/CN=local-client",
+         "extendedKeyUsage=clientAuth\n"),
+        ("server", "/O=openshell/CN=host.openshell.internal",
+         "extendedKeyUsage=serverAuth\nsubjectAltName=DNS:host.openshell.internal\n"),
+    ):
+        directory = ca_dir / name
+        directory.mkdir()
+        csr, ext = tmp_path / f"{name}.csr", tmp_path / f"{name}.ext"
+        ext.write_text(ext_text)
+        subprocess.run(["openssl", "req", "-new", "-newkey", "ec", "-pkeyopt",
+                        "ec_paramgen_curve:prime256v1", "-nodes", "-keyout", str(directory / "tls.key"),
+                        "-out", str(csr), "-subj", subject], check=True, capture_output=True)
+        subprocess.run(["openssl", "x509", "-req", "-in", str(csr), "-CA", str(ca_dir / "ca.crt"),
+                        "-CAkey", str(ca_key), "-set_serial", "0x" + secrets.token_hex(16),
+                        "-days", "30", "-extfile", str(ext), "-out", str(directory / "tls.crt")],
+                       check=True, capture_output=True)
+    (ca_dir / "client-ca.pem").write_bytes((ca_dir / "ca.crt").read_bytes())
+    (ca_dir / "pki-generation").write_text("1\n")
+    ca_key.unlink()
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    monkeypatch.setenv("SAW_RUNTIME_DIR", str(runtime))
     monkeypatch.setenv("HOME", str(home))
     return FakeWorld(state, home)
 
@@ -150,7 +180,7 @@ class FakeWorld:
         (self.state / "rbac").write_text("on")
 
     def admin_cert(self):
-        return self.home / ".local" / "state" / "saw-installer" / "tls" / "client" / "tls.crt"
+        return self.admin_tls / "client" / "tls.crt"
 
     # podman -------------------------------------------------------------
     def set_images(self, images):
@@ -188,6 +218,10 @@ class FakeWorld:
         log = self.state / "openshell.log"
         return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
 
+    def openshell_env_calls(self):
+        log = self.state / "openshell-env.log"
+        return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
     def deny(self, *operations):
         (self.state / "deny.json").write_text(json.dumps(list(operations)))
 
@@ -210,10 +244,10 @@ class FakeWorld:
 
 @pytest.fixture
 def secrets_dir(tmp_path):
-    """Provider Secrets as the VM sees them: /run/saw/secrets/<secret>/<key>."""
+    """Only metadata reaches /run/saw/secrets/<secret> on the VM."""
     base = tmp_path / "secrets"
-    for secret, data in {"inference": {"api_key": "nvapi-TEST-KEY-123", "provider": "build"},
-                         "web-search": {"api_key": "brave-TEST-KEY-456"}}.items():
+    for secret, data in {"inference": {"provider": "build"},
+                         "web-search": {"provider": "brave"}}.items():
         (base / secret).mkdir(parents=True)
         for key, value in data.items():
             (base / secret / key).write_text(value + "\n")
@@ -221,9 +255,15 @@ def secrets_dir(tmp_path):
 
 
 @pytest.fixture
-def config():
-    return {"vmName": "saw-test", "namespace": "openshell-agents",
+def config(ab, fake_env):
+    with ab.admin_session({}, fake_env.home, None, as_current_user=True) as (tls, config_home):
+        fake_env.admin_tls = tls
+        yield {"vmName": "saw-test", "namespace": "openshell-agents",
             "runtimeUser": "cloud-user", "mtlsGateway": "saw-installer",
+            "relayGateway": "saw-relay", "adminTlsDir": str(tls),
+            "adminConfigHome": str(config_home),
+            "credentialProxy": TEST_PROXY,
+            "gatewayPki": {"generation": 1, "caFingerprint": "test-gateway-ca"},
             "ownerSubject": "subject-alice", "oidcIssuer": "", "sandboxDashboardRoute": "",
             "dashboard": {"enabled": False, "owner": "alice"},
             "harness": {"cosign": {
@@ -233,7 +273,7 @@ def config():
 
 
 @pytest.fixture
-def inputs_dir(tmp_path, bom, config, shipped_profile_files, secrets_dir):
+def inputs_dir(tmp_path, bom, config, shipped_profile_files, secrets_dir, fake_env):
     """A complete /run/saw tree built from the real chart files."""
     root = tmp_path / "run-saw"
     installer = root / "installer"
@@ -244,10 +284,15 @@ def inputs_dir(tmp_path, bom, config, shipped_profile_files, secrets_dir):
     (installer / "apply_bom.py").write_text(SCRIPT.read_text())
     for name in ("tool-actions.yaml", "tool-gate.mjs", "tool-gate-plugin.mjs"):
         (installer / name).write_text((SCRIPT.parent / name).read_text())
+    for name in ("saw-gateway-pki", "openshell-gateway-pki.conf"):
+        (installer / name).write_text((CHART / "files" / "guest" / name).read_text())
     (installer / "gateway.env").write_text(GATEWAY_ENV)
     (installer / "gateway.toml").write_text(GATEWAY_TOML)
     (installer / "setup-dashboard.sh").write_text(
         (CHART / "files" / "installer" / "setup-dashboard.sh").read_text())
+    proxy_ca = root / "proxy-ca"
+    proxy_ca.mkdir()
+    (proxy_ca / "ca.crt").write_bytes((fake_env.home / ".local/state/openshell/tls/ca.crt").read_bytes())
     profiles = root / "profiles"
     profiles.mkdir()
     for key, text in shipped_profile_files.items():

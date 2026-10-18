@@ -21,6 +21,30 @@ SAW_NS=saw-<name> VM_NAME=<name> \
 
 Compare it with a known allowed destination from the same VM. A `000` HTTP code only means no HTTP response arrived; the curl exit code and error distinguish name resolution, refusal, and timeout. In the 2026-10-11 test cluster, `kubernetes.default.svc` gave curl exit 6 because the short name did not resolve in the guest. The fully qualified `kubernetes.default.svc.cluster.local` and API ClusterIP timed out with exit 28. `169.254.169.254:80` refused the connection with exit 7 when the NetworkPolicy was off. These signatures are observations from that cluster, not a universal way to identify which layer denied a packet. Check policy objects and compare a positive control before concluding which layer is responsible.
 
+## Provider call fails through the credential proxy
+
+Check `oc get deploy,pod,svc -n saw-<name> -l openshell.pattern/role=credential-proxy`
+and the proxy's `/healthz` Service port 8081. Its logs report host, binding,
+and status without keys. An `unknown or unbound credential marker` 502 means
+the marker, Secret provider type, and profile endpoint do not agree. A missing
+mounted key makes `/healthz` fail. A proxy outage cannot cause a key fallback
+in the VM; restore the Deployment or Secret and retry the request.
+
+## Installer reports a credential key on a VM disk
+
+The VM is still mounting a full provider Secret. Replace its volume source
+with `<name>-meta`, create that metadata Secret, and put the full Secret only
+on the credential proxy Deployment. The installer stops before applying the
+profile to avoid persisting the live key. For custom providers, also add the
+binding in `credentialProxy.secrets`.
+
+## Relay forward is refused
+
+Confirm that `saw-relay` is registered with a `OU=openshell-user` certificate
+and is a user member of the target workspace. Forward and keepalive units use
+`--gateway saw-relay`; the temporary `saw-installer` admin entry exists only
+during apply. Re-run `saw-apply` after correcting workspace membership.
+
 ## Supervisor approved, but the connection fails
 
 The governance profile can become live through the interceptor before the `openshell-saw` release receives its matching EgressFirewall and NetworkPolicy update. A persistent version of this problem occurs when a profile is added without its exact outside host in `egress.allow` or `egress.extraAllow`, or without a narrow `networkPolicy.extraEgress` rule for an in-cluster Service. Custom provider URLs held only in Vault cannot be inferred by the chart.

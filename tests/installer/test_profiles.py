@@ -1,4 +1,5 @@
 """SAW-BOM profile parsing, validation and credential resolution."""
+from conftest import TEST_PROXY
 
 import pytest
 import yaml
@@ -144,30 +145,38 @@ def test_nemoclaw_sandbox_needs_nemoclaw_in_bom(ab, bom, shipped_profile_files):
 
 # -- credentials -----------------------------------------------------------
 
-def test_credentials_resolve_from_mounted_secrets(ab, shipped_profile_files, secrets_dir):
+def test_credentials_resolve_to_markers_from_metadata(ab, shipped_profile_files, secrets_dir):
     profiles = ab.parse_profiles(shipped_profile_files)
-    creds = ab.resolve_credentials(profiles, secrets_dir)
-    assert creds == {"default": {"nvidia": "nvapi-TEST-KEY-123", "brave": "brave-TEST-KEY-456"},
-                     "cuda-dev": {"nvidia": "nvapi-TEST-KEY-123"}}
+    creds = ab.resolve_credentials(profiles, secrets_dir, TEST_PROXY)
+    assert creds == {"default": {"nvidia": "saw-cred.inference.api_key",
+                                 "brave": "saw-cred.web-search.api_key"},
+                     "cuda-dev": {"nvidia": "saw-cred.inference.api_key"}}
 
 
 def test_missing_secret_is_an_error_naming_it(ab, shipped_profile_files, secrets_dir):
     for f in (secrets_dir / "web-search").iterdir():
         f.unlink()
-    with pytest.raises(ab.InstallerError, match="Secret 'web-search' key 'api_key'"):
-        ab.resolve_credentials(ab.parse_profiles(shipped_profile_files), secrets_dir)
+    (secrets_dir / "web-search").rmdir()
+    with pytest.raises(ab.InstallerError, match="metadata Secret 'web-search-meta'"):
+        ab.resolve_credentials(ab.parse_profiles(shipped_profile_files), secrets_dir, TEST_PROXY)
 
 
-def test_empty_secret_value_is_an_error(ab, shipped_profile_files, secrets_dir):
+def test_credential_key_on_vm_disk_is_refused(ab, shipped_profile_files, secrets_dir):
     (secrets_dir / "inference" / "api_key").write_text("  \n")
-    with pytest.raises(ab.InstallerError, match="provider 'nvidia'"):
-        ab.resolve_credentials(ab.parse_profiles(shipped_profile_files), secrets_dir)
+    with pytest.raises(ab.InstallerError, match="credential key 'api_key' is present on a VM disk"):
+        ab.resolve_credentials(ab.parse_profiles(shipped_profile_files), secrets_dir, TEST_PROXY)
+
+
+def test_missing_proxy_binding_is_refused_before_apply(ab, shipped_profile_files, secrets_dir):
+    proxy = {**TEST_PROXY, "secrets": [TEST_PROXY["secrets"][0]]}
+    with pytest.raises(ab.InstallerError, match="credentialProxy.secrets has no binding"):
+        ab.resolve_credentials(ab.parse_profiles(shipped_profile_files), secrets_dir, proxy)
 
 
 def test_secret_for_another_provider_is_refused(ab, shipped_profile_files, secrets_dir):
     (secrets_dir / "inference" / "provider").write_text("gemini\n")
     with pytest.raises(ab.InstallerError, match="Secret 'inference' is for 'gemini'"):
-        ab.resolve_credentials(ab.parse_profiles(shipped_profile_files), secrets_dir)
+        ab.resolve_credentials(ab.parse_profiles(shipped_profile_files), secrets_dir, TEST_PROXY)
 
 
 @pytest.mark.parametrize("configured", ["nvidia", "build", ""])
@@ -179,7 +188,7 @@ def test_provider_type_or_nemoclaw_alias_is_accepted(ab, configured):
 
 def test_disabled_providers_need_no_credential(ab, tmp_path):
     files = make_files(providers=[{**NVIDIA, "enabled": False}])
-    assert ab.resolve_credentials(ab.parse_profiles(files), tmp_path) == {}
+    assert ab.resolve_credentials(ab.parse_profiles(files), tmp_path, TEST_PROXY) == {}
 
 
 def test_profile_helper_matches_chart_layout():

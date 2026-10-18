@@ -44,6 +44,7 @@ SAW_NS         ?= saw-$(OPENSHELL_SAW_NAME)
 HELM_DIR       := image-builder-charts/helm/
 SAW_CHART  := charts/openshell-saw
 SAW_VALUES_FILE ?=
+CREDENTIAL_PROXY_IMAGE ?=
 KEYCLOAK_CHART := charts/openshell-keycloak
 # Keycloak (and the RHBK operator) can live in any namespace.
 KEYCLOAK_NS    ?= saw-keycloak
@@ -64,6 +65,7 @@ export OPENSHELL_SAW_NAME SANDBOX_IMAGE CONTAINER_RUNTIME GOVERNANCE_ENABLED GOV
 export PROVIDER MODEL API_KEY ENDPOINT_URL PROFILES WEB_SEARCH WEB_SEARCH_API_KEY GCP_SA_JSON
 export OIDC_ISSUER OIDC_CLIENT_ID OIDC_FLOW OIDC_TOKEN_DIR SSH_KEY_PATH OWNER OWNER_SUBJECT
 export SAW_NS SAW_CHART SAW_VALUES_FILE KEYCLOAK_NS KEYCLOAK_CHART KEYCLOAK_REALM KEYCLOAK_NAME SANDBOX_NAME
+export CREDENTIAL_PROXY_IMAGE
 export USE_EXISTING_KEYCLOAK SCRIPTS_DIR GUI_PORT WORKSPACE CMD DASHBOARD
 
 # Pattern install: `./pattern.sh make install GOVERNANCE_ENGINE=apf` selects the
@@ -476,7 +478,7 @@ lint: ## Lint charts, shell syntax, and the Make interface
 	@for chart in charts/* image-builder-charts/helm/*; do \
 		test -f "$$chart/Chart.yaml" || continue; \
 		if [ "$$chart" = charts/openshell-saw ]; then \
-			helm lint "$$chart" --set sandboxName=lint -f tests/fixtures/saw-network-topology.yaml || exit; \
+			helm lint "$$chart" --set sandboxName=lint -f tests/fixtures/saw-network-topology.yaml -f tests/fixtures/credential-proxy-values.yaml || exit; \
 		else \
 			helm lint "$$chart" --set sandboxName=lint || exit; \
 		fi; \
@@ -517,8 +519,18 @@ status: ## Show status of all OpenShell resources (every SAW namespace + $(NS))
 	@$(SCRIPTS_DIR)/saw-cluster-status.sh
 
 # --- Local Python tests (no cluster needed) ---
-TEST_PATHS ?= tests/installer tests/charts tests/scripts tests/portal cli/tests
-.PHONY: test-installer test-tool-gate
+TEST_PATHS ?= tests/installer tests/charts tests/scripts tests/portal tests/credential_proxy cli/tests
+.PHONY: test-installer test-tool-gate test-credential-proxy credential-proxy-image test-credential-isolation
+GO ?= go
+test-credential-proxy: ## Race-enabled credential proxy tests
+	cd credential-proxy && $(GO) vet ./... && $(GO) test -race ./...
+
+credential-proxy-image: ## Build the credential proxy image locally
+	podman build -f credential-proxy/Containerfile -t $(IMAGE_REPO)/saw-credential-proxy:$(IMAGE_TAG) credential-proxy
+
+test-credential-isolation: ## Verify credential isolation on a live SAW
+	SAW_NS=$(SAW_NS) VM_NAME=$(or $(VM_NAME),$(OPENSHELL_SAW_NAME)) tests/test-credential-isolation.sh
+
 test-installer: ## Run the complete local Python test suite with uv
 	@if [ -n "$(PYTHON)" ]; then \
 		PYTHONPATH=cli/src$${PYTHONPATH:+:$$PYTHONPATH} $(PYTHON) -m pytest \

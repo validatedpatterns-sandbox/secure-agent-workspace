@@ -10,17 +10,7 @@
 {{- end }}
 {{- end }}
 {{- if .Values.egress.enabled }}
-{{- $hosts := concat (.Values.egress.allow | default list) (.Values.egress.extraAllow | default list) | uniq }}
-{{- if .Values.allowDriverConfig }}
-{{- range (.Values.egress.harnessAllow | default list) }}
-{{- if not (has . $hosts) }}{{- $hosts = append $hosts . }}{{- end }}
-{{- end }}
-{{- end }}
-{{- if eq (.Values.signing.mode | default "warn") "enforce" }}
-{{- range (.Values.egress.signingAllow | default list) }}
-{{- if not (has . $hosts) }}{{- $hosts = append $hosts . }}{{- end }}
-{{- end }}
-{{- end }}
+{{- $hosts := include "openshell-sandbox.egressHosts" . | fromJsonArray }}
 {{- range $hosts }}
 {{- include "openshell-sandbox.validateEgressHost" . }}
 {{- end }}

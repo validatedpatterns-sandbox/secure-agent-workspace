@@ -12,7 +12,9 @@ helm / Argo ──► openshell-saw chart
                  ├─ <vm>-installer ConfigMap     installer-bom.yaml, config.json,
                  │                               apply_bom.py, setup-dashboard.sh
                  ├─ saw-bom-profiles ConfigMap   (saw-bom chart: SAW-BOM profiles)
-                 ├─ provider Secrets             inference, web-search, ...
+                 ├─ provider metadata Secrets    inference-meta, web-search-meta, ...
+                 ├─ public proxy CA ConfigMap    saw-proxy-ca
+                 ├─ credential proxy Deployment  full provider Secrets stay here
                  └─ <vm>-cloudinit Secret        static units and first-boot files
                             │
                             ▼
@@ -31,17 +33,17 @@ VM boot ─► cloud-init ─► saw-install.service ─► saw-apply.service
   from the BOM's `signature` field, copies the binary out, checks
   `--version` against the BOM, installs it atomically into
   `/usr/local/bin`, re-syncs `gateway.env`, `gateway.toml` and the
-  route-SAN drop-in from the installer disk, then starts the user-level
+  tmpfs PKI generator and public credential proxy CA from the installer disk, then starts the user-level
   `openshell-gateway.service` (restarting it if a binary or the config
   changed; an owed restart survives a failed attempt). Unchanged components
   are skipped, so reboots pull nothing. `apply_bom.py` itself always runs
   from a root-owned, verified copy under `/var/lib/saw/verified`, not the
   live installer disk/mount — see [Signing](#signing).
 - **saw-apply** runs only after `install` finished for the same BOM. It reads
-  the profiles and mounted Secrets, then runs the profile step as
-  `cloud-user` with the plan on stdin. Provider keys are passed to the CLI
-  as `--credential NAME` with the value in the environment, never in argv;
-  existing providers get the current key via `provider update`. If the gateway has no profile
+  the profiles and mounted Secret metadata, then runs the profile step as
+  `cloud-user` with the plan on stdin. Nonsecret markers are passed to the CLI
+  as `--credential NAME` in the environment;
+  existing providers get the marker via `provider update`. If the gateway has no profile
   for a provider type (e.g. `brave` when governance is off), the installer imports the copy
   shipped in `charts/openshell-saw/files/provider-profiles/` (kept identical to
   `charts/governance-policy/profiles/`) into that workspace; a type with no shipped profile is
@@ -51,7 +53,7 @@ VM boot ─► cloud-init ─► saw-install.service ─► saw-apply.service
   It records what it created and, in the default `report` prune mode, only
   logs what a later profile change would delete. See
   [Removing things from a profile](#removing-things-from-a-profile).
-- Nothing else runs in the SAW's namespace: no Job. The VM's root disk is
+- The credential proxy Deployment and CA hook also run in the SAW's namespace. The VM's root disk is
   imported by CDI from the golden image (or cloned from a DataSource), and
   the routes' redirect URIs are registered by the redirect registrar in
   Keycloak's namespace (or, with it off, by an administrator:
@@ -59,8 +61,8 @@ VM boot ─► cloud-init ─► saw-install.service ─► saw-apply.service
 
 cloud-init runs once per VM, so it only writes static files (mount script,
 units, and the reconcile units when `vm.liveInputs` is true) and first-boot
-copies of the gateway config. The BOM, gateway config, profiles, and provider
-Secrets are mounted at `/run/saw`. With the default disks, a change is visible
+copies of the gateway config and PKI override. The BOM, gateway config, profiles,
+provider metadata, and public proxy CA are mounted at `/run/saw`. With the default disks, a change is visible
 on the next boot. With `vm.liveInputs: true`, virtiofs shows the change while
 the VM runs and `saw-reconcile` applies it. See [Live inputs](#live-inputs).
 
@@ -108,7 +110,8 @@ oc logs -f -l vm.kubevirt.io/name=<vm> -c guest-console-log --tail=-1
 
 | Who | How | Role |
 | --- | --- | --- |
-| In-VM installer (`apply_bom.py`) | its own mTLS client certificate `CN=saw-installer, OU=openshell-admin`, gateway entry `saw-installer` | platform admin (`openshell-admin`) |
+| In-VM installer (`apply_bom.py`) | per-run admin mTLS certificate and CLI entry in tmpfs | platform admin during apply only |
+| Forward and keepalive units | persistent `CN=saw-relay, OU=openshell-user` certificate | workspace user |
 | Users (laptop CLI, dashboard) | their own OIDC token from Keycloak | from `realm_access.roles`: `openshell-admin` / `openshell-user` |
 
 The installer never logs in to Keycloak and never configures the CLI for
@@ -121,13 +124,11 @@ gateway CA (`scripts/extract-gateway-ca.sh`); the Route hostname is added to
 the gateway certificate by cloud-init.
 
 The gateway takes an mTLS caller's roles from the client certificate's OU.
-The certificate the gateway generates for local use carries
-`OU=openshell-user`, which is not enough once OIDC RBAC is on, so the
-installer issues its own `CN=saw-installer, OU=openshell-admin` certificate
-with the gateway's CA (`~/.local/state/openshell/tls`), keeps it in
-`~/.local/state/saw-installer/tls` (re-issued when missing, signed by a
-different CA, or within 30 days of expiry) and registers it as the
-`saw-installer` gateway entry. The default `openshell` entry is left alone.
+The installer creates a separate admin CA and a two-hour certificate during
+each apply, trusts that CA temporarily, and removes it afterward. It never
+keeps an admin key or gateway CA key on persistent VM storage. Long-running
+forward and keepalive units use the `saw-relay` user certificate and workspace
+membership. See [Credential isolation](credential-isolation.md).
 
 ## SSH into the VM
 
@@ -156,7 +157,8 @@ The guest needs SELinux boolean `virt_qemu_ga_manage_ssh=on`; cloud-init and
 ## Upgrading
 
 `vm.liveInputs` defaults to `false`. The installer ConfigMap, profiles, and
-provider Secrets are iso9660 disks filled at boot.
+provider metadata Secrets are iso9660 disks filled at boot. Provider keys stay
+in projected Secrets mounted into the credential proxy.
 
 1. Change `bom:` in the chart values (versions + digests; tags are refused
    at render time and by the installer).
@@ -362,7 +364,7 @@ sandbox images can adopt the same per-pull podman policy approach later.
 ## Live inputs
 
 `vm.liveInputs` defaults to `false`. The installer ConfigMap, `saw-bom-profiles`,
-and provider Secrets are iso9660 disks filled at boot. Set it to `true` to
+and provider metadata Secrets are iso9660 disks filled at boot. Set it to `true` to
 serve those same objects over virtiofs. The guest mounts them at the same
 `/run/saw` paths. A path unit starts `saw-reconcile` after a change, and a
 60-second timer is the fallback. Reconcile waits 10 seconds so one Helm
@@ -377,8 +379,9 @@ then:
   virtiofs mount — before this, reconcile ran straight off the live mount
   with no verification at all, the most direct way to bypass
   `signing.mode: enforce` with live inputs on (see "Signing" above).
-- runs `apply` only when profiles or Secrets changed. Existing providers get
-  `provider update` with the new key. Sandboxes keep running.
+- runs `apply` when profiles, metadata Secrets, or the public proxy CA change.
+  Provider key rotation happens in the proxy without a VM action. A changed
+  egress wiring fingerprint recreates sandboxes and wipes `/sandbox`.
 - writes the applied hashes to `inputs` in `/var/lib/saw/status.json`.
   `make saw-status` shows whether that matches the cluster. A
   failed install or apply is recorded there too (`lastFailedHash`); the
@@ -399,7 +402,7 @@ virtiofs. Migration was not retested with a shared disk.
 These still need a restart: VM size, disks, and anything cloud-init writes
 (the reconcile units included). Turning `vm.liveInputs` on does not edit an
 existing VM's cloud-init. Recreate the VM after the value is true. With
-live inputs, a change to the installer ConfigMap or a provider Secret does
+live inputs, a change to the installer ConfigMap or a provider metadata Secret does
 not set `RestartRequired`. The cloud-init checksum still does. Adding or
 removing an entry in `additionalProviderSecrets` (or the `inference`
 Secret's name) also needs a restart even with `vm.liveInputs: true`: it

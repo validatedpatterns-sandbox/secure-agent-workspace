@@ -17,7 +17,8 @@ saw-mount-inputs mounts either kind under /run/saw:
     /run/saw/installer/tool-gate.mjs        tool-call decision engine
     /run/saw/installer/tool-gate-plugin.mjs OpenClaw before_tool_call hook
     /run/saw/profiles/<flat key>.yaml       SAW-BOM profiles (saw-bom chart)
-    /run/saw/secrets/<secret>/<key>         provider credential Secrets
+    /run/saw/secrets/<secret>/<key>         non-secret provider metadata only
+    /run/saw/proxy-ca/ca.crt                public credential-proxy CA
 
 Commands:
     validate        check BOM, config, profiles and credentials; changes nothing
@@ -26,13 +27,15 @@ Commands:
     reconcile       re-run install and/or apply when virtiofs inputs changed
     apply-profiles  (runtime user) internal; reads its plan from stdin
 
-The installer talks to the gateway only through a local mTLS gateway entry.
+The installer gives OpenShell a non-secret credential marker, never a live
+provider key. Its admin mTLS identity exists only during apply in tmpfs.
 End users log in with their own OIDC token; this script never performs an
 OIDC login and never configures the CLI for OAuth.
 """
 
 import argparse
 import base64
+from contextlib import contextmanager
 import hashlib
 import io
 import ipaddress
@@ -357,6 +360,9 @@ def reported_version(output):
 CONFIG_DEFAULTS = {
     "runtimeUser": "cloud-user",
     "mtlsGateway": "saw-installer",
+    "relayGateway": "saw-relay",
+    "credentialProxy": {"url": "", "markerPrefix": "saw-cred", "secrets": []},
+    "gatewayPki": {"generation": 1},
     "ownerSubject": "",
     "ownerSubjectSource": "",
     "sandboxDashboardRoute": "",
@@ -411,6 +417,24 @@ def load_config(path):
         raise InstallerError("installer config: invalid runtimeUser")
     if not NAME_RE.match(merged["mtlsGateway"]):
         raise InstallerError("installer config: invalid mtlsGateway name")
+    if not NAME_RE.match(merged["relayGateway"]):
+        raise InstallerError("installer config: invalid relayGateway name")
+    proxy = merged["credentialProxy"]
+    if not isinstance(proxy, dict) or not isinstance(proxy.get("secrets"), list) or not re.fullmatch(
+            r"[A-Za-z0-9_.-]+", str(proxy.get("markerPrefix", ""))):
+        raise InstallerError("installer config: credentialProxy must have markerPrefix and secrets")
+    if proxy.get("url"):
+        url = urlsplit(proxy["url"])
+        if url.scheme != "http" or not url.hostname or url.port != 3128:
+            raise InstallerError("installer config: credentialProxy.url must be an HTTP proxy on port 3128")
+    for binding in proxy["secrets"]:
+        if not isinstance(binding, dict) or not SECRET_NAME_RE.match(str(binding.get("name", ""))) or \
+                not SECRET_KEY_RE.match(str(binding.get("key", ""))) or \
+                not isinstance(binding.get("providers"), list) or not binding["providers"]:
+            raise InstallerError("installer config: invalid credentialProxy.secrets binding")
+    generation = (merged.get("gatewayPki") or {}).get("generation")
+    if type(generation) is not int or generation < 1:
+        raise InstallerError("installer config: gatewayPki.generation must be a positive integer")
     signing = merged.get("signing") or {}
     if not isinstance(signing, dict):
         raise InstallerError("installer config: signing must be an object")
@@ -1464,13 +1488,14 @@ def check_provider_type(provider, configured):
             f"credential, but its Secret '{provider.credential_secret}' is for '{configured}'")
 
 
-def resolve_credentials(profiles, secrets_dir):
-    """Return {workspace: {provider: key}} read from mounted Secret files.
+def resolve_credentials(profiles, secrets_dir, proxy):
+    """Return non-secret markers, after checking the proxy binding catalog.
 
-    A missing credential is an error: the old flow silently fell back to
-    `--from-existing`, which created providers without keys.
+    Any credential key on a VM input disk is a deployment error even when it
+    is empty; a stale full Secret must never silently win over its -meta copy.
     """
     secrets_dir = Path(secrets_dir)
+    bindings = {(b["name"], b["key"]): b for b in proxy["secrets"]}
     creds = {}
     for _, ws in enabled_workspaces(profiles):
         for p in ws.providers:
@@ -1478,18 +1503,26 @@ def resolve_credentials(profiles, secrets_dir):
                 continue
             base = secrets_dir / p.credential_secret
             key_file = base / p.credential_secret_key
-            try:
-                value = key_file.read_text(encoding="utf-8").strip()
-            except OSError:
-                value = ""
-            if not value:
+            binding = bindings.get((p.credential_secret, p.credential_secret_key))
+            if binding is None:
                 raise InstallerError(
-                    f"credential for provider '{p.name}' in workspace '{ws.name}' not found: "
-                    f"Secret '{p.credential_secret}' key '{p.credential_secret_key}'. "
-                    "List the Secret in openshell-saw additionalProviderSecrets and make sure it exists.")
+                    f"provider '{p.name}' in workspace '{ws.name}' uses Secret "
+                    f"'{p.credential_secret}' key '{p.credential_secret_key}', but credentialProxy.secrets "
+                    "has no binding; add it before applying")
+            if key_file.exists() or key_file.is_symlink():
+                raise InstallerError(f"Secret '{p.credential_secret}' credential key "
+                                     f"'{p.credential_secret_key}' is present on a VM disk; "
+                                     "provider keys belong only to the credential proxy")
+            if not base.is_dir():
+                raise InstallerError(f"metadata Secret '{p.credential_secret}-meta' is not mounted")
             type_file = base / "provider"
             configured = type_file.read_text(encoding="utf-8").strip() if type_file.is_file() else ""
             check_provider_type(p, configured)
+            if configured and configured not in binding["providers"]:
+                raise InstallerError(f"Secret '{p.credential_secret}' provider type is not allowed "
+                                     "by credentialProxy.secrets")
+            if not configured and len(binding["providers"]) != 1:
+                raise InstallerError(f"metadata Secret '{p.credential_secret}-meta' needs a provider type")
             if p.model_secret_key:
                 p.model = read_secret_value(base, p.model_secret_key) or p.model
             if p.base_url_secret_key:
@@ -1501,7 +1534,14 @@ def resolve_credentials(profiles, secrets_dir):
                         raise InstallerError(f"provider '{p.name}' in workspace '{ws.name}': {exc} "
                                              f"(Secret '{p.credential_secret}' key "
                                              f"'{p.base_url_secret_key}')") from None
-            creds.setdefault(ws.name, {})[p.name] = value
+                    if p.base_url.startswith("http://"):
+                        log(f"WARN: provider '{p.name}' has a plain-HTTP custom URL; "
+                            "the credential proxy cannot intercept it")
+                    elif urlsplit(p.base_url).port not in (None, 443):
+                        raise InstallerError(f"provider '{p.name}' has a custom HTTPS port; "
+                                             "the credential proxy supports port 443 only")
+            creds.setdefault(ws.name, {})[p.name] = (
+                f"{proxy['markerPrefix']}.{p.credential_secret}.{p.credential_secret_key}")
     return creds
 
 
@@ -2203,13 +2243,6 @@ def merge_user_env(chart_env, current):
     return text + ("\n".join(extra) + "\n" if extra else "")
 
 
-def san_dropin(route_host):
-    return ("[Service]\nExecStartPre=\n"
-            "ExecStartPre=/usr/local/bin/openshell-gateway generate-certs "
-            "--output-dir ${OPENSHELL_LOCAL_TLS_DIR} --server-san host.openshell.internal "
-            f"--server-san {route_host}\n")
-
-
 def write_if_changed(path, text, mode=0o644, owner=None):
     """Write text atomically if it differs. Returns True when it changed."""
     path = Path(path)
@@ -2231,7 +2264,7 @@ def write_if_changed(path, text, mode=0o644, owner=None):
 
 
 def sync_gateway_config(inputs, cfg, etc_dir, home, owner=None, dry_run=False):
-    """Bring gateway.env/gateway.toml and the route-SAN drop-in in line with
+    """Bring gateway.env/gateway.toml in line with
     the chart. cloud-init only writes them on the first boot of a VM, so
     this is what makes chart changes reach an existing VM after a restart.
     Returns True when anything changed (the gateway must then restart)."""
@@ -2250,8 +2283,7 @@ def sync_gateway_config(inputs, cfg, etc_dir, home, owner=None, dry_run=False):
         user_dir / "gateway.env": (merge_user_env(chart_env, current_env), owner),
         user_dir / "gateway.toml": (chart_toml, owner),
     }
-    route_host = cfg.get("routeHost") or ""
-    dropin = home / SAN_DROPIN
+    legacy_dropin = home / SAN_DROPIN
     if dry_run:
         stale = [str(p) for p, (text, _) in wanted.items()
                  if not p.is_file() or p.read_text(encoding="utf-8") != text]
@@ -2262,17 +2294,100 @@ def sync_gateway_config(inputs, cfg, etc_dir, home, owner=None, dry_run=False):
         if write_if_changed(path, text, 0o644, file_owner):
             log(f"updated {path}")
             changed = True
-    if route_host:
-        if write_if_changed(dropin, san_dropin(route_host), 0o644, owner):
-            log(f"updated {dropin} (gateway certificate SAN {route_host})")
-            changed = True
-    elif dropin.exists():
-        dropin.unlink()
+    if legacy_dropin.exists():
+        legacy_dropin.unlink()
         changed = True
     if owner and os.geteuid() == 0:
-        for directory in (home / ".config", user_dir, dropin.parent.parent, dropin.parent):
+        for directory in (home / ".config", user_dir):
             if directory.is_dir():
                 os.chown(directory, *owner)
+    return changed
+
+
+def certificate_fingerprint(path):
+    try:
+        der = ssl.PEM_cert_to_DER_cert(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    return hashlib.sha256(der).hexdigest()
+
+
+def ensure_gateway_pki(inputs, cfg, home, owner, shell, wrap, etc_dir, bin_dir,
+                       dry_run=False):
+    """Install the tmpfs-only CA generator and rotate legacy gateway PKI.
+
+    The golden-image ExecStartPre is overridden on the first boot by
+    cloud-init. Reassert that override on upgrades before any gateway start.
+    """
+    home, etc_dir = Path(home), Path(etc_dir)
+    tls = home / ".local/state/openshell/tls"
+    script = inputs.installer / "saw-gateway-pki"
+    dropin_source = inputs.installer / "openshell-gateway-pki.conf"
+    proxy_ca = inputs.proxy_ca / "ca.crt"
+    if not script.is_file() or not dropin_source.is_file():
+        raise InstallerError("installer disk lacks the gateway PKI script or drop-in")
+    if not proxy_ca.is_file():
+        raise InstallerError("required saw-proxy-ca disk is missing ca.crt")
+    proxy_pem = proxy_ca.read_text(encoding="utf-8")
+    if "PRIVATE KEY-----" in proxy_pem or not certificate_fingerprint(proxy_ca):
+        raise InstallerError("saw-proxy-ca contains an invalid public CA certificate")
+    route_host = cfg.get("routeHost") or ""
+    if route_host and not HOST_RE.match(route_host):
+        raise InstallerError("installer config: routeHost is not a DNS name")
+    generation = str(cfg["gatewayPki"]["generation"])
+    libexec = Path(bin_dir).parent / "libexec/saw/saw-gateway-pki"
+    dropin = etc_dir.parent / "systemd/user/openshell-gateway.service.d/10-saw-pki.conf"
+    files = {
+        libexec: (script.read_text(encoding="utf-8"), 0o755),
+        dropin: (dropin_source.read_text(encoding="utf-8"), 0o644),
+        etc_dir / "server-sans": (route_host + "\n", 0o644),
+        etc_dir / "pki-generation": (generation + "\n", 0o644),
+        etc_dir / "credential-proxy-ca.pem": (proxy_pem, 0o644),
+    }
+    if dry_run:
+        log("[dry-run] gateway PKI files and proxy CA would be synchronized")
+        return False
+    changed = False
+    for path, (content, mode) in files.items():
+        if write_if_changed(path, content, mode):
+            changed = True
+    legacy_dropin = home / SAN_DROPIN
+    if legacy_dropin.exists():
+        legacy_dropin.unlink()
+        changed = True
+    required_tls = ("ca.crt", "server/tls.crt", "server/tls.key",
+                    "client/tls.crt", "client/tls.key", "relay/tls.crt",
+                    "relay/tls.key", "client-ca.pem")
+    rotate = ((tls / "ca.key").exists() or
+              (tls.exists() and
+               (any(not (tls / part).is_file() for part in required_tls) or
+                read_secret_value(tls, "pki-generation") != generation)))
+    server_cert = tls / "server/tls.crt"
+    if server_cert.is_file():
+        for host in ("host.openshell.internal", route_host):
+            if not host:
+                continue
+            check = shell.run(["openssl", "x509", "-in", str(server_cert), "-noout",
+                               "-checkhost", host], check=False, quiet=True)
+            # OpenSSL < 3.2 exits 0 on a mismatch and only prints "does NOT match".
+            if not check.ok or "does NOT match" in check.out:
+                rotate = True
+    legacy_state = home / ".local/state/saw-installer"
+    legacy_entry = home / ".config/openshell/gateways/saw-installer"
+    if rotate:
+        log("Rotating legacy or outdated gateway PKI; sandboxes will be recreated")
+        shell.run(wrap(["systemctl", "--user", "stop", "openshell-gateway.service"]), check=False)
+        shutil.rmtree(tls, ignore_errors=True)
+        (home / ".nemoclaw/credentials.json").unlink(missing_ok=True)
+        changed = True
+    for legacy in (legacy_state, legacy_entry):
+        if legacy.exists():
+            shutil.rmtree(legacy)
+            changed = True
+    if (tls / "ca.crt").is_file():
+        if write_if_changed(tls / "client-ca.pem", (tls / "ca.crt").read_text(encoding="utf-8"),
+                            0o600, owner):
+            changed = True
     return changed
 
 
@@ -2624,6 +2739,10 @@ class ProfileApplier:
         self.creds = creds
         self.provider_profiles = provider_profile_docs or {}   # id -> profile YAML
         self.gateway = cfg["mtlsGateway"]
+        self.relay_gateway = cfg.get("relayGateway", "saw-relay")
+        wiring = "|".join((cfg.get("credentialProxy") or {}).get(k, "") for k in ("url", "caFingerprint"))
+        wiring += "|" + (cfg.get("gatewayPki") or {}).get("caFingerprint", "")
+        self.wiring_label = hashlib.sha256(wiring.encode()).hexdigest()[:16]
         self.skipped = set()          # (workspace, provider) the gateway had no profile for
         self.desired = {}             # (kind, workspace, name) -> profile name that wants it
         self.profile_name = ""
@@ -2653,6 +2772,10 @@ class ProfileApplier:
                 shell.add_secret(value)
 
     def cli(self, *args, **kwargs):
+        cli_env = {"XDG_CONFIG_HOME": self.cfg.get("adminConfigHome", "/run/user/0/saw-admin-missing"),
+                   "OPENSHELL_GATEWAY": self.gateway}
+        cli_env.update(kwargs.pop("env", None) or {})
+        kwargs["env"] = cli_env
         return self.sh.run(["openshell", *args], **kwargs)
 
     def usable(self, ws):
@@ -2661,69 +2784,45 @@ class ProfileApplier:
 
     # -- gateway access ------------------------------------------------------
 
-    def ensure_admin_client_cert(self):
-        """The installer's own mTLS client certificate, CN=saw-installer,
-        OU=openshell-admin, signed by the gateway's CA.
-
-        The gateway takes an mTLS caller's roles from the certificate's OU.
-        The client certificate the gateway generates for local use carries
-        OU=openshell-user, which is enough while no RBAC applies but not once
-        OIDC is on (found live: workspace create was refused). Kept in its own
-        directory, in the layout `gateway add --local` imports via
-        OPENSHELL_LOCAL_TLS_DIR; re-issued when missing, not signed by the
-        current CA, or expiring within 30 days."""
-        home = Path(os.environ.get("HOME", "/home/cloud-user"))
-        gateway_tls = home / ".local" / "state" / "openshell" / "tls"
-        out = home / ".local" / "state" / "saw-installer" / "tls"
-        if self.sh.dry_run:
-            log(f"[dry-run] admin client certificate in {out}")
-            return out
-        ca_crt, ca_key = gateway_tls / "ca.crt", gateway_tls / "ca.key"
-        if not (ca_crt.is_file() and ca_key.is_file()):
-            raise InstallerError(f"gateway CA not found in {gateway_tls}; the installer signs its "
-                                 "admin client certificate with it (is the gateway set up?)")
-        client = out / "client"
-        client.mkdir(parents=True, exist_ok=True)
-        for d in (out.parent, out, client):
-            os.chmod(d, 0o700)
-        shutil.copyfile(ca_crt, out / "ca.crt")
-        crt, key = client / "tls.crt", client / "tls.key"
-        current = (crt.is_file() and key.is_file()
-                   and self.sh.run(["openssl", "verify", "-CAfile", str(ca_crt), str(crt)],
-                                   check=False, quiet=True).ok
-                   and self.sh.run(["openssl", "x509", "-checkend", str(30 * 86400), "-noout",
-                                    "-in", str(crt)], check=False, quiet=True).ok)
-        if current:
-            return out
-        log(f"Issuing the installer's admin client certificate ({ADMIN_CERT_SUBJECT})")
-        with tempfile.TemporaryDirectory(prefix="saw-cert-") as tmp:
-            csr, ext = Path(tmp) / "req.csr", Path(tmp) / "ext.cnf"
-            ext.write_text("basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\n"
-                           "extendedKeyUsage=clientAuth\n", encoding="utf-8")
-            self.sh.run(["openssl", "req", "-new", "-newkey", "ec", "-pkeyopt",
-                         "ec_paramgen_curve:prime256v1", "-nodes", "-keyout", str(key),
-                         "-subj", ADMIN_CERT_SUBJECT, "-out", str(csr)], quiet=True)
-            os.chmod(key, 0o600)
-            self.sh.run(["openssl", "x509", "-req", "-in", str(csr), "-CA", str(ca_crt),
-                         "-CAkey", str(ca_key), "-set_serial", "0x" + secrets.token_hex(16),
-                         "-days", "365", "-extfile", str(ext), "-out", str(crt)], quiet=True)
-        return out
-
     def register_gateway(self):
-        """Point the CLI at the local gateway over mTLS as the installer's
-        admin identity. The entry is replaced on every run so a stale entry
-        never wins; the default `openshell` entry is left alone."""
-        tls_dir = self.ensure_admin_client_cert()
+        """Use the per-run admin identity and persist only the user relay."""
+        tls_dir = self.cfg.get("adminTlsDir")
+        if not tls_dir and not self.sh.dry_run:
+            raise InstallerError("admin TLS session was not prepared by apply")
+        tls_dir = tls_dir or "/run/user/0/saw-admin-dry-run/tls"
         log(f"Registering local mTLS gateway '{self.gateway}' (OU=openshell-admin)")
         self.cli("gateway", "remove", self.gateway, check=False, quiet=True)
         self.cli("gateway", "add", f"https://127.0.0.1:{GATEWAY_PORT}",
                  "--name", self.gateway, "--local", env={"OPENSHELL_LOCAL_TLS_DIR": str(tls_dir)})
-        self.cli("gateway", "select", self.gateway)
         result = self.cli("workspace", "list", check=False)
         if not result.ok:
             raise InstallerError(
                 "the mTLS client cannot list workspaces; the installer needs the "
                 "local mTLS identity to act as a platform admin (openshell-admin)")
+        self.register_relay_gateway()
+
+    def register_relay_gateway(self):
+        """The persistent gateway entry has OU=openshell-user only."""
+        home = Path(os.environ.get("HOME", "/home/cloud-user"))
+        gateway_tls = home / ".local/state/openshell/tls"
+        persistent = str(home / ".config")
+        if not self.sh.dry_run and not (gateway_tls / "relay/tls.key").is_file():
+            raise InstallerError("gateway relay identity is missing")
+        with tempfile.TemporaryDirectory(prefix="saw-relay-") as tmp:
+            layout = Path(tmp)
+            if not self.sh.dry_run:
+                (layout / "client").mkdir()
+                shutil.copyfile(gateway_tls / "ca.crt", layout / "ca.crt")
+                shutil.copyfile(gateway_tls / "relay/tls.crt", layout / "client/tls.crt")
+                shutil.copyfile(gateway_tls / "relay/tls.key", layout / "client/tls.key")
+            env = {"XDG_CONFIG_HOME": persistent, "OPENSHELL_LOCAL_TLS_DIR": str(layout)}
+            self.sh.run(["openshell", "gateway", "remove", "saw-installer"],
+                        env=env, check=False, quiet=True)
+            self.sh.run(["openshell", "gateway", "remove", self.relay_gateway],
+                        env=env, check=False, quiet=True)
+            self.sh.run(["openshell", "gateway", "add", f"https://127.0.0.1:{GATEWAY_PORT}",
+                         "--name", self.relay_gateway, "--local"], env=env)
+            self.sh.run(["openshell", "gateway", "select", self.relay_gateway], env=env)
 
     # -- workspaces and providers ------------------------------------------
 
@@ -2746,6 +2845,8 @@ class ProfileApplier:
                     f"could not create workspace '{ws.name}'. Creating workspaces needs "
                     "platform admin; check the mTLS identity has the openshell-admin role")
         owner = self.cfg.get("ownerSubject")
+        self.cli("workspace", "member", "add", "--workspace", ws.name,
+                 "--subject", "saw-relay", "--role", "user", ok_if_exists=True)
         if owner:
             self.cli("workspace", "member", "add", "--workspace", ws.name,
                      "--subject", owner, "--role", "admin", ok_if_exists=True)
@@ -3107,6 +3208,29 @@ class ProfileApplier:
                    for mount in sandbox_mounts(ws, sb)}
         return seen == desired
 
+    def sandbox_wiring_ok(self, ws, sb):
+        """A running sandbox must have been created with the current proxy CA."""
+        result = self.cli("sandbox", "get", sb.name, *ws_args(ws.name), "-o", "json",
+                          check=False, quiet=True)
+        if result.ok:
+            try:
+                data = json.loads(result.out)
+            except ValueError:
+                data = {}
+            labels = data.get("labels") or data.get("metadata", {}).get("labels") or {}
+            if isinstance(labels, list):
+                labels = dict(item.split("=", 1) for item in labels
+                              if isinstance(item, str) and "=" in item)
+            if isinstance(labels, dict):
+                return labels.get("saw.redhat.com/egress-wiring") == self.wiring_label
+        # Older CLI builds print labels in human output but reject -o json.
+        human = self.cli("sandbox", "get", sb.name, *ws_args(ws.name), check=False, quiet=True)
+        if not human.ok:
+            return False
+        match = re.search(r"(?:^|\n)\s*saw\.redhat\.com/egress-wiring\s*[:=]\s*([0-9a-f]{16})\b",
+                          human.out)
+        return bool(match and match.group(1) == self.wiring_label)
+
     def harness_mount_ok(self, ws, sb):
         """True when the sandbox mounts exactly its harness volume read-only,
         or, without a harnessRef, mounts nothing at HARNESS_MOUNT (a harness
@@ -3304,14 +3428,16 @@ class ProfileApplier:
         self.prepare_tool_gate(ws, sb)
         self.prepare_harness(ws, sb)
         state = self.sandbox_state(ws, sb)
-        if state == "running" and not self.sh.dry_run and not self.sandbox_mounts_ok(ws, sb):
+        if state == "running" and not self.sh.dry_run and (not self.sandbox_mounts_ok(ws, sb)
+                                                           or not self.sandbox_wiring_ok(ws, sb)):
             # Mounts are fixed at create: a sandbox created before its
             # harnessRef, one that still mounts a harness it no longer has,
             # or one that mounts another volume there is created again.
             # OpenShell 0.1.x deletes the per-sandbox /sandbox workspace
             # volume, including /sandbox/persist. Preserve needed files
             # separately before a recreation; the harness volume is distinct.
-            log(f"Sandbox '{sb.name}' has stale or missing trusted mounts; recreating it")
+            log(f"Sandbox '{sb.name}' has stale mounts or proxy wiring; recreating it "
+                "(this wipes /sandbox)")
             self.delete_sandbox_and_wait(ws, sb)
             state = "missing"
         if state == "broken":
@@ -3341,7 +3467,8 @@ class ProfileApplier:
             return
         if sb.image and ("/" in sb.image or ":" in sb.image):
             self.sh.run(["podman", "pull", sb.image], check=False, timeout=900)
-        args = ["sandbox", "create", "--name", sb.name, "--label", MANAGED_LABEL]
+        args = ["sandbox", "create", "--name", sb.name, "--label", MANAGED_LABEL,
+                "--label", f"saw.redhat.com/egress-wiring={self.wiring_label}"]
         if sb.image:
             args += ["--from", sb.image]
         args += ws_args(ws.name)
@@ -3821,7 +3948,8 @@ class ProfileApplier:
         unit = (f"[Unit]\nDescription=OpenShell sandbox keep-alive for {sb.name}\n"
                 f"After=network-online.target\n\n"
                 f"[Service]\nType=simple\nUser={user}\n"
-                f"ExecStart=/usr/local/bin/openshell sandbox exec -n {sb.name} {flags} "
+                f"ExecStart=/usr/local/bin/openshell --gateway {self.relay_gateway} "
+                f"sandbox exec -n {sb.name} {flags} "
                 f"--no-tty -- sleep infinity\nRestart=always\nRestartSec=5\n\n"
                 f"[Install]\nWantedBy=multi-user.target\n")
         self.sh.run(["sudo", "-n", "tee", f"/etc/systemd/system/{service}.service"],
@@ -4131,6 +4259,11 @@ class ProfileApplier:
     def verify(self, profiles):
         banner("Verification")
         failures = []
+        relay = self.sh.run(["openshell", "--gateway", self.relay_gateway, "workspace", "list"],
+                            env={"XDG_CONFIG_HOME": str(Path(os.environ.get("HOME", "/home/cloud-user")) / ".config")},
+                            check=False, quiet=True)
+        if not relay.ok:
+            failures.append("the saw-relay identity cannot list its workspaces")
         listed = self.cli("workspace", "list", check=False, quiet=True)
         for profile, ws in enabled_workspaces(profiles):
             if ws.name != "default" and not re.search(rf"(^|\s){re.escape(ws.name)}(\s|$)", listed.out, re.M):
@@ -4801,7 +4934,7 @@ def setup_sandbox_ui(shell, cfg, home):
                 os.chmod(cookie_file, 0o600)
             shell.add_secret(cookie)
             issuer_ca = issuer_trust_paths(home)[0]
-            units, files = sandbox_ui_units(cfg, home, cookie, cfg.get("mtlsGateway", "saw-installer"),
+            units, files = sandbox_ui_units(cfg, home, cookie, cfg.get("relayGateway", "saw-relay"),
                                             issuer_ca if issuer_ca.is_file() else None)
     stale = sorted(existing - set(units))
     for name in stale:
@@ -4895,6 +5028,7 @@ class Inputs:
         self.dashboard_script = self.installer / "setup-dashboard.sh"
         self.profiles = self.root / "profiles"
         self.secrets = self.root / "secrets"
+        self.proxy_ca = self.root / "proxy-ca"
         self.owner = self.root / "owner"
 
     def load(self, check_agent_mounts=True):
@@ -4911,7 +5045,7 @@ class Inputs:
         profiles = parse_profiles(profile_files)
         validate_profiles(profiles)
         check_profiles_against_bom(profiles, bom)
-        creds = resolve_credentials(profiles, self.secrets)
+        creds = resolve_credentials(profiles, self.secrets, cfg["credentialProxy"])
         bundles = parse_harness_files(harness_files)
         check_harness_index(bundles, index)
         revisions = validate_harness(profiles, bundles)
@@ -4996,6 +5130,123 @@ def runtime_home(cfg, as_current_user):
     return Path(info.pw_dir), (info.pw_uid, info.pw_gid)
 
 
+def check_proxy_health(cfg, timeout=30):
+    host = urlsplit(cfg["credentialProxy"]["url"]).hostname
+    if not host:
+        raise InstallerError("credential proxy URL is missing")
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            with socket.create_connection((host, 8081), timeout=2) as conn:
+                conn.sendall(b"GET /healthz HTTP/1.1\r\nHost: proxy\r\nConnection: close\r\n\r\n")
+                response = conn.recv(128)
+                if response.startswith(b"HTTP/1.1 200"):
+                    return
+        except OSError:
+            pass
+        if time.monotonic() >= deadline:
+            raise InstallerError("credential proxy did not become ready within 30 seconds")
+        time.sleep(1)
+
+
+def _openssl(*args):
+    result = subprocess.run(["openssl", *map(str, args)], capture_output=True, text=True,
+                            check=False)
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        raise InstallerError("could not issue the per-run admin certificate "
+                             f"(openssl {args[0]}: {detail[-1] if detail else result.returncode})")
+
+
+@contextmanager
+def admin_session(cfg, home, owner, as_current_user=False):
+    """Temporarily trust one short-lived admin CA and keep its key in tmpfs."""
+    gateway_tls = Path(home) / ".local/state/openshell/tls"
+    gateway_ca = gateway_tls / "ca.crt"
+    bundle = gateway_tls / "client-ca.pem"
+    if not gateway_ca.is_file():
+        raise InstallerError("gateway CA certificate is missing")
+    gateway_pem = gateway_ca.read_text(encoding="utf-8")
+    uid = owner[0] if owner else os.getuid()
+    runtime = Path(os.environ.get("SAW_RUNTIME_DIR", os.environ.get("XDG_RUNTIME_DIR", "/tmp"))) \
+        if as_current_user else Path(f"/run/user/{uid}")
+    if not runtime.is_dir():
+        raise InstallerError(f"runtime tmpfs {runtime} is unavailable")
+    if not as_current_user:
+        fs = subprocess.run(["stat", "-f", "-c", "%T", str(runtime)],
+                            capture_output=True, text=True, check=False)
+        if fs.returncode or fs.stdout.strip() != "tmpfs":
+            raise InstallerError(f"runtime directory {runtime} is not tmpfs")
+    root_base = runtime / "saw-root-admin" if as_current_user else Path("/run/saw/admin")
+    session_dir = root_dir = None
+    added = False
+    try:
+        session_dir = Path(tempfile.mkdtemp(prefix="saw-admin.", dir=runtime))
+        root_base.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(root_base, 0o700)
+        root_dir = Path(tempfile.mkdtemp(prefix="session.", dir=root_base))
+        tls = session_dir / "tls"
+        client = tls / "client"
+        config_home = session_dir / "config"
+        client.mkdir(parents=True)
+        config_home.mkdir()
+        for directory in (session_dir, tls, client, config_home):
+            os.chmod(directory, 0o700)
+            if owner and os.geteuid() == 0:
+                os.chown(directory, *owner)
+        ca_crt, ca_key = root_dir / "ca.crt", root_dir / "ca.key"
+        _openssl("req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
+                 "-nodes", "-keyout", ca_key, "-out", ca_crt,
+                 "-subj", "/O=openshell/OU=SAW-apply/CN=saw-apply-ca", "-days", "1",
+                 "-addext", "basicConstraints=critical,CA:TRUE",
+                 "-addext", "keyUsage=critical,keyCertSign")
+        csr, key, crt = root_dir / "client.csr", client / "tls.key", client / "tls.crt"
+        _openssl("req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
+                 "-nodes", "-keyout", key, "-subj", ADMIN_CERT_SUBJECT, "-out", csr)
+        ext = root_dir / "ext.cnf"
+        ext.write_text("basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\n"
+                       "extendedKeyUsage=clientAuth\n", encoding="utf-8")
+        _openssl("x509", "-req", "-in", csr, "-CA", ca_crt, "-CAkey", ca_key,
+                 "-set_serial", "0x" + secrets.token_hex(16), "-days", "1",
+                 "-extfile", ext, "-out", crt)
+        shredded = subprocess.run(["shred", "-u", "--", str(ca_key)],
+                                  capture_output=True, check=False)
+        if shredded.returncode:
+            ca_key.unlink(missing_ok=True)
+            raise InstallerError("could not shred the per-run admin CA key")
+        shutil.copyfile(gateway_ca, tls / "ca.crt")
+        for file in (key, crt, tls / "ca.crt"):
+            os.chmod(file, 0o600)
+            if owner and os.geteuid() == 0:
+                os.chown(file, *owner)
+        admin_pem = ca_crt.read_text(encoding="utf-8")
+        write_if_changed(bundle, gateway_pem.rstrip() + "\n" + admin_pem, 0o600, owner)
+        added = True
+        if not as_current_user:
+            trust = ssl.create_default_context(cafile=str(gateway_ca))
+            trust.load_cert_chain(str(crt), str(key))
+            deadline = time.monotonic() + 30
+            while True:
+                try:
+                    with socket.create_connection(("127.0.0.1", GATEWAY_PORT), timeout=2) as sock:
+                        with trust.wrap_socket(sock, server_hostname="host.openshell.internal"):
+                            break
+                except (OSError, ssl.SSLError):
+                    if time.monotonic() >= deadline:
+                        raise InstallerError("gateway did not accept the per-run admin CA within 30 seconds")
+                    time.sleep(1)
+        yield tls, config_home
+    finally:
+        try:
+            if added:
+                write_if_changed(bundle, gateway_pem, 0o600, owner)
+        finally:
+            if session_dir is not None:
+                shutil.rmtree(session_dir, ignore_errors=True)
+            if root_dir is not None:
+                shutil.rmtree(root_dir, ignore_errors=True)
+
+
 def cmd_install(args):
     """Step 1 (root): install the BOM's components and start the gateway.
 
@@ -5043,6 +5294,8 @@ def cmd_install(args):
                 write_json_atomic(state_file, done)
         config_changed = sync_gateway_config(inputs, cfg, args.etc_dir, home, owner,
                                              dry_run=args.dry_run)
+        pki_changed = ensure_gateway_pki(inputs, cfg, home, owner, shell, wrap,
+                                         args.etc_dir, args.bin_dir, dry_run=args.dry_run)
         allow_guest_agent_ssh_keys(shell)
         issuer_ca = issuer_ca_certs(configured_ca_bundle(cfg, inputs.secrets))
         if not args.dry_run:
@@ -5052,7 +5305,7 @@ def cmd_install(args):
         # a failure between here and the restart cannot leave the old
         # gateway running on a retry.
         state = read_json(state_file, {"components": {}})
-        if {"gateway", "supervisor"} & set(changed) or config_changed or trust_changed:
+        if {"gateway", "supervisor"} & set(changed) or config_changed or trust_changed or pki_changed:
             state["gatewayRestartPending"] = True
             if not args.dry_run:
                 write_json_atomic(state_file, state)
@@ -5063,9 +5316,17 @@ def cmd_install(args):
                                      cafile=trust_file if trust_file.is_file() else None)
             ensure_gateway(shell, cfg["runtimeUser"], env,
                            restart=bool(state.get("gatewayRestartPending")))
+            if not args.dry_run and (home / ".local/state/openshell/tls/ca.key").exists():
+                raise InstallerError("gateway CA private key remains on disk after startup")
         if state.pop("gatewayRestartPending", None) and not args.dry_run:
             write_json_atomic(state_file, state)
-        status.set("Done", bom_name, signature=installer.signatures)
+        status.set("Done", bom_name, signature=installer.signatures,
+                   extra={"credentialProxy": {"url": cfg["credentialProxy"]["url"],
+                                              "caFingerprint": certificate_fingerprint(
+                                                  Path(args.etc_dir) / "credential-proxy-ca.pem")},
+                          "pki": {"generation": cfg["gatewayPki"]["generation"],
+                                  "caFingerprint": certificate_fingerprint(
+                                      home / ".local/state/openshell/tls/ca.crt")}})
         return 0
     except InstallerError as exc:
         log(f"ERROR: {exc}")
@@ -5119,7 +5380,7 @@ def cmd_apply(args):
     """Step 2 (root entry): apply the SAW-BOM profiles.
 
     Refuses to run until `install` has installed this exact BOM. Reads the
-    mounted profiles and Secrets as root, then hands the plan to a child
+    mounted profiles and metadata as root, then hands the plan to a child
     process running as the runtime user on stdin, so that user never needs
     access to /run/saw."""
     inputs = Inputs(args.inputs, getattr(args, "installer_dir", None))
@@ -5144,7 +5405,14 @@ def cmd_apply(args):
         # The child runs as the runtime user. /var/lib/saw itself stays
         # root-owned (status.json); the ledger lives in a directory that user
         # can write, or the first apply dies with PermissionError.
-        _, owner = runtime_home(cfg, args.as_current_user)
+        home, owner = runtime_home(cfg, args.as_current_user)
+        cfg["credentialProxy"] = {**cfg["credentialProxy"],
+                                  "caFingerprint": certificate_fingerprint(inputs.proxy_ca / "ca.crt")}
+        cfg["gatewayPki"] = {**cfg["gatewayPki"],
+                             "caFingerprint": certificate_fingerprint(
+                                 home / ".local/state/openshell/tls/ca.crt")}
+        if not cfg["credentialProxy"]["caFingerprint"] or not cfg["gatewayPki"]["caFingerprint"]:
+            raise InstallerError("credential proxy or gateway CA certificate is missing")
         ledger_dir = state_dir / "user"
         if not args.dry_run:
             ledger_dir.mkdir(parents=True, exist_ok=True)
@@ -5185,18 +5453,33 @@ def cmd_apply(args):
 
         _, wrap = runtime_user(cfg, args.as_current_user)
         argv = [sys.executable, str(script), "apply-profiles"]
-        plan = json.dumps(plan_for_user(cfg, profiles, creds, dash_copy,
-                                        provider_profiles(inputs.installer), harness))
-        result = subprocess.run(wrap(argv), input=plan, text=True, check=False)
-        if result.returncode != 0:
-            raise InstallerError("applying profiles failed; see the log above")
+        with admin_session(cfg, home, owner, args.as_current_user) as (admin_tls, config_home):
+            cfg["adminTlsDir"] = str(admin_tls)
+            cfg["adminConfigHome"] = str(config_home)
+            plan = json.dumps(plan_for_user(cfg, profiles, creds, dash_copy,
+                                            provider_profiles(inputs.installer), harness))
+            result = subprocess.run(wrap(argv), input=plan, text=True, check=False)
+            if result.returncode != 0:
+                raise InstallerError("applying profiles failed; see the log above")
+        tls = home / ".local/state/openshell/tls"
+        if (tls / "client-ca.pem").read_text(encoding="utf-8") != (tls / "ca.crt").read_text(encoding="utf-8"):
+            raise InstallerError("gateway client-CA bundle retained an admin CA after apply")
+        if (tls / "ca.key").exists():
+            raise InstallerError("gateway CA private key is present after apply")
+        if not args.as_current_user:
+            check_proxy_health(cfg)
         report = {}
         ledger_path = state_dir / "user" / "managed.json"
         if ledger_path.is_file():
             report = json.loads(ledger_path.read_text(encoding="utf-8")).get("lastPrune") or {}
         status.set("Done", bom_name, pruned=report.get("pruned"),
                    would_prune=report.get("wouldPrune"),
-                   extra={"appliedRevision": harness["revisions"]})
+                   extra={"appliedRevision": harness["revisions"],
+                          "credentialProxy": {"url": cfg["credentialProxy"]["url"],
+                                              "caFingerprint": certificate_fingerprint(
+                                                  inputs.proxy_ca / "ca.crt")},
+                          "pki": {"generation": cfg["gatewayPki"]["generation"],
+                                  "caFingerprint": certificate_fingerprint(tls / "ca.crt")}})
         return 0
     except InstallerError as exc:
         log(f"ERROR: {exc}")
@@ -5276,6 +5559,7 @@ def input_hashes(inputs):
         "installer": tree_hash(inputs.installer),
         "profiles": tree_hash(inputs.profiles),
         "secrets": tree_hash(inputs.secrets),
+        "proxyCa": tree_hash(inputs.proxy_ca),
     }
     if inputs.owner.is_dir():
         result["owner"] = tree_hash(inputs.owner)
@@ -5297,7 +5581,10 @@ def reconcile_actions(current, applied, install_done, apply_done):
     installer_changed = current.get("installer") != applied.get("installer")
     rest_changed = (current.get("profiles") != applied.get("profiles")
                     or current.get("secrets") != applied.get("secrets")
-                    or current.get("owner") != applied.get("owner"))
+                    or current.get("owner") != applied.get("owner")
+                    or current.get("proxyCa") != applied.get("proxyCa"))
+    if current.get("proxyCa") != applied.get("proxyCa"):
+        installer_changed = True
     if installer_changed:
         actions.append("install")
     # A BOM or installer-file change is followed by apply, so the new

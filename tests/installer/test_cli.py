@@ -37,8 +37,7 @@ def world(tmp_path, inputs_dir, fake_env):
     opt_dir = tmp_path / "opt"
     etc_dir = tmp_path / "etc-openshell"
     home = tmp_path / "home-cloud-user"
-    # The gateway's CA as the golden image leaves it; the installer signs its
-    # admin client certificate with it.
+    # The gateway CA public certificate and nonadmin identities persist.
     (home / ".local" / "state").mkdir(parents=True)
     shutil.copytree(fake_env.home / ".local" / "state" / "openshell", home / ".local" / "state" / "openshell")
 
@@ -142,10 +141,11 @@ def test_failed_install_is_visible_and_clears_ready(world):
 def test_missing_credential_blocks_apply_but_not_install(world):
     for f in (world.inputs / "secrets" / "web-search").iterdir():
         f.unlink()
+    (world.inputs / "secrets" / "web-search").rmdir()
     assert world.run("install").returncode == 0      # software install does not read profiles
     result = world.run("apply")
     assert result.returncode == 1
-    assert "Secret 'web-search' key 'api_key'" in result.stdout
+    assert "metadata Secret 'web-search-meta' is not mounted" in result.stdout
     assert world.status()["apply"]["phase"] == "Failed"
     assert world.fake.openshell_calls() == []        # nothing half-applied
     assert world.run("validate").returncode == 1
@@ -174,7 +174,7 @@ def test_no_profiles_disk_still_configures_gateway(world):
     result = world.run("apply")
     assert result.returncode == 0, result.stdout
     assert "No enabled workspaces" in result.stdout
-    assert world.fake.openshell_state()["selected"] == "saw-installer"
+    assert world.fake.openshell_state()["selected"] == "saw-relay"
 
 
 def test_no_enabled_profiles_still_revokes_old_owner(world):
@@ -184,7 +184,7 @@ def test_no_enabled_profiles_still_revokes_old_owner(world):
     cfg_path.write_text(json.dumps(cfg))
     assert world.run("install").returncode == 0
     assert world.run("apply").returncode == 0
-    assert len(world.fake.openshell_state()["members"]) == 2
+    assert len(world.fake.openshell_state()["members"]) == 4
 
     for profile_file in (world.inputs / "profiles").iterdir():
         profile_file.unlink()
@@ -193,7 +193,8 @@ def test_no_enabled_profiles_still_revokes_old_owner(world):
     result = world.run("apply")
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert world.fake.openshell_state()["members"] == []
+    assert world.fake.openshell_state()["members"] == [
+        ["cuda-dev", "saw-relay", "user"], ["default", "saw-relay", "user"]]
     assert "cuda-dev" in world.fake.openshell_state()["workspaces"]
     assert json.loads((world.state / "user" / "owner-memberships.json").read_text()) == {}
 
@@ -288,27 +289,42 @@ def test_install_syncs_gateway_config_every_boot(world):
     assert "OPENSHELL_NEW=1" in (world.etc / "gateway.env").read_text()
 
 
-def test_route_host_adds_certificate_san_dropin(world):
+def test_route_host_updates_pki_inputs_and_rotates_old_certificate(world):
     config = json.loads((world.inputs / "installer" / "config.json").read_text())
     config["routeHost"] = "saw-test-gateway-ns.apps.example.com"
     (world.inputs / "installer" / "config.json").write_text(json.dumps(config))
     assert world.run("install").returncode == 0
-    dropin = world.home / ".config/systemd/user/openshell-gateway.service.d/route-san.conf"
-    assert "--server-san saw-test-gateway-ns.apps.example.com" in dropin.read_text()
+    sans = world.etc / "server-sans"
+    assert sans.read_text() == "saw-test-gateway-ns.apps.example.com\n"
+    assert not (world.home / ".local/state/openshell/tls/ca.crt").exists()
     config["routeHost"] = ""
     (world.inputs / "installer" / "config.json").write_text(json.dumps(config))
     assert world.run("install").returncode == 0
-    assert not dropin.exists()
+    assert sans.read_text() == "\n"
 
 
-def test_credential_is_rotated_on_existing_provider(world):
+def test_legacy_gateway_ca_key_triggers_rotation(world):
+    tls = world.home / ".local/state/openshell/tls"
+    (tls / "ca.key").write_text("legacy private key")
+    old_nemoclaw = world.home / ".nemoclaw/credentials.json"
+    old_nemoclaw.parent.mkdir()
+    old_nemoclaw.write_text('{"NVIDIA_API_KEY":"old-live-key"}')
+    assert world.run("install").returncode == 0
+    assert not tls.exists()
+    assert not old_nemoclaw.exists()
+    assert not (world.home / ".local/state/saw-installer").exists()
+
+
+def test_vm_rejects_a_rotated_key_file_on_its_disk(world):
     assert world.run("install").returncode == 0
     assert world.run("apply").returncode == 0
     (world.inputs / "secrets" / "inference" / "api_key").write_text("nvapi-ROTATED-999\n")
-    assert world.run("apply").returncode == 0
+    result = world.run("apply")
+    assert result.returncode == 1
+    assert "provider keys belong only to the credential proxy" in result.stdout
     providers = world.fake.openshell_state()["providers"]
-    assert providers["default/nvidia"]["credential"] == "NVIDIA_API_KEY=nvapi-ROTATED-999"
-    assert providers["cuda-dev/nvidia"]["credential"] == "NVIDIA_API_KEY=nvapi-ROTATED-999"
+    assert providers["default/nvidia"]["credential"] == "NVIDIA_API_KEY=saw-cred.inference.api_key"
+    assert providers["cuda-dev/nvidia"]["credential"] == "NVIDIA_API_KEY=saw-cred.inference.api_key"
 
 
 def test_credentials_never_appear_in_argv(world):
@@ -317,7 +333,7 @@ def test_credentials_never_appear_in_argv(world):
     argv = json.dumps(world.fake.openshell_calls())
     assert "nvapi-TEST-KEY-123" not in argv and "brave-TEST-KEY-456" not in argv
     assert world.fake.openshell_state()["providers"]["default/brave"]["credential"] == \
-        "BRAVE_API_KEY=brave-TEST-KEY-456"
+        "BRAVE_API_KEY=saw-cred.web-search.api_key"
 
 
 def test_owed_gateway_restart_survives_a_failed_attempt(ab, world, monkeypatch):

@@ -1,4 +1,5 @@
 """Profile pruning removes only objects the installer recorded."""
+from conftest import TEST_PROXY
 
 import json
 from pathlib import Path
@@ -25,7 +26,7 @@ def profiles(ab, shipped_profile_files):
 
 @pytest.fixture
 def creds(ab, profiles, secrets_dir):
-    return ab.resolve_credentials(profiles, secrets_dir)
+    return ab.resolve_credentials(profiles, secrets_dir, TEST_PROXY)
 
 
 def test_first_apply_adopts_and_deletes_nothing(ab, fake_env, config, profiles, creds, tmp_path, capsys):
@@ -175,7 +176,7 @@ def test_imported_profile_is_not_pruned_while_its_provider_still_uses_it(
     re-import) pruned the profile out from under the provider still using
     it, and the run after that re-imported it."""
     fake_env.without_profiles("openai")
-    creds = ab.resolve_credentials(custom_inference_profiles, custom_secrets)
+    creds = ab.resolve_credentials(custom_inference_profiles, custom_secrets, TEST_PROXY)
     ledger = tmp_path / "managed.json"
     docs = {"openai": SHIPPED_OPENAI_PROFILE.read_text()}
     _apply_on(ab, config, creds, custom_inference_profiles, ledger, docs)  # imports, adopts
@@ -192,7 +193,7 @@ def test_skipped_provider_is_not_pruned_on_a_transient_catalog_gap(
     its type (governance restarting, a catalog gap, ...) was never
     remembered, so prune deleted it (and its inference route) even though
     nothing about the desired profile changed."""
-    creds = ab.resolve_credentials(custom_inference_profiles, custom_secrets)
+    creds = ab.resolve_credentials(custom_inference_profiles, custom_secrets, TEST_PROXY)
     ledger = tmp_path / "managed.json"
     _apply_on(ab, config, creds, custom_inference_profiles, ledger)   # adopt, provider created
     _apply_on(ab, config, creds, custom_inference_profiles, ledger)
@@ -209,7 +210,7 @@ def test_kept_sandbox_does_not_lose_its_providers(ab, fake_env, config, shipped_
     inference route) of a sandbox that prune.sandboxes: false is keeping,
     even though the sandbox object itself was correctly left alone."""
     profiles = ab.parse_profiles(shipped_profile_files)
-    creds = ab.resolve_credentials(profiles, secrets_dir)
+    creds = ab.resolve_credentials(profiles, secrets_dir, TEST_PROXY)
     ledger = tmp_path / "managed.json"
     _apply_on(ab, config, creds, profiles, ledger)
     for profile in profiles:
@@ -506,7 +507,7 @@ def test_kept_sandbox_providers_are_protected_when_listing_fails(
     becomes prunable -- fail safe the same direction workspace_contents
     already does for a failed listing (PR #54 review round 2, 3)."""
     profiles = ab.parse_profiles(shipped_profile_files)
-    creds = ab.resolve_credentials(profiles, secrets_dir)
+    creds = ab.resolve_credentials(profiles, secrets_dir, TEST_PROXY)
     ledger = tmp_path / "managed.json"
     _apply_on(ab, config, creds, profiles, ledger)
     for profile in profiles:

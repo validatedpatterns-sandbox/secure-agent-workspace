@@ -17,7 +17,7 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     # Leave time for pytest to print failures even if a gateway test stalls.
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -31,6 +31,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: credential-proxy/go.mod
       - uses: azure/setup-helm@v4
         with:
           version: v3.17.3
@@ -73,7 +76,7 @@ jobs:
             exit 1
           fi
           pip install -q pyyaml
-          helm template saw-sign charts/openshell-saw --namespace saw-sign -f tests/fixtures/saw-network-topology.yaml --set sandboxName=saw-sign > /tmp/rendered.yaml
+          helm template saw-sign charts/openshell-saw --namespace saw-sign -f tests/fixtures/saw-network-topology.yaml -f tests/fixtures/credential-proxy-values.yaml --set sandboxName=saw-sign > /tmp/rendered.yaml
           python3 scripts/build-installer-manifest.py /tmp/rendered.yaml /tmp/installer-manifest.txt
           ok=0
           for key in "${keys[@]}"; do

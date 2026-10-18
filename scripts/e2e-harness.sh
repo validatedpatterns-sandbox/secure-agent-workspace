@@ -25,7 +25,6 @@
 # separately (upstream OpenShell, not this repo's installer):
 #   - default-deny egress outside the VM
 #   - tool actions tied to task/permissions + approval for consequential ones
-#   - provider/admin keys protected from VM-root
 #   - policy-update propagation to running workspaces
 #   - in-cluster MCP Service reachability (L7 403 is the sandbox net policy)
 #

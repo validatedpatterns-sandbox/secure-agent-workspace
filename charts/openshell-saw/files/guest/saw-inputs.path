@@ -6,6 +6,7 @@ PathChanged=/run/saw/installer
 PathChanged=/run/saw/profiles
 PathChanged=/run/saw/secrets
 PathChanged=/run/saw/owner
+PathChanged=/run/saw/proxy-ca
 Unit=saw-reconcile.service
 
 [Install]

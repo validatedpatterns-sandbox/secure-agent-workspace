@@ -242,7 +242,7 @@ There is no prepare Job: nothing runs in the SAW's namespace but the VM. The VM'
 
 #### Guest
 
-`saw-install` pulls each BOM component by digest and starts the gateway. `saw-apply` reads the mounted profiles and provider Secrets and creates workspaces, providers, and sandboxes, and attaches each sandbox's providers (OpenShell 0.1.x has no inference routes: agents call their provider's own endpoint). The default signature mode is `warn`. The default prune mode is `report` (log `would delete`, delete nothing). Inputs are iso9660 disks unless `vm.liveInputs` is true, in which case virtiofs updates them without a restart.
+`saw-install` pulls each BOM component by digest and starts the gateway. `saw-apply` reads the mounted profiles and provider metadata, creates workspaces, providers, and sandboxes, and attaches each sandbox's providers using nonsecret markers. The namespace credential proxy injects keys on bound HTTPS requests. The default signature mode is `warn`. The default prune mode is `report` (log `would delete`, delete nothing). VM inputs are iso9660 disks unless `vm.liveInputs` is true, in which case virtiofs updates them without a restart.
 
 Pattern owner subjects use a separate `saw-owner-subject` ConfigMap mount over
 virtiofs, even when other inputs use ISO media. The input watcher and timer
@@ -312,7 +312,7 @@ finishes, verify that `/var/lib/saw/verified/installer/setup-dashboard.sh`
 has the new content and that `saw-apply.service` completed. Check the web UI
 route with an owner and a different user before you consider the update done.
 
-A workspace that stays Starting is usually waiting on a provider Secret. The virt-launcher pod is scheduled and sits in ContainerCreating; the kubelet retries the mount, so the VM boots within about 2 minutes of the Secret appearing.
+A workspace that stays Starting may be waiting on a required provider metadata Secret or the public `saw-proxy-ca` ConfigMap. The virt-launcher pod is scheduled and sits in ContainerCreating; the kubelet retries the mount when the missing input appears.
 
 ```bash
 oc get events -n saw-<user> | grep FailedMount
@@ -422,14 +422,15 @@ The cleanup API firewall exception remains while `cleanupOnDelete: true`, even i
 | Gateway (VM) | DNS, registry, ingress controller | TCP/UDP 5353, TCP 5000, TCP 443/80 | Resolution, image pull, Routes |
 | CDI importer pod | Registry or configured disk URL | TCP 5000 or allowed outside port | Root disk import |
 | Cleanup hook pod | Kubernetes API | HTTPS | Delete VM and PVCs |
-| In-guest installer | mounted ConfigMaps and Secrets | virtiofs or iso9660 | Install binaries and apply profiles |
+| In-guest installer | mounted ConfigMaps, provider metadata Secrets, public proxy CA | virtiofs or iso9660 | Install binaries and apply profiles with markers |
+| Credential proxy | full provider Secrets | namespace pod mounts | Inject keys into bound HTTPS requests |
 | Dashboard (VM) | Gateway (VM) | gRPC over TLS | Agent operations |
 
 ### Authentication Flows
 
 - **CLI:** `openshell gateway login` uses the browser flow by default, or the OIDC device-code flow when `OPENSHELL_NO_BROWSER=1` is set, authenticating against Keycloak. The token is cached locally and sent as a bearer token on gRPC calls.
 - **Dashboard:** OAuth2 proxy handles browser-based OIDC login, proxies authenticated requests to the dashboard backend, which connects to the gateway.
-- **In-guest installer:** its own mTLS client certificate, `CN=saw-installer` and `OU=openshell-admin`, registered as the `saw-installer` gateway entry. Users still use OIDC.
+- **In-guest installer:** a two-hour `OU=openshell-admin` certificate and CLI entry in tmpfs during each apply. The long-running `saw-relay` identity has only the workspace user role. Users still use OIDC. See [Credential isolation](credential-isolation.md).
 
 ## Operator Quick Reference
 

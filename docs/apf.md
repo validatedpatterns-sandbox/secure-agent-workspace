@@ -237,7 +237,9 @@ audit volume at `/sandbox/.saw/audit`. An OpenClaw sandbox with a harness bundle
 ([harness-bundles.md](harness-bundles.md)) also mounts that volume read-only at `/sandbox/harness`.
 The installer sends these exact combinations through `CreateSandbox` driver config. The gateway
 sets `allow_driver_config = true`; APF admits only the installer's podman volume mounts from its
-admin mTLS identity, using this signed `SandboxPolicy` block from `scripts/apf-bundle.py`:
+per-run admin mTLS identity, using this signed `SandboxPolicy` block from `scripts/apf-bundle.py`.
+That identity and its CA live only in tmpfs during apply; long-running forwards
+use the `saw-relay` user certificate. See [Credential isolation](credential-isolation.md).
 
 ```yaml
 driver_config:

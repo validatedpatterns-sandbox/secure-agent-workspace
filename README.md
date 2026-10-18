@@ -64,7 +64,7 @@ Secure Agent Workspace provisions dedicated KubeVirt virtual machines for each u
 
 Organizations adopting AI coding and knowledge agents need strong isolation guarantees: each user's agent must run in its own boundary, with auditable access to enterprise systems, controlled network egress, and centralized identity management. Traditional container-based isolation is insufficient when agents can execute arbitrary code and tool calls.
 
-This quickstart implements NVIDIA's [Secure Agent Workspace reference architecture](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html) on Red Hat OpenShift. Each user gets a dedicated Fedora 44 VM running the OpenShell gateway and an AI agent (OpenClaw, Hermes, or Deep Agents Code). The VM provides process-level and network-level isolation. OIDC authentication (via Red Hat Build of Keycloak) ensures only the sandbox owner can access their workspace. Secrets for inference providers flow through HashiCorp Vault and the External Secrets Operator, keeping API keys out of Git and helm values.
+This quickstart implements NVIDIA's [Secure Agent Workspace reference architecture](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html) on Red Hat OpenShift. Each user gets a dedicated Fedora 44 VM running the OpenShell gateway and an AI agent (OpenClaw, Hermes, or Deep Agents Code). The VM provides process-level and network-level isolation. OIDC authentication (via Red Hat Build of Keycloak) ensures only the sandbox owner can access their workspace. Provider keys flow through Vault and External Secrets into a per-namespace credential proxy; the VM receives nonsecret markers and metadata only. See [Credential isolation](docs/credential-isolation.md).
 
 The system supports multiple inference providers (Gemini, Anthropic, OpenAI, NVIDIA Build, OpenRouter, Ollama, or custom endpoints) and optional web search integration (Tavily, Brave). A bootc-based golden image pipeline pre-bakes all packages into a container image that CDI imports directly, enabling fast VM provisioning without cloud-init package installation.
 
@@ -135,7 +135,7 @@ The following diagrams are from the [NVIDIA Secure Agent Workspace OpenShift Vir
 | Agent runtime | NVIDIA OpenShell + OpenClaw/NemoClaw | AI coding and knowledge agents inside sandbox |
 | Gateway | OpenShell Gateway (gRPC over TLS) | Sandbox lifecycle, SSH proxy, inference routing |
 | Golden image | Bootc (Fedora 44) + CDI | Pre-baked VM image for fast provisioning |
-| Secrets | HashiCorp Vault + External Secrets Operator | API keys for inference providers, SSH keys |
+| Secrets | Vault + External Secrets Operator + credential proxy | Provider API keys stay outside the VM; SSH public keys grant guest access |
 | GitOps | ArgoCD (Validated Patterns) | Declarative cluster configuration |
 | Access control | Dashboard token + OIDC gateway validation | Per-user access via application-level tokens |
 
@@ -299,6 +299,7 @@ make login                    # Opens the browser for Keycloak sign-in
 make whoami                   # Verify identity
 
 # 11. Create the user VM (deploys into namespace saw-$OPENSHELL_SAW_NAME)
+#     Set CREDENTIAL_PROXY_IMAGE to a published saw-credential-proxy@sha256:...
 #     Keys come from files so they stay out of the shell history.
 #     The default data-science profile also creates a Brave Search provider,
 #     so it needs WEB_SEARCH_API_KEY; without it the in-VM apply fails with
@@ -308,6 +309,7 @@ make whoami                   # Verify identity
 read -r WEB_SEARCH_API_KEY < "$HOME/.brave-api-key"
 read -r API_KEY < "$HOME/.nvidia-api-key"
 export WEB_SEARCH_API_KEY API_KEY
+export CREDENTIAL_PROXY_IMAGE='quay.io/<you>/saw-credential-proxy@sha256:<digest>'
 make saw-create \
   PROVIDER=build \
   MODEL=nvidia/nemotron-3-super-120b-a12b
@@ -422,7 +424,7 @@ user access targets require `OPENSHELL_SAW_NAME`. `saw-list`, `status`, and
 `SAW_NS=saw-$OPENSHELL_SAW_NAME`. Manual builds stay in-cluster by default. To push, explicitly set
 `IMAGE_REPO` to your own namespace and `IMAGE_TAG` as needed; the upstream
 CI namespace is refused. For `saw-create`, set `PROVIDER`, `MODEL`, and
-`API_KEY` in the environment for keyed providers; `OWNER` and `OWNER_SUBJECT` select another owner. A new inference Secret needs `PROVIDER` and `MODEL`; `API_KEY` may be empty for a keyless provider. A repeat `saw-create` keeps an existing inference Secret when `API_KEY` is empty.
+`API_KEY` in the environment for keyed providers; `OWNER` and `OWNER_SUBJECT` select another owner. Set `CREDENTIAL_PROXY_IMAGE` to the published image digest, or provide it through `SAW_VALUES_FILE`. A new inference Secret needs `PROVIDER` and `MODEL`; `API_KEY` may be empty for a keyless provider. A repeat `saw-create` keeps an existing inference Secret when `API_KEY` is empty.
 
 `IMAGE_TAG=latest` selects the CI-built gateway disk used by `images-mirror`;
 `IMAGE_TAG=sha-<commit>` selects a particular CI build. The chart's in-VM BOM
@@ -682,6 +684,7 @@ make quickstart-delete
 │   ├── openshell-saw/            # Per-user sandbox VM + gateway + agent
 │   ├── pattern-secrets/              # ExternalSecrets for provider API keys + SSH
 │   └── saw-users/                    # Turns the user list into namespaces and Argo apps
+├── credential-proxy/                 # Per-namespace TLS proxy that injects provider keys
 ├── image-builder-charts/             # Build-time charts (imagestreams, bootc image)
 │   └── helm/
 │       ├── nemoclaw-imagestream/     # NemoClaw sandbox image BuildConfig
@@ -723,7 +726,7 @@ The system implements layered isolation:
 2. **OIDC authentication** — Keycloak provides SSO with PKCE and device code flow support
 3. **Per-user access control** — Dashboard and sandbox UI proxies allow the owner and explicit support users by `preferred_username`. Each gateway also checks workspace membership for list and create operations.
 4. **TLS passthrough** — Gateway route preserves gRPC/HTTP2 end-to-end; the gateway validates OIDC tokens directly
-5. **Secret management** — API keys flow through Vault + ESO; the user's SSH private key never touches the cluster in plaintext
+5. **Secret management** — Provider keys stay in namespace Secrets mounted into the credential proxy. The VM stores markers and metadata, and its platform admin mTLS identity exists only during an installer apply in tmpfs. The user's SSH private key never touches the cluster. See [Credential isolation](docs/credential-isolation.md).
 6. **Network isolation** — Default-deny NetworkPolicy blocks cross-namespace and API/metadata traffic from the VM; EgressFirewall limits external destinations to exact allowed hostnames. CI checks shipped profile hosts and ports against both layers.
 7. **Governed gateways** — every gateway calls a fail-closed governance service: the OpenShell governance interceptor, or APF with a signed policy bundle ([docs/apf.md](docs/apf.md))
 
@@ -883,7 +886,7 @@ a private CA, set `KEYCLOAK_CA=<ca-bundle.pem>`. For a Keycloak CR not named
 
 | Namespace | Contents |
 |---|---|
-| `saw-<name>` (one per sandbox) | The gateway VM, its installer inputs and provider Secrets |
+| `saw-<name>` (one per sandbox) | The gateway VM, metadata inputs, credential proxy, and provider Secrets mounted only into that proxy |
 | `openshell-agents` | Golden VM image, image builds, governance interceptor |
 | `saw-keycloak` | Keycloak (RHBK) |
 

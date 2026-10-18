@@ -40,6 +40,12 @@ changes here reach an existing VM after a restart (unlike cloud-init).
       "namespace" .Release.Namespace
       "runtimeUser" "cloud-user"
       "mtlsGateway" "saw-installer"
+      "relayGateway" "saw-relay"
+      "credentialProxy" (dict
+          "url" (printf "http://%s-credential-proxy.%s.svc.cluster.local:3128" (include "openshell-sandbox.fullname" .) .Release.Namespace)
+          "markerPrefix" "saw-cred"
+          "secrets" .Values.credentialProxy.secrets)
+      "gatewayPki" (dict "generation" .Values.gatewayPki.generation)
       "ownerSubject" (.Values.accessControl.ownerSubject | default "")
       "ownerSubjectSource" (.Values.accessControl.ownerSubjectSource | default "")
       "oidcIssuer" $oidcIssuer
@@ -89,6 +95,10 @@ data:
 {{ include "openshell-sandbox.gatewayEnv" . | indent 4 }}
   gateway.toml: |
 {{ include "openshell-sandbox.gatewayToml" . | indent 4 }}
+  saw-gateway-pki: |
+{{ .Files.Get "files/guest/saw-gateway-pki" | indent 4 }}
+  openshell-gateway-pki.conf: |
+{{ .Files.Get "files/guest/openshell-gateway-pki.conf" | indent 4 }}
   apply_bom.py: |
 {{ .Files.Get "files/installer/apply_bom.py" | indent 4 }}
   tool-actions.yaml: |

@@ -9,6 +9,12 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "openshell-saw-create.sh"
+PROXY_IMAGE = "quay.io/example/saw-credential-proxy@sha256:" + "0" * 64
+
+
+@pytest.fixture(autouse=True)
+def proxy_image(monkeypatch):
+    monkeypatch.setenv("CREDENTIAL_PROXY_IMAGE", PROXY_IMAGE)
 
 FAKE_OC = r'''#!/usr/bin/env bash
 echo "oc $*" >> "$FAKE_LOG"
@@ -31,7 +37,13 @@ case "$1" in
        elif [[ "$2" == endpointslice ]]; then
          echo '{"items":[{"addressType":"IPv4","ports":[{"port":6443,"protocol":"TCP"}],"endpoints":[{"addresses":["10.10.10.10"],"conditions":{"ready":true}}]}]}'
        elif [[ "$2" == secret ]]; then
-         [[ " ${EXISTING_SECRETS:-} " == *" $3 "* ]] && echo "secret/$3"
+         if [[ " ${EXISTING_SECRETS:-} " == *" $3 "* ]]; then
+           if [[ " $* " == *" -o json "* ]]; then
+             echo '{"metadata":{"namespace":"default"},"data":{}}'
+           else
+             echo "secret/$3"
+           fi
+         fi
        elif [[ "$2" == keycloak ]]; then
          echo '{"items":[{"metadata":{"name":"openshell-keycloak"}}]}'
        elif [[ "$2" == secrets ]]; then
@@ -92,7 +104,7 @@ def run(tmp_path):
         if unset_issuer:
             full.pop("OIDC_ISSUER")
         result = subprocess.run(["bash", str(SCRIPT)], env=full, cwd=ROOT, capture_output=True, text=True)
-        return result, log.read_text(), tmp_path / "bom-values.yaml"
+        return result, (log.read_text() if log.exists() else ""), tmp_path / "bom-values.yaml"
 
     def _run(**env):
         result, commands, bom_values = _invoke(**env)
@@ -305,6 +317,14 @@ def test_missing_provider_settings_fail_before_cluster_work(tmp_path):
                             capture_output=True, text=True)
     assert result.returncode != 0
     assert "PROVIDER and MODEL" in result.stderr
+
+
+def test_missing_proxy_image_fails_before_cluster_work(run, monkeypatch):
+    monkeypatch.delenv("CREDENTIAL_PROXY_IMAGE")
+    result, commands, _ = run.invoke(PROVIDER="build", MODEL="m", API_KEY="k")
+    assert result.returncode != 0
+    assert "CREDENTIAL_PROXY_IMAGE" in result.stderr
+    assert commands == ""
 
 
 def test_missing_login_token_fails_before_cluster_write(tmp_path):

@@ -24,9 +24,11 @@ def disks(tmp_path):
     (installer / "apply_bom.py").write_text("# installer\n")
     (dev / "virtio-saw-profiles").mkdir()
     (dev / "virtio-saw-profiles" / "profiles__p__ws__workspace.yaml").write_text("x: 1\n")
-    for i, value in enumerate(["key-a", "key-b"]):
+    (dev / "virtio-saw-proxy-ca").mkdir()
+    (dev / "virtio-saw-proxy-ca" / "ca.crt").write_text("public-test-ca\n")
+    for i, value in enumerate(["nvidia", "brave"]):
         (dev / f"virtio-saw-sec-{i}").mkdir()
-        (dev / f"virtio-saw-sec-{i}" / "api_key").write_text(value)
+        (dev / f"virtio-saw-sec-{i}" / "provider").write_text(value)
     return dev
 
 
@@ -50,10 +52,12 @@ def test_mounts_every_disk_by_serial(tmp_path, disks):
     assert (root / "installer" / "apply_bom.py").is_file()
     assert (root / "profiles" / "profiles__p__ws__workspace.yaml").is_file()
     # Secret disks follow the order in config.json.
-    assert (root / "secrets" / "inference" / "api_key").read_text() == "key-a"
-    assert (root / "secrets" / "web-search" / "api_key").read_text() == "key-b"
+    assert (root / "secrets" / "inference" / "provider").read_text() == "nvidia"
+    assert (root / "secrets" / "web-search" / "provider").read_text() == "brave"
+    assert not list((root / "secrets").rglob("api_key"))
+    assert (root / "proxy-ca" / "ca.crt").read_text() == "public-test-ca\n"
     mounts = log(state, "mount.log")
-    assert len(mounts) == 4
+    assert len(mounts) == 5
     assert all(m.startswith("-t iso9660 -o ro,nosuid,nodev,noexec ") for m in mounts)
 
 
@@ -74,6 +78,14 @@ def test_missing_installer_disk_fails(tmp_path, disks):
     result, _ = run_script(tmp_path, disks)
     assert result.returncode == 1
     assert "required disk saw-installer is not attached" in result.stderr
+
+
+def test_missing_proxy_ca_disk_fails(tmp_path, disks):
+    import shutil
+    shutil.rmtree(disks / "virtio-saw-proxy-ca")
+    result, _ = run_script(tmp_path, disks)
+    assert result.returncode == 1
+    assert "required disk saw-proxy-ca is not attached" in result.stderr
 
 
 def test_missing_optional_disks_are_fine(tmp_path, disks):
@@ -111,4 +123,4 @@ def test_invalid_secret_name_is_skipped(tmp_path, disks):
     assert "skipping invalid Secret name" in result.stderr
     assert not (tmp_path / "etc").exists()
     # The skipped name keeps its disk position: 'inference' is still disk 1.
-    assert (tmp_path / "run-saw" / "secrets" / "inference" / "api_key").read_text() == "key-b"
+    assert (tmp_path / "run-saw" / "secrets" / "inference" / "provider").read_text() == "brave"

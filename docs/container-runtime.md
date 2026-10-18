@@ -93,65 +93,39 @@ helm upgrade <release> charts/openshell-saw --set containerRuntime=podman
 
 ## Connecting to the TUI
 
-The gateway uses mTLS. The self-signed server certificate is only valid for `127.0.0.1`, so
-external route access (e.g. opening the gateway URL in a browser) won't work for the CLI.
-Use a port-forward instead.
+The gateway presents its own CA certificate on the Route. Users authenticate
+with OIDC; the in-VM admin mTLS identity is temporary and must never be
+copied to a laptop.
 
-### Step 1 — Copy the mTLS client certs from the VM (once per sandbox)
+### Step 1 — Configure the CLI and sign in
 
 ```bash
-SANDBOX=<your-sandbox-name>   # e.g. test-docker
-NS=openshell-agents
-
-mkdir -p ~/.config/openshell/gateways/${SANDBOX}/mtls
-
-for f in ca.crt tls.crt tls.key; do
-  [[ "$f" == "ca.crt" ]] \
-    && src="/home/cloud-user/.local/state/openshell/tls/ca.crt" \
-    || src="/home/cloud-user/.local/state/openshell/tls/client/${f}"
-  virtctl -n ${NS} scp \
-    cloud-user@vm/${SANDBOX}:${src} \
-    ~/.config/openshell/gateways/${SANDBOX}/mtls/${f} \
-    --identity-file=~/.generated-ssh-keys/sandbox-ssh \
-    --local-ssh-opts=-oStrictHostKeyChecking=no \
-    --local-ssh-opts=-oUserKnownHostsFile=/dev/null
-done
-
-chmod 600 ~/.config/openshell/gateways/${SANDBOX}/mtls/*
-
-cat > ~/.config/openshell/gateways/${SANDBOX}/metadata.json <<EOF
-{"name":"${SANDBOX}","gateway_endpoint":"https://127.0.0.1:17670","is_remote":false,"gateway_port":17670,"auth_mode":"mtls"}
-EOF
+export OPENSHELL_SAW_NAME=<your-saw-name>
+make saw-configure
+openshell gateway login "$OPENSHELL_SAW_NAME"
 ```
 
-### Step 2 — Start port-forward (keep this terminal open)
+### Step 2 — Verify gateway and sandbox are reachable
 
 ```bash
-oc port-forward svc/${SANDBOX}-gateway 17670:17670 -n openshell-agents
-```
-
-### Step 3 — Verify gateway and sandbox are reachable
-
-```bash
-openshell gateway select ${SANDBOX}
 openshell sandbox list
 # Should show the sandbox in Ready or Unspecified phase
 ```
 
-### Step 4 — Open the TUI
+### Step 3 — Open the TUI
 
 ```bash
+SANDBOX=<sandbox-name>
 ssh \
-  -o "ProxyCommand=openshell --gateway ${SANDBOX} ssh-proxy --gateway-name ${SANDBOX} --name ${SANDBOX}" \
+  -o "ProxyCommand=openshell --gateway ${OPENSHELL_SAW_NAME} ssh-proxy --gateway-name ${OPENSHELL_SAW_NAME} --name ${SANDBOX}" \
   -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null \
   -o LogLevel=ERROR \
   -tt sandbox@openshell-${SANDBOX}.default openclaw
 ```
 
-> **Note:** The cert-copy step (Step 1) requires `virtctl`. A follow-up improvement is to
-> have the in-guest installer publish the mTLS client cert as a k8s Secret so the local setup can be
-> done with `oc extract secret/...` instead.
+See [Credential isolation](credential-isolation.md) for the distinction between
+the short-lived installer admin identity and user access.
 
 ## Known limitations
 

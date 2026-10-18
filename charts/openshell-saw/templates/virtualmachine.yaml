@@ -81,6 +81,10 @@ spec:
               serial: saw-profiles
               disk:
                 bus: virtio
+            - name: saw-proxy-ca
+              serial: saw-proxy-ca
+              disk:
+                bus: virtio
             {{- range $i, $name := $secrets }}
             - name: saw-sec-{{ $i }}
               serial: saw-sec-{{ $i }}
@@ -93,6 +97,8 @@ spec:
             - name: saw-installer
               virtiofs: {}
             - name: saw-profiles
+              virtiofs: {}
+            - name: saw-proxy-ca
               virtiofs: {}
             {{- range $i, $name := $secrets }}
             - name: saw-sec-{{ $i }}
@@ -175,6 +181,9 @@ spec:
           configMap:
             name: saw-bom-profiles
             optional: true
+        - name: saw-proxy-ca
+          configMap:
+            name: saw-proxy-ca
         {{- if eq .Values.accessControl.ownerSubjectSource "resolved" }}
         - name: saw-owner
           configMap:
@@ -190,5 +199,5 @@ spec:
         {{- range $i, $name := $secrets }}
         - name: saw-sec-{{ $i }}
           secret:
-            secretName: {{ $name }}
+            secretName: {{ if eq $name (include "openshell-sandbox.caBundleSecret" $) }}{{ $name }}{{ else }}{{ $name }}-meta{{ end }}
         {{- end }}

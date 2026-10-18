@@ -260,6 +260,22 @@ Provider credential Secrets attached to the VM, de-duplicated, as JSON list.
 {{- toJson $names -}}
 {{- end }}
 
+{{/* Exact DNS hosts shared by the EgressFirewall and credential proxy. */}}
+{{- define "openshell-sandbox.egressHosts" -}}
+{{- $hosts := concat (.Values.egress.allow | default list) (.Values.egress.extraAllow | default list) | uniq -}}
+{{- if .Values.allowDriverConfig -}}
+  {{- range (.Values.egress.harnessAllow | default list) -}}
+    {{- if not (has . $hosts) -}}{{- $hosts = append $hosts . -}}{{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- if eq (.Values.signing.mode | default "warn") "enforce" -}}
+  {{- range (.Values.egress.signingAllow | default list) -}}
+    {{- if not (has . $hosts) -}}{{- $hosts = append $hosts . -}}{{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- toJson $hosts -}}
+{{- end -}}
+
 {{/*
 The Secret holding the cluster's ingress CA (key ca-bundle.crt) the VM trusts
 for the issuer, or "". Only for the in-cluster Keycloak (oidc.issuerUrl
@@ -285,7 +301,7 @@ OPENSHELL_SERVER_PORT=17670
 OPENSHELL_COMPUTE_DRIVER=podman
 OPENSHELL_TLS_CERT=/home/cloud-user/.local/state/openshell/tls/server/tls.crt
 OPENSHELL_TLS_KEY=/home/cloud-user/.local/state/openshell/tls/server/tls.key
-OPENSHELL_TLS_CLIENT_CA=/home/cloud-user/.local/state/openshell/tls/ca.crt
+OPENSHELL_TLS_CLIENT_CA=/home/cloud-user/.local/state/openshell/tls/client-ca.pem
 # The copy the installer keeps in the runtime user's config dir (also the
 # gateway's XDG default); /etc/openshell holds the chart's copy.
 OPENSHELL_GATEWAY_CONFIG=/home/cloud-user/.config/openshell/gateway.toml
@@ -343,6 +359,9 @@ sandbox_runtime_image = {{ .Values.bom.spec.openshell.sandbox.image | quote }}
 # so only a volume labelled attachable for the caller's workspace can be
 # attached, and no host path or image.
 allow_driver_config = true
+https_proxy = {{ printf "http://%s-credential-proxy.%s.svc.cluster.local:3128" (include "openshell-sandbox.fullname" .) .Release.Namespace | quote }}
+proxy_ca_bundle = "/etc/openshell/credential-proxy-ca.pem"
+proxy_connect_by_hostname = true
 {{- if .Values.governance.enabled }}
 
 {{- $engine := include "openshell-sandbox.governanceEngine" . }}

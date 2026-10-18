@@ -1,0 +1,23 @@
+{{- if has "inference" (.Values.secrets | default list) }}
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: inference-meta
+spec:
+  refreshInterval: {{ .Values.refreshInterval }}
+  secretStoreRef:
+    name: {{ .Values.secretStoreRef.name }}
+    kind: {{ .Values.secretStoreRef.kind }}
+  target:
+    name: inference-meta
+    template:
+      type: Opaque
+      engineVersion: v2
+      data:
+        provider: {{ printf "{{ .provider }}" | quote }}
+        model: {{ printf "{{ index . \"model\" | default \"\" }}" | quote }}
+        url: {{ printf "{{ index . \"url\" | default \"\" }}" | quote }}
+  dataFrom:
+    - extract:
+        key: {{ .Values.vaultPrefix }}/inference
+{{- end }}

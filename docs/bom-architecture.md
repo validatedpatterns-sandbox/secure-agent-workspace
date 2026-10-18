@@ -16,7 +16,8 @@
 │                                                                         │
 │  installer ConfigMap (BOM, apply_bom.py, gateway config)                │
 │  saw-bom-profiles ConfigMap                                             │
-│  provider Secrets (inference, web-search, ...)                          │
+│  provider metadata Secrets (inference-meta, web-search-meta, ...)       │
+│  public credential proxy CA                                             │
 └─────────────────────────┬───────────────────────────────────────────────┘
                           │
                           ▼
@@ -29,9 +30,9 @@
 │  └── Skip components that are already current                           │
 │                                                                         │
 │  saw-apply (root reads inputs, then cloud-user runs the plan)          │
-│  ├── mTLS client cert CN=saw-installer, OU=openshell-admin              │
+│  ├── per-run admin mTLS cert and CA in tmpfs                             │
 │  ├── Workspaces, providers, sandboxes (provider attached per sandbox)   │
-│  ├── provider update when a Secret key changes                          │
+│  ├── provider credentials are nonsecret markers                         │
 │  ├── Ledger of created objects; report mode only logs deletions        │
 │  └── Verify workspaces, providers, and sandboxes                        │
 │                                                                         │
@@ -170,13 +171,13 @@ User → OpenClaw TUI/GUI
 ├─────────────────────────────────────────────────┤
 │ Credential Boundary                             │
 │ ├── API keys in Vault / K8s secrets             │
-│ ├── OpenShell provider stores credentials       │
-│ ├── Proxy injects credentials at request time   │
-│ └── No credentials inside sandbox containers    │
+│ ├── VM and OpenShell store markers only          │
+│ ├── Namespace proxy injects keys at bound hosts │
+│ └── No provider keys inside the VM or sandboxes  │
 ├─────────────────────────────────────────────────┤
 │ Identity Boundary                               │
 │ ├── OIDC via Keycloak (alice)                   │
-│ ├── mTLS for internal gateway communication     │
+│ ├── mTLS; platform admin CA only during apply    │
 │ ├── Gateway token for OpenClaw Control UI       │
 │ └── Sandbox user (UID 65532) — non-root         │
 └─────────────────────────────────────────────────┘

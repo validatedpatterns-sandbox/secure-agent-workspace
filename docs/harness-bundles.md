@@ -70,11 +70,10 @@ spec:
 
 A server that calls a keyed service gets its key the same way OpenClaw gets
 its model key: from an OpenShell **provider** attached to the sandbox. The
-sandbox's environment holds only a placeholder in the provider profile's env
-var (for example `BRAVE_API_KEY`), and the sandbox's egress proxy puts the
-real key in only on requests to that profile's endpoints, from its listed
-programs (`node`, `curl`). The real key never enters the sandbox, so the agent
-cannot read it.
+sandbox's environment holds a nonsecret marker in the provider profile's env
+var (for example `BRAVE_API_KEY`), and the namespace credential proxy puts the
+real key in only on requests to bound HTTPS endpoints. The real key never
+enters the VM, so VM root and the agent cannot read it.
 
 1. Declare the server in `harness.yaml` with the provider type as its
    `governanceProfile`:
@@ -129,7 +128,7 @@ The installer refuses a bundle whose governed server or plugin names a profile
 the gateway does not serve in that workspace, or one the sandbox has no
 provider for. For a service no profile covers yet (Tavily, for instance), add
 a profile with a `credentials` entry to `charts/governance-policy/profiles/`
-first. The older `credentialSecret` / `credentialEnvVar` fields are refused:
+first and add its endpoint to the credential proxy binding. The older `credentialSecret` / `credentialEnvVar` fields are refused:
 they put the real key in the sandbox, where the agent could read it.
 
 Everything a stdio server downloads at start (`npx -y <package>`) needs a
@@ -380,7 +379,7 @@ requires `oc`, Python with PyYAML, the deployment controller's tooling, and
 ### Security properties
 
 - With the governance interceptor enabled, caller driver config requires
-  an mTLS platform admin and permits only the installer's gate and audit
+  the installer's temporary mTLS platform admin and permits only its gate and audit
   volumes, optionally with a read-only harness volume at `/sandbox/harness`.
   The gate is read-only and the audit mount is writable only at its dedicated
   target; OIDC admins, bind mounts, other targets and driver options are refused.
@@ -399,6 +398,7 @@ requires `oc`, Python with PyYAML, the deployment controller's tooling, and
   signature (`harness.cosign`) before using the image, subject to the bounded
   successful-verification cache described above.
 - Governance uses the gateway's live catalog and requires a matching provider
-  on the sandbox; keys never enter the sandbox (providers + egress proxy only).
+  on the sandbox; only a marker enters the VM and sandbox. The namespace
+  credential proxy injects the key into bound HTTPS requests.
 - `npx`-style servers fetch code at run time, outside the digest — vendor
   when that matters.

@@ -35,7 +35,10 @@ BOB = {
 
 
 def helm(*args):
-    return subprocess.run([HELM, *args], capture_output=True, text=True)
+    command = [HELM, *args]
+    if str(SAW_CHART) in command:
+        command += ["-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml")]
+    return subprocess.run(command, capture_output=True, text=True)
 
 
 def render_file(tmp_path, users, extra=None):
@@ -346,8 +349,8 @@ def test_rendered_machine_values_validate_in_the_shipped_installer(tmp_path):
     for key, value in profile_cm["data"].items():
         (run_saw / "profiles").mkdir(exist_ok=True)
         (run_saw / "profiles" / key).write_text(value)
-    for secret, data in {"inference": {"api_key": "k1", "provider": "build"},
-                         "web-search": {"api_key": "k2"}}.items():
+    for secret, data in {"inference": {"provider": "nvidia"},
+                         "web-search": {"provider": "brave"}}.items():
         (run_saw / "secrets" / secret).mkdir(parents=True)
         for key, value in data.items():
             (run_saw / "secrets" / secret / key).write_text(value)
@@ -360,6 +363,8 @@ def test_rendered_machine_values_validate_in_the_shipped_installer(tmp_path):
     config = json.loads(installer["data"]["config.json"])
     assert config["vmName"] == "alice"
     assert config["ownerSubject"] == ""
+    assert {(b["name"], b["key"]) for b in config["credentialProxy"]["secrets"]} == {
+        ("inference", "api_key"), ("web-search", "api_key")}
 
 
 

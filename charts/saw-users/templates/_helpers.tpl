@@ -100,6 +100,9 @@ user's `values` on top. Nested maps merge; the user's keys win.
 {{- $extra := list -}}
 {{- range $secretNames -}}{{- if ne . "inference" -}}{{- $extra = append $extra . -}}{{- end -}}{{- end -}}
 {{- $_ := set $base "additionalProviderSecrets" $extra -}}
+{{- $proxy := deepCopy (index $base "credentialProxy" | default dict) -}}
+{{- $_ := set $proxy "secrets" (include "saw-users.credentialBindings" . | fromJsonArray) -}}
+{{- $_ := set $base "credentialProxy" $proxy -}}
 {{- /* The cluster's ingress CA, synced by pattern-secrets; openshell-saw only
      uses it for the in-cluster Keycloak without an explicit caBundle. */ -}}
 {{- $oidc := deepCopy (index $base "oidc" | default dict) -}}
@@ -208,6 +211,31 @@ an enabled workspace). pattern-secrets syncs only these.
 {{- range .root.Values.defaults.secrets -}}{{- $_ := set $names . true -}}{{- end -}}
 {{- end -}}
 {{- toJson (keys $names | sortAlpha) -}}
+{{- end -}}
+
+{{/* Only fields marked kind=secret become proxy bindings. */}}
+{{- define "saw-users.credentialBindings" -}}
+{{- $bindings := dict -}}
+{{- $known := include "saw-users.userCatalog" . | fromJsonArray -}}
+{{- range $profile := $known -}}
+  {{- range $secret, $entry := $profile.secrets | default dict -}}
+    {{- range $field := $entry.fields | default list -}}
+      {{- if eq $field.kind "secret" -}}
+        {{- $id := printf "%s/%s" $secret $field.key -}}
+        {{- $previous := index $bindings $id | default (dict "name" $secret "key" $field.key "providers" (list)) -}}
+        {{- $providers := $previous.providers -}}
+        {{- range $entry.providers | default list -}}
+          {{- if not (has . $providers) -}}{{- $providers = append $providers . -}}{{- end -}}
+        {{- end -}}
+        {{- $_ := set $previous "providers" $providers -}}
+        {{- $_ := set $bindings $id $previous -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- $out := list -}}
+{{- range keys $bindings | sortAlpha -}}{{- $out = append $out (index $bindings .) -}}{{- end -}}
+{{- toJson $out -}}
 {{- end -}}
 
 {{- define "saw-users.profiles" -}}

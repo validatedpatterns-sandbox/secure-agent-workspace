@@ -1,6 +1,8 @@
 """Applying SAW-BOM profiles through the (fake) OpenShell CLI over mTLS."""
+from conftest import TEST_PROXY
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -16,7 +18,7 @@ def profiles(ab, shipped_profile_files):
 
 @pytest.fixture
 def creds(ab, profiles, secrets_dir):
-    return ab.resolve_credentials(profiles, secrets_dir)
+    return ab.resolve_credentials(profiles, secrets_dir, TEST_PROXY)
 
 
 def _shipped_harness(ab):
@@ -41,18 +43,19 @@ def test_fresh_apply_creates_everything(ab, fake_env, config, profiles, creds):
     applier.apply(profiles)
     state = fake_env.openshell_state()
 
-    # Local mTLS gateway only (the installer's admin identity): no OIDC login,
-    # no token files, and the default `openshell` entry is not touched.
-    assert state["gateways"] == [{"name": "saw-installer", "endpoint": "https://127.0.0.1:17670",
-                                  "local": True, "roles": ["openshell-admin"]}]
-    assert state["selected"] == "saw-installer"
+    # Only the nonadmin relay entry remains in persistent CLI state.
+    assert state["gateways"] == [{"name": "saw-relay", "endpoint": "https://127.0.0.1:17670",
+                                  "local": True, "roles": ["openshell-user"]}]
+    assert state["selected"] == "saw-relay"
     assert all("oidc" not in " ".join(c).lower() for c in fake_env.openshell_calls())
 
     assert state["workspaces"] == ["default", "cuda-dev"]
     assert set(state["providers"]) == {"default/nvidia", "default/brave", "cuda-dev/nvidia"}
     assert state["providers"]["default/nvidia"] == {
-        "type": "nvidia", "credential": "NVIDIA_API_KEY=nvapi-TEST-KEY-123"}
-    assert state["providers"]["default/brave"]["credential"] == "BRAVE_API_KEY=brave-TEST-KEY-456"
+        "type": "nvidia", "credential": "NVIDIA_API_KEY=saw-cred.inference.api_key"}
+    assert state["providers"]["default/brave"]["credential"] == "BRAVE_API_KEY=saw-cred.web-search.api_key"
+    assert all(c["xdg"] == config["adminConfigHome"] for c in fake_env.openshell_env_calls()
+               if c["args"][0] != "gateway")
 
     # OpenShell 0.1.x has no inference routes: nothing calls `openshell inference`.
     assert not [c for c in fake_env.openshell_calls() if c[:1] == ["inference"]]
@@ -116,6 +119,17 @@ def test_second_apply_is_idempotent(ab, fake_env, config, profiles, creds):
     assert len(fake_env.other_calls("nemoclaw")) == 1
 
 
+def test_changed_proxy_ca_recreates_sandboxes(ab, fake_env, config, profiles, creds, capsys):
+    make_applier(ab, config, creds).apply(profiles)
+    before = len([c for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "create"]])
+    changed = {**config, "credentialProxy": {**config["credentialProxy"],
+                                               "caFingerprint": "different-proxy-ca"}}
+    make_applier(ab, changed, creds).apply(profiles)
+    after = len([c for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "create"]])
+    assert after == before + 2
+    assert "this wipes /sandbox" in capsys.readouterr().out
+
+
 def test_broken_nemoclaw_sandbox_is_onboarded_again(ab, fake_env, config, profiles, creds, monkeypatch):
     monkeypatch.setattr(ab.ProfileApplier, "BROKEN_GRACE_SECONDS", 0)
     make_applier(ab, config, creds).apply(profiles)
@@ -130,7 +144,9 @@ def test_broken_nemoclaw_sandbox_is_onboarded_again(ab, fake_env, config, profil
 def test_owner_subject_becomes_admin_of_each_workspace(ab, fake_env, config, profiles, creds):
     make_applier(ab, config, creds, ownerSubject="f3c1-owner-subject").apply(profiles)
     members = fake_env.openshell_state()["members"]
-    assert members == [["cuda-dev", "f3c1-owner-subject", "admin"],
+    assert members == [["cuda-dev", "saw-relay", "user"],
+                       ["cuda-dev", "f3c1-owner-subject", "admin"],
+                       ["default", "saw-relay", "user"],
                        ["default", "f3c1-owner-subject", "admin"]]
     # Re-running does not fail on the existing membership.
     make_applier(ab, config, creds, ownerSubject="f3c1-owner-subject").apply(profiles)
@@ -139,7 +155,8 @@ def test_owner_subject_becomes_admin_of_each_workspace(ab, fake_env, config, pro
 def test_no_owner_subject_fails_agent_apply(ab, fake_env, config, profiles, creds):
     with pytest.raises(ab.InstallerError, match="ownerSubject is required"):
         make_applier(ab, config, creds, ownerSubject="").apply(profiles)
-    assert fake_env.openshell_state()["members"] == []
+    assert fake_env.openshell_state()["members"] == [
+        ["cuda-dev", "saw-relay", "user"], ["default", "saw-relay", "user"]]
 
 
 def test_owner_recreation_removes_stale_membership(ab, fake_env, config, profiles, creds, tmp_path):
@@ -147,10 +164,12 @@ def test_owner_recreation_removes_stale_membership(ab, fake_env, config, profile
     make_applier(ab, config, creds, ownerSubject="old-subject").apply(profiles)
     make_applier(ab, config, creds, ownerSubject="new-subject").apply(profiles)
     assert fake_env.openshell_state()["members"] == [
+        ["cuda-dev", "saw-relay", "user"], ["default", "saw-relay", "user"],
         ["cuda-dev", "new-subject", "admin"], ["default", "new-subject", "admin"]]
     with pytest.raises(ab.InstallerError, match="ownerSubject is required"):
         make_applier(ab, config, creds, ownerSubject="").apply(profiles)
-    assert fake_env.openshell_state()["members"] == []
+    assert fake_env.openshell_state()["members"] == [
+        ["cuda-dev", "saw-relay", "user"], ["default", "saw-relay", "user"]]
 
 
 def test_owner_revocation_clears_retained_disabled_workspace(
@@ -167,7 +186,8 @@ def test_owner_revocation_clears_retained_disabled_workspace(
 
     state = fake_env.openshell_state()
     assert "cuda-dev" in state["workspaces"]
-    assert state["members"] == []
+    assert state["members"] == [["cuda-dev", "saw-relay", "user"],
+                                 ["default", "saw-relay", "user"]]
     assert json.loads((tmp_path / "owner-memberships.json").read_text()) == {}
 
 
@@ -369,7 +389,7 @@ def test_missing_profile_is_imported_from_the_chart_then_provider_created(ab, fa
     applier.apply(profiles)
     state = fake_env.openshell_state()
     assert state["imported_profiles"] == {"default": ["brave"]}
-    assert state["providers"]["default/brave"]["credential"] == "BRAVE_API_KEY=brave-TEST-KEY-456"
+    assert state["providers"]["default/brave"]["credential"] == "BRAVE_API_KEY=saw-cred.web-search.api_key"
     assert applier.skipped == set()
     assert applier.verify(profiles) == []
     imports = [c for c in fake_env.openshell_calls() if c[:3] == ["provider", "profile", "import"]]
@@ -431,20 +451,18 @@ def cert_field(path, *args):
 
 
 def test_installer_uses_an_admin_client_certificate_under_rbac(ab, fake_env, config, profiles, creds):
-    """Live: with OIDC on, the gateway's own local client certificate
-    (OU=openshell-user) could not create workspaces. The installer issues
-    CN=saw-installer, OU=openshell-admin from the gateway's CA."""
+    """The temporary admin CA authorizes apply; the persistent entry is user-only."""
     fake_env.rbac()
     make_applier(ab, config, creds).apply(profiles)
     state = fake_env.openshell_state()
-    assert state["gateways"] == [{"name": "saw-installer", "endpoint": "https://127.0.0.1:17670",
-                                  "local": True, "roles": ["openshell-admin"]}]
-    assert state["selected"] == "saw-installer"
+    assert state["gateways"] == [{"name": "saw-relay", "endpoint": "https://127.0.0.1:17670",
+                                  "local": True, "roles": ["openshell-user"]}]
+    assert state["selected"] == "saw-relay"
     assert "cuda-dev" in state["workspaces"]
     crt = fake_env.admin_cert()
     subject = cert_field(crt, "-subject", "-nameopt", "sep_multiline")
     assert "OU=openshell-admin" in subject and "CN=saw-installer" in subject
-    ca = fake_env.home / ".local/state/openshell/tls/ca.crt"
+    ca = fake_env.home / ".local/state/openshell/tls/client-ca.pem"
     assert subprocess.run(["openssl", "verify", "-CAfile", str(ca), str(crt)], capture_output=True).returncode == 0
     assert "TLS Web Client Authentication" in cert_field(crt, "-ext", "extendedKeyUsage")
     assert oct((crt.parent / "tls.key").stat().st_mode & 0o777) == "0o600"
@@ -463,26 +481,23 @@ def test_gateways_own_user_certificate_is_refused_under_rbac(ab, fake_env, confi
         applier.apply_workspace(next(ws for _, ws in ab.enabled_workspaces(profiles) if ws.name == "cuda-dev"))
 
 
-def test_admin_certificate_is_kept_while_valid_and_reissued_for_a_new_ca(ab, fake_env, config, profiles, creds):
+def test_admin_certificate_uses_a_separate_ca_in_tmpfs(ab, fake_env, config, profiles, creds):
     make_applier(ab, config, creds).register_gateway()
     crt = fake_env.admin_cert()
-    first = cert_field(crt, "-serial")
-    make_applier(ab, config, creds).register_gateway()
-    assert cert_field(crt, "-serial") == first                       # reused on every boot
-    ca_dir = fake_env.home / ".local/state/openshell/tls"          # gateway CA rotated
-    subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
-                    "-nodes", "-keyout", str(ca_dir / "ca.key"), "-out", str(ca_dir / "ca.crt"),
-                    "-subj", "/O=openshell/CN=openshell-ca", "-days", "30"], check=True, capture_output=True)
-    make_applier(ab, config, creds).register_gateway()
-    assert cert_field(crt, "-serial") != first
-    assert subprocess.run(["openssl", "verify", "-CAfile", str(ca_dir / "ca.crt"), str(crt)],
-                          capture_output=True).returncode == 0
+    gateway_ca = fake_env.home / ".local/state/openshell/tls/ca.crt"
+    assert subprocess.run(["openssl", "verify", "-CAfile", str(gateway_ca), str(crt)],
+                          capture_output=True).returncode != 0
+    assert subprocess.run(["openssl", "verify", "-CAfile", str(gateway_ca.parent / "client-ca.pem"),
+                           str(crt)], capture_output=True).returncode == 0
+    assert fake_env.admin_tls.is_relative_to(Path(os.environ["SAW_RUNTIME_DIR"]))
+    assert not list(fake_env.home.rglob("ca.key"))
 
 
-def test_missing_gateway_ca_is_a_clear_error(ab, fake_env, config, profiles, creds):
-    (fake_env.home / ".local/state/openshell/tls/ca.key").unlink()
-    with pytest.raises(ab.InstallerError, match="gateway CA not found"):
-        make_applier(ab, config, creds).register_gateway()
+def test_missing_gateway_ca_is_a_clear_error(ab, fake_env):
+    (fake_env.home / ".local/state/openshell/tls/ca.crt").unlink()
+    with pytest.raises(ab.InstallerError, match="gateway CA certificate is missing"):
+        with ab.admin_session({}, fake_env.home, None, as_current_user=True):
+            pass
 
 
 def test_key_never_appears_in_argv_or_logs(ab, fake_env, config, profiles, creds, capsys):

@@ -67,6 +67,7 @@ def test_gateway_allows_driver_guard_without_noninterceptable_template_rpc():
     out = subprocess.run(
         [HELM, "template", "guard-test", str(ROOT / "charts/openshell-saw"),
          "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
+         "-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml"),
          "--set", "global.clusterDomain=example.test"],
         capture_output=True, text=True, check=True).stdout
     config = next(d["data"]["gateway.toml"] for d in yaml.safe_load_all(out)

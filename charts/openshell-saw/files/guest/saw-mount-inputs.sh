@@ -45,6 +45,7 @@ mount_disk() {
 
 mount_disk saw-installer "${ROOT}/installer" required
 mount_disk saw-profiles "${ROOT}/profiles" optional
+mount_disk saw-proxy-ca "${ROOT}/proxy-ca" required
 if grep -q '"ownerSubjectSource": "resolved"' "${ROOT}/installer/config.json"; then
   mount_disk saw-owner "${ROOT}/owner" required
 fi

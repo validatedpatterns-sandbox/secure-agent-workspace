@@ -27,7 +27,9 @@ def keys(*args):
 
 def test_defaults_sync_everything_from_the_hub():
     assert keys() == {"inference": {"secret/data/hub/inference"},
+                      "inference-meta": {"secret/data/hub/inference"},
                       "web-search": {"secret/data/hub/web-search"},
+                      "web-search-meta": {"secret/data/hub/web-search"},
                       "openshell-ssh-pubkey": {"secret/data/hub/ssh"},
                       "openshell-aap-ssh": {"secret/data/hub/ssh"}}
 
@@ -38,6 +40,7 @@ def test_a_user_prefix_keeps_the_shared_ssh_key(tmp_path):
                                       "sshVaultPrefix": "secret/data/hub", "secrets": ["inference"]}))
     got = keys("-f", str(values))
     assert got == {"inference": {"secret/data/hub/saw-bob/inference"},
+                   "inference-meta": {"secret/data/hub/saw-bob/inference"},
                    "openshell-ssh-pubkey": {"secret/data/hub/ssh"},
                    "openshell-aap-ssh": {"secret/data/hub/ssh"}}
 

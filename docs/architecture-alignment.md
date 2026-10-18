@@ -78,7 +78,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 - Agents run inside container sandboxes managed by the OpenShell gateway
 - Inference routed through user-configured provider endpoints
 
-**Alignment:** Full for Phase I. Per-tool approval is the OpenClaw `saw-tool-gate` hook fed by `charts/governance-policy/tool-actions.yaml`: a consequential tool does not run until the configured approval path allows it, and each call is audited with the signed-in user and the current task. Credential proxying and the cluster OCSF pipeline are still absent.
+**Alignment:** Full for Phase I. Per-tool approval is the OpenClaw `saw-tool-gate` hook fed by `charts/governance-policy/tool-actions.yaml`: a consequential tool does not run until the configured approval path allows it, and each call is audited with the signed-in user and the current task. Provider credentials are injected by the per-namespace proxy; the cluster OCSF pipeline is still absent.
 
 ### 6. Secret Management
 
@@ -90,9 +90,9 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 - ExternalSecret resources for each inference provider (anthropic, gemini, openai, nvidia, openrouter, vertex) and search providers (tavily, brave-search)
 - SSH private/public keys managed through Vault
 - `values-secret.yaml.template` defines the secret schema
-- The in-guest installer reads provider Secrets from the VM (iso9660 disks, or virtiofs when `vm.liveInputs` is true) and passes each key to the OpenShell CLI in the environment, not in argv
+- The proxy pod alone mounts the full provider Secrets. The VM mounts only their `-meta` companions; the installer passes nonsecret markers to OpenShell and NemoClaw. The proxy binds markers to profile hosts and injects keys into allowed HTTPS requests.
 
-**Alignment:** Full. API keys and SSH keys flow through Vault and ESO, keeping credentials out of Git, helm values, and ArgoCD state.
+**Alignment:** Full for VM-root key isolation. API keys stay outside the VM, as described in [Credential isolation](credential-isolation.md). VM root can still use a bound key through the proxy while it controls the VM.
 
 ### 7. Policy Distribution
 
@@ -144,7 +144,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 | Reference Design Phase | This Implementation |
 |---|---|
 | **Phase I: Perimeter-based enforcement** | Largely implemented — VM isolation, OIDC, image governance, secret management, GitOps, operator controls |
-| **Phase II: Runtime-based enforcement** | Per-tool approval and user/task audit are implemented (`tool-actions.yaml`, `saw-tool-gate`). Signed APF policy bundles are implemented; credential proxying and OCSF collection are not |
+| **Phase II: Runtime-based enforcement** | Per-tool approval and user/task audit are implemented (`tool-actions.yaml`, `saw-tool-gate`). Signed APF policy bundles and credential proxying are implemented; OCSF collection is not |
 
 ## Recommendations for Closing Gaps
 

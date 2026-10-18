@@ -81,6 +81,13 @@ spec:
     {{- end }}
   egress:
 {{ include "openshell-sandbox.commonEgressRules" (list . $externalPorts) | indent 4 }}
+    - to:
+        - podSelector:
+            matchLabels:
+              openshell.pattern/role: credential-proxy
+      ports:
+        - {protocol: TCP, port: 3128}
+        - {protocol: TCP, port: 8081}
     {{- if and .Values.governance.enabled $np.allow.governanceInterceptor }}
     - to:
         - namespaceSelector:
@@ -98,6 +105,33 @@ spec:
         - protocol: TCP
           port: {{ .Values.governance.port }}
     {{- end }}
+    {{- range $np.extraEgress }}
+    - {{ toYaml . | nindent 6 | trim }}
+    {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: saw-credential-proxy
+  labels:
+    {{- include "openshell-sandbox.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  podSelector:
+    matchLabels:
+      openshell.pattern/role: credential-proxy
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              openshell.pattern/role: gateway
+      ports:
+        - {protocol: TCP, port: 3128}
+        - {protocol: TCP, port: 8081}
+  egress:
+{{ include "openshell-sandbox.commonEgressRules" (list . (list 443)) | indent 4 }}
     {{- range $np.extraEgress }}
     - {{ toYaml . | nindent 6 | trim }}
     {{- end }}

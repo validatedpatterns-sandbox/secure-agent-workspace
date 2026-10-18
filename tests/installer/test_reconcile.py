@@ -94,16 +94,16 @@ def test_tree_hash_ignores_configmap_dot_dirs(ab, tmp_path):
     root = tmp_path / "secrets" / "inference"
     data = root / "..2026"
     data.mkdir(parents=True)
-    (data / "api_key").write_text("new\n")
+    (data / "model").write_text("new\n")
     link_data = root / "..data"
     link_data.symlink_to("..2026")
-    (root / "api_key").symlink_to("..data/api_key")
+    (root / "model").symlink_to("..data/model")
     first = ab.tree_hash(root)
-    (data / "api_key").write_text("rotated\n")
+    (data / "model").write_text("rotated\n")
     assert ab.tree_hash(root) != first
 
 
-def test_reconcile_after_boot_is_a_noop_until_a_secret_changes(tmp_path, inputs_dir, fake_env):
+def test_reconcile_after_boot_is_a_noop_until_metadata_changes(tmp_path, inputs_dir, fake_env):
     bom = yaml.safe_load((inputs_dir / "installer" / "installer-bom.yaml").read_text())
     fake_env.images_for_bom(bom)
     state = tmp_path / "var-lib-saw"
@@ -130,8 +130,8 @@ def test_reconcile_after_boot_is_a_noop_until_a_secret_changes(tmp_path, inputs_
     status = json.loads((state / "status.json").read_text())
     assert status["inputs"]["upToDate"] is True
     assert len(fake_env.podman_calls()) == pulls
-    secret = inputs_dir / "secrets" / "inference" / "api_key"
-    secret.write_text("rotated-key\n")
+    metadata = inputs_dir / "secrets" / "inference" / "model"
+    metadata.write_text("rotated-model\n")
     changed = run("reconcile")
     assert changed.returncode == 0, changed.stdout + changed.stderr
     assert "running apply" in changed.stdout

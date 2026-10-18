@@ -1,0 +1,21 @@
+{{- if has "web-search" (.Values.secrets | default list) }}
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: web-search-meta
+spec:
+  refreshInterval: {{ .Values.refreshInterval }}
+  secretStoreRef:
+    name: {{ .Values.secretStoreRef.name }}
+    kind: {{ .Values.secretStoreRef.kind }}
+  target:
+    name: web-search-meta
+    template:
+      type: Opaque
+      engineVersion: v2
+      data:
+        provider: brave
+  dataFrom:
+    - extract:
+        key: {{ .Values.vaultPrefix }}/web-search
+{{- end }}

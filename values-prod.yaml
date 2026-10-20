@@ -44,19 +44,24 @@ clusterGroup:
       channel: fast
       source: community-operators
       sourceNamespace: openshift-marketplace
+    # [ocp5-rc5] productized rhdh-operator is amd64-only; use the community
+    # operator catalog (arm64) added as CatalogSource/rhdh-community-catalog.
     rhdh:
       name: rhdh
       namespace: rhdh-operator
-      channel: fast
+      channel: fast-2.2
+      source: rhdh-community-catalog
+      sourceNamespace: openshift-marketplace
     # Tekton, for the portal's pipelines.
     openshift-pipelines:
       name: openshift-pipelines-operator-rh
       namespace: openshift-operators
       channel: latest
-    openshift-ai:
-      name: rhods-operator
-      namespace: redhat-ods-operator
-      channel: fast
+    # [ocp5-rc5 deferred] rhods-operator absent from rc5 catalog; pattern creates no DataScienceCluster; restore on GA
+    # openshift-ai:
+    #   name: rhods-operator
+    #   namespace: redhat-ods-operator
+    #   channel: fast
   applications:
     openshift-external-secrets:
       name: openshift-external-secrets

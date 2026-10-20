@@ -227,3 +227,32 @@ spec:
       ports:
         - protocol: TCP
           port: {{ int .Values.portal.generator.port }}
+---
+# [ocp5-rc5] The community RHDH 2.x operator gives the backend a default-deny
+# ingress netpol; only the OpenShift router may reach it on :7007. But the
+# generator's /status JWKS check and the portal pipelines both call the backend
+# from saw-portal via RHDH_INTERNAL_URL (http://backstage-<name>.<ns>.svc:80,
+# which lands on the pod at 7007), so that traffic is dropped -> urlopen
+# timeouts. Allow ingress from the portal namespace on the backend port.
+# (Not needed on the productized RHDH 1.10 operator the chart was built against.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: saw-rhdh-allow-portal-ingress
+  namespace: {{ .Values.rhdh.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      rhdh.redhat.com/app: backstage-{{ .Values.rhdh.name }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.portal.namespace }}
+      ports:
+        - protocol: TCP
+          port: 7007

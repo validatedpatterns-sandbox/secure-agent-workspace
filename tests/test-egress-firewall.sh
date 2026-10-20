@@ -181,7 +181,7 @@ else
 fi
 
 if oc get egressfirewall default -n "${SAW_NS}" -o json | python3 -c '
-import json, sys
+import ipaddress, json, sys
 rules = json.load(sys.stdin)["spec"]["egress"]
 types = [r["type"] for r in rules]
 if types[-2:] != ["Deny", "Deny"]:
@@ -194,9 +194,14 @@ ports = rules[0].get("ports") or []
 if ports != [{"protocol": "TCP", "port": 443}, {"protocol": "TCP", "port": 80}]:
     sys.exit("node allow must be TCP 443 and 80 only, got %s" % ports)
 api_rules = [rule for rule in rules if rule["type"] == "Allow"
-             and rule.get("to", {}).get("cidrSelector") not in (None, "0.0.0.0/0", "::/0")]
-if not api_rules or any(len(rule.get("ports") or []) != 1 for rule in api_rules):
-    sys.exit("cleanup API allow must target exact endpoint IPs and ports")
+             and rule.get("to", {}).get("cidrSelector") is not None]
+# cleanupOnDelete=false intentionally emits no API exception. Validate any
+# exceptions that exist without requiring a rule for disabled cleanup.
+for rule in api_rules:
+    network = ipaddress.ip_network(rule["to"]["cidrSelector"])
+    ports = rule.get("ports") or []
+    if network.prefixlen != network.max_prefixlen or len(ports) != 1 or ports[0].get("protocol") != "TCP":
+        sys.exit("cleanup API allow must target exact endpoint IPs and TCP ports")
 for rule in rules:
     name = (rule.get("to") or {}).get("dnsName") or ""
     if "*" in name:

@@ -1,0 +1,6 @@
+# VP CI workspace for the unmodified scripts/e2e-harness.sh.
+users:
+  - name: alice
+    profiles:
+      - data-science
+    harnessEnabled: true

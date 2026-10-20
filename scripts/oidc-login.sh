@@ -213,6 +213,36 @@ do_device_login() {
   die "Authentication timed out after 10 minutes"
 }
 
+# --- Password flow (unattended CI with an explicitly supplied identity) ---
+
+do_password_login() (
+  umask 077
+  [[ -n "${OIDC_USERNAME:-}" ]] || die "OIDC_USERNAME is required for password login"
+  [[ -n "${OIDC_PASSWORD:-}" ]] || die "OIDC_PASSWORD is required for password login"
+
+  # Read credentials from the environment, encode each field, and send the
+  # form on stdin. Neither jq nor curl receives credentials in its argv.
+  local token_response
+  token_response="$(jq -nj '
+    {grant_type: "password", client_id: env.OIDC_CLIENT_ID,
+     username: env.OIDC_USERNAME, password: env.OIDC_PASSWORD,
+     scope: "openid email profile"} |
+    to_entries | map((.key | @uri) + "=" + (.value | @uri)) | join("&")' \
+    | curl -fsSL ${CURL_TLS_OPTS} --connect-timeout 5 --max-time 10 \
+        -X POST "${TOKEN_ENDPOINT}" \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        --data-binary @- 2>/dev/null)" || \
+    die "Password login failed; check the supplied credentials and direct grant configuration"
+
+  if ! jq -e 'type == "object" and
+      (.access_token | type == "string" and length > 0) and
+      (.expires_in | type == "number" and . > 0 and floor == .)' \
+      <<<"${token_response}" >/dev/null 2>&1; then
+    die "Password login returned an invalid token response (access_token and positive expires_in required)"
+  fi
+  save_token "${token_response}"
+)
+
 # --- Token management ---
 
 save_token() {
@@ -321,7 +351,11 @@ do_login() {
   case "${OIDC_FLOW}" in
     browser) do_browser_login ;;
     device-code|device) do_device_login ;;
-    *) die "Unknown OIDC_FLOW: ${OIDC_FLOW}. Use 'browser' or 'device-code'." ;;
+    password)
+      export OIDC_CLIENT_ID OIDC_USERNAME OIDC_PASSWORD
+      do_password_login
+      ;;
+    *) die "Unknown OIDC_FLOW: ${OIDC_FLOW}. Use 'browser', 'device-code', or 'password'." ;;
   esac
 }
 

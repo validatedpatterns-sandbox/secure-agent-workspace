@@ -87,14 +87,20 @@ assert_contains "${KC_OUTPUT}" "kind: KeycloakRealmImport" "KeycloakRealmImport 
 assert_contains "${KC_OUTPUT}" "openshell-cli" "CLI client configured"
 assert_contains "${KC_OUTPUT}" "openshell-user" "user role defined"
 assert_contains "${KC_OUTPUT}" "openshell-admin" "admin role defined"
-assert_contains "${KC_OUTPUT}" "developer@openshell.local" "test user 'developer' present"
-assert_contains "${KC_OUTPUT}" "admin@openshell.local" "test user 'admin' present"
-assert_contains "${KC_OUTPUT}" "alice@openshell.local" "test user 'alice' present"
-assert_contains "${KC_OUTPUT}" "bob@openshell.local" "test user 'bob' present"
+for user in developer admin alice bob; do
+  assert_not_contains "${KC_OUTPUT}" "${user}@openshell.local" "demo user '${user}' absent by default"
+done
 assert_contains "${KC_OUTPUT}" "pkce.code.challenge.method" "PKCE configured"
 assert_contains "${KC_OUTPUT}" "device.authorization.grant.enabled" "device code flow enabled"
 assert_contains "${KC_OUTPUT}" "registrationAllowed: false" "user registration is off"
 assert_contains "${KC_OUTPUT}" "keycloakCRName" "realm import references Keycloak CR"
+
+KC_DEMO_OUTPUT="$(helm template openshell-keycloak "${CHARTS_DIR}/openshell-keycloak" \
+  --namespace saw-keycloak --set demo.enabled=true 2>&1)"
+for user in developer admin alice bob; do
+  assert_contains "${KC_DEMO_OUTPUT}" "${user}@openshell.local" "demo user '${user}' present when enabled"
+done
+assert_contains "${KC_DEMO_OUTPUT}" "openshell-keycloak-user-passwords" "demo passwords come from the user password Secret"
 
 # ============================================================
 echo ""

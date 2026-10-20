@@ -14,7 +14,7 @@ global:
   governance:
     engine: interceptor
 main:
-  clusterGroupName: prod
+  variant: prod
   multiSourceConfig:
     enabled: true
     clusterGroupChartVersion: 0.9.*

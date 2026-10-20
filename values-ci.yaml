@@ -1,0 +1,139 @@
+clusterGroup:
+  name: ci
+  namespaces:
+    external-secrets:
+    external-secrets-operator:
+      operatorGroup: true
+      targetNamespaces: []
+    openshift-cnv:
+      operatorGroup: true
+      targetNamespaces:
+        - openshift-cnv
+    # Shared: golden image, image builds, governance interceptor.
+    openshell-agents:
+    # Keycloak and its RHBK operator, in a namespace of their own so they
+    # never collide with a platform Keycloak (often in `keycloak`). Any
+    # namespace works; see openshell-saw oidc.keycloakNamespace.
+    saw-keycloak:
+      operatorGroup: true
+      targetNamespaces:
+        - saw-keycloak
+    rhdh-operator:
+      operatorGroup: true
+      targetNamespaces: []
+    # Self-service portal (charts/openshell-rhdh): Red Hat Developer Hub, and
+    # the namespace with the workspace registry and its pipelines.
+    rhdh:
+    saw-portal:
+    redhat-ods-operator:
+      operatorGroup: true
+      targetNamespaces: []
+    vault:
+  subscriptions:
+    eso:
+      name: openshift-external-secrets-operator
+      namespace: external-secrets-operator
+      channel: stable-v1
+    openshift-virtualization:
+      name: kubevirt-hyperconverged
+      namespace: openshift-cnv
+      channel: stable
+    rhbk:
+      name: rhbk-operator
+      namespace: saw-keycloak
+      channel: stable-v26
+    rhdh:
+      name: rhdh
+      namespace: rhdh-operator
+      channel: fast
+    # Tekton, for the portal's pipelines.
+    openshift-pipelines:
+      name: openshift-pipelines-operator-rh
+      namespace: openshift-operators
+      channel: latest
+    openshift-ai:
+      name: rhods-operator
+      namespace: redhat-ods-operator
+      channel: fast
+  applications:
+    openshift-external-secrets:
+      name: openshift-external-secrets
+      namespace: external-secrets
+      chart: openshift-external-secrets
+      chartVersion: 0.0.*
+    vault:
+      name: vault
+      namespace: vault
+      chart: hashicorp-vault
+      chartVersion: 0.1.*
+    openshift-cnv:
+      name: openshift-cnv
+      namespace: openshift-cnv
+      path: charts/openshift-cnv
+    openshell-keycloak:
+      name: openshell-keycloak
+      namespace: saw-keycloak
+      path: charts/openshell-keycloak
+      # Import passwords from Vault only when users are explicitly selected.
+      overrides:
+        - name: keycloak.userPasswords.externalSecret.enabled
+          value: "true"
+        - name: ownerResolver.enabled
+          value: "true"
+        - name: demo.enabled
+          value: "true"
+    # One namespace and three apps (secrets, bill of materials, VM) per user,
+    # from overrides/saw-users.yaml. The chart release is tracked here; the
+    # Application objects it creates live in the Argo CD namespace.
+    # prune drops a user's Applications when their list entry is removed.
+    # pruneOnRemove in the chart decides whether the VM and namespace go too.
+    saw-users:
+      name: saw-users
+      namespace: openshell-agents
+      path: charts/saw-users
+      extraValueFiles:
+        - /overrides/saw-users-ci.yaml
+      overrides:
+        - name: ownerResolution.enabled
+          value: "true"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        retry:
+          limit: 20
+    # Self-service agent workspaces: RHDH templates, the pipelines that store
+    # a user's keys in Vault and register the workspace, and the
+    # ApplicationSet that builds each one (docs/self-service-portal.md).
+    openshell-rhdh:
+      name: openshell-rhdh
+      namespace: rhdh
+      path: charts/openshell-rhdh
+    governance-policy:
+      name: governance-policy
+      namespace: openshell-agents
+      path: charts/governance-policy
+    # prune: switching global.governance.engine removes the interceptor's
+    # Deployment and Service (APF takes over the Service name) and back.
+    governance-interceptor:
+      name: governance-interceptor
+      namespace: openshell-agents
+      path: charts/governance-interceptor
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        retry:
+          limit: 20
+  # Vault policy and role that let the portal's pipeline write users' keys
+  # under secret/data/hub/saw-* (ansible/playbooks/saw-portal-vault.yaml).
+  imperative:
+    jobs:
+      - name: saw-portal-vault
+        playbook: ansible/playbooks/saw-portal-vault.yaml
+        timeout: 300
+      # The cluster's ingress CA in Vault, for workspace VMs to trust the
+      # in-cluster Keycloak (ansible/playbooks/saw-ingress-ca.yaml).
+      - name: saw-ingress-ca
+        playbook: ansible/playbooks/saw-ingress-ca.yaml
+        timeout: 300

@@ -20,3 +20,7 @@ __pycache__/
 *.pyc
 # Local nested checkout
 /secure-agent-workspace/
+# VP test framework
+tests/ci/__pycache__
+tests/ci/.pytest_cache
+tests/ci/.results

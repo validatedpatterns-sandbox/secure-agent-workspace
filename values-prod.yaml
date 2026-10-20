@@ -39,9 +39,11 @@ clusterGroup:
       namespace: openshift-cnv
       channel: stable
     rhbk:
-      name: rhbk-operator
+      name: keycloak-operator
       namespace: saw-keycloak
-      channel: stable-v26
+      channel: fast
+      source: community-operators
+      sourceNamespace: openshift-marketplace
     rhdh:
       name: rhdh
       namespace: rhdh-operator

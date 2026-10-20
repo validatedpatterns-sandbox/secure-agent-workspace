@@ -76,8 +76,13 @@ rhdh:
     # Who may manage RBAC in RHDH's Administration page.
     admins: []
     usersGroup: saw-users
-    # RHDH's Keycloak catalog provider (users and groups), as RHDH 1.10 lists it.
-    keycloakCatalogPlugin: ./dynamic-plugins/dist/backstage-community-plugin-catalog-backend-module-keycloak-dynamic
+    # RHDH's Keycloak catalog provider (users and groups).
+    # [ocp5-rc5] The community rhdh:next (2.x) image has no bundled local copy at
+    # the path RHDH 1.10 uses; this module instead ships as an OCI plugin that the
+    # image's default config disables. Re-enable it by the exact digest the
+    # community image already references (arch-neutral JS; the arm64 variant ships
+    # in the arm64 hub image, so no amd64 digest-pinning is needed here).
+    keycloakCatalogPlugin: oci://quay.io/rhdh/backstage-community-plugin-catalog-backend-module-keycloak@sha256:9cc716bf061e969d8b90e9c7a38687c97758dbfc3124fd67673463707648136a
   # The Tekton tab on each workspace's catalog page: its create and delete
   # pipeline runs as a graph, with each task's log. Uses RHDH's Kubernetes
   # and Tekton plugins, reading only the portal namespace as the service

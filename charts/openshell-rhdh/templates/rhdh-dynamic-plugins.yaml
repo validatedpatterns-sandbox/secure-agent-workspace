@@ -10,6 +10,12 @@ data:
     includes:
       - dynamic-plugins.default.yaml
     plugins:
+      # [ocp5-rc5] The community rhdh hub image does not bundle the OIDC auth
+      # backend provider (productized RHDH does), so signInPage: oidc / 
+      # auth.providers.oidc fails with "Unknown auth provider 'oidc'". Pull it
+      # as an external dynamic plugin. See docs/deployment-vera-rubin.md.
+      - package: oci://quay.io/rhdh/backstage-plugin-auth-backend-module-oidc-provider:2.1.0--0.4.20!backstage-plugin-auth-backend-module-oidc-provider
+        disabled: false
       # http:backstage:request, which the workspace templates use.
       - package: ./dynamic-plugins/dist/roadiehq-scaffolder-backend-module-http-request-dynamic
         disabled: false

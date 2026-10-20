@@ -197,3 +197,33 @@ spec:
     - extract:
         key: {{ .Values.oidcSecret.vaultKey }}
 {{- end }}
+---
+# [ocp5-rc5] The community RHDH 2.x operator creates a default-deny egress
+# NetworkPolicy for the backend (allowing only DNS/443/DB), so the catalog
+# can't read the generator's catalog.yaml and the http:backstage:request step
+# can't reach it. NetworkPolicies are additive, so allow egress to the
+# generator's port. (Not needed on the older operator SAW was built against.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: saw-rhdh-allow-generator-egress
+  namespace: {{ .Values.rhdh.namespace }}
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      rhdh.redhat.com/app: backstage-{{ .Values.rhdh.name }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.portal.namespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: saw-workspaces-generator
+      ports:
+        - protocol: TCP
+          port: {{ int .Values.portal.generator.port }}

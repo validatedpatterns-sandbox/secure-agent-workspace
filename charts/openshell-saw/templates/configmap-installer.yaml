@@ -80,6 +80,14 @@ metadata:
   name: {{ include "openshell-sandbox.fullname" . }}-installer
   labels:
     {{- include "openshell-sandbox.labels" . | nindent 4 }}
+  annotations:
+    # [ocp5-rc5] This ConfigMap's data is ~300 KiB. The app sets
+    # ServerSideApply=true, but OCP 5.0's Argo CD still client-side-applies it
+    # (managedFields come back empty), writing a last-applied-configuration
+    # annotation that exceeds the 256 KiB metadata limit and fails the sync.
+    # Replace the object (a full PUT, no last-applied annotation) instead of
+    # patching it. Harmless on clusters where SSA works.
+    argocd.argoproj.io/sync-options: Replace=true
 data:
   installer-bom.yaml: |
 {{ toYaml .Values.bom | indent 4 }}

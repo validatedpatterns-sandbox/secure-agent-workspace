@@ -192,6 +192,12 @@ make prereqs-check
 
 ### Installation
 
+> **Deploying on arm64 / OpenShift 5.0 rc5 (NVIDIA Vera Rubin)?** The productized
+> operators SAW uses are not in the rc5 catalog on arm64. Use the
+> `openshift-vera-rubin` branch and follow
+> **[Deploying SAW on OpenShift 5.0 rc5 / arm64](docs/vera-rubin-ocp.md)**, which
+> wraps the steps below with a pre/post-install script set.
+
 Two deployment paths are available:
 
 #### Option A: Validated Pattern (automated, GitOps)
@@ -717,6 +723,7 @@ make quickstart-delete
 - [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell)
 - [NVIDIA NemoClaw](https://github.com/NVIDIA/NemoClaw)
 - [Red Hat Validated Patterns](https://validatedpatterns.io/)
+- [Deploying SAW on OpenShift 5.0 rc5 / arm64 (Vera Rubin)](docs/vera-rubin-ocp.md)
 - [Red Hat Build of Keycloak](https://docs.redhat.com/en/documentation/red_hat_build_of_keycloak/)
 
 ## Technical details

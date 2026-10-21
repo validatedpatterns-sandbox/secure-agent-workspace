@@ -51,7 +51,13 @@ source:
   # CDI pull method: "node" (the node's runtime pulls, trusts the internal
   # registry's CA, caches the image) or "pod" (the CDI importer pod).
   pullMethod: "node"
-  registryURL: ""
+  # [ocp5-rc5] On verac2 the CDI importer resolves names via node/host DNS and
+  # cannot reach the in-cluster image registry (image-registry.openshift-image-
+  # registry.svc is a cluster-only name -> "no such host"), and the golden image
+  # was never mirrored there. Pull the golden disk directly from the PUBLIC GHCR
+  # multi-arch image instead (amd64+arm64; the arm64 node pulls its own arch).
+  # NB: quay.io/rh-ai-quickstart/openshell-gateway is amd64-only -> do NOT use it.
+  registryURL: "docker://ghcr.io/validatedpatterns-sandbox/openshell-gateway:latest"
   httpURL: ""
 
 vm:

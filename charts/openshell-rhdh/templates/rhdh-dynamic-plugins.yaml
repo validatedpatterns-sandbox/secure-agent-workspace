@@ -10,8 +10,18 @@ data:
     includes:
       - dynamic-plugins.default.yaml
     plugins:
-      # http:backstage:request, which the workspace templates use.
-      - package: ./dynamic-plugins/dist/roadiehq-scaffolder-backend-module-http-request-dynamic
+      # [ocp5-rc5] The community rhdh hub image does not bundle the OIDC auth
+      # backend provider (productized RHDH does), so signInPage: oidc / 
+      # auth.providers.oidc fails with "Unknown auth provider 'oidc'". Pull it
+      # as an external dynamic plugin, pinned by amd64 digest because the
+      # plugin image has no arm64 variant (arch-neutral JS runs on arm64).
+      # See docs/deployment-vera-rubin.md.
+      - package: oci://quay.io/rhdh/backstage-plugin-auth-backend-module-oidc-provider@sha256:1f52bc30019ab66d9a37b304f6801f2c9ba7b3fcd5f70fcbad810ae080e0b3d7!backstage-plugin-auth-backend-module-oidc-provider
+        disabled: false
+      # [ocp5-rc5] http:backstage:request action (workspace templates use it).
+      # The community hub doesn't bundle it; pull the OCI dynamic plugin pinned
+      # by amd64 digest (arch-neutral JS runs on arm64).
+      - package: oci://quay.io/rhdh/roadiehq-scaffolder-backend-module-http-request@sha256:b7e9e36a73a132e12843bc1feac599cc8f928f32228a02d5bd5ac8f3b1e20b7a!roadiehq-scaffolder-backend-module-http-request
         disabled: false
       {{- if .Values.rhdh.tekton.enabled }}
       # The Tekton tab (with the Kubernetes backend it reads through).

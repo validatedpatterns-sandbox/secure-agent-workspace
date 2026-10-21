@@ -206,6 +206,32 @@ elif op == "provider update":
     configs = [head[i + 1] for i, a in enumerate(head) if a == "--config"]
     if configs:
         state["providers"][key]["config"] = configs
+elif op == "provider refresh" and head[2] == "configure":
+    # Like the real CLI: --secret-material-env KEY=ENVVAR reads $ENVVAR
+    # (values never in argv); --material KEY=VALUE is literal.
+    key = f"{ws}/{head[3]}"
+    if key not in state["providers"]:
+        fail("Error: provider not found")
+    material = {}
+    for i, arg in enumerate(head):
+        if arg == "--secret-material-env":
+            name, _, env = head[i + 1].partition("=")
+            env = env or name
+            if env not in os.environ:
+                fail(f"Error: environment variable {env} is not set")
+            material[name] = os.environ[env]
+        elif arg == "--material":
+            name, _, value = head[i + 1].partition("=")
+            material[name] = value
+    state["providers"][key].setdefault("refresh", {})[opt("--credential-key")] = {
+        "strategy": opt("--strategy"), "material": material}
+elif op == "provider refresh" and head[2] == "rotate":
+    key = f"{ws}/{head[3]}"
+    refresh = state["providers"].get(key, {}).get("refresh", {}).get(opt("--credential-key"))
+    if not refresh:
+        fail("Error: provider credential has no refresh configuration")
+    state["minted"] = state.get("minted", 0) + 1
+    state["providers"][key]["credential"] = f"{opt('--credential-key')}=minted-{state['minted']}"
 elif op == "provider get":
     prov = state["providers"].get(f"{ws}/{head[2]}")
     if prov is None:

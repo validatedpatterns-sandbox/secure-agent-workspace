@@ -1,0 +1,24 @@
+apiVersion: saw.redhat.com/v1alpha1
+kind: HarnessBundle
+metadata:
+  name: daily-briefing
+spec:
+  agent: openclaw
+  version: 0.1.0
+  # A daily briefing of the user's Slack and Gmail messages: the
+  # daily-briefing skill, and two stdio MCP servers that read new messages.
+  # Mounted read-only at /sandbox/harness; the servers keep their state and
+  # the briefing in /sandbox/briefing.
+  #
+  # Governance: each server calls one service, so it names the provider
+  # profile that governs it. The installer refuses the bundle unless the
+  # gateway serves that profile and the sandbox has a provider of its type
+  # (slack, gmail). The server reads the profile's env var, a placeholder:
+  # the sandbox's egress proxy swaps in the real, gateway-refreshed token,
+  # only for the profile's (read-only) endpoints. No key is in the bundle.
+  plugins: []
+  mcpServers:
+    - name: slack-reader
+      governanceProfile: slack
+    - name: gmail-reader
+      governanceProfile: gmail

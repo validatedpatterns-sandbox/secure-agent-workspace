@@ -12,6 +12,29 @@ credentials:
     required: true
     auth_style: bearer
     header_name: authorization
+    # With Slack token rotation on, a token lasts 12 hours. The gateway
+    # exchanges the refresh token for a new one before it expires and keeps
+    # the rotated refresh token; the sandbox only ever sees a placeholder.
+    # (`openshell provider refresh configure`, done by the SAW installer for
+    # providers with `refresh:` in their SAW-BOM profile.) A non-rotating
+    # token needs no refresh: leave it unconfigured.
+    refresh:
+      strategy: oauth2_refresh_token
+      token_url: https://slack.com/api/oauth.v2.access
+      refresh_before_seconds: 600
+      max_lifetime_seconds: 43200
+      material:
+        - name: client_id
+          description: Slack app client ID
+          required: true
+        - name: client_secret
+          description: Slack app client secret
+          required: true
+          secret: true
+        - name: refresh_token
+          description: Slack refresh token (xoxe-...)
+          required: true
+          secret: true
 discovery:
   credentials: [api_token]
 endpoints:
@@ -22,16 +45,31 @@ endpoints:
     rules:
       - allow:
           method: GET
+          path: /api/auth.test
+      - allow:
+          method: GET
           path: /api/team.info
       - allow:
           method: GET
           path: /api/users.info
       - allow:
           method: GET
+          path: /api/conversations.list
+      - allow:
+          method: GET
           path: /api/conversations.info
       - allow:
           method: GET
           path: /api/conversations.history
+      - allow:
+          method: GET
+          path: /api/conversations.replies
 binaries:
   - /usr/bin/curl
   - /usr/local/bin/curl
+  # node: OpenClaw and its tools (the daily briefing collector). The real
+  # path is matched: /usr/bin/node-<major> in Hummingbird-based images,
+  # /usr/local/bin/node in the NemoClaw image.
+  - /usr/bin/node
+  - /usr/bin/node-*
+  - /usr/local/bin/node

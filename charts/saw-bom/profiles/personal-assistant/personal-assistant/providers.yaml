@@ -1,0 +1,30 @@
+apiVersion: saw.redhat.com/v1alpha1
+kind: Providers
+metadata:
+  profile: personal-assistant
+spec:
+  providers:
+    - name: nvidia
+      type: nvidia
+      nemoclawProvider: build
+      model: nvidia/nemotron-3-super-120b-a12b
+      credentialSecret: inference
+      credentialSecretKey: api_key
+    # Slack and Gmail, read-only (charts/governance-policy/profiles). With a
+    # refresh token in the Secret, the gateway refreshes the access token
+    # (OpenShell `provider refresh`, oauth2-refresh-token): the Secret holds
+    # client_id, client_secret and refresh_token, and the sandbox only ever
+    # sees a placeholder. Without one, the Secret's token is used as is.
+    # See docs/daily-briefing.md.
+    - name: slack
+      type: slack
+      credentialSecret: slack
+      credentialSecretKey: bot_token
+      refresh:
+        strategy: oauth2-refresh-token
+    - name: gmail
+      type: gmail
+      credentialSecret: gmail
+      credentialSecretKey: access_token
+      refresh:
+        strategy: oauth2-refresh-token

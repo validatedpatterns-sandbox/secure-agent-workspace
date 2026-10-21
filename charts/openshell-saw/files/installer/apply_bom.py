@@ -117,7 +117,22 @@ PROVIDER_CRED_MAP = {
     "build": "NVIDIA_INFERENCE_API_KEY",
     "brave": "BRAVE_API_KEY",
     "tavily": "TAVILY_API_KEY",
+    "slack": "SLACK_BOT_TOKEN",
+    "gmail": "GMAIL_ACCESS_TOKEN",
 }
+# Gateway-managed credential refresh (OpenShell `provider refresh`): the
+# strategy a SAW-BOM provider can ask for, and the material it reads from
+# the provider's Secret (key -> required). The material stays at the
+# gateway; the sandbox only ever sees the credential's placeholder. Required
+# here means required by the provider profiles that declare the refresh
+# (charts/governance-policy/profiles: Slack and Google both need the client
+# secret); the gateway refuses `refresh configure` without it.
+REFRESH_MATERIAL = {
+    "oauth2-refresh-token": {"client_id": True, "client_secret": True, "refresh_token": True},
+}
+# A refreshed provider needs some credential at creation; this one is
+# replaced by the first refresh (`provider refresh rotate`) right after.
+REFRESH_BOOTSTRAP_CREDENTIAL = "saw-refresh-pending"
 SANDBOX_TYPES = {"generic", "openclaw", "nemoclaw"}
 # Provider config key that records a provider's base URL. OpenShell 0.1.x has
 # no inference router: the agent calls the endpoint itself (see
@@ -549,6 +564,10 @@ class Provider:
     inference_timeout: int = 0
     base_url: str = ""
     credential_free: bool = False
+    # refresh.strategy (a REFRESH_MATERIAL key), and the material read from
+    # the Secret by resolve_credentials.
+    refresh_strategy: str = ""
+    refresh_material: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -667,6 +686,8 @@ HARNESS_IMAGE_MAX_BYTES = 512 * 1024 * 1024
 # Keys configure_harness may set; a shape change must unset the ones it
 # no longer wants, not leave them stale.
 HARNESS_CONFIG_KEYS = ("plugins.load.paths", "skills.load.extraDirs")
+# Provider types that are also OpenClaw chat channels.
+OPENCLAW_CHAT_CHANNELS = frozenset({"slack"})
 OPENCLAW_EXEC_ENV = ("OPENCLAW_HOME=/sandbox SQLITE_TMPDIR=/sandbox/.openclaw/state "
                      "TMPDIR=/sandbox/.openclaw/state OPENCLAW_NIX_MODE=0")
 # mcp.json env/header value: exactly ${VAR}, or Authorization-style
@@ -1280,7 +1301,8 @@ def parse_profiles(files):
                         model=p.get("model", ""),
                         base_url_secret_key=p.get("baseUrlSecretKey", ""),
                         model_secret_key=p.get("modelSecretKey", ""),
-                        inference_timeout=int(p.get("inferenceTimeout", 0) or 0)))
+                        inference_timeout=int(p.get("inferenceTimeout", 0) or 0),
+                        refresh_strategy=str((p.get("refresh") or {}).get("strategy", ""))))
             if "sandbox.yaml" in docs:
                 key, text = docs["sandbox.yaml"]
                 for s in (_yaml(text, key).get("spec") or {}).get("sandboxes") or []:
@@ -1377,10 +1399,10 @@ def validate_harness(profiles, bundles):
             ref = sb.harness_ref or {}
             if not (sb.enabled and ref):
                 continue
-            if sb.type != "openclaw":
+            if sb.type not in ("openclaw", "nemoclaw"):
                 raise InstallerError(
                     f"sandbox '{sb.name}' has a harnessRef but type '{sb.type}'; "
-                    "only openclaw sandboxes load a harness")
+                    "only agent sandboxes (openclaw, nemoclaw) load a harness")
             image = harness_image(ref)
             if image:
                 if not DIGEST_IMAGE_RE.match(image):
@@ -1452,6 +1474,9 @@ def validate_profiles(profiles):
                               f"(supported: {', '.join(sorted(BASE_URL_CONFIG_KEYS))})")
             if p.inference_timeout < 0:
                 errors.append(f"{where}: provider '{p.name}' has a negative inferenceTimeout")
+            if p.refresh_strategy and p.refresh_strategy not in REFRESH_MATERIAL:
+                errors.append(f"{where}: provider '{p.name}' has unsupported refresh strategy "
+                              f"'{p.refresh_strategy}' (supported: {', '.join(sorted(REFRESH_MATERIAL))})")
         sandbox_names = set()
         for s in ws.sandboxes:
             if not s.enabled:
@@ -1518,6 +1543,29 @@ def resolve_credentials(profiles, secrets_dir):
                 value = key_file.read_text(encoding="utf-8").strip()
             except OSError:
                 value = ""
+            if p.refresh_strategy in REFRESH_MATERIAL:
+                # The gateway mints the credential from this material; a
+                # current access token in the Secret is optional.
+                p.refresh_material = {k: read_secret_value(base, k)
+                                      for k in REFRESH_MATERIAL[p.refresh_strategy]}
+                missing = [k for k, required in REFRESH_MATERIAL[p.refresh_strategy].items()
+                           if required and not p.refresh_material[k]]
+                if missing and value:
+                    # No refresh material, only a token (e.g. a Slack bot
+                    # token without rotation): used as is, like any key.
+                    log(f"Provider '{p.name}' in workspace '{ws.name}': Secret "
+                        f"'{p.credential_secret}' has no {', '.join(missing)}; using its "
+                        f"'{p.credential_secret_key}' as a static credential (no refresh)")
+                    p.refresh_strategy, p.refresh_material = "", {}
+                elif missing:
+                    raise InstallerError(
+                        f"credential for provider '{p.name}' in workspace '{ws.name}' not found: "
+                        f"Secret '{p.credential_secret}' needs refresh material "
+                        f"({', '.join(k for k in REFRESH_MATERIAL[p.refresh_strategy])}) or a "
+                        f"'{p.credential_secret_key}' token")
+                else:
+                    p.refresh_material = {k: v for k, v in p.refresh_material.items() if v}
+                    value = value or REFRESH_BOOTSTRAP_CREDENTIAL
             if not value:
                 raise InstallerError(
                     f"credential for provider '{p.name}' in workspace '{ws.name}' not found: "
@@ -2695,6 +2743,10 @@ class ProfileApplier:
         for workspace in creds.values():
             for value in workspace.values():
                 shell.add_secret(value)
+        # Which refresh material was handed to the gateway, per provider (a
+        # digest), so an unchanged Secret does not reset rotated material.
+        self.refresh_state = (Path(prune["ledgerPath"]).parent / "refresh.json"
+                              if prune.get("ledgerPath") else None)
 
     def cli(self, *args, **kwargs):
         return self.sh.run(["openshell", *args], **kwargs)
@@ -2866,11 +2918,15 @@ class ProfileApplier:
             if not credential_keys or credential_keys[1].strip() != "<none>":
                 raise InstallerError(f"keyless provider '{provider.name}' already has credentials "
                                      "or their absence cannot be verified; remove them explicitly first")
-        if created.existed and not provider.credential_free:
+        if created.existed and not provider.credential_free and not provider.refresh_strategy:
             updated = self.cli("provider", "update", provider.name, *ws_args(ws.name),
                                "--credential", env_name, *config, env=env, check=False)
             if not updated.ok:
                 log(f"WARN: could not refresh the credential of existing provider '{provider.name}'")
+        # A refreshed provider keeps the credential the gateway minted: the
+        # Secret's (or the bootstrap value) would undo the last refresh.
+        if provider.refresh_strategy:
+            self.configure_refresh(ws, provider, env_name, fresh=not created.existed)
         self.remember("provider", ws.name, provider.name)
         if provider.type in self.provider_profiles:
             # Keep an imported profile remembered on every run that still
@@ -2926,6 +2982,48 @@ class ProfileApplier:
                                      f"'{provider.type}': endpoint "
                                      f"'{endpoint.get('host')}' is not an in-cluster Service "
                                      "(credentialFree is for .svc hosts)")
+
+    def configure_refresh(self, ws, provider, credential_key, fresh):
+        """Hand the provider's refresh material to the gateway and mint the
+        first credential (`provider refresh configure`, then `rotate`).
+
+        The material goes through the environment (--secret-material-env),
+        never argv. It is configured on a new provider and when the Secret's
+        material changed, not on every run: the gateway stores a rotated
+        refresh token (Slack rotates them), which re-sending the Secret's
+        original one would undo."""
+        material = provider.refresh_material
+        for value in material.values():
+            self.sh.add_secret(value)
+        digest = hashlib.sha256(json.dumps(
+            {"strategy": provider.refresh_strategy, "key": credential_key, "material": material},
+            sort_keys=True).encode()).hexdigest()
+        state = read_json(self.refresh_state, {}) if self.refresh_state else {}
+        entry = f"{ws.name}/{provider.name}"
+        if not fresh and state.get(entry) == digest:
+            log(f"Provider '{provider.name}': refresh already configured")
+            return True
+        env = {f"SAW_REFRESH_{k.upper()}": v for k, v in material.items()}
+        flags = []
+        for key in sorted(material):
+            flags += ["--secret-material-env", f"{key}=SAW_REFRESH_{key.upper()}"]
+        configured = self.cli("provider", "refresh", "configure", provider.name, *ws_args(ws.name),
+                              "--credential-key", credential_key,
+                              "--strategy", provider.refresh_strategy, *flags, env=env, check=False)
+        if not configured.ok:
+            log(f"WARN: could not configure credential refresh for provider '{provider.name}'")
+            return False
+        rotated = self.cli("provider", "refresh", "rotate", provider.name, *ws_args(ws.name),
+                           "--credential-key", credential_key, check=False)
+        if not rotated.ok:
+            log(f"WARN: the first refresh of provider '{provider.name}' failed; see "
+                f"`openshell provider refresh status {provider.name}`")
+            return False
+        log(f"Provider '{provider.name}': credential refresh configured ({provider.refresh_strategy})")
+        if self.refresh_state and not self.sh.dry_run:
+            state[entry] = digest
+            write_json_atomic(self.refresh_state, state, mode=0o600)
+        return True
 
     def import_provider_profile(self, ws, profile_id):
         """The gateway has no profile for this provider type (governed
@@ -3602,16 +3700,32 @@ class ProfileApplier:
         # openclaw_gateway_script restarts only on a harness refill, when none
         # is running, or when its settings changed; the files are in place either way.
         self.install_tool_gate(ws, sb, enable=True)
+        self.disable_provider_channels(ws, sb, exec_cmd, oc_env)
         # One script: the gateway secret is made and kept inside the sandbox
         # (the installer never sees it). The gateway is restarted only when
         # the harness was refilled, none is running, or its settings (auth
         # mode, users, origins) changed: a restart cuts live sessions.
         refilled = (self.harness_refilled.get((ws.name, sb.name), False)
                     or self.gate_refilled.get((ws.name, sb.name), False))
+        providers = [p for p in sb.providers if (ws.name, p) not in self.skipped]
         self.cli(*exec_cmd, "sh", "-c",
-                 openclaw_gateway_script(self.cfg, ws.name, sb.name, oc_env, refilled=refilled),
+                 openclaw_gateway_script(self.cfg, ws.name, sb.name, oc_env, refilled=refilled,
+                                         providers=providers),
                  check=False)
         self.install_keepalive(ws, sb)
+
+    def disable_provider_channels(self, ws, sb, exec_cmd, oc_env):
+        """Keep OpenClaw's own chat channel off for a provider that shares
+        its name (slack). The provider is for governed reads (the harness's
+        MCP servers); onboarding skips channels. Found live: with the Slack
+        provider attached, the gateway treats the slack channel as configured,
+        tries to install @openclaw/slack from npm at startup (egress denied)
+        and refuses to start; the UI then answers 502."""
+        types = {p.type for p in ws.providers if p.name in sb.providers}
+        for channel in sorted(types & OPENCLAW_CHAT_CHANNELS):
+            self.cli(*exec_cmd, "sh", "-c",
+                     f"{oc_env} openclaw config set channels.{channel}.enabled false",
+                     check=False)
 
     def configure_harness(self, ws, sb, exec_cmd, oc_env):
         """Point OpenClaw at the mounted bundle (openclaw_harness_config).
@@ -3958,7 +4072,19 @@ class ProfileApplier:
                 "creating it without agent onboarding")
             self.create_sandbox(ws, sb)
             return
-        if sb.type == "nemoclaw":
+        if sb.type == "nemoclaw" and sb.harness_ref:
+            # A harness is a volume mounted when the sandbox is created, and
+            # `nemoclaw onboard` cannot add one on podman (its host mounts
+            # are Docker only). The installer creates the NemoClaw sandbox
+            # itself, with the mount, and configures OpenClaw in it as it
+            # does after onboarding; a sandbox onboarded earlier, without
+            # the mount, is created again (create_sandbox).
+            log(f"Sandbox '{sb.name}': NemoClaw image with harness "
+                f"{sb.harness_ref.get('name') or sb.harness_ref.get('image')}; "
+                "created by the installer (no nemoclaw onboard)")
+            self.create_sandbox(ws, sb, configure_harness=False)
+            self.start_openclaw(ws, sb, provider)
+        elif sb.type == "nemoclaw":
             # Onboard once: on later boots the sandbox exists and nemoclaw
             # refuses to attach to the already running gateway.
             if self.sandbox_state(ws, sb) == "running":
@@ -4346,7 +4472,7 @@ _WRITE_PASSWORD_JS = ('const fs=require("fs"),f=process.argv[1];const c=JSON.par
 _NEW_SECRET_JS = 'process.stdout.write(require("crypto").randomBytes(24).toString("hex"))'
 
 
-def openclaw_gateway_script(cfg, workspace, sandbox, oc_env, refilled=False):
+def openclaw_gateway_script(cfg, workspace, sandbox, oc_env, refilled=False, providers=()):
     """The sandbox shell script that configures and (re)starts OpenClaw's
     gateway on 0.0.0.0:18789.
 
@@ -4442,6 +4568,10 @@ def openclaw_gateway_script(cfg, workspace, sandbox, oc_env, refilled=False):
         # The control UI is reached through a route, so the browser's Origin
         # is the route's https URL.
         lines.append(f"openclaw config set gateway.controlUi.allowedOrigins {q(json.dumps(origins))}")
+    # The gateway process keeps the environment it started with, so a
+    # provider attached since (its credential placeholder, e.g.
+    # SLACK_BOT_TOKEN) reaches the agent only after a restart.
+    lines.append(f"# providers: {' '.join(sorted(providers))}")
     # Every setting above is fixed text (the secret stays "$secret"), so
     # their digest says whether the running gateway has them.
     fingerprint = hashlib.sha256("\n".join(lines).encode()).hexdigest()

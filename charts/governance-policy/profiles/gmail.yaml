@@ -1,0 +1,70 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+id: gmail
+display_name: Gmail
+description: Read-only Gmail API access for governed sandbox agents
+category: messaging
+credentials:
+  - name: access_token
+    description: Gmail OAuth access token (gmail.readonly)
+    env_vars: [GMAIL_ACCESS_TOKEN]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+    # Google access tokens last an hour. The gateway exchanges the user's
+    # refresh token for a new one 5 minutes before expiry; the client
+    # secret and the refresh token stay at the gateway and the sandbox only
+    # ever sees a placeholder.
+    refresh:
+      strategy: oauth2_refresh_token
+      token_url: https://oauth2.googleapis.com/token
+      refresh_before_seconds: 300
+      max_lifetime_seconds: 3600
+      material:
+        - name: client_id
+          description: Google OAuth client ID
+          required: true
+        - name: client_secret
+          description: Google OAuth client secret
+          required: true
+          secret: true
+        - name: refresh_token
+          description: Google OAuth refresh token (scope gmail.readonly)
+          required: true
+          secret: true
+discovery:
+  credentials: [access_token]
+endpoints:
+  - host: gmail.googleapis.com
+    port: 443
+    protocol: rest
+    enforcement: enforce
+    rules:
+      - allow:
+          method: GET
+          path: /gmail/v1/users/me/profile
+      - allow:
+          method: GET
+          path: /gmail/v1/users/me/labels
+      - allow:
+          method: GET
+          path: /gmail/v1/users/me/messages
+      - allow:
+          method: GET
+          path: /gmail/v1/users/me/messages/*
+      - allow:
+          method: GET
+          path: /gmail/v1/users/me/threads
+      - allow:
+          method: GET
+          path: /gmail/v1/users/me/threads/*
+binaries:
+  - /usr/bin/curl
+  - /usr/local/bin/curl
+  # node: OpenClaw and its tools (the daily briefing collector). The real
+  # path is matched: /usr/bin/node-<major> in Hummingbird-based images,
+  # /usr/local/bin/node in the NemoClaw image.
+  - /usr/bin/node
+  - /usr/bin/node-*
+  - /usr/local/bin/node

@@ -138,6 +138,68 @@
           ]
         }
       ]
+    },
+    "personal-assistant": {
+      "description": "Personal assistant: NemoClaw agent with NVIDIA inference and a daily Slack and Gmail briefing",
+      "secrets": {
+        "gmail": {
+          "fields": [
+            {
+              "key": "access_token",
+              "kind": "secret",
+              "required": true,
+              "title": "API key"
+            }
+          ],
+          "provider": "gmail",
+          "providers": [
+            "gmail"
+          ]
+        },
+        "inference": {
+          "fields": [
+            {
+              "key": "api_key",
+              "kind": "secret",
+              "required": true,
+              "title": "API key"
+            }
+          ],
+          "provider": "nvidia",
+          "providers": [
+            "nvidia"
+          ]
+        },
+        "slack": {
+          "fields": [
+            {
+              "key": "bot_token",
+              "kind": "secret",
+              "required": true,
+              "title": "API key"
+            }
+          ],
+          "provider": "slack",
+          "providers": [
+            "slack"
+          ]
+        }
+      },
+      "workspaces": [
+        {
+          "description": "Personal assistant: NemoClaw agent with NVIDIA inference and a daily Slack and Gmail briefing",
+          "enabled": true,
+          "name": "personal-assistant",
+          "sandboxes": [
+            {
+              "enabled": true,
+              "name": "assistant",
+              "type": "nemoclaw",
+              "uiRoute": true
+            }
+          ]
+        }
+      ]
     }
   }
 }

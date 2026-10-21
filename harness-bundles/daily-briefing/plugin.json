@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "daily-briefing",
+  "version": "0.1.0",
+  "description": "SAW daily briefing: Slack and Gmail, read-only, through governed providers."
+}

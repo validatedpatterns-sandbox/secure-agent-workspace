@@ -1,0 +1,23 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "slack-reader": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/mcp/slack-reader.mjs"],
+      "env": {
+        "SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}",
+        "NODE_EXTRA_CA_CERTS": "${NODE_EXTRA_CA_CERTS}"
+      }
+    },
+    "gmail-reader": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/mcp/gmail-reader.mjs"],
+      "env": {
+        "GMAIL_ACCESS_TOKEN": "${GMAIL_ACCESS_TOKEN}",
+        "NODE_EXTRA_CA_CERTS": "${NODE_EXTRA_CA_CERTS}"
+      }
+    }
+  }
+}

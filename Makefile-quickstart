@@ -87,7 +87,7 @@ endif
         governance-interceptor-build governance-interceptor-build-local \
         keycloak-deploy keycloak-delete keycloak-check keycloak-issuer \
         keycloak-register keycloak-redirects keycloak-redirects-sync \
-        keycloak-passwords keycloak-harden keycloak-add-users keycloak-password keycloak-reset-password \
+        keycloak-passwords keycloak-harden keycloak-add-users keycloak-add-user keycloak-password keycloak-reset-password \
         login whoami logout saw-create saw-configure saw-list saw-logs saw-status \
         saw-restart saw-restart-pending saw-vm-ssh saw-ssh saw-tui saw-gui saw-delete \
         sandbox-pre-delete quickstart-delete status test test-deployment test-harness-e2e lint \
@@ -298,6 +298,10 @@ KC_USERS_ENV = KEYCLOAK_NS=$(KEYCLOAK_NS) KEYCLOAK_CHART=$(KEYCLOAK_CHART) KEYCL
 
 keycloak-add-users: ## Create missing Keycloak users and store passwords in a Secret (USERS_FILE=...)
 	@$(SCRIPTS_DIR)/keycloak-users.sh add-users "$(USERS_FILE)"
+
+keycloak-add-user: ## Create one Keycloak user with a generated password, kept in a Secret (KC_USER=alice); for a user who creates their workspace in the portal
+	@if [ -z "$(KC_USER)" ]; then echo "Set KC_USER=<name>."; exit 1; fi
+	@printf 'users:\n  - name: %s\n' "$(KC_USER)" | $(KC_USERS_ENV) $(SCRIPTS_DIR)/keycloak-users.sh add-users -
 
 keycloak-password: ## Copy a user's password to the clipboard / name its Secret (KC_USER=alice; SHOW=1 prints it)
 	@if [ -z "$(KC_USER)" ]; then echo "Error: KC_USER is required. Pass KC_USER=alice." >&2; exit 1; fi

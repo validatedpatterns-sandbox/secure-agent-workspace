@@ -74,16 +74,19 @@ def shipped_profile_files():
 HARNESS = ROOT / "charts" / "saw-bom" / "harness"
 
 
-def harness_files():
+def harness_files(bundles=("ds-default",)):
     """Flatten charts/saw-bom/harness exactly like templates/configmap-bom.yaml
     (content-addressed keys plus a path map per bundle), but as raw bytes (the
-    ConfigMap value is the base64 of these bytes)."""
+    ConfigMap value is the base64 of these bytes). Like the chart, only the
+    bundles a selected profile uses (data-science: ds-default)."""
     files = {}
     maps = {}
     for path in sorted(HARNESS.rglob("*")):
         if path.is_file():
             parts = path.relative_to(HARNESS).parts
             bundle, rel = parts[0], "/".join(parts[1:])
+            if bundle not in bundles:
+                continue
             key = f"harness__{bundle}__{hashlib.sha256(rel.encode()).hexdigest()[:16]}"
             files[key] = path.read_bytes()
             maps.setdefault(bundle, {})[key.rsplit("__", 1)[1]] = rel

@@ -1,0 +1,20 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  annotations:
+    argocd.argoproj.io/tracking-id: secure-agent-workspace-prod:operators.coreos.com/Subscription:rhdh-operator/rhdh
+  labels:
+    operators.coreos.com/rhdh.rhdh-operator: ''
+  name: rhdh
+  namespace: rhdh-operator
+spec:
+  channel: fast-2.2
+  config:
+    env:
+    - name: RELATED_IMAGE_postgresql
+      value: registry.redhat.io/rhel9/postgresql-15:latest
+  installPlanApproval: Automatic
+  name: rhdh
+  source: rhdh-community-catalog
+  sourceNamespace: openshift-marketplace
+

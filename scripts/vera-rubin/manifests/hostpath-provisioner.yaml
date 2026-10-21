@@ -1,0 +1,49 @@
+apiVersion: v1
+items:
+- apiVersion: hostpathprovisioner.kubevirt.io/v1beta1
+  kind: HostPathProvisioner
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: '{"apiVersion":"hostpathprovisioner.kubevirt.io/v1beta1","kind":"HostPathProvisioner","metadata":{"annotations":{},"name":"hostpath-provisioner"},"spec":{"imagePullPolicy":"IfNotPresent","storagePools":[{"name":"saw-hpp","path":"/var/hpvolumes"}],"workload":{"nodeSelector":{"kubernetes.io/os":"linux"}}}}
+
+        '
+    creationTimestamp: '2026-10-20T03:06:38Z'
+    finalizers:
+    - finalizer.delete.hostpath-provisioner
+    generation: 7
+    name: hostpath-provisioner
+    resourceVersion: '624468'
+    uid: 0b345b60-c5eb-4b9d-b819-672c1d913330
+  spec:
+    imagePullPolicy: IfNotPresent
+    storagePools:
+    - name: saw-hpp
+      path: /var/hpvolumes
+    workload:
+      nodeSelector:
+        kubernetes.io/os: linux
+  status:
+    conditions:
+    - lastHeartbeatTime: '2026-10-20T03:07:16Z'
+      lastTransitionTime: '2026-10-20T03:07:16Z'
+      message: Application Available
+      reason: Complete
+      status: 'True'
+      type: Available
+    - lastHeartbeatTime: '2026-10-20T03:07:16Z'
+      lastTransitionTime: '2026-10-20T03:07:16Z'
+      status: 'False'
+      type: Progressing
+    - lastHeartbeatTime: '2026-10-20T03:07:16Z'
+      lastTransitionTime: '2026-10-20T03:06:38Z'
+      status: 'False'
+      type: Degraded
+    observedVersion: v4.22
+    operatorVersion: v4.22
+    storagePoolStatuses:
+    - name: saw-hpp
+      phase: Ready
+    targetVersion: v4.22
+kind: List
+metadata: {}
+

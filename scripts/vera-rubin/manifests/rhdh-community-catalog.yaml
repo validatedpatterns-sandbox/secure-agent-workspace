@@ -1,0 +1,17 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: CatalogSource
+metadata:
+  name: rhdh-community-catalog
+  namespace: openshift-marketplace
+spec:
+  displayName: RHDH Community Operators
+  grpcPodConfig:
+    extractContent:
+      catalogDir: /configs
+  image: quay.io/rhdh-community/operator-catalog:next
+  publisher: rhdh-community
+  sourceType: grpc
+  updateStrategy:
+    registryPoll:
+      interval: 30m
+

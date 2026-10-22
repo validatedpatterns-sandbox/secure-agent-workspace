@@ -69,17 +69,29 @@ export OIDC_ISSUER OIDC_CLIENT_ID OIDC_FLOW OIDC_TOKEN_DIR SSH_KEY_PATH OWNER OW
 export SAW_NS SAW_CHART SAW_VALUES_FILE KEYCLOAK_NS KEYCLOAK_CHART KEYCLOAK_REALM KEYCLOAK_NAME SANDBOX_NAME
 export USE_EXISTING_KEYCLOAK SCRIPTS_DIR GUI_PORT WORKSPACE CMD DASHBOARD
 
-# Pattern install: `./pattern.sh make install GOVERNANCE_ENGINE=apf` selects the
-# governance engine for this cluster without editing values-global.yaml. It
-# becomes a Pattern extraParameter (global.governance.engine), which the
-# operator passes to every application and which overrides values-global.yaml.
-# Only an explicit GOVERNANCE_ENGINE does this; otherwise values-global.yaml
-# decides. Run make install again with the other engine to switch back.
+# Explicit install knobs override values-global.yaml through Pattern
+# extraParameters. Without them, values-global.yaml decides.
+SAW_INSTALL_PARAMETERS :=
 ifneq ($(findstring $(origin GOVERNANCE_ENGINE),command line environment),)
 ifeq ($(filter interceptor apf,$(GOVERNANCE_ENGINE)),)
 $(error GOVERNANCE_ENGINE must be interceptor or apf, not "$(GOVERNANCE_ENGINE)")
 endif
-export EXTRA_HELM_OPTS := $(EXTRA_HELM_OPTS) --set main.extraParameters[0].name=global.governance.engine --set main.extraParameters[0].value=$(GOVERNANCE_ENGINE)
+SAW_INSTALL_PARAMETERS += global.governance.engine=$(GOVERNANCE_ENGINE)
+endif
+ifneq ($(findstring $(origin WEB_SEARCH_ENABLED),command line environment),)
+ifneq ($(WEB_SEARCH_ENABLED),true)
+ifneq ($(WEB_SEARCH_ENABLED),false)
+$(error WEB_SEARCH_ENABLED must be true or false, not "$(WEB_SEARCH_ENABLED)")
+endif
+endif
+SAW_INSTALL_PARAMETERS += global.webSearch.enabled=$(WEB_SEARCH_ENABLED)
+endif
+# Pair each name=value with a contiguous index; neither knob reserves a slot.
+# --set-string keeps false a string in the Pattern CR's extraParameter value.
+saw_install_parameter = --set main.extraParameters[$(word 1,$(subst =, ,$(1)))].name=$(word 2,$(subst =, ,$(1))) --set-string main.extraParameters[$(word 1,$(subst =, ,$(1)))].value=$(word 3,$(subst =, ,$(1)))
+ifneq ($(strip $(SAW_INSTALL_PARAMETERS)),)
+SAW_INSTALL_PARAMETER_INDICES := $(wordlist 1,$(words $(SAW_INSTALL_PARAMETERS)),0 1)
+export EXTRA_HELM_OPTS := $(EXTRA_HELM_OPTS) $(foreach p,$(join $(addsuffix =,$(SAW_INSTALL_PARAMETER_INDICES)),$(SAW_INSTALL_PARAMETERS)),$(call saw_install_parameter,$(p)))
 endif
 
 .PHONY: prereqs-check quickstart-prereqs-check storage-class-check check-oidc-ca ssh-key-generate sandbox-build cli-build \

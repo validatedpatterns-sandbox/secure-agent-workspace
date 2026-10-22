@@ -36,11 +36,26 @@ tls_options=(--insecure)
 if [[ -n "${OIDC_CA_BUNDLE:-}" ]]; then
   tls_options=(--cacert "${OIDC_CA_BUNDLE}")
 fi
-status="$(curl -sS "${tls_options[@]}" --connect-timeout 5 --max-time 15 \
+# The gateway exposes an authenticated gRPC API. GET / returns 404 even for
+# the owner, so probe ListSandboxes with an explicit default workspace scope.
+# Request fields: ListSandboxesRequest.workspace_scope (4),
+# WorkspaceSelector.workspace (1), followed by the five-byte gRPC frame header.
+umask 077
+request_dir="$(mktemp -d)"
+trap 'rm -rf "${request_dir}"' EXIT
+printf 'Authorization: Bearer %s\n' "${token}" > "${request_dir}/authorization"
+printf '\x00\x00\x00\x00\x0b\x22\x09\x0a\x07default' > "${request_dir}/request"
+status="$(curl -sS --http2 "${tls_options[@]}" --connect-timeout 5 --max-time 15 \
   --output /dev/null --write-out '%{http_code}' \
-  -H "Authorization: Bearer ${token}" "https://${host}/")"
-if [[ "${status}" != 403 ]]; then
-  echo "Error: second-user access returned HTTP ${status}; expected 403." >&2
+  --dump-header "${request_dir}/headers" \
+  --header @"${request_dir}/authorization" \
+  --header 'Content-Type: application/grpc' --header 'TE: trailers' \
+  --data-binary @"${request_dir}/request" \
+  "https://${host}/openshell.v1.OpenShell/ListSandboxes")"
+grpc_code="$(awk 'tolower($1) == "grpc-status:" {gsub(/\r/, "", $2); code=$2} END {print code}' \
+  "${request_dir}/headers")"
+if [[ "${status}" != 200 || "${grpc_code}" != 7 ]]; then
+  echo "Error: second-user access returned HTTP ${status}, gRPC ${grpc_code:-absent}; expected HTTP 200, gRPC 7 (PERMISSION_DENIED)." >&2
   exit 1
 fi
-printf '{"result":"denied","status_code":403}\n'
+printf '{"result":"denied","protocol":"grpc","grpc_code":7}\n'

@@ -623,6 +623,9 @@ def test_saw_restart_pending_with_nothing_pending(tmp_path):
 
 def install_opts(*args, env=None):
     """EXTRA_HELM_OPTS as `make install` hands it to the pattern framework."""
+    if env is None:
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("GOVERNANCE_ENGINE", "WEB_SEARCH_ENABLED", "EXTRA_HELM_OPTS")}
     return run_make("--eval", 'probe-install-opts:\n\t@printf "%s" "$$EXTRA_HELM_OPTS"',
                     "probe-install-opts", *args, env=env)
 
@@ -634,11 +637,12 @@ def test_governance_engine_selects_the_engine_at_install():
     assert result.returncode == 0, result.stderr
     assert result.stdout.split() == [
         "--set", "main.extraParameters[0].name=global.governance.engine",
-        "--set", "main.extraParameters[0].value=apf"]
+        "--set-string", "main.extraParameters[0].value=apf"]
 
 
 def test_values_global_decides_without_an_explicit_engine():
-    env = {k: v for k, v in os.environ.items() if k not in ("GOVERNANCE_ENGINE", "EXTRA_HELM_OPTS")}
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("GOVERNANCE_ENGINE", "WEB_SEARCH_ENABLED", "EXTRA_HELM_OPTS")}
     result = install_opts(env=env)
     assert result.returncode == 0, result.stderr
     assert result.stdout == ""
@@ -655,6 +659,31 @@ def test_an_unknown_engine_stops_the_install():
     result = install_opts("GOVERNANCE_ENGINE=opa")
     assert result.returncode != 0
     assert "GOVERNANCE_ENGINE must be interceptor or apf" in result.stderr
+
+
+def test_web_search_can_be_disabled_at_install():
+    result = install_opts("WEB_SEARCH_ENABLED=false")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == [
+        "--set", "main.extraParameters[0].name=global.webSearch.enabled",
+        "--set-string", "main.extraParameters[0].value=false"]
+
+
+def test_both_install_knobs_get_contiguous_parameter_indices():
+    result = install_opts("GOVERNANCE_ENGINE=apf", "WEB_SEARCH_ENABLED=false")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == [
+        "--set", "main.extraParameters[0].name=global.governance.engine",
+        "--set-string", "main.extraParameters[0].value=apf",
+        "--set", "main.extraParameters[1].name=global.webSearch.enabled",
+        "--set-string", "main.extraParameters[1].value=false"]
+
+
+@pytest.mark.parametrize("value", ["maybe", "", "true false"])
+def test_an_invalid_web_search_switch_stops_the_install(value):
+    result = install_opts(f"WEB_SEARCH_ENABLED={value}")
+    assert result.returncode != 0
+    assert "WEB_SEARCH_ENABLED must be true or false" in result.stderr
 
 
 def _oc_storageclass(bindir, items_json, extra_cases=""):

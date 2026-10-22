@@ -94,6 +94,12 @@ clusterGroup:
       overrides:
         - name: ownerResolution.enabled
           value: "true"
+        # clustergroup 0.9 formats booleans in extraParametersNested with %s,
+        # producing "%!s(bool=false)". Its final overrides use tpl/toString:
+        # forward the typed global value here so the install knob survives.
+        - name: global.webSearch.enabled
+          value: '{{ .Values.global.webSearch.enabled }}'
+          forceString: true
       syncPolicy:
         automated:
           prune: true

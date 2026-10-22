@@ -32,6 +32,12 @@ def test_defaults_sync_everything_from_the_hub():
                       "openshell-aap-ssh": {"secret/data/hub/ssh"}}
 
 
+def test_inference_only_renders_no_web_search_external_secret():
+    got = keys("--set", "secrets={inference}")
+    assert "inference" in got
+    assert "web-search" not in got
+
+
 def test_a_user_prefix_keeps_the_shared_ssh_key(tmp_path):
     values = tmp_path / "v.yaml"
     values.write_text(yaml.safe_dump({"vaultPrefix": "secret/data/hub/saw-bob",

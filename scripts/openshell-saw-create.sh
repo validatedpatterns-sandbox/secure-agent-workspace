@@ -264,15 +264,17 @@ if [[ -n "${WEB_SEARCH_API_KEY}" ]]; then
   echo "Secret 'web-search' updated in ${DEPLOY_NS}."
 fi
 
-# The chart lists inference and web-search by default. Do not wait for an
-# optional Secret that is absent from this namespace.
+# Only mount available Secrets; disable web-search providers in the BOM too
+# when the optional web-search Secret is absent.
 SECRET_SET=()
+web_search_enabled=true
 secret_names="$(oc get secrets -n "${DEPLOY_NS}" -o name)"
 if ! grep -qx 'secret/inference' <<<"${secret_names}"; then
   SECRET_SET+=(--set "inference.secretName=")
 fi
 if ! grep -qx 'secret/web-search' <<<"${secret_names}"; then
   SECRET_SET+=(--set "additionalProviderSecrets=null")
+  web_search_enabled=false
 fi
 
 # --- SAW-BOM profiles ---
@@ -283,6 +285,9 @@ if [[ -n "${PROFILES}" ]]; then
   BOM_VALUES="$(mktemp)"
   { echo "profiles:"; tr ',' '\n' <<<"${PROFILES}" | sed -e 's/^ *//' -e 's/ *$//' -e '/^$/d' -e 's/^/  - /'; } > "${BOM_VALUES}"
   BOM_OPTS=(-f "${BOM_VALUES}")
+fi
+if [[ "${web_search_enabled}" == false ]]; then
+  BOM_OPTS+=(--set webSearch.enabled=false)
 fi
 # ${arr[@]+...}: an empty array is "unbound" under set -u in bash < 4.4 (macOS).
 helm upgrade --install saw-bom "${SAW_BOM_CHART}" --namespace "${DEPLOY_NS}" ${BOM_OPTS[@]+"${BOM_OPTS[@]}"} >/dev/null

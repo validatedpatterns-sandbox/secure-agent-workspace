@@ -1,18 +1,59 @@
 {{- /* SAW-BOM profiles only. The installer (apply_bom.py) ships with the
      openshell-saw chart and is versioned with its InstallerBOM. */ -}}
 {{- $profileFiles := dict }}
+{{- $webSearch := ne (toString .Values.webSearch.enabled) "false" }}
 {{- range $profile := .Values.profiles }}
 {{- $files := $.Files.Glob (printf "profiles/%s/**/*.yaml" $profile) }}
+{{- /* Provider names are scoped to the workspace directory, not the profile. */ -}}
+{{- $disabled := dict }}
+{{- if not $webSearch }}
 {{- range $path, $_ := $files }}
-{{- if and (hasSuffix "sandbox.yaml" $path) (not $.Values.harnessEnabled) }}
-{{- $doc := $.Files.Get $path | fromYaml }}
+{{- if eq (base $path) "providers.yaml" }}
+{{- $names := dict }}
+{{- range $provider := ((($.Files.Get $path | fromYaml).spec).providers | default list) }}
+{{- if eq ($provider.credentialSecret | default "") "web-search" }}
+{{- $_ := set $names $provider.name true }}
+{{- end }}
+{{- end }}
+{{- $_ := set $disabled (dir $path) $names }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- range $path, $_ := $files }}
+{{- $content := $.Files.Get $path }}
+{{- $names := get $disabled (dir $path) | default dict }}
+{{- $changed := false }}
+{{- if and (eq (base $path) "providers.yaml") $names }}
+{{- $doc := $content | fromYaml }}
+{{- range $provider := (($doc.spec).providers | default list) }}
+{{- if and (hasKey $names $provider.name) (ne (toString $provider.enabled) "false") }}
+{{- $_ := set $provider "enabled" false }}
+{{- $changed = true }}
+{{- end }}
+{{- end }}
+{{- if $changed }}{{- $content = toYaml $doc }}{{- end }}
+{{- else if and (eq (base $path) "sandbox.yaml") (or $names (not $.Values.harnessEnabled)) }}
+{{- $doc := $content | fromYaml }}
 {{- range $sb := (($doc.spec).sandboxes | default list) }}
+{{- if and (not $.Values.harnessEnabled) (hasKey $sb "harnessRef") }}
 {{- $_ := unset $sb "harnessRef" }}
+{{- $changed = true }}
 {{- end }}
-{{- $_ := set $profileFiles $path (toYaml $doc) }}
+{{- if $names }}
+{{- $providers := list }}
+{{- range $name := $sb.providers | default list }}
+{{- if hasKey $names $name }}
+{{- $changed = true }}
 {{- else }}
-{{- $_ := set $profileFiles $path ($.Files.Get $path) }}
+{{- $providers = append $providers $name }}
 {{- end }}
+{{- end }}
+{{- if hasKey $sb "providers" }}{{- $_ := set $sb "providers" $providers }}{{- end }}
+{{- end }}
+{{- end }}
+{{- if $changed }}{{- $content = toYaml $doc }}{{- end }}
+{{- end }}
+{{- $_ := set $profileFiles $path $content }}
 {{- end }}
 {{- end }}
 {{- /* Inline harness bundles: charts/saw-bom/harness/<bundle>/<relpath>, for

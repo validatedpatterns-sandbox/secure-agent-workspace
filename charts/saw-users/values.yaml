@@ -3,6 +3,8 @@
 # the VM name (OpenShell's limit), in namespace saw-<name>, as with
 # `make saw-create OPENSHELL_SAW_NAME=<name>`. The dashboard route
 # label "<name>-dashboard-saw-<name>" is then at most 53 of 63.
+# A user's webSearch.enabled overrides global.webSearch.enabled (default true).
+# Set it to false when that user's Vault prefix has no web-search key.
 users: []
 
 # Pattern Keycloak accounts are resolved centrally. Disable this only for an

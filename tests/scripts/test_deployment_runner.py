@@ -1,5 +1,6 @@
 """Safe local checks for the live runner's preflight and status parsing."""
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -87,6 +88,14 @@ def test_make_exported_empty_name_does_not_set_wrong_namespace(runner_env):
         "quickstart-prereqs-check saw-review-01 review-01"
 
 
+def test_web_search_key_is_optional(runner_env):
+    env, evidence = runner_env
+    env.pop("WEB_SEARCH_API_KEY")
+    result = run_runner(env)
+    assert result.returncode == 17  # Reached prereqs rather than failing preflight.
+    assert "config.web-search\t0\toff" in evidence.read_text()
+
+
 def test_status_progress_output_cannot_pass_as_json(runner_env):
     env, evidence = runner_env
     env["RUNNER_STOP_AT"] = "status"
@@ -116,3 +125,40 @@ def test_status_permission_error_stops_without_retry(runner_env):
     assert result.returncode != 0
     assert "status access failed" in evidence.read_text()
     assert Path(env["MAKE_LOG"]).read_text().count("saw-status") == 1
+
+
+@pytest.mark.parametrize(("expected", "response", "valid"), [
+    ("accepted", {"result": "accepted", "status_code": 200}, True),
+    ("allowed", {"result": "allowed", "protocol": "http", "status_code": 204}, True),
+    ("denied", {"result": "denied", "status_code": 403}, True),
+    ("allowed", {"result": "allowed", "protocol": "grpc", "grpc_code": 0}, True),
+    ("denied", {"result": "denied", "protocol": "grpc", "grpc_code": 7}, True),
+    ("allowed", {"result": "allowed", "protocol": "grpc", "grpc_code": 7}, False),
+    ("denied", {"result": "denied", "protocol": "grpc", "grpc_code": 0}, False),
+    ("denied", {"result": "denied", "protocol": "grpc", "grpc_code": 16}, False),
+    ("denied", {"result": "denied", "protocol": "grpc", "grpc_code": "7"}, False),
+    ("denied", {"result": "denied", "protocol": "unknown", "status_code": 403}, False),
+    ("denied", {"result": "denied", "status_code": 404}, False),
+    ("denied", {"result": "allowed", "protocol": "grpc", "grpc_code": 7}, False),
+])
+def test_request_evidence_uses_actual_protocol(tmp_path, expected, response, valid):
+    # Exercise the runner's real function without starting its cluster lifecycle.
+    source = (ROOT / "scripts/test-deployment.sh").read_text()
+    function = source.split("run_check() {", 1)[1].split("cleanup_on_exit() {", 1)[0]
+    check = tmp_path / "check.sh"
+    executable(check, 'printf \'%s\\n\' \'%s\'\n' % ("%s", json.dumps(response)))
+    evidence = tmp_path / "evidence"
+    env = dict(os.environ, CHECK=str(check), EXPECTED=expected,
+               check_file=str(tmp_path / "private-result"), EVIDENCE=str(evidence))
+    result = subprocess.run(["bash", "-c", "set -euo pipefail\n"
+                             'record() { printf "%s\\n" "$*" >> "$EVIDENCE"; }\n'
+                             "run_check() {" + function +
+                             'run_check access "$CHECK" alice "$EXPECTED"\n'],
+                            env=env, capture_output=True, text=True)
+    assert (result.returncode == 0) == valid, result.stderr
+    if valid:
+        detail = "protocol=grpc;grpc_code=" if response.get("protocol") == "grpc" \
+            else "protocol=http;status_code="
+        assert detail in evidence.read_text()
+    else:
+        assert "invalid request result" in evidence.read_text()

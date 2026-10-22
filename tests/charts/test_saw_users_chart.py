@@ -323,8 +323,8 @@ def test_missing_repo_url_fails(tmp_path):
     assert "global.repoURL is required" in result.stderr
 
 
-def test_rendered_machine_values_validate_in_the_shipped_installer(tmp_path):
-    docs = docs_from(render_file(tmp_path, [ALICE, BOB]))
+def validate_rendered_user(tmp_path, docs, secrets):
+    """Mount both child charts and only the supplied Secrets as /run/saw."""
     values_file = tmp_path / "alice-values.yaml"
     application = app(docs, "saw-alice")
     values_file.write_text(application["spec"]["source"]["helm"]["values"])
@@ -335,7 +335,10 @@ def test_rendered_machine_values_validate_in_the_shipped_installer(tmp_path):
     saw_docs = [doc for doc in yaml.safe_load_all(rendered.stdout) if doc]
     installer = next(doc for doc in saw_docs if doc["kind"] == "ConfigMap"
                      and doc["metadata"]["name"] == "alice-installer")
-    bom = helm("template", "saw-alice-bom", str(BOM_CHART), "--namespace", "saw-alice")
+    bom_values_file = tmp_path / "bom-values.yaml"
+    bom_values_file.write_text(app(docs, "saw-alice-bom")["spec"]["source"]["helm"]["values"])
+    bom = helm("template", "saw-alice-bom", str(BOM_CHART), "--namespace", "saw-alice",
+               "-f", str(bom_values_file))
     assert bom.returncode == 0, bom.stderr
     [profile_cm] = [doc for doc in yaml.safe_load_all(bom.stdout) if doc]
 
@@ -346,13 +349,21 @@ def test_rendered_machine_values_validate_in_the_shipped_installer(tmp_path):
     for key, value in profile_cm["data"].items():
         (run_saw / "profiles").mkdir(exist_ok=True)
         (run_saw / "profiles" / key).write_text(value)
-    for secret, data in {"inference": {"api_key": "k1", "provider": "build"},
-                         "web-search": {"api_key": "k2"}}.items():
+    for secret, data in secrets.items():
         (run_saw / "secrets" / secret).mkdir(parents=True)
         for key, value in data.items():
             (run_saw / "secrets" / secret / key).write_text(value)
     result = subprocess.run([sys.executable, str(run_saw / "installer" / "apply_bom.py"),
                              "validate", "--inputs", str(run_saw)], capture_output=True, text=True)
+    return result, installer
+
+
+def test_rendered_machine_values_validate_in_the_shipped_installer(tmp_path):
+    docs = docs_from(render_file(tmp_path, [ALICE, BOB]))
+    result, installer = validate_rendered_user(tmp_path, docs, {
+        "inference": {"api_key": "k1", "provider": "build"},
+        "web-search": {"api_key": "k2"},
+    })
     assert result.returncode == 0, result.stdout + result.stderr
     assert "inputs are valid" in result.stdout
     assert "2 workspace(s) ['cuda-dev', 'default']" in result.stdout
@@ -360,6 +371,97 @@ def test_rendered_machine_values_validate_in_the_shipped_installer(tmp_path):
     config = json.loads(installer["data"]["config.json"])
     assert config["vmName"] == "alice"
     assert config["ownerSubject"] == ""
+
+
+@pytest.mark.parametrize("global_enabled,user_enabled,enabled", [
+    (False, None, False),
+    ("false", None, False),
+    (True, False, False),
+    (True, "false", False),
+    (False, True, True),
+    ("false", "true", True),
+])
+@pytest.mark.parametrize("profile", ["data-science", "unknown-profile"])
+def test_web_search_switch_controls_all_child_apps(
+    tmp_path, global_enabled, user_enabled, enabled, profile,
+):
+    user = {"name": "alice", "profiles": [profile]}
+    if user_enabled is not None:
+        user["webSearch"] = {"enabled": user_enabled}
+    docs = docs_from(render_file(tmp_path, [user], {
+        "global": {"webSearch": {"enabled": global_enabled}},
+    }))
+    assert helm_values(app(docs, "saw-alice-secrets"))["secrets"] == \
+        (["inference", "web-search"] if enabled else ["inference"])
+    assert helm_values(app(docs, "saw-alice"))["additionalProviderSecrets"] == \
+        (["web-search"] if enabled else [])
+    assert helm_values(app(docs, "saw-alice-bom")) == {
+        "profiles": [profile], **({} if enabled else {"webSearch": {"enabled": False}}),
+    }
+
+
+def test_web_search_off_validates_without_a_web_search_secret(tmp_path):
+    docs = docs_from(render_file(tmp_path, [ALICE], {
+        "global": {"webSearch": {"enabled": False}},
+    }))
+    result, _ = validate_rendered_user(tmp_path, docs, {
+        "inference": {"api_key": "k1", "provider": "build"},
+    })
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "inputs are valid" in result.stdout
+    assert "2 credential(s)" in result.stdout
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_pattern_override_preserves_the_boolean_install_knob(tmp_path, enabled):
+    """Reproduce clustergroup 0.9's parameter handoff offline.
+
+    The operator writes extraParametersNested values as unquoted YAML; the
+    chart uses printf %s on those booleans, then applies the app's overrides
+    with tpl/toString. The last parameter of a given name wins in Argo/Helm.
+    """
+    bridge = tmp_path / "clustergroup-bridge"
+    (bridge / "templates").mkdir(parents=True)
+    (bridge / "Chart.yaml").write_text("apiVersion: v2\nname: bridge\nversion: 0.0.0\n")
+    (bridge / "templates" / "parameters.yaml").write_text('''parameters:
+{{- range $name, $value := .Values.extraParametersNested }}
+  - name: {{ $name }}
+    value: {{ printf "%s" $value | quote }}
+{{- end }}
+{{- range (index .Values.clusterGroup.applications "saw-users").overrides }}
+  - name: {{ .name }}
+    value: {{ tpl (toString .value) $ | quote }}
+    forceString: {{ .forceString | default false }}
+{{- end }}
+''')
+    flags = tmp_path / "flags.yaml"
+    flags.write_text(yaml.safe_dump({
+        "global": {"webSearch": {"enabled": enabled}},
+        "extraParametersNested": {"global.webSearch.enabled": enabled},
+    }))
+    result = helm("template", "bridge", str(bridge),
+                  "-f", str(ROOT / "values-global.yaml"),
+                  "-f", str(ROOT / "values-prod.yaml"), "-f", str(flags))
+    assert result.returncode == 0, result.stderr
+    parameters = [p for p in yaml.safe_load(result.stdout)["parameters"]
+                  if p["name"] == "global.webSearch.enabled"]
+    assert parameters[0]["value"] == f"%!s(bool={str(enabled).lower()})"
+    assert parameters[-1] == {"name": "global.webSearch.enabled",
+                               "value": str(enabled).lower(), "forceString": True}
+    docs = docs_from(render_file(tmp_path, [ALICE], {
+        "global": {"webSearch": {"enabled": parameters[-1]["value"]}},
+    }))
+    assert ("web-search" in helm_values(app(docs, "saw-alice-secrets"))["secrets"]) == enabled
+
+
+def test_web_search_on_without_its_secret_reproduces_the_installer_failure(tmp_path):
+    docs = docs_from(render_file(tmp_path, [ALICE]))
+    result, _ = validate_rendered_user(tmp_path, docs, {
+        "inference": {"api_key": "k1", "provider": "build"},
+    })
+    assert result.returncode != 0
+    assert "credential for provider 'brave' in workspace 'default' not found" in \
+        result.stdout + result.stderr
 
 
 

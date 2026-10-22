@@ -81,6 +81,64 @@ def test_demo_harness_is_off_by_default():
     assert "harness-index.yaml" not in data
 
 
+def test_web_search_on_preserves_original_profile_bytes():
+    data = bom_data()
+    for path in (CHART / "profiles" / "data-science").rglob("*.yaml"):
+        assert data[str(path.relative_to(CHART)).replace("/", "__")] == path.read_text()
+
+
+@pytest.mark.parametrize("harness_enabled", [True, False])
+def test_web_search_off_disables_only_its_providers(harness_enabled):
+    result = helm_template(CHART, "--set", "webSearch.enabled=false",
+                           "--set", f"harnessEnabled={str(harness_enabled).lower()}",
+                           "--set", "profiles[0]=data-science",
+                           "--set", "profiles[1]=custom-inference")
+    assert result.returncode == 0, result.stderr
+    [cm] = [d for d in yaml.safe_load_all(result.stdout) if d]
+    for profile in ("data-science", "custom-inference"):
+        key = f"profiles__{profile}__default__providers.yaml"
+        providers = yaml.safe_load(cm["data"][key])["spec"]["providers"]
+        original = yaml.safe_load((CHART / "profiles" / profile / "default" /
+                                   "providers.yaml").read_text())["spec"]["providers"]
+        for provider, source in zip(providers, original, strict=True):
+            assert provider == (source | {"enabled": False} if
+                                source.get("credentialSecret") == "web-search" else source)
+    for key, content in cm["data"].items():
+        if key.endswith("__sandbox.yaml"):
+            source = yaml.safe_load((CHART / key.replace("__", "/")).read_text())
+            harnesses = {sb["name"]: sb.get("harnessRef") for sb in source["spec"]["sandboxes"]}
+            for sandbox in yaml.safe_load(content)["spec"]["sandboxes"]:
+                assert "brave" not in sandbox.get("providers", [])
+                assert sandbox.get("harnessRef") == (harnesses[sandbox["name"]] if harness_enabled else None)
+
+
+def test_web_search_off_removes_provider_names_only_in_their_workspace(tmp_path):
+    copy = tmp_path / "saw-bom"
+    shutil.copytree(CHART, copy)
+    workspace = copy / "profiles" / "data-science" / "default"
+    path = workspace / "providers.yaml"
+    doc = yaml.safe_load(path.read_text())
+    doc["spec"]["providers"].append({"name": "search-extra", "type": "brave",
+                                      "credentialSecret": "web-search"})
+    path.write_text(yaml.safe_dump(doc))
+    path = workspace / "sandbox.yaml"
+    doc = yaml.safe_load(path.read_text())
+    doc["spec"]["sandboxes"][0]["providers"] = ["nvidia", "brave", "search-extra"]
+    path.write_text(yaml.safe_dump(doc))
+    other = copy / "profiles" / "data-science" / "cuda-dev" / "sandbox.yaml"
+    doc = yaml.safe_load(other.read_text())
+    doc["spec"]["sandboxes"][0]["providers"] = ["brave"]
+    other.write_text(yaml.safe_dump(doc))
+    result = helm_template(copy, "--set", "webSearch.enabled=false")
+    assert result.returncode == 0, result.stderr
+    [cm] = [d for d in yaml.safe_load_all(result.stdout) if d]
+    sandbox = yaml.safe_load(cm["data"]["profiles__data-science__default__sandbox.yaml"])
+    assert sandbox["spec"]["sandboxes"][0]["providers"] == ["nvidia"]
+    assert "harnessRef" not in sandbox["spec"]["sandboxes"][0]
+    # A same-named provider in another workspace is independent.
+    assert cm["data"]["profiles__data-science__cuda-dev__sandbox.yaml"] == other.read_text()
+
+
 def test_demo_harness_true_ships_the_bundle_and_ref():
     data = bom_data(demo_harness=True)
     assert "harnessRef" in data["profiles__data-science__default__sandbox.yaml"]

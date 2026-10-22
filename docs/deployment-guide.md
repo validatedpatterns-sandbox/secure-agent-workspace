@@ -179,7 +179,7 @@ ExternalSecret CRs pull from Vault:
 | `openshell-aap-ssh` | `<prefix>/ssh` | SSH private key + public key |
 | `openshell-ssh-pubkey` | `<prefix>/ssh` | SSH public key (for cloud-init) |
 | `inference` | `<prefix>/inference` | Provider type, model, API key |
-| `web-search` | `<prefix>/web-search` | Brave provider and API key |
+| `web-search` | `<prefix>/web-search` | Brave provider and API key; omitted when web search is off |
 
 `<prefix>` is `secret/data/hub` unless a user sets `vaultPrefix`. One shared hub key then serves every workspace. To give one person their own keys, put them in Vault at `secret/data/hub/saw-<user>/...` and set that user's `vaultPrefix` to `secret/data/hub/saw-<user>`. The `saw-users` chart reads the prefix; it does not create Vault entries. See the commented example in `values-secret.yaml.template`.
 
@@ -522,9 +522,14 @@ Set `TEST_CLUSTER_CONTEXT` to the result of `oc config current-context`.
 Set `TEST_OWNER_SUBJECT` to the test owner's OIDC subject. Set
 `TEST_SECOND_TOKEN_DIR` to a different local directory that already has a
 second user's `token.json`. Keep credentials in files or environment
-variables; do not add them to a command line. The data-science profile
-needs `WEB_SEARCH_API_KEY`. The pattern also needs its inference and
-web-search keys in Vault before the test. For example:
+variables; do not add them to a command line. `WEB_SEARCH_API_KEY` is optional.
+When unset or empty, the runner installs and reinstalls the pattern with
+`WEB_SEARCH_ENABLED=false` and verifies that both the web-search ExternalSecret
+and Secret are absent. Omit the web-search entry from the pattern's secrets
+file for this run. With a key set, the runner verifies normal secret delivery
+and credential preservation on reinstall; supply the matching key to Vault
+through the pattern's secrets file. Run both modes and retain both evidence
+TSVs; each records `config.web-search` as `on` or `off`. For example:
 
 ```bash
 export TEST_CLUSTER_CONTEXT=<dedicated-oc-context>
@@ -539,8 +544,11 @@ export PROVIDER=build
 export MODEL=nvidia/nemotron-3.5-lightning-30b-a3b
 read -r API_KEY < "$HOME/.nvidia-api-key"
 export API_KEY
-read -r WEB_SEARCH_API_KEY < "$HOME/.web-search-api-key"
-export WEB_SEARCH_API_KEY
+# Off-mode run:
+unset WEB_SEARCH_API_KEY
+# For a separate on-mode run, restore the secrets-file entry and use:
+# read -r WEB_SEARCH_API_KEY < "$HOME/.brave-api-key"
+# export WEB_SEARCH_API_KEY
 export TEST_INFERENCE_CHECK=/absolute/path/check-inference.sh
 export TEST_OWNER_ACCESS_CHECK=/absolute/path/check-owner-access.sh
 # Optional: override the built-in second-user denial check.
@@ -554,12 +562,17 @@ verifies the response. The runner sets `TEST_ACTIVE_SAW_NAME` and
 `TEST_ACTIVE_SAW_NS` for each manual or pattern SAW. It also passes the
 owner's `OIDC_TOKEN_DIR` and `TEST_SECOND_TOKEN_DIR`. The inference check
 must return a JSON object such as `{"result":"accepted","status_code":200}`.
-The owner check must return `{"result":"allowed","status_code":200}`.
-The built-in second-user check uses `TEST_SECOND_TOKEN_DIR` and requires a
-403 response from the active SAW gateway. An override must return
+The owner check must return `{"result":"allowed","status_code":200}` for
+HTTP, or `{"result":"allowed","protocol":"grpc","grpc_code":0}` for gRPC.
+The built-in second-user check uses `TEST_SECOND_TOKEN_DIR` to call the
+gateway's `ListSandboxes` gRPC API in the default workspace. It requires
+gRPC `PERMISSION_DENIED` (7) and returns
+`{"result":"denied","protocol":"grpc","grpc_code":7}`. This requires curl
+with HTTP/2 support. A request to the gateway root is not an access check:
+it returns 404 for both users. An HTTP check override must return
 `{"result":"denied","status_code":403}`.
 Return a nonzero exit code when a request fails. Do not print tokens or
-response bodies. The runner records the status code and a SHA-256 hash of
+response bodies. The runner records the protocol, status code, and a SHA-256 hash of
 the output. These checks are required; a typed confirmation cannot replace
 them.
 
@@ -674,7 +687,47 @@ On the pattern path (Option A, including workspaces created in the self-service 
 
 ### Web search in the default sandbox
 
-The `notebook` sandbox attaches only the NVIDIA provider, and its policy allows only that provider's endpoints, so the agent's web search and web fetch calls fail. Attaching the `brave` provider to the sandbox in the BOM profile (`charts/saw-bom/profiles/data-science/default/sandbox.yaml`) opens its endpoints; note that the default profile already creates a `brave` provider but attaches it to no sandbox, which is why step 11 still needs `WEB_SEARCH_API_KEY`. A live walkthrough also saw OpenClaw's own SSRF guard reject the sandbox's synthetic DNS answers, so enabling web search may take more than the provider change.
+Web search is on by default for GitOps deployments. If Vault has no
+`hub/web-search` key, omit its entry from the secrets file and install with:
+
+```bash
+./pattern.sh make install WEB_SEARCH_ENABLED=false
+```
+
+Alternatively, set `global.webSearch.enabled: false` in `values-global.yaml`.
+A user's `webSearch: {enabled: false}` in `overrides/saw-users.yaml` wins over
+the global value; `true` opts that user back in and requires their Vault key.
+Off removes web-search from secret delivery and VM mounts, disables every
+BOM provider whose `credentialSecret` is `web-search`, and removes those
+provider names from sandbox lists. Other providers are unchanged. The
+quickstart detects a missing web-search Secret and applies the same BOM
+setting automatically. A rerun keeps web search on if the Secret exists.
+
+Leaving web search on without its key produces ESO `SecretSyncedError` and
+a Degraded secrets Application, and the VM can stay in `ContainerCreating`
+with `FailedMount` for `web-search`. If the mount is bypassed, the installer
+reports `credential for provider 'brave' in workspace 'default' not found`.
+Turn the switch off to avoid all three failures.
+
+When switching an existing workspace off, the per-user Applications use
+self-heal without automatic prune. Check for retained objects with
+`oc get externalsecret,secret web-search -n saw-<user>` and remove them after
+the updated Applications have synced:
+`oc delete externalsecret,secret web-search -n saw-<user> --ignore-not-found`.
+Removing the VM volume may require `make saw-restart-pending` (review the
+listed VMs before confirming). The default installer prune mode is `report`,
+so an existing gateway's Brave provider may remain; inspect
+`openshell provider list --workspace default` and remove it explicitly if
+needed. Turning the switch off does not revoke its credential or promise
+to remove a provider already installed on a gateway.
+
+The `notebook` sandbox attaches only the NVIDIA provider, and its policy
+allows only that provider's endpoints, so the agent's web search and web
+fetch calls fail even with web search on. Attaching the `brave` provider in
+`charts/saw-bom/profiles/data-science/default/sandbox.yaml` opens its endpoints.
+A live walkthrough also saw OpenClaw's own SSRF guard reject the sandbox's
+synthetic DNS answers, so enabling web search may take more than the provider
+change. The self-service portal still requires a web-search key in its form.
 
 ### Shell access
 

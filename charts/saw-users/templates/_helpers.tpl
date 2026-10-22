@@ -68,6 +68,23 @@ own pruneOnRemove, else the chart-wide default. "true" or "".
 {{- end -}}
 
 {{/*
+Web search: the user's webSearch.enabled, else global.webSearch.enabled,
+else on. Pattern extraParameters may supply the string "false". "true" or "".
+*/}}
+{{- define "saw-users.webSearch" -}}
+{{- $enabled := true -}}
+{{- $global := .root.Values.global.webSearch | default dict -}}
+{{- $user := .user.webSearch | default dict -}}
+{{- if hasKey $global "enabled" -}}
+{{- $enabled = $global.enabled -}}
+{{- end -}}
+{{- if hasKey $user "enabled" -}}
+{{- $enabled = $user.enabled -}}
+{{- end -}}
+{{- if ne (toString $enabled) "false" -}}true{{- end -}}
+{{- end -}}
+
+{{/*
 openshell-saw values: chart defaults, then this user's owner, then the
 user's `values` on top. Nested maps merge; the user's keys win.
 */}}
@@ -207,6 +224,9 @@ an enabled workspace). pattern-secrets syncs only these.
 {{- /* No profile in the catalog: keep the Secrets every SAW used to get. */ -}}
 {{- range .root.Values.defaults.secrets -}}{{- $_ := set $names . true -}}{{- end -}}
 {{- end -}}
+{{- if not (include "saw-users.webSearch" .) -}}
+{{- $_ := unset $names "web-search" -}}
+{{- end -}}
 {{- toJson (keys $names | sortAlpha) -}}
 {{- end -}}
 
@@ -220,6 +240,9 @@ an enabled workspace). pattern-secrets syncs only these.
 {{- $bomValues := dict "profiles" $profiles -}}
 {{- if $user.harnessEnabled -}}
 {{- $_ := set $bomValues "harnessEnabled" true -}}
+{{- end -}}
+{{- if not (include "saw-users.webSearch" .) -}}
+{{- $_ := set $bomValues "webSearch" (dict "enabled" false) -}}
 {{- end -}}
 {{- toYaml $bomValues -}}
 {{- end -}}
@@ -267,6 +290,15 @@ metadata:
   {{- end }}
 spec:
   project: {{ $root.Values.argo.project }}
+  {{- if eq .path "charts/openshell-saw" }}
+  # KubeMacPool changes this timestamp even on admission dry-runs. With
+  # ServerSideDiff it otherwise makes every healthy VM permanently OutOfSync.
+  ignoreDifferences:
+    - group: kubevirt.io
+      kind: VirtualMachine
+      jsonPointers:
+        - /metadata/annotations/kubemacpool.io~1transaction-timestamp
+  {{- end }}
   destination:
     name: {{ $root.Values.argo.destinationName }}
     namespace: {{ printf "saw-%s" $user.name }}

@@ -353,15 +353,21 @@ def _saw_helm(log):
 
 
 def test_without_a_web_search_key_the_vm_does_not_wait_for_that_secret(run):
-    log, _ = run(PROVIDER="build", MODEL="m", API_KEY="k")
+    log, values = run(PROVIDER="build", MODEL="m", API_KEY="k", WEB_SEARCH_API_KEY="",
+                      PROFILES="data-science,custom-inference")
     helm = _saw_helm(log)
     assert "additionalProviderSecrets=null" in helm
     assert "inference.secretName=" not in helm
+    bom = next(line for line in log.splitlines() if line.startswith("helm upgrade --install saw-bom "))
+    assert "--set webSearch.enabled=false" in bom
+    assert yaml.safe_load(values.read_text())["profiles"] == ["data-science", "custom-inference"]
 
 
 def test_a_rerun_keeps_the_existing_web_search_secret(run):
     log, _ = run(PROVIDER="build", MODEL="m", API_KEY="k",
-                 EXISTING_SECRETS="web-search")
+                 WEB_SEARCH_API_KEY="", EXISTING_SECRETS="web-search")
     helm = _saw_helm(log)
     assert "inference.secretName=" not in helm
     assert "additionalProviderSecrets=null" not in helm
+    bom = next(line for line in log.splitlines() if line.startswith("helm upgrade --install saw-bom "))
+    assert "webSearch.enabled" not in bom

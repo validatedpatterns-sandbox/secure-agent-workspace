@@ -2,6 +2,11 @@
 profiles:
   - data-science
 
+# Off disables every provider whose credentialSecret is web-search and removes
+# it from sandbox provider lists. saw-users resolves the global/per-user switch.
+webSearch:
+  enabled: true
+
 # Harness governance is checked in the guest against the gateway's live
 # provider profile catalog (`openshell provider list-profiles`), so there is
 # no list of governance profiles to keep in sync here.

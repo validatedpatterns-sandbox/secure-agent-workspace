@@ -14,7 +14,8 @@ cd "${repo}"
 : "${PROVIDER:?Set PROVIDER for the manual quickstart}"
 : "${MODEL:?Set MODEL for the manual quickstart}"
 : "${API_KEY:?Set API_KEY in the environment; do not pass it on the command line}"
-: "${WEB_SEARCH_API_KEY:?Set WEB_SEARCH_API_KEY for the data-science profile}"
+web_search=off
+if [[ -n "${WEB_SEARCH_API_KEY:-}" ]]; then web_search=on; fi
 : "${TARGET_BRANCH:?Set TARGET_BRANCH to the pushed branch with the tested commit}"
 : "${TARGET_ORIGIN:?Set TARGET_ORIGIN to its remote name}"
 : "${TEST_INFERENCE_CHECK:?Set TEST_INFERENCE_CHECK to an executable request check}"
@@ -149,16 +150,23 @@ run_check() {
     exit "${rc}"
   fi
   if ! jq -e --arg expected "${expected}" \
-      '.result == $expected and (.status_code | type == "number") and
-       (if $expected == "denied" then .status_code == 403
-        else .status_code >= 200 and .status_code < 300 end)' \
+      '.result == $expected and
+       (if .protocol == "grpc" then
+          (.grpc_code | type == "number") and
+          .grpc_code == (if $expected == "denied" then 7 else 0 end)
+        elif (.protocol // "http") == "http" then
+          (.status_code | type == "number") and
+          (if $expected == "denied" then .status_code == 403
+           else .status_code >= 200 and .status_code < 300 end)
+        else false end)' \
       "${check_file}" >/dev/null; then
     record "${label}" 1 "invalid request result;output_sha256=${digest}"
     echo "Error: ${label} did not report the required request result." >&2
     exit 1
   fi
-  status="$(jq -r '.status_code' "${check_file}")"
-  record "${label}" 0 "result=${expected};status_code=${status};output_sha256=${digest}"
+  status="$(jq -r 'if .protocol == "grpc" then "protocol=grpc;grpc_code=\(.grpc_code)"
+                   else "protocol=http;status_code=\(.status_code)" end' "${check_file}")"
+  record "${label}" 0 "result=${expected};${status};output_sha256=${digest}"
 }
 cleanup_on_exit() {
   local rc=$?
@@ -318,8 +326,25 @@ check_repeat_state() {
     exit 1
   fi
 }
+check_web_search_absent() {
+  local label="$1" kind found
+  for kind in externalsecret secret; do
+    # Empty output means NotFound; API/RBAC errors must still fail the check.
+    if ! found="$(oc get "${kind}" web-search -n "${pattern_namespace}" \
+        --ignore-not-found -o name)"; then
+      record "${label}" 1 "could not check web-search ${kind}"
+      return 1
+    fi
+    if [[ -n "${found}" ]]; then
+      record "${label}" 1 "web-search ${kind} still exists"
+      return 1
+    fi
+  done
+  record "${label}" 0 "inference Secret exists; web-search ExternalSecret and Secret are absent"
+}
 
 echo "Testing commit ${commit} on context ${context}. Evidence: ${evidence}"
+record config.web-search 0 "${web_search}"
 record version.oc-client 0 "$(oc version --client | sed -n '1p')"
 record version.helm 0 "$(helm version --short)"
 record version.gateway-image 0 "${IMAGE_REPO:-ghcr.io/validatedpatterns-sandbox}/openshell-gateway:${IMAGE_TAG:-latest}"
@@ -390,27 +415,39 @@ fi
 keycloak_started=false
 
 pattern_started=true
-run pattern.install ./pattern.sh make install
+pattern_install_opts=()
+if [[ "${web_search}" == off ]]; then
+  pattern_install_opts+=(WEB_SEARCH_ENABLED=false)
+fi
+run pattern.install ./pattern.sh make install ${pattern_install_opts[@]+"${pattern_install_opts[@]}"}
 run pattern.health ./pattern.sh make argo-healthcheck
 check_argo_revision pattern.revision
 wait_for_installer pattern.installer "${TEST_PATTERN_SAW_NAME}"
 pattern_inference_hash="$(secret_hash inference "${pattern_namespace}")"
-pattern_search_hash="$(secret_hash web-search "${pattern_namespace}")"
-record pattern.secret-delivery 0 "inference and web-search Secrets exist"
+if [[ "${web_search}" == on ]]; then
+  pattern_search_hash="$(secret_hash web-search "${pattern_namespace}")"
+  record pattern.secret-delivery 0 "inference and web-search Secrets exist"
+else
+  check_web_search_absent pattern.secret-delivery
+fi
 run_check pattern.owner-access "${TEST_OWNER_ACCESS_CHECK}" "${TEST_PATTERN_SAW_NAME}" allowed
 run_check pattern.second-user-denied "${TEST_SECOND_USER_DENIED_CHECK}" "${TEST_PATTERN_SAW_NAME}" denied
 run pattern.uninstall ./pattern.sh make uninstall
 run pattern.namespace-delete delete_pattern_namespace
 run pattern.uninstall-again ./pattern.sh make uninstall
 run pattern.remirror make images-mirror
-run pattern.reinstall ./pattern.sh make install
+run pattern.reinstall ./pattern.sh make install ${pattern_install_opts[@]+"${pattern_install_opts[@]}"}
 run pattern.reinstall-health ./pattern.sh make argo-healthcheck
 check_argo_revision pattern.reinstall-revision
 wait_for_installer pattern.reinstall-installer "${TEST_PATTERN_SAW_NAME}"
 check_repeat_state pattern.inference-credentials "${pattern_inference_hash}" \
   "$(secret_hash inference "${pattern_namespace}")"
-check_repeat_state pattern.web-search-credentials "${pattern_search_hash}" \
-  "$(secret_hash web-search "${pattern_namespace}")"
+if [[ "${web_search}" == on ]]; then
+  check_repeat_state pattern.web-search-credentials "${pattern_search_hash}" \
+    "$(secret_hash web-search "${pattern_namespace}")"
+else
+  check_web_search_absent pattern.reinstall-secret-delivery
+fi
 run pattern.final-uninstall ./pattern.sh make uninstall
 run pattern.final-namespace-delete delete_pattern_namespace
 pattern_started=false

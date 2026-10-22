@@ -7,6 +7,9 @@ display_name: OpenAI
 description: OpenAI inference API
 category: inference
 inference_capable: true
+# Model used when neither the SAW-BOM provider nor its Secret names one.
+# Change it here to move every SAW off a model that is unavailable.
+default_model: gpt-4o
 credentials:
   - name: api_key
     description: OpenAI API key

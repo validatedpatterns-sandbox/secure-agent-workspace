@@ -178,8 +178,8 @@ def credential(cred, profile_id=""):
 
 # APF 0.2.0 rejects any other field in a Provider spec ("unknown field ...,
 # expected one of type, endpoints, binaries, credentials"). OpenShell-only
-# profile fields (category, inference_capable, discovery, a credential's
-# description and query_param) have no place in it and are left out; a
+# profile fields (category, inference_capable, default_model, discovery, a
+# credential's description and query_param) have no place in it and are left out; a
 # credential's refresh becomes its `source` (credential_source).
 PROVIDER_SPEC_FIELDS = ("type", "endpoints", "binaries", "credentials")
 

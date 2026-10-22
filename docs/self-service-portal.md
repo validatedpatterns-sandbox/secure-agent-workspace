@@ -271,8 +271,12 @@ controller runs with a global `--policy`; the default allows it.)
 Run it after changing a profile. `tests/charts/test_saw_users_chart.py`
 fails when the files are stale.
 
-The pipeline adds each Secret's `provider` (so the installer can refuse a key
-for another service) and fills a field's default (a profile's model).
+The pipeline adds each Secret's `provider` so the installer can refuse a key
+for another service. A native API's Model field is an optional override:
+leaving it blank stores no model in Vault, so the installer uses the provider
+profile's `default_model`. The catalog generator checks the provider profiles
+for an available default but does not copy its value into the form or Secret.
+Custom endpoints must supply their own model.
 
 ### Keys
 

@@ -41,7 +41,7 @@ def test_existing_custom_settings_are_cleared_only_for_native_apis(
     ("anthropic", "", "apiKey", "claude-sonnet-4-6"),
     ("openai", "http://ollama.models.svc:11434/v1", "custom-api-key", "llama3"),
     ("openai", "https://api.openai.com/v1", "custom-api-key", "gpt-4o"),
-    ("nvidia", "", "custom-api-key", "nvidia/nemotron-3.5-lightning-30b-a3b"),
+    ("nvidia", "", "custom-api-key", "nvidia/test-model"),
 ])
 def test_onboarding_uses_the_provider_protocol(
         ab, fake_env, config, kind, endpoint, choice, model):
@@ -92,7 +92,7 @@ def test_shipped_optional_apis_do_not_require_keys_by_default(ab, secrets_dir):
     assert all(not p.enabled and not p.base_url_secret_key for p in optional)
     assert workspace.sandboxes[0].providers == ["nvidia"]
     nvidia = next(p for p in workspace.providers if p.name == "nvidia")
-    assert nvidia.model == "nvidia/nemotron-3.5-lightning-30b-a3b"
+    assert nvidia.model == ""  # the provider profile supplies the default
     assert nvidia.credential_secret_key == "api_key"
     assert set(ab.resolve_credentials(profiles, secrets_dir)["default"]) == {"nvidia", "brave"}
 
@@ -121,3 +121,17 @@ def test_each_official_api_reads_its_own_secret(ab, secrets_dir):
         provider = next(p for p in workspace.providers if p.name == kind)
         assert provider.credential_secret == f"inference-{kind}"
         assert provider.model == f"test-{kind}-model"
+
+
+@pytest.mark.parametrize("kind", ["nvidia", "openai", "anthropic"])
+def test_native_onboarding_uses_the_edited_provider_profile_default(ab, fake_env, config, kind):
+    provider = ab.Provider(name="inference", type=kind)
+    sandbox = ab.Sandbox(name="chat", type="openclaw", providers=[provider.name])
+    workspace = ab.Workspace(name="default", providers=[provider], sandboxes=[sandbox])
+    applier = ab.ProfileApplier(ab.Shell(), config, {"default": {provider.name: "test-key"}},
+                                {kind: "default_model: edited-profile-model\n"})
+    applier.apply([ab.Profile(name="test", workspaces=[workspace])])
+    scripts = [c[-1] for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "exec"]]
+    expected = ("--custom-model-id edited-profile-model" if kind == "nvidia"
+                else f"openclaw models set {kind}/edited-profile-model")
+    assert any(expected in script for script in scripts)

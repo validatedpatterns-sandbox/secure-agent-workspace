@@ -27,6 +27,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILES = ROOT / "charts" / "saw-bom" / "profiles"
+PROVIDER_PROFILES = ROOT / "charts" / "governance-policy" / "profiles"
 CATALOG_OUTPUTS = [ROOT / "charts" / "saw-users" / "files" / "profile-catalog.json",
                    ROOT / "charts" / "openshell-rhdh" / "files" / "profile-catalog.json"]
 TEMPLATE_OUTPUT = ROOT / "charts" / "openshell-rhdh" / "files" / "create-workspace.yaml"
@@ -50,10 +51,14 @@ def secret_fields(provider):
         fields.append({"key": provider["baseUrlSecretKey"], "kind": "url", "required": True,
                        "title": "Endpoint base URL (OpenAI-compatible, ending in /v1)"})
     if provider.get("modelSecretKey"):
-        field = {"key": provider["modelSecretKey"], "kind": "text", "required": True,
+        custom = provider.get("baseUrl") or provider.get("baseUrlSecretKey")
+        profile_default = (load(PROVIDER_PROFILES / f"{provider.get('type', '')}.yaml").get("default_model")
+                           if not custom else None)
+        field = {"key": provider["modelSecretKey"], "kind": "text",
+                 "required": not bool(provider.get("model") or profile_default),
                  "title": "Model"}
-        if provider.get("model"):
-            field["default"] = provider["model"]
+        if not field["required"]:
+            field["description"] = "Optional override. Leave empty to use the configured provider model."
         fields.append(field)
     return fields
 
@@ -227,6 +232,8 @@ def render_template(cat, for_user=False):
             for field in spec["fields"]:
                 name = form_name(sname, field["key"])
                 prop = {"title": f"{sname}: {field['title']}", "type": "string"}
+                if field.get("description"):
+                    prop["description"] = field["description"]
                 if field["kind"] == "secret":
                     prop["ui:field"] = "Secret"
                     prop["description"] = (f"Stored in Vault for your workspace only "
@@ -237,7 +244,8 @@ def render_template(cat, for_user=False):
                         prop["default"] = field["default"]
                     if field["kind"] == "url":
                         prop["pattern"] = "^https?://"
-                    string_data[f"{sname}.{field['key']}"] = "${{ parameters." + name + " }}"
+                    string_data[f"{sname}.{field['key']}"] = (
+                        "${{ parameters." + name + (" }}" if field.get("required") else " or '' }}"))
                 props[name] = prop
                 if field.get("required"):
                     required.append(name)

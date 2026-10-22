@@ -43,6 +43,8 @@ spec:
                 signed in with Keycloak, for you only: notebook (default), cuda-sandbox (cuda-dev)'}
             inference__api_key: {title: 'inference: API key', type: string, 'ui:field': Secret, description: Stored
                 in Vault for your workspace only (provider nvidia)}
+            inference__model: {title: 'inference: Model', type: string, description: Optional override.
+                Leave empty to use the configured provider model.}
             web_search__api_key: {title: 'web-search: API key', type: string, 'ui:field': Secret, description: Stored
                 in Vault for your workspace only (provider brave)}
           required: [inference__api_key, web_search__api_key]
@@ -63,8 +65,8 @@ spec:
         type: Opaque
         stringData: {action: create, token: '${{ secrets.backstageToken }}', profile: '${{ parameters.profile
             }}', inference.api_key: '${{ secrets.inference__api_key }}', inference.url: '${{ parameters.inference__url
-            }}', inference.model: '${{ parameters.inference__model }}', web-search.api_key: '${{ secrets.web_search__api_key
-            }}'}
+            }}', inference.model: '${{ parameters.inference__model or '''' }}', web-search.api_key: '${{
+            secrets.web_search__api_key }}'}
   - id: run
     name: Start the pipeline
     action: http:backstage:request

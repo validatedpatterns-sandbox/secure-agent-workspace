@@ -154,6 +154,20 @@ def test_missing_fields_are_named(portal, catalog):
         portal.parse_request({"profile": "custom-inference", "web-search.api_key": "b"}, catalog)
 
 
+@pytest.mark.parametrize("override", ["", "user-selected-model"])
+def test_model_is_stored_only_when_the_user_selects_one(portal, catalog, override):
+    _, secrets = portal.parse_request({
+        "profile": "data-science", "inference.api_key": "key", "inference.model": override,
+        "web-search.api_key": "search-key"}, catalog)
+    if override:
+        assert secrets["inference"]["model"] == override
+    else:
+        assert "model" not in secrets["inference"]
+    model = next(f for f in catalog["data-science"]["secrets"]["inference"]["fields"]
+                 if f["key"] == "model")
+    assert not model["required"] and "default" not in model
+
+
 def test_a_url_with_credentials_is_refused(portal, catalog):
     with pytest.raises(portal.PortalError, match="must be an http"):
         portal.parse_request({"profile": "custom-inference", "inference.api_key": "k",

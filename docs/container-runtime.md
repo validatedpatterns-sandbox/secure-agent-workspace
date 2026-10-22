@@ -75,13 +75,13 @@ Both can coexist in the same namespace.
 make saw-create \
   OPENSHELL_SAW_NAME=my-sandbox \
   CONTAINER_RUNTIME=podman \
-  PROVIDER=build MODEL=nvidia/nemotron-3.5-lightning-30b-a3b API_KEY=<nvapi-key>
+  PROVIDER=build API_KEY=<nvapi-key>
 
 # Docker compatibility runtime + NemoClaw
 make saw-create \
   OPENSHELL_SAW_NAME=my-sandbox \
   CONTAINER_RUNTIME=docker \
-  PROVIDER=build MODEL=nvidia/nemotron-3.5-lightning-30b-a3b API_KEY=<nvapi-key>
+  PROVIDER=build API_KEY=<nvapi-key>
 ```
 
 Switching an existing sandbox requires a values change and VM recreate:

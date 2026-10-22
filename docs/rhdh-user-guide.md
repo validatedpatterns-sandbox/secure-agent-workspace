@@ -167,8 +167,10 @@ oc logs -n saw-portal deploy/saw-workspaces-generator --tail=20
 
 1. In RHDH: **Create** → **Create or update my agent workspace** → **Choose**.
 2. **Profile**: pick one, e.g. `data-science`. The form now asks only for
-   that profile's keys:
+   that profile's settings:
    - `inference: API key`: the NVIDIA API key (build.nvidia.com);
+   - `inference: Model`: optional; leave blank to use the provider profile's
+     default, or enter a model name to override it for this workspace;
    - `web-search: API key`: the Brave Search API key.
 
    "Sandbox web UIs" lists the sandboxes that get their own route

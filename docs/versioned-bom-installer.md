@@ -459,12 +459,13 @@ delete`, and `provider profile delete` exist. `workspace create` and
 
 ## Official API providers
 
-The `data-science` profile uses NVIDIA
-`nvidia/nemotron-3.5-lightning-30b-a3b` by default. Its `default/notebook`
+The `data-science` profile uses NVIDIA's provider-profile `default_model`.
+Its `default/notebook`
 sandbox can also attach the optional `openai` and `anthropic` providers;
 both are disabled until enabled in the profile and listed in the sandbox's
 `providers`. They read separate `inference-openai` and `inference-anthropic`
-Secrets. Each Secret contains `provider`, `model`, and `api_key`; official
+Secrets. Each Secret contains `provider` and `api_key`; `model` is an optional
+override of the provider profile's default. Official
 APIs need no `url`. See the [provider setup steps](../README.md#supported-inference-providers).
 
 OpenClaw uses the built-in model catalog for these official APIs. A provider
@@ -472,6 +473,87 @@ with `baseUrl` or `baseUrlSecretKey` instead uses custom endpoint onboarding.
 OpenAI API-key chats use the OpenClaw runtime. In both cases, the sandbox
 receives placeholder keys and OpenShell substitutes the real credentials
 only for allowed requests.
+
+### Choosing a model
+
+Set the shared default in `default_model` in the provider profile under
+`charts/governance-policy/profiles/` and mirror it into
+`charts/openshell-saw/files/provider-profiles/`. These profiles are the only
+shipped defaults for NVIDIA, OpenAI, and Anthropic. The BOM, Secret template,
+and portal do not pin another default.
+
+For an explicit override, set `model` in the SAW-BOM provider definition or
+the provider's Secret. The shipped NVIDIA definition is:
+
+```yaml
+- name: nvidia
+  type: nvidia
+  nemoclawProvider: build
+  credentialSecret: inference
+  credentialSecretKey: api_key
+  modelSecretKey: model
+```
+
+`modelSecretKey: model` lets each SAW override that default with the `model`
+field in its `inference` Secret. Both NVIDIA workspaces (`default` and
+`cuda-dev`) read this override, as OpenAI and Anthropic do from their own
+Secrets. A missing or empty Secret field keeps an explicit BOM `model`, if
+one is set; otherwise the provider profile supplies the model. In the portal,
+leave the optional Model field blank to use this default, or enter an override.
+Custom endpoints require an explicit model and never inherit the official API
+provider's default.
+
+The installer resolves a sandbox's model in this order, with no hardcoded
+fallback anywhere:
+
+1. the sandbox's own `model`;
+2. the SAW-BOM provider's `model`, which its Secret's `model` field replaces
+   when `modelSecretKey` is set;
+3. `default_model` in the provider profile
+   (`charts/governance-policy/profiles/{nvidia,openai,anthropic}.yaml`, mirrored
+   in `charts/openshell-saw/files/provider-profiles/`). Change it to move every
+   SAW that names no model of its own — for example when a model is withdrawn.
+   The installer strips the field before importing a profile into the gateway,
+   which knows only endpoint policy.
+
+With no model from any of the three, the installer logs a warning and leaves
+the sandbox running without onboarding OpenClaw, rather than guessing.
+For a new SAW, `make saw-create ... PROVIDER=nvidia API_KEY=<key>` uses the
+profile default. Add `MODEL=<model-id>` to write an explicit Secret override.
+
+To switch an existing SAW to another model — say while the default one is
+unavailable — change only the Secret, then `make saw-restart`. How depends on
+who owns the Secret:
+
+- **Vault-managed SAWs** (the Validated Pattern flow, where `pattern-secrets`
+  creates an `inference` ExternalSecret): change the `model` field of the
+  `inference` entry in `~/values-secret-<pattern>.yaml` and run
+  `./pattern.sh make load-secrets`. External Secrets resyncs within its
+  refresh interval (15 s by default). A workspace created through the
+  self-service portal keeps its model in the portal's own Vault prefix, so
+  change it there instead.
+- **Portal-managed SAWs**: re-run the portal's workspace template with the new
+  model; it writes Vault, and External Secrets syncs from there.
+- **Standalone SAWs** (Secret created by `make saw-create`, no ExternalSecret):
+  patch the Secret directly.
+
+```bash
+oc patch secret inference -n saw-<name> --type=merge \
+-p '{"stringData":{"model":"<model-id>"}}'
+```
+
+Do not use `make saw-create` for a model-only change: it also re-runs
+`helm upgrade` for the SAW, and options you do not repeat on that command line
+fall back to their defaults (for example `governance.engine=interceptor` and
+disabled dashboard routes). Pass the SAW's original options if you use it
+anyway. Its Secret write merge-patches only the fields it is given, so an
+`API_KEY` rotation no longer drops an existing `model` override — but on a
+Vault-managed SAW that write is reverted on the next refresh.
+
+The governance profiles control allowed endpoints and binaries as well as
+carrying the installer model default. Choose a model served by the provider's
+allowed endpoint. Existing nonempty Secret or BOM models remain explicit
+overrides; remove them to follow the profile default after upgrading.
 
 ## Custom inference
 

@@ -2937,7 +2937,11 @@ class ProfileApplier:
             f"into workspace '{ws.name}'")
         with tempfile.TemporaryDirectory(prefix="saw-profile-") as tmp:
             path = Path(tmp) / f"{profile_id}.yaml"
-            path.write_text(self.provider_profiles[profile_id], encoding="utf-8")
+            # `default_model` is for this installer; OpenShell's profile parser
+            # knows nothing about it, so it never reaches the gateway.
+            doc = yaml.safe_load(self.provider_profiles[profile_id]) or {}
+            doc.pop("default_model", None)
+            path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
             result = self.cli("provider", "profile", "import", "-f", str(path), *ws_args(ws.name),
                               ok_if_exists=True, check=False)
         if not result.ok:
@@ -2950,6 +2954,17 @@ class ProfileApplier:
 
     # -- sandboxes -------------------------------------------------------
 
+    def model_for(self, provider, sb=None):
+        """The model a sandbox is onboarded with: its own, else the provider's
+        (which its Secret may have replaced), else the provider profile's
+        `default_model`. Every onboarding path resolves it the same way, so
+        provider selection and the two onboardings never disagree. Custom
+        endpoints must name their own model, not the official API's default."""
+        model = (sb.model if sb else "") or provider.model
+        if model or provider.base_url or provider.base_url_secret_key:
+            return model
+        return profile_default_model(self.provider_profiles.get(provider.type, ""))
+
     def find_provider(self, ws, names):
         """The provider an agent sandbox is onboarded with: one of the
         sandbox's own providers, preferring one with a model. Never another
@@ -2958,7 +2973,7 @@ class ProfileApplier:
         usable = [p for p in self.usable(ws) if not p.credential_free]
         if names:
             usable = [p for n in names for p in usable if p.name == n]
-        return next((p for p in usable if p.model), usable[0] if usable else None)
+        return next((p for p in usable if self.model_for(p)), usable[0] if usable else None)
 
     def sandbox_state(self, ws, sb):
         """'running', 'broken' (Error/Completed), 'deleting' or 'missing'."""
@@ -3520,8 +3535,9 @@ class ProfileApplier:
             "NEMOCLAW_PROVIDER": nc_provider,
             "NEMOCLAW_PROVIDER_KEY": credential,
         }
-        if sb.model or provider.model:
-            env["NEMOCLAW_MODEL"] = sb.model or provider.model
+        model = self.model_for(provider, sb)
+        if model:
+            env["NEMOCLAW_MODEL"] = model
         if PROVIDER_CRED_MAP.get(nc_provider):
             env[PROVIDER_CRED_MAP[nc_provider]] = credential
         result = self.sh.run(["nemoclaw", "onboard", "--fresh", "--non-interactive",
@@ -3563,7 +3579,13 @@ class ProfileApplier:
         # No /sandbox chown: OpenShell 0.1.x runs the workload without
         # capabilities (root in the container cannot even read /sandbox) and
         # already gives /sandbox to the image's user.
-        model = sb.model or provider.model or "nvidia/nemotron-3.5-lightning-30b-a3b"
+        model = self.model_for(provider, sb)
+        if not model:
+            log(f"WARN: no model for provider '{provider.name}'; set model on the sandbox or "
+                "provider, or default_model in its profile. Skipping OpenClaw onboarding")
+            self.install_tool_gate(ws, sb, enable=False)
+            self.install_keepalive(ws, sb)
+            return
         oc_env = OPENCLAW_EXEC_ENV
         # OpenShell 0.1.x: no inference.local. OpenClaw calls the provider's
         # own endpoint with the placeholder key this exec receives in the
@@ -5257,6 +5279,15 @@ def provider_profiles(installer_dir):
     for path in sorted(Path(installer_dir).glob("provider-profile-*.yaml")):
         found[path.name[len("provider-profile-"):-len(".yaml")]] = path.read_text(encoding="utf-8")
     return found
+
+
+def profile_default_model(profile_yaml):
+    """A provider profile's `default_model`: the model a sandbox gets when
+    neither it nor its provider (nor the provider's Secret) names one."""
+    try:
+        return (yaml.safe_load(profile_yaml) or {}).get("default_model") or ""
+    except yaml.YAMLError:
+        return ""
 
 
 def plan_for_user(cfg, profiles, creds, dashboard_script,

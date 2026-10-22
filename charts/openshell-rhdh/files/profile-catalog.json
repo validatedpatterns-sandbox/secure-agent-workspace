@@ -70,6 +70,13 @@
               "kind": "secret",
               "required": true,
               "title": "API key"
+            },
+            {
+              "description": "Optional override. Leave empty to use the configured provider model.",
+              "key": "model",
+              "kind": "text",
+              "required": false,
+              "title": "Model"
             }
           ],
           "provider": "nvidia",

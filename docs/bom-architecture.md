@@ -146,7 +146,7 @@ User → OpenClaw TUI/GUI
          ▼
   OpenClaw Gateway (inside sandbox, port 18789)
          │
-         │ model: nvidia/nemotron-3.5-lightning-30b-a3b
+         │ model: provider profile default, unless explicitly overridden
          │ baseUrl: https://integrate.api.nvidia.com/v1 (the provider's own endpoint)
          │ key: the placeholder in NVIDIA_API_KEY
          │

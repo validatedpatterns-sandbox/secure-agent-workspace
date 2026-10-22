@@ -182,6 +182,7 @@ elif op == "provider profile" and head[2] == "import":
     if doc["id"] in imported.get(ws, []):
         fail(f"Error: provider profile '{doc['id']}' already exists")
     imported.setdefault(ws, []).append(doc["id"])
+    state.setdefault("imported_profile_docs", {})[doc["id"]] = sorted(doc)
     print(f"Imported provider profile {doc['id']}")
 elif op == "provider profile" and head[2] == "delete":
     imported = state.setdefault("imported_profiles", {})

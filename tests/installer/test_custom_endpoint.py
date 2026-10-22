@@ -12,6 +12,15 @@ URL = "https://vllm.models.svc.cluster.local:8443/v1"
 MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 
 
+def test_custom_endpoint_does_not_inherit_the_official_api_model(ab):
+    applier = ab.ProfileApplier(ab.Shell(dry_run=True), {"mtlsGateway": "test"}, {},
+                                {"openai": "default_model: cloud-model\n"})
+    provider = ab.Provider(name="custom", type="openai", base_url=URL)
+    assert applier.model_for(provider) == ""
+    provider.model = MODEL
+    assert applier.model_for(provider) == MODEL
+
+
 @pytest.fixture
 def custom_secrets(secrets_dir):
     inference = secrets_dir / "inference"
@@ -96,12 +105,13 @@ def test_base_url_only_for_types_the_router_supports(ab):
         ab.validate_profiles(ab.parse_profiles(files))
 
 
-def test_data_science_profile_is_unchanged(ab, shipped_profile_files, secrets_dir):
-    """No url/model keys in the Secret: providers keep their profile model."""
+def test_data_science_profile_leaves_model_selection_to_the_provider_profile(
+        ab, shipped_profile_files, secrets_dir):
+    """No url/model keys in the Secret: the BOM does not pin a model."""
     profiles = ab.parse_profiles(shipped_profile_files)
     ab.resolve_credentials(profiles, secrets_dir)
     nvidia = next(p for p in profiles[0].workspaces[0].providers if p.name == "nvidia")
-    assert (nvidia.base_url, nvidia.model) == ("", "nvidia/nemotron-3.5-lightning-30b-a3b")
+    assert (nvidia.base_url, nvidia.model) == ("", "")
 
 
 def test_without_an_openai_profile_the_agent_is_not_onboarded_with_another_provider(

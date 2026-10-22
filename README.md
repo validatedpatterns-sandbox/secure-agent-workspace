@@ -313,9 +313,7 @@ make whoami                   # Verify identity
 read -r WEB_SEARCH_API_KEY < "$HOME/.brave-api-key"
 read -r API_KEY < "$HOME/.nvidia-api-key"
 export WEB_SEARCH_API_KEY API_KEY
-make saw-create \
-  PROVIDER=build \
-  MODEL=nvidia/nemotron-3.5-lightning-30b-a3b
+make saw-create PROVIDER=build
 unset API_KEY WEB_SEARCH_API_KEY
 ```
 
@@ -426,8 +424,12 @@ user access targets require `OPENSHELL_SAW_NAME`. `saw-list`, `status`, and
 `BUILD_NS=openshell-agents`, `KEYCLOAK_NS=saw-keycloak`, and
 `SAW_NS=saw-$OPENSHELL_SAW_NAME`. Manual builds stay in-cluster by default. To push, explicitly set
 `IMAGE_REPO` to your own namespace and `IMAGE_TAG` as needed; the upstream
-CI namespace is refused. For `saw-create`, set `PROVIDER`, `MODEL`, and
-`API_KEY` in the environment for keyed providers; `OWNER` and `OWNER_SUBJECT` select another owner. A new inference Secret needs `PROVIDER` and `MODEL`; `API_KEY` may be empty for a keyless provider. A repeat `saw-create` keeps an existing inference Secret when `API_KEY` is empty.
+CI namespace is refused. For `saw-create`, set `PROVIDER` and `API_KEY` in the
+environment for keyed providers. Omit `MODEL` to use the provider profile's
+default, or set it for an explicit override; custom endpoints require it.
+`OWNER` and `OWNER_SUBJECT` select another owner. A new inference Secret needs
+`PROVIDER`; `API_KEY` may be empty for a keyless provider. A repeat `saw-create`
+preserves Secret fields that are not supplied.
 
 `IMAGE_TAG=latest` selects the CI-built gateway disk used by `images-mirror`;
 `IMAGE_TAG=sha-<commit>` selects a particular CI build. The chart's in-VM BOM
@@ -471,8 +473,8 @@ The existing Python CLI has a smaller command set than Make.
 | Ollama (local) | `ollama` | `llama3` |
 | Custom OpenAI-compatible endpoint (vLLM, Ollama, ...) | `openai` + `ENDPOINT_URL` | the model the server serves; see [Custom inference provider](#custom-inference-provider) |
 
-The `data-science` profile defaults to NVIDIA
-`nvidia/nemotron-3.5-lightning-30b-a3b`. OpenAI and Anthropic are optional and
+The `data-science` profile uses the model configured in the NVIDIA provider
+profile's `default_model`. OpenAI and Anthropic are optional and
 disabled by default. To add either to the existing notebook with Option A:
 
 1. Set its `enabled: true` in
@@ -482,8 +484,8 @@ disabled by default. To add either to the existing notebook with Option A:
    keep `nvidia` first to retain the NVIDIA default.
 3. Add its separate `inference-openai` or `inference-anthropic` entry from
    `values-secret.yaml.template`, keeping the existing NVIDIA and web-search
-   entries. Each uses `provider`, `model`, and `api_key`; the API Secret's
-   `model` overrides the profile's model. Official APIs need no URL.
+   entries. Each uses `provider` and `api_key`; an optional `model` overrides
+   the provider profile's `default_model`. Official APIs need no URL.
 
 Select the provider's model in the notebook chat's model picker. These optional
 providers apply only to `default/notebook`; `cuda-dev` continues to use NVIDIA.

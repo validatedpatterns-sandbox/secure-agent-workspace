@@ -81,6 +81,15 @@ overwrites it from the filename anyway, but OpenShell's own parser requires it, 
 file also works with `openshell provider profile import -f <file>` (the SAW installer imports
 `brave.yaml` this way when governance is off).
 
+An inference profile also carries `default_model`: the model the installer uses
+when neither the sandbox, nor the SAW-BOM provider, nor its Secret names one.
+It is the only model setting in this file — everything else here is endpoint
+policy — and the installer strips it before any `openshell provider profile
+import`, so the gateway never sees it. Prefer the SAW-BOM provider or its
+Secret for a single SAW; change `default_model` to move every SAW that has no
+explicit model. See
+[Choosing a model](versioned-bom-installer.md#choosing-a-model).
+
 ```yaml
 id: github
 display_name: GitHub

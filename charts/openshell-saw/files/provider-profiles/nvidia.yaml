@@ -7,6 +7,9 @@ display_name: NVIDIA Endpoints
 description: NVIDIA API inference endpoints
 category: inference
 inference_capable: true
+# Model used when neither the SAW-BOM provider nor its Secret names one.
+# Change it here to move every SAW off a model that is unavailable.
+default_model: nvidia/nemotron-3.5-lightning-30b-a3b
 credentials:
   - name: api_key
     description: NVIDIA API key

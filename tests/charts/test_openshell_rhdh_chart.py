@@ -1,5 +1,6 @@
 """Render the self-service portal chart (charts/openshell-rhdh)."""
 import json
+import runpy
 import shutil
 import subprocess
 from pathlib import Path
@@ -60,6 +61,20 @@ def test_every_form_field_reaches_the_request(docs):
                 assert f"{secret}.{field['key']}" in string_data
                 if field["kind"] == "secret":
                     assert string_data[f"{secret}.{field['key']}"].startswith("${{ secrets.")
+
+
+@pytest.mark.parametrize("kind", ["nvidia", "openai", "anthropic"])
+def test_native_model_inputs_do_not_pin_profile_defaults(kind):
+    generator = runpy.run_path(str(ROOT / "scripts" / "saw-profile-catalog.py"))
+    fields = generator["secret_fields"]({"type": kind, "modelSecretKey": "model"})
+    model = next(f for f in fields if f["key"] == "model")
+    assert not model["required"] and "default" not in model
+
+
+def test_model_is_required_without_a_configured_default():
+    generator = runpy.run_path(str(ROOT / "scripts" / "saw-profile-catalog.py"))
+    fields = generator["secret_fields"]({"type": "unconfigured", "modelSecretKey": "model"})
+    assert next(f for f in fields if f["key"] == "model")["required"]
 
 
 def test_proxy_endpoints_only_post_to_the_portal_namespace(docs):

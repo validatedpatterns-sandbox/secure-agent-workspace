@@ -7,9 +7,9 @@ spec:
     - name: nvidia
       type: nvidia
       nemoclawProvider: build
-      model: nvidia/nemotron-3.5-lightning-30b-a3b
       credentialSecret: inference
       credentialSecretKey: api_key
+      modelSecretKey: model
     - name: brave
       type: brave
       credentialSecret: web-search
@@ -18,14 +18,12 @@ spec:
     - name: openai
       type: openai
       enabled: false
-      model: gpt-4o
       credentialSecret: inference-openai
       credentialSecretKey: api_key
       modelSecretKey: model
     - name: anthropic
       type: anthropic
       enabled: false
-      model: claude-sonnet-4-6
       credentialSecret: inference-anthropic
       credentialSecretKey: api_key
       modelSecretKey: model

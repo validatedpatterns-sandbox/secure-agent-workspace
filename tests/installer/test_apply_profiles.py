@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from conftest import harness_files
 
@@ -28,6 +29,7 @@ def _shipped_harness(ab):
 
 def make_applier(ab, config, creds, harness=None, **overrides):
     return ab.ProfileApplier(ab.Shell(), {**config, **overrides}, creds,
+                             {p.stem: p.read_text() for p in SHIPPED_PROFILES.glob("*.yaml")},
                              harness=harness if harness is not None else _shipped_harness(ab))
 
 
@@ -325,6 +327,7 @@ def test_provider_without_gateway_profile_is_skipped_not_fatal(ab, fake_env, con
     `provider create --type brave` failed the whole apply."""
     fake_env.without_profiles("brave")
     applier = make_applier(ab, config, creds)
+    applier.provider_profiles.pop("brave")
     applier.apply(profiles)
     state = fake_env.openshell_state()
     assert "default/brave" not in state["providers"]
@@ -339,6 +342,7 @@ def test_sandbox_is_created_without_a_skipped_provider(ab, fake_env, config, pro
     notebook = next(sb for sb in default_ws(ab, profiles).sandboxes if sb.name == "notebook")
     notebook.providers = ["nvidia", "brave"]
     applier = make_applier(ab, config, creds)
+    applier.provider_profiles.pop("brave")
     applier.apply(profiles)
     assert fake_env.openshell_state()["sandboxes"]["default/notebook"]["providers"] == ["nvidia"]
     assert applier.verify(profiles) == []
@@ -353,6 +357,10 @@ def test_other_provider_errors_still_fail(ab, fake_env, config, profiles, creds)
 # -- importing a shipped provider profile the gateway lacks ------------------
 
 SHIPPED_PROFILES = Path(__file__).resolve().parents[2] / "charts" / "openshell-saw" / "files" / "provider-profiles"
+
+
+def shipped_model(kind):
+    return yaml.safe_load((SHIPPED_PROFILES / f"{kind}.yaml").read_text())["default_model"]
 
 
 def applier_with_shipped_profiles(ab, config, creds):
@@ -397,6 +405,100 @@ def test_failed_profile_import_stops_the_apply(ab, fake_env, config, profiles, c
                                 harness=_shipped_harness(ab))
     with pytest.raises(ab.InstallerError, match="could not import the 'brave' provider profile"):
         applier.apply(profiles)
+
+
+def test_shipped_inference_profiles_carry_a_default_model(ab):
+    defaults = {p.stem: ab.profile_default_model(p.read_text())
+                for p in SHIPPED_PROFILES.glob("*.yaml")}
+    for kind in ("nvidia", "openai", "anthropic"):
+        assert isinstance(defaults[kind], str) and defaults[kind]
+    assert defaults["brave"] == ""      # not an inference provider
+
+
+@pytest.mark.parametrize("text", ["id: x\n", "", ": : :\n"])
+def test_a_profile_without_a_usable_default_model_yields_nothing(ab, text):
+    assert ab.profile_default_model(text) == ""
+
+
+def _clear_models(ab, profiles):
+    ws = next(ws for _, ws in ab.enabled_workspaces(profiles) if ws.name == "default")
+    for provider in ws.providers:
+        provider.model = ""
+    for sb in ws.sandboxes:
+        sb.model = ""
+
+
+def onboard_command(fake_env, sandbox="notebook"):
+    return next(c[-1] for c in fake_env.openshell_calls()
+                if c[:2] == ["sandbox", "exec"] and "onboard" in c[-1] and sandbox in c)
+
+
+def test_the_profile_default_model_is_used_when_nothing_else_names_one(
+        ab, fake_env, config, profiles, creds):
+    """The installer has no hardcoded model: the shipped profile carries it."""
+    _clear_models(ab, profiles)
+    applier_with_shipped_profiles(ab, config, creds).apply(profiles)
+    assert f"--custom-model-id {shipped_model('nvidia')}" in onboard_command(fake_env)
+
+
+def test_the_provider_model_wins_over_the_profile_default(
+        ab, fake_env, config, profiles, creds):
+    """A value the BOM (or its Secret) sets must beat the profile's default,
+    so the two have to differ for the test to prove anything."""
+    _clear_models(ab, profiles)
+    ws = next(ws for _, ws in ab.enabled_workspaces(profiles) if ws.name == "default")
+    next(p for p in ws.providers if p.name == "nvidia").model = "nvidia/from-bom"
+    applier_with_shipped_profiles(ab, config, creds).apply(profiles)
+    assert "--custom-model-id nvidia/from-bom" in onboard_command(fake_env)
+    assert shipped_model("nvidia") not in onboard_command(fake_env)
+
+
+def test_the_sandbox_model_wins_over_both(ab, fake_env, config, profiles, creds):
+    _clear_models(ab, profiles)
+    ws = next(ws for _, ws in ab.enabled_workspaces(profiles) if ws.name == "default")
+    next(p for p in ws.providers if p.name == "nvidia").model = "nvidia/from-bom"
+    next(sb for sb in ws.sandboxes if sb.name == "notebook").model = "nvidia/from-sandbox"
+    applier_with_shipped_profiles(ab, config, creds).apply(profiles)
+    assert "--custom-model-id nvidia/from-sandbox" in onboard_command(fake_env)
+
+
+def test_an_inference_provider_is_chosen_on_its_profile_default_alone(
+        ab, fake_env, config, profiles, creds):
+    """providers: [brave, nvidia] with NVIDIA's model only in its profile.
+    Picking brave would onboard a search provider and skip the agent."""
+    _clear_models(ab, profiles)
+    ws = next(ws for _, ws in ab.enabled_workspaces(profiles) if ws.name == "default")
+    notebook = next(sb for sb in ws.sandboxes if sb.name == "notebook")
+    notebook.providers = ["brave", "nvidia"]
+    applier_with_shipped_profiles(ab, config, creds).apply(profiles)
+    onboard = onboard_command(fake_env)
+    assert "--custom-provider-id nvidia" in onboard
+    assert f"--custom-model-id {shipped_model('nvidia')}" in onboard
+
+
+def test_nemoclaw_onboarding_uses_the_profile_default_model(
+        ab, fake_env, config, profiles, creds):
+    for _, ws in ab.enabled_workspaces(profiles):
+        for provider in ws.providers:
+            provider.model = ""
+        for sb in ws.sandboxes:
+            sb.model = ""
+    applier_with_shipped_profiles(ab, config, creds).apply(profiles)
+    calls = fake_env.other_calls("nemoclaw")
+    assert [c["model"] for c in calls] == [shipped_model("nvidia")]
+
+
+def test_default_model_is_stripped_before_the_gateway_sees_the_profile(
+        ab, fake_env, config, profiles, creds):
+    """OpenShell's own parser never meets a field only this installer reads."""
+    fake_env.without_profiles("brave")
+    docs = {p.stem: p.read_text() for p in SHIPPED_PROFILES.glob("*.yaml")}
+    docs["brave"] += "default_model: should-not-reach-the-gateway\n"
+    ab.ProfileApplier(ab.Shell(), config, creds, docs,
+                      harness=_shipped_harness(ab)).apply(profiles)
+    imported = fake_env.openshell_state()["imported_profile_docs"]
+    assert "default_model" not in imported["brave"]
+    assert "endpoints" in imported["brave"]
 
 
 def test_provider_profiles_are_read_from_the_installer_disk(ab, tmp_path):

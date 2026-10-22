@@ -17,7 +17,8 @@ GATE = ROOT / "charts" / "openshell-saw" / "files" / "installer"
 
 def applier_for(ab, config, creds, **changes):
     harness = {"bundles": ab.parse_harness_files(harness_files())}
-    return ab.ProfileApplier(ab.Shell(), {**config, **changes}, creds, harness=harness)
+    docs = {p.stem: p.read_text() for p in (GATE.parent / "provider-profiles").glob("*.yaml")}
+    return ab.ProfileApplier(ab.Shell(), {**config, **changes}, creds, docs, harness=harness)
 
 
 def test_agent_gate_files_come_from_read_only_volume(

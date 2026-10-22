@@ -142,6 +142,26 @@ def test_onboarding_quotes_what_comes_from_profiles(ab, fake_env, config, profil
     assert "--custom-model-id 'my model'\"'\"'s/v1'" in onboard
 
 
+def test_missing_model_skips_onboarding_and_keeps_sandbox_alive(
+        ab, fake_env, config, profiles, creds, capsys):
+    ws = next(ws for _, ws in ab.enabled_workspaces(profiles) if ws.name == "default")
+    for provider in ws.providers:
+        provider.model = ""
+    notebook = next(sb for sb in ws.sandboxes if sb.name == "notebook")
+    notebook.model = ""
+
+    applier = make_applier(ab, config, creds)
+    applier.provider_profiles = {}
+    applier.apply(profiles)
+
+    calls = [c for c in fake_env.openshell_calls() if "notebook" in c]
+    assert not any("openclaw onboard " in " ".join(c) for c in calls)
+    assert "default/notebook" in fake_env.openshell_state()["sandboxes"]
+    units = [c for c in fake_env.other_calls("sudo") if "tee" in c["args"]]
+    assert any("openshell-sandbox-notebook" in " ".join(c["args"]) for c in units)
+    assert "no model for provider 'nvidia'" in capsys.readouterr().out
+
+
 def test_an_unknown_provider_type_still_gets_the_keepalive(ab, fake_env, config, profiles, creds):
     for _, ws in ab.enabled_workspaces(profiles):
         for p in ws.providers:

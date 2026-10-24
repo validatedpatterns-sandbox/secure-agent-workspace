@@ -37,7 +37,7 @@ def test_help_lists_public_targets_once_without_make_warnings():
         "saw-vm-ssh saw-ssh saw-tui saw-gui saw-delete quickstart-delete "
         "governance-deploy governance-delete governance-profile-list "
         "governance-profile-add governance-profile-remove governance-profile-create "
-        "status check-oidc-ca"
+        "status check-oidc-ca catalog catalog-check git-hooks"
     ).split()
     for target in targets:
         assert len(re.findall(rf"^  {target}\s", plain, re.MULTILINE)) == 1

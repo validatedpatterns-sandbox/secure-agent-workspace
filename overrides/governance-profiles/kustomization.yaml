@@ -1,0 +1,22 @@
+# Provider profiles this deployment adds to the shipped governance catalog
+# (charts/governance-policy/profiles). Each is an OpenShell provider profile
+# in a file of its own here; list it under configMapGenerator.files and push.
+# A profile names the hosts a provider's credential may reach: one profile
+# per credential (several hosts in one profile share the key). The
+# governance-extra-profiles Application (values-prod.yaml) builds the
+# ConfigMap; the interceptor serves the shipped and extra profiles together.
+# A SAW-BOM provider uses a profile by its id: `type: <id>`; the sandbox
+# `inference:` of such a provider must set `protocol`. The id must not be a
+# shipped one. With governance off the gateway does not read this catalog.
+# See docs/custom-inference.md.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: openshell-agents
+generatorOptions:
+  disableNameSuffixHash: true
+  labels:
+    app.kubernetes.io/name: governance-policy
+configMapGenerator:
+  - name: governance-interceptor-extra-profiles
+    files:
+      - custom-inference.yaml

@@ -481,6 +481,201 @@ provider with `OPENAI_BASE_URL`, and OpenClaw calls that endpoint directly
 profile and put `provider: openai`, `model`, `url` and `api_key` in the
 `inference` Secret; see [Custom inference](custom-inference.md).
 
+## Providers, inference and sandbox environment
+
+OpenShell splits the concerns, and the BOM follows it
+([providers](https://docs.nvidia.com/openshell/v0.1.2/how-it-works/providers/overview),
+[inference](https://docs.nvidia.com/openshell/v0.1.2/how-it-works/inference),
+[sandboxes](https://docs.nvidia.com/openshell/v0.1.2/how-it-works/sandboxes/overview)):
+
+| Concept | Where | Owns |
+|---|---|---|
+| provider profile | `charts/governance-policy/profiles/<type>.yaml` | the hosts a credential may reach, the credential names and the env vars they surface as |
+| provider | `providers.yaml` | which profile (`type`) and which Secret keys hold its credentials |
+| inference | `sandbox.yaml` `inference:` | how the agent reaches its model: provider, protocol, endpoint, model, timeout |
+| sandbox | `sandbox.yaml` | image, type, harness, attached providers, ordinary environment |
+
+*"Provider attachment does not select or rewrite a model"*: the sandbox gets
+a placeholder credential, the proxy puts in the real value for the profile's
+endpoints, and the agent's own configuration says which endpoint and model.
+
+### Inputs
+
+Wherever a value may come from a Secret, it is written the Kubernetes way:
+
+```yaml
+model:
+  secretKeyRef: {name: inference, key: model}   # /run/saw/secrets/inference/model
+  default: meta-llama/Llama-3.1-8B-Instruct     # used when the key is absent
+  required: false                               # default: required when no default
+  title: Model (notebook)                       # the RHDH form's label
+```
+
+A literal (`model: llama-3.1-8b`) is fixed by the profile. The RHDH "create
+workspace" form asks for every `secretKeyRef` input: `title` is its label,
+`default` pre-fills it, and it is required exactly when the installer would
+refuse an absent value, so the form and the installer never disagree (an
+empty `default: ""` makes a field optional). The Secret must be mounted on
+the VM: `inference.secretName` or `additionalProviderSecrets` in the
+openshell-saw values, which `saw-users` sets from the catalog.
+
+### `inference:` on a sandbox
+
+```yaml
+sandboxes:
+  - name: notebook
+    type: openclaw
+    providers: [internal-llm, github]
+    inference:
+      providerRef: internal-llm       # the provider whose credential the agent uses
+      protocol: openai                # optional: openai | anthropic; implied by
+                                      # the provider's type when that is a known one
+      baseUrl:                        # optional; the endpoint
+        secretKeyRef: {name: inference, key: url}
+      model:
+        secretKeyRef: {name: inference, key: model}
+      timeoutSeconds: "300"           # optional
+```
+
+- `providerRef` names one of the sandbox's own providers; the installer never
+  guesses the inference provider from the attachment order or a
+  provider-level model.
+- `protocol` is how the agent speaks (OpenAI chat completions or Anthropic
+  Messages). The provider's type implies it for the built-in types
+  (`nvidia`, `openai`, `codex` → `openai`; `anthropic`, `claude-code` →
+  `anthropic`), so it is usually left out. A governed profile of your own
+  for another host (`vllm-prod`, say) has no implied protocol: set
+  `protocol: openai` there. The profile decides which hosts the key may
+  reach; the protocol decides how the agent talks to them.
+- Without `baseUrl`, the agent uses the provider type's own API (NVIDIA's
+  for `nvidia`), else the protocol's official one (`api.openai.com`,
+  `api.anthropic.com`). An official API (`openai`, `anthropic` providers) is
+  onboarded natively in OpenClaw; any other endpoint as a custom one. A
+  `baseUrl` is validated (http(s), no localhost, no credentials, query or
+  fragment) and never echoed.
+- NemoClaw sandboxes get the model as `NEMOCLAW_MODEL`. The provider name
+  NemoClaw expects is derived from the provider `type` (`nvidia` → `build`;
+  others pass through); `nemoclawProvider` on a provider overrides it.
+- Without an `inference:` block the older fields apply: the sandbox `model`,
+  the provider's `model`/`modelSecretKey`/`baseUrlSecretKey`.
+
+### `env:` on a sandbox
+
+```yaml
+    env:
+      HF_HUB_OFFLINE: {value: "1"}                                 # literal
+      PROJECT: {secretKeyRef: {name: inference, key: project}, default: ""}
+```
+
+The sandbox's ordinary environment, passed as `sandbox create --env` so every
+process in the sandbox has it. Names follow OpenShell's rule
+(`[A-Za-z_][A-Za-z0-9_]*`, `OPENSHELL_*` reserved); values are one line of
+at most 8 KiB.
+
+- **Not for credentials.** The agent can read sandbox env. A name that is a
+  provider credential variable, or any `env_vars` name of an attached
+  provider's profile (`GITHUB_TOKEN`, `GH_TOKEN`, ...), is refused -- for
+  an existing sandbox too (the check runs before anything on the gateway
+  changes). Inference settings (`*_BASE_URL`, `MODEL`) belong in
+  `inference:`.
+- **Changing the env recreates the sandbox.** OpenShell fixes a sandbox's
+  environment at `sandbox create` (no update; `exec --env` is per command),
+  so the installer keeps the env's digest in the sandbox's
+  `saw.redhat.com/env` label and, when the profile's env differs
+  (a changed, added or removed variable), recreates it, carrying `/sandbox`
+  over. Open sessions end; files outside `/sandbox` are not kept. Inference
+  changes need no recreation: the agent is onboarded again.
+
+  The files are never put at risk: `/sandbox` is archived and checksummed
+  in the sandbox, downloaded to `<state dir>/sandbox-archives/` and
+  verified; if any of that fails the apply fails and the sandbox is left as
+  it was. Only the installer's own mounts are left out of the archive, each
+  by its exact path (`harness/`, `.saw/trusted/`, `.saw/audit/`), never by
+  name, so a user's `project/harness/` is kept. Only then is the pending
+  restore recorded (`<state dir>/sandbox-migrations.json`, with the env
+  labels of the sandbox it came from and of its replacement) and the
+  sandbox deleted. After the new sandbox is created the archive is
+  uploaded, verified, unpacked and compared against the archive
+  (`tar -df`); a failure fails the apply and the record stays, so the next
+  apply finishes the restore. Every `sandbox create` stamps a random
+  `saw.redhat.com/instance` label, and the record names the original's and
+  the replacement's instance: the restore goes only into the sandbox with
+  the replacement's instance, never by env (a desired env can be rolled
+  back, which would make an empty replacement look like the original). If
+  the original is still running on the next apply (the delete failed, or
+  the installer stopped before it), it may hold newer work than the
+  archive, so it is archived again (the old archive replaced only once the
+  new one verified) and the delete retried; nothing is ever restored over
+  it. Identity is decided strictly, from the two strong signals only: the
+  instance label this installer stamps at create and the gateway's own id
+  when the CLI prints one. Every signal known on both sides is compared
+  and any that differs is a veto (matching instance labels never hide a
+  conflicting gateway id); a match needs an agreeing strong signal. An env
+  label never establishes identity. A running sandbox that is neither the
+  original nor the replacement, or whose labels cannot be read while a
+  restore is pending, fails the apply (the error names the archive and the
+  record); the installer never guesses with a user's files, and never
+  reports success while a restore is pending. A sandbox from before the
+  instance label, on a CLI that prints no id, therefore cannot be
+  recovered automatically after a failed delete: the apply says so and
+  what to do. A pending recreation's replacement is created with the env
+  the profile wants now and restored once; there is no intermediate
+  sandbox, and a successful apply always ends with the current env. A
+  sandbox that reports an error is given time to recover before any of
+  this is decided, so a recovering replacement still gets its restore. The
+  record and the archive are removed in exactly one place: after the
+  restored files verify.
+- **`inference.timeoutSeconds`** is OpenClaw's per-provider HTTP request
+  timeout (`models.providers.<provider type>.timeoutSeconds`); it is unset
+  again when the field is removed (OpenClaw's onboarding keeps an existing
+  provider's settings). NemoClaw's own onboarding has no such setting; the
+  OpenClaw gateway it runs gets it.
+
+### Credentials by name
+
+A provider normally has one credential (`credentialSecretKey`). A type whose
+profile declares several lists them by the profile's credential name:
+
+```yaml
+- name: tk
+  type: twokey
+  credentialSecret: twokey
+  credentials:
+    api_key:    {secretKey: key}                   # the profile's credentials[].name
+    app_secret: {secretKey: secret, title: App secret}
+```
+
+Each is read from the same Secret and passed as its own `--credential ENV`,
+`ENV` being the env var that credential declares in the profile. Names are
+checked against the profile before anything changes; reordering a profile's
+credentials cannot change which Secret key is used. Values never appear in
+argv or logs. Every credential is a (secret) field of the RHDH form.
+
+### Credential environment variable
+
+The env var the installer passes a provider's credential through is read from
+the provider's **profile** (`credentials[0].env_vars[0]` in
+`charts/governance-policy/profiles/<type>.yaml`), falling back to a built-in
+default when no profile ships for the type. So a profile-backed type such as
+`github`, `slack` or `gmail` can be used as a BOM provider without an installer
+change, and validation accepts a provider type whose profile ships with the
+chart. A profile lists `env_vars` as a list so the gateway can expose the same
+credential under several names inside the sandbox (for example `GITHUB_TOKEN`
+and `GH_TOKEN`); the installer passes the value through the first, and the
+gateway exposes all of them.
+
+A type that is neither built in nor shipped is a deployment's own profile
+(`overrides/governance-profiles/<id>.yaml`, served by the governance
+interceptor). With governance on, load-time validation lets such a type
+through (it must be a DNS label) and `adopt_governed_profiles` resolves it
+against the gateway's live catalog before any provider is created: the
+served profile becomes the profile doc, so the credential env var and the
+named credentials come from it exactly as from a shipped file. A type the
+catalog does not serve fails the apply, naming the directory; nothing is
+created. With governance off the shipped profiles are the whole catalog and
+such a type is refused at load. A sandbox `inference:` on such a provider
+must state `protocol`.
+
 ## Moving to a new OpenShell release series (0.0.x -> 0.1.x)
 
 OpenShell 0.1.0 cannot upgrade 0.0.x state in place. When `install` replaces

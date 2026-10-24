@@ -323,9 +323,11 @@ def parse_request(data, catalog):
         values = {}
         for field in spec.get("fields", []):
             value = (data.get(f"{name}.{field['key']}") or "").strip()
-            if not value and field.get("default"):
+            if not value and "default" in field:
                 value = field["default"]
             if not value:
+                # Absent: an error when required, else left out of the Secret
+                # (the installer then uses the profile's default, if any).
                 if field.get("required"):
                     missing.append(f"{name}.{field['key']}")
                 continue

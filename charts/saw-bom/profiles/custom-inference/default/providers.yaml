@@ -4,18 +4,15 @@ metadata:
   profile: custom-inference
 spec:
   providers:
-    # OpenShell's `openai` provider type reaches any OpenAI-compatible server:
-    # the gateway's inference router calls OPENAI_BASE_URL with the key, and
-    # sandboxes use https://inference.local/v1 without ever seeing the key.
-    # The base URL and model come from the `inference` Secret (provider: openai).
+    # The deployment's own provider profile for its OpenAI-compatible server
+    # (overrides/governance-profiles/custom-inference.yaml): it names the
+    # host the key may reach. A provider only holds the credential; the
+    # endpoint, model and timeout are the sandbox's `inference:` settings
+    # (sandbox.yaml), read from the same `inference` Secret.
     - name: custom
-      type: openai
+      type: custom-inference
       credentialSecret: inference
       credentialSecretKey: api_key
-      baseUrlSecretKey: url
-      modelSecretKey: model
-      # Self-hosted models can take longer than OpenShell's 60 s default.
-      inferenceTimeout: 300
     - name: brave
       type: brave
       credentialSecret: web-search

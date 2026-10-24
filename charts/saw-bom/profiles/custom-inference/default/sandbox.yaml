@@ -11,3 +11,23 @@ spec:
       image: quay.io/aipcc/base-images/agentic/openclaw@sha256:896d1526ee29b53167034ba65d1c758c8da777f441ed094e19f3bcf6d7445c61
       providers:
         - custom
+      # How the agent reaches its model: the `custom` provider's credential,
+      # the OpenAI protocol (stated: the installer cannot infer it for a
+      # deployment's own profile type), and the endpoint and model from the
+      # `inference` Secret (the RHDH form asks for both). The provider's
+      # profile must name the endpoint's host (docs/custom-inference.md).
+      inference:
+        providerRef: custom
+        protocol: openai
+        baseUrl:
+          secretKeyRef:
+            name: inference
+            key: url
+          title: Endpoint base URL (OpenAI-compatible, ending in /v1)
+        model:
+          secretKeyRef:
+            name: inference
+            key: model
+          title: Model
+        # Self-hosted models can take longer than the agent's default.
+        timeoutSeconds: "300"

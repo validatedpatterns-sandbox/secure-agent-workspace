@@ -56,6 +56,15 @@ spec:
           configMap:
             name: governance-interceptor-policy
         - name: profiles
-          configMap:
-            name: governance-interceptor-profiles
+          # The shipped catalog plus the deployment's own profiles
+          # (overrides/governance-profiles, the governance-extra-profiles
+          # app). The extra ConfigMap is optional: with no extra profiles the
+          # app renders nothing and the pod still starts.
+          projected:
+            sources:
+              - configMap:
+                  name: governance-interceptor-profiles
+              - configMap:
+                  name: {{ .Values.extraProfilesConfigMap }}
+                  optional: true
 {{- end }}

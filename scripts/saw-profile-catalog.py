@@ -17,6 +17,11 @@ Helm chart can only read its own files:
 
     scripts/saw-profile-catalog.py            write both files
     scripts/saw-profile-catalog.py --check    fail when they are stale (CI)
+    scripts/saw-profile-catalog.py --list     print the files it writes
+
+`make catalog` runs it. Adding a profile needs nothing else: the pre-commit
+hook (`make git-hooks`) and the Profile catalog workflow regenerate these
+files when charts/saw-bom/profiles changes.
 """
 import argparse
 import json
@@ -41,11 +46,34 @@ def load(path):
     return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
 
+def input_field(src, kind, fallback_title):
+    """A form field for a typed input ({secretKeyRef: {name, key}, default?,
+    required?, title?}), as the installer resolves it (resolve_input): the
+    field is required when it has no default, unless `required` says
+    otherwise; a default is kept even when empty, so the form and the
+    installer agree on what an absent value means."""
+    field = {"key": src["secretKeyRef"]["key"], "kind": kind,
+             "required": bool(src.get("required", "default" not in src)),
+             "title": src.get("title") or fallback_title}
+    if "default" in src and src["default"] is not None:
+        field["default"] = str(src["default"])
+    return field
+
+
 def secret_fields(provider):
     """The fields a provider reads from its Secret, as the installer does
-    (resolve_credentials): the key, and optionally a base URL and a model."""
-    fields = [{"key": provider.get("credentialSecretKey", "api_key"), "kind": "secret",
-               "required": True, "title": "API key"}]
+    (resolve_credentials): the credential(s), and optionally a base URL and
+    a model (the older provider-level fields)."""
+    creds = provider.get("credentials")
+    if isinstance(creds, dict) and creds:
+        fields = []
+        for i, (cname, entry) in enumerate(creds.items()):
+            fields.append({"key": entry["secretKey"], "kind": "secret", "required": True,
+                           "title": entry.get("title") or ("API key" if i == 0 else
+                                                          f"Credential ({cname})")})
+    else:
+        fields = [{"key": provider.get("credentialSecretKey", "api_key"), "kind": "secret",
+                   "required": True, "title": "API key"}]
     if provider.get("baseUrlSecretKey"):
         fields.append({"key": provider["baseUrlSecretKey"], "kind": "url", "required": True,
                        "title": "Endpoint base URL (OpenAI-compatible, ending in /v1)"})
@@ -56,6 +84,31 @@ def secret_fields(provider):
             field["default"] = provider["model"]
         fields.append(field)
     return fields
+
+
+def secret_ref(src):
+    """(Secret name, key) of a {secretKeyRef: {name, key}} input, or None."""
+    ref = src.get("secretKeyRef") if isinstance(src, dict) else None
+    if isinstance(ref, dict) and ref.get("name") and ref.get("key"):
+        return ref["name"], ref["key"]
+    return None
+
+
+def sandbox_fields(sandbox):
+    """(secret, field) for each input a sandbox reads from a Secret, as the
+    installer does: its `inference:` settings (baseUrl: a URL field; model and
+    timeoutSeconds: text) and its `env:` entries. Literals are fixed by the
+    profile and not asked for."""
+    inference = sandbox.get("inference") or {}
+    for key, kind, title in (("baseUrl", "url", "Endpoint base URL"),
+                             ("model", "text", "Model"),
+                             ("timeoutSeconds", "text", "Request timeout (seconds)")):
+        src = inference.get(key)
+        if secret_ref(src):
+            yield secret_ref(src)[0], input_field(src, kind, f"{title} ({sandbox['name']})")
+    for name, src in (sandbox.get("env") or {}).items():
+        if secret_ref(src):
+            yield secret_ref(src)[0], input_field(src, "text", str(name))
 
 
 def catalog():
@@ -89,6 +142,14 @@ def catalog():
                                            {"providers": [], "fields": []})
                 entry["providers"] = sorted(set(entry["providers"]) | {prov.get("type", "")})
                 for f in secret_fields(prov):
+                    if f["key"] not in {x["key"] for x in entry["fields"]}:
+                        entry["fields"].append(f)
+            # The inputs a sandbox reads from a Secret (inference, env).
+            for sb in (load(wdir / "sandbox.yaml").get("spec") or {}).get("sandboxes") or []:
+                if not sb.get("enabled", True):
+                    continue
+                for secret, f in sandbox_fields(sb):
+                    entry = secrets.setdefault(secret, {"providers": [], "fields": []})
                     if f["key"] not in {x["key"] for x in entry["fields"]}:
                         entry["fields"].append(f)
         for entry in secrets.values():
@@ -233,10 +294,11 @@ def render_template(cat, for_user=False):
                                            f"(provider {spec['provider'] or '/'.join(spec['providers'])})")
                     string_data[f"{sname}.{field['key']}"] = "${{ secrets." + name + " }}"
                 else:
-                    if field.get("default"):
+                    if "default" in field:
                         prop["default"] = field["default"]
                     if field["kind"] == "url":
-                        prop["pattern"] = "^https?://"
+                        # An optional URL may be left blank.
+                        prop["pattern"] = "^https?://" if field.get("required") else "^(https?://.*)?$"
                     string_data[f"{sname}.{field['key']}"] = "${{ parameters." + name + " }}"
                 props[name] = prop
                 if field.get("required"):
@@ -374,7 +436,14 @@ def render_delete_template(for_user=False):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--check", action="store_true", help="fail when an output is stale")
+    parser.add_argument("--list", action="store_true",
+                        help="print the files this script writes, one per line, and exit")
     args = parser.parse_args(argv)
+    if args.list:
+        for path in (*CATALOG_OUTPUTS, TEMPLATE_OUTPUT, DELETE_TEMPLATE,
+                     ADMIN_TEMPLATE_OUTPUT, ADMIN_DELETE_TEMPLATE):
+            print(path.relative_to(ROOT))
+        return 0
     text = render()
     outputs = [(path, text) for path in CATALOG_OUTPUTS]
     outputs.append((TEMPLATE_OUTPUT, render_template(json.loads(text))))
@@ -393,8 +462,8 @@ def main(argv=None):
             path.write_text(text, encoding="utf-8")
             print(f"wrote {path.relative_to(ROOT)}")
     if stale:
-        print("stale profile catalog (run scripts/saw-profile-catalog.py): " + ", ".join(stale),
-              file=sys.stderr)
+        print("stale profile catalog (run `make catalog`, or scripts/saw-profile-catalog.py): "
+              + ", ".join(stale), file=sys.stderr)
         return 1
     return 0
 

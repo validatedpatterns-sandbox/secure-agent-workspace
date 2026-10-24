@@ -1021,7 +1021,7 @@ def test_installer_disk_ships_provider_profiles(default_docs, ab, tmp_path):
     assert data["provider-profile-brave.yaml"] == (SAW_PROFILES / "brave.yaml").read_text()
     for key, value in data.items():
         (tmp_path / key).write_text(value)
-    assert set(ab.provider_profiles(tmp_path)) == {"anthropic", "brave", "nvidia", "openai"}
+    assert set(ab.provider_profiles(tmp_path)) == {"anthropic", "brave", "gmail", "nvidia", "openai", "slack"}
 
 
 def test_create_script_passes_the_keycloak_it_finds():
@@ -1043,7 +1043,7 @@ def test_secret_template_matches_the_default_profile():
         fields = secrets[p["credentialSecret"]]
         assert p["credentialSecretKey"] in fields, p["name"]
         configured = fields.get("provider", {}).get("value")
-        assert configured in (p["type"], p.get("nemoclawProvider")), (p["name"], configured)
+        assert configured in (p["type"], {"nvidia": "build"}.get(p["type"])), (p["name"], configured)
 
 
 def test_custom_inference_profile_validates_in_the_shipped_installer(tmp_path):

@@ -199,9 +199,15 @@ Two deployment paths are available:
 Deploys everything — operators, Vault, ESO, Keycloak, secrets, and a default sandbox — via ArgoCD.
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/validatedpatterns-sandbox/secure-agent-workspace.git
+# 1. Fork, then clone your fork. Argo CD deploys from the branch you push
+# (users, profiles, endpoints are files in this repository), so GitOps
+# changes need a remote you can write to:
+# https://github.com/validatedpatterns-sandbox/secure-agent-workspace/fork
+# (Cloning upstream directly also installs; then add users outside git,
+# see step 7.)
+git clone https://github.com/<your-github-user>/secure-agent-workspace.git
 cd secure-agent-workspace
+git remote add upstream https://github.com/validatedpatterns-sandbox/secure-agent-workspace.git
 
 # 2. Log in to OpenShift with cluster-admin
 oc login --server=https://api.<cluster>:6443 -u <user>
@@ -230,18 +236,33 @@ make images-mirror
 make check-oidc-ca
 
 # 6. Deploy the pattern (runs inside the VP utility container)
-# NOTE: The deploying branch must exist on the remote (origin).
+# NOTE: The deploying branch must exist on your fork (origin): the Pattern
+# CR points Argo CD at it, and every later change (steps 7+) is a push there.
 # pattern.sh forwards TARGET_BRANCH and TARGET_ORIGIN (not TARGET_REVISION).
 #   export TARGET_BRANCH=main TARGET_ORIGIN=origin
 ./pattern.sh make install
 
-# 7. Authenticate and configure the CLI
+# 7. Add your first user. The pattern ships overrides/saw-users.yaml with
+# `users: []`, so no workspace VM exists yet. Add an entry for the account
+# (a lowercase DNS label, at most 19 characters), push it to the deploying
+# branch, and create the Keycloak account; Argo CD then builds saw-<name>.
+#   users:
+#     - name: alice
+git add overrides/saw-users.yaml && git commit -m "Add alice" && git push
+make keycloak-add-users       # creates the account; password in a Secret
+oc -n vp-gitops get application saw-alice   # wait until Synced/Healthy
+make saw-logs OPENSHELL_SAW_NAME=alice      # until "apply: Done"
+# Without a fork: users create their own workspace in the self-service
+# portal (Red Hat Developer Hub, docs/rhdh-user-guide.md), or create one
+# outside GitOps with `make saw-create OPENSHELL_SAW_NAME=alice` (Option B).
+
+# 8. Authenticate and configure the CLI
 make login                    # Opens the browser for Keycloak sign-in
 export OPENSHELL_SAW_NAME=alice          # VM alice in namespace saw-alice
 make saw-configure
 openshell gateway login $OPENSHELL_SAW_NAME   # Authenticate CLI with gateway
 
-# 8. Verify
+# 9. Verify
 # The first command lists the default workspace; the second lists cuda-dev.
 openshell sandbox list
 openshell sandbox list --workspace cuda-dev
@@ -469,7 +490,7 @@ The existing Python CLI has a smaller command set than Make.
 | NVIDIA Build | `build` | `meta/llama-3.3-70b-instruct` |
 | OpenRouter | `openrouter` | `anthropic/claude-sonnet-4-6` |
 | Ollama (local) | `ollama` | `llama3` |
-| Custom OpenAI-compatible endpoint (vLLM, Ollama, ...) | `openai` + `ENDPOINT_URL` | the model the server serves; see [Custom inference provider](#custom-inference-provider) |
+| Custom OpenAI-compatible endpoint (vLLM, Ollama, ...) | `custom-inference` + `ENDPOINT_URL` | the model the server serves; see [Custom inference provider](#custom-inference-provider) |
 
 The `data-science` profile defaults to NVIDIA
 `nvidia/nemotron-3.5-lightning-30b-a3b`. OpenAI and Anthropic are optional and
@@ -490,22 +511,15 @@ providers apply only to `default/notebook`; `cuda-dev` continues to use NVIDIA.
 
 #### Custom inference provider
 
-Use a model server of your own (vLLM, Ollama, or any OpenAI-compatible API) instead of a cloud provider. The installer creates an `openai` provider with the endpoint's base URL and onboards OpenClaw against that URL. OpenShell 0.1.x has no inference routing: the agent sends a placeholder key, and the sandbox proxy puts in the real one only for the hosts the provider profile names, so the profile must name your endpoint's host (see [docs/custom-inference.md](docs/custom-inference.md)).
+Use a model server of your own (vLLM, Ollama, or any OpenAI-compatible API) instead of a cloud provider. OpenShell 0.1.x has no inference routing: the agent calls the endpoint itself with a placeholder key, and the sandbox proxy puts in the real one only for the hosts the provider's **profile** names. The pattern cannot know your host, so you add a profile for it: a plain OpenShell profile file in `overrides/governance-profiles/` (an example, `custom-inference.yaml`, is shipped), served to every gateway by the `governance-extra-profiles` application. The `custom-inference` SAW-BOM profile uses it (`type: custom-inference`), reads the URL and model from the `inference` Secret, and onboards OpenClaw against that URL (see [docs/custom-inference.md](docs/custom-inference.md)).
 
-Select the `custom-inference` SAW-BOM profile and give the endpoint's URL, model and key.
-
-**Option A (Validated Pattern)** — in `~/values-secret-secure-agent-workspace.yaml`, use the commented custom example of the `inference` secret (`provider: openai`, `model`, `url`, `api_key`), and select the profile in `charts/saw-bom/values.yaml` (committed to the branch the pattern deploys):
-
-```yaml
-profiles:
-  - custom-inference
-```
+**Option A (Validated Pattern)** — set your host in `overrides/governance-profiles/custom-inference.yaml` and, for a host outside the cluster, in `egress.extraAllow` (`overrides/saw-users.yaml`); give the user entry `profiles: [custom-inference]`; in `~/values-secret-secure-agent-workspace.yaml` use the commented custom example of the `inference` secret (`url`, `model`, `api_key`). Push, `./pattern.sh make load-secrets`, restart the VM.
 
 **Option B (Quickstart)** — one command:
 
 ```bash
 make saw-create OPENSHELL_SAW_NAME=alice PROFILES=custom-inference \
-  PROVIDER=openai MODEL=<served model> \
+  PROVIDER=custom-inference MODEL=<served model> \
   ENDPOINT_URL=http://vllm.<namespace>.svc:8000/v1 \
   API_KEY=<key>          # use API_KEY='' if the server needs no key
 ```
@@ -513,8 +527,8 @@ make saw-create OPENSHELL_SAW_NAME=alice PROFILES=custom-inference \
 Notes:
 
 - The **gateway VM** calls the URL, not your laptop: use a cluster Service or Route host. `localhost` is refused.
-- With governance on, the `openai` provider type must be in the governance catalog (`charts/governance-policy/profiles/openai.yaml`, shipped with the chart).
-- Self-hosted models can be slow; the profile sets a 300-second inference timeout.
+- Governance must be on: the `custom-inference` profile reaches the gateway through the governance catalog. The installer refuses the apply, naming `overrides/governance-profiles`, until the profile is served.
+- Self-hosted models can be slow; the profile sets a 300-second inference timeout (`inference.timeoutSeconds`).
 
 Details: [docs/custom-inference.md](docs/custom-inference.md).
 

@@ -262,14 +262,39 @@ controller runs with a global `--policy`; the default allows it.)
 - `charts/saw-users/files/profile-catalog.json` and
   `charts/openshell-rhdh/files/profile-catalog.json`: each profile's
   workspaces and sandboxes (with their UI flag), and each Secret its providers
-  read with the fields it needs (`credentialSecretKey`, and `baseUrlSecretKey`
-  / `modelSecretKey` when set);
+  read with the fields it needs: the credential (`credentialSecretKey`, or each
+  entry of a `credentials:` mapping), `baseUrlSecretKey` / `modelSecretKey`
+  when set, and every `secretKeyRef` input of a sandbox's `inference:` and
+  `env:` (labelled by its `title`, pre-filled with its `default`, required
+  exactly when the installer would refuse an absent value);
 - `charts/openshell-rhdh/files/create-workspace.yaml`: the RHDH template. It
   lists the profiles, and for the chosen one asks only for its fields. API
   keys use RHDH's Secret field, so they are not stored with the task.
 
-Run it after changing a profile. `tests/charts/test_saw_users_chart.py`
-fails when the files are stale.
+#### Adding a profile
+
+Add its directory under `charts/saw-bom/profiles/<name>/` (`workspace.yaml`,
+`providers.yaml`, `sandbox.yaml` per workspace). Nothing else needs editing:
+the form, the pipelines' catalog and `saw-users` are regenerated from it.
+
+- **Locally**: run `make git-hooks` once per clone. A commit that touches
+  `charts/saw-bom/profiles/` (or the generator) then regenerates the files and
+  adds them to the commit. `make catalog` regenerates them by hand;
+  `make catalog-check` fails when they are stale.
+- **In CI**: the Profile catalog workflow
+  (`.github/workflows/profile-catalog.yml`) regenerates them on every pull
+  request that changes a profile. On a branch of this repository it commits
+  the result to the branch. On a fork it cannot write to the branch, so it
+  fails with the command to run and attaches the regenerated files as a
+  `profile-catalog.patch` artifact (`git apply profile-catalog.patch`). The
+  installer tests also fail on stale files
+  (`tests/charts/test_saw_users_chart.py`).
+
+Commits pushed with the default workflow token do not start other workflows.
+If checks are required on a pull request's last commit, set the
+`CATALOG_PUSH_TOKEN` secret (a GitHub App or fine-grained token with
+`contents: write` on this repository only) so the regenerated commit is
+checked too.
 
 The pipeline adds each Secret's `provider` (so the installer can refuse a key
 for another service) and fills a field's default (a profile's model).

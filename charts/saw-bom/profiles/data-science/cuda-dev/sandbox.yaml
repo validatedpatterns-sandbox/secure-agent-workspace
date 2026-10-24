@@ -10,6 +10,18 @@ spec:
       image: ghcr.io/validatedpatterns-sandbox/nemoclaw-sandbox:latest
       providers:
         - nvidia
+      # How the agent reaches its model: the `nvidia` provider's credential
+      # over the OpenAI protocol (NVIDIA's API is OpenAI-compatible), with
+      # the model from the `inference` Secret, else this default (the RHDH
+      # form pre-fills it; each sandbox has its own field).
+      inference:
+        providerRef: nvidia
+        model:
+          secretKeyRef:
+            name: inference
+            key: cuda_model
+          default: nvidia/nemotron-3.5-lightning-30b-a3b
+          title: Model (cuda-sandbox)
       # The NemoClaw sandbox runs the OpenClaw gateway too: its control UI
       # gets its own route like the notebook's (see default/sandbox.yaml).
       ui:

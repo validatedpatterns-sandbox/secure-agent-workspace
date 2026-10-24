@@ -132,10 +132,11 @@ def test_a_base_url_with_shell_characters_is_refused(ab, url):
 
 
 def test_onboarding_quotes_what_comes_from_profiles(ab, fake_env, config, profiles, creds):
+    # The shipped notebook takes its model from its `inference:` block.
     for _, ws in ab.enabled_workspaces(profiles):
         for sb in ws.sandboxes:
             if sb.name == "notebook":
-                sb.model = "my model's/v1"
+                sb.inference_values["model"] = "my model's/v1"
     make_applier(ab, config, creds).apply(profiles)
     onboard = next(c[-1] for c in fake_env.openshell_calls()
                    if c[:2] == ["sandbox", "exec"] and "onboard" in c[-1] and "notebook" in c)

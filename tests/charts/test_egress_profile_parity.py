@@ -95,7 +95,7 @@ def test_allowlist_has_no_unexplained_reverse_drift():
 
 def test_installer_profile_copies_match_governance_policy():
     copies = sorted(SAW_COPIES.glob("*.yaml"))
-    assert [p.name for p in copies] == ["anthropic.yaml", "brave.yaml", "nvidia.yaml", "openai.yaml"]
+    assert [p.name for p in copies] == ["anthropic.yaml", "brave.yaml", "gmail.yaml", "nvidia.yaml", "openai.yaml", "slack.yaml"]
     for path in copies:
         twin = PROFILES / path.name
         assert path.read_text() == twin.read_text(), (
@@ -116,3 +116,42 @@ def test_profile_configmap_keys_match_files():
         "charts/governance-policy/templates/configmap.yaml must include exactly "
         f"charts/governance-policy/profiles/*.yaml: expected {sorted(expected)}, "
         f"got {sorted(config['data'])}")
+
+
+# --- a deployment's own profiles (overrides/governance-profiles) -------------
+
+EXTRA_DIR = ROOT / "overrides/governance-profiles"
+INTERCEPTOR_DEPLOYMENT = ROOT / "charts/governance-interceptor/templates/deployment.yaml"
+
+
+def extra_profiles():
+    kustomization = yaml.safe_load((EXTRA_DIR / "kustomization.yaml").read_text())
+    (gen,) = kustomization["configMapGenerator"]
+    assert gen["name"] == "governance-interceptor-extra-profiles"
+    return {name: yaml.safe_load((EXTRA_DIR / name).read_text()) for name in gen.get("files") or []}
+
+
+def test_extra_profiles_are_complete_and_do_not_shadow_shipped_ones():
+    shipped = {p.stem for p in PROFILES.glob("*.yaml")}
+    for name, doc in extra_profiles().items():
+        assert doc["id"] == Path(name).stem, f"{name}: the file is named after its id"
+        assert doc["id"] not in shipped, f"{name}: a shipped profile has this id"
+        assert doc["endpoints"] and all(
+            {"host", "port", "protocol", "enforcement"} <= set(e) for e in doc["endpoints"]), name
+        assert all(c.get("env_vars") for c in doc["credentials"]), (
+            f"{name}: each credential needs env_vars (the installer passes the key through it)")
+
+
+def test_the_interceptor_mounts_the_extra_profiles_next_to_the_shipped_ones():
+    text = INTERCEPTOR_DEPLOYMENT.read_text()
+    assert "projected:" in text and "governance-interceptor-profiles" in text
+    assert "{{ .Values.extraProfilesConfigMap }}" in text and "optional: true" in text
+    values = yaml.safe_load((ROOT / "charts/governance-interceptor/values.yaml").read_text())
+    assert values["extraProfilesConfigMap"] == "governance-interceptor-extra-profiles"
+
+
+def test_the_pattern_deploys_the_extra_profiles_directory():
+    apps = yaml.safe_load((ROOT / "values-prod.yaml").read_text())["clusterGroup"]["applications"]
+    app = apps["governance-extra-profiles"]
+    assert app["path"] == "overrides/governance-profiles" and app["kustomize"] is True
+    assert app["namespace"] == "openshell-agents"

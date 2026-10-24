@@ -481,6 +481,22 @@ governance-apf: ## Quickstart: run APF as the governance interceptor (GHCR_USER=
 
 test: test-installer ## Run local installer, chart, script, portal, and CLI tests
 
+# The RHDH form and the profile catalogs are generated from
+# charts/saw-bom/profiles (scripts/saw-profile-catalog.py).
+CATALOG_PY = if [ "$${CI:-}" = true ] || ! command -v uv >/dev/null 2>&1; then \
+	python3 scripts/saw-profile-catalog.py $(1); else \
+	uv run --locked scripts/saw-profile-catalog.py $(1); fi
+
+catalog: ## Regenerate the RHDH form and profile catalogs from charts/saw-bom/profiles
+	@$(call CATALOG_PY,)
+
+catalog-check: ## Fail when the generated profile catalogs are stale
+	@$(call CATALOG_PY,--check)
+
+git-hooks: ## Use the repo's git hooks (regenerate the catalogs on commit)
+	@git config core.hooksPath .githooks
+	@echo "git hooks: .githooks (pre-commit regenerates the profile catalogs)"
+
 test-deployment: ## Run the live OpenShift deployment test (read docs first)
 	@$(SCRIPTS_DIR)/test-deployment.sh
 

@@ -9,7 +9,7 @@
 #           SAW_VALUES_FILE (other Helm settings; topology is discovered)
 #
 # Custom OpenAI-compatible endpoint (vLLM, Ollama, ...):
-#   PROVIDER=openai MODEL=<served model> ENDPOINT_URL=https://<host>/v1 \
+#   PROVIDER=custom-inference MODEL=<served model> ENDPOINT_URL=https://<host>/v1 \
 #   API_KEY=<key> PROFILES=custom-inference
 #
 # Each SAW gets its own namespace (SAW_NS, default saw-<name>). The shared

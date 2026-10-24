@@ -1,3 +1,10 @@
 # Add real account names here after creating them with keycloak-add-users.
 # Each entry creates saw-<name>. Demo entries are in saw-users-demo.yaml.
-users: []
+#users: []
+users:
+  - name: e2eds
+    profiles:
+      - data-science # data-science (the default profile)
+  - name: e2ecustom
+    profiles:
+      - custom-inference

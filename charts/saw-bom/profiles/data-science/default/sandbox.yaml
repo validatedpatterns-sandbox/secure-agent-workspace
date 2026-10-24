@@ -19,6 +19,18 @@ spec:
       #                                  published by CI from harness-bundles/
       harnessRef:
         name: ds-default
+      # How the agent reaches its model: the `nvidia` provider's credential
+      # over the OpenAI protocol (NVIDIA's API is OpenAI-compatible), with
+      # the model from the `inference` Secret, else this default (the RHDH
+      # form pre-fills it; each sandbox has its own field).
+      inference:
+        providerRef: nvidia
+        model:
+          secretKeyRef:
+            name: inference
+            key: model
+          default: nvidia/nemotron-3.5-lightning-30b-a3b
+          title: Model (notebook)
       # ui.route: publish the agent's web UI (OpenClaw control UI, port
       # 18789) on its own route, <user>-<workspace>-<sandbox>-ui, behind an
       # oauth2-proxy that signs in with Keycloak and admits only the

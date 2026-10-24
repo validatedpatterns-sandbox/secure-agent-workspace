@@ -24,9 +24,9 @@
               "title": "Model"
             }
           ],
-          "provider": "openai",
+          "provider": "custom-inference",
           "providers": [
-            "openai"
+            "custom-inference"
           ]
         },
         "web-search": {
@@ -70,6 +70,20 @@
               "kind": "secret",
               "required": true,
               "title": "API key"
+            },
+            {
+              "default": "nvidia/nemotron-3.5-lightning-30b-a3b",
+              "key": "model",
+              "kind": "text",
+              "required": false,
+              "title": "Model (notebook)"
+            },
+            {
+              "default": "nvidia/nemotron-3.5-lightning-30b-a3b",
+              "key": "cuda_model",
+              "kind": "text",
+              "required": false,
+              "title": "Model (cuda-sandbox)"
             }
           ],
           "provider": "nvidia",

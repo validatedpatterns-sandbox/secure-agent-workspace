@@ -20,7 +20,8 @@ def test_shipped_profile_parses(ab, shipped_profile_files):
     default = workspaces["default"]
     assert [(p.name, p.type, p.credential_secret) for p in default.providers if p.enabled] == [
         ("nvidia", "nvidia", "inference"), ("brave", "brave", "web-search")]
-    assert default.providers[0].nemoclaw_provider == "build"
+    assert default.providers[0].nemoclaw_provider == ""
+    assert ab.nemoclaw_provider(default.providers[0]) == "build"
     notebook = next(s for s in default.sandboxes if s.name == "notebook")
     assert notebook.type == "openclaw" and notebook.enabled and notebook.providers == ["nvidia"]
     assert [s.name for s in default.sandboxes if not s.enabled] == ["cuda-sandbox", "toolbox"]
@@ -172,9 +173,14 @@ def test_secret_for_another_provider_is_refused(ab, shipped_profile_files, secre
 
 @pytest.mark.parametrize("configured", ["nvidia", "build", ""])
 def test_provider_type_or_nemoclaw_alias_is_accepted(ab, configured):
-    provider = ab.Provider(name="nvidia", type="nvidia", nemoclaw_provider="build",
-                           credential_secret="inference")
+    provider = ab.Provider(name="nvidia", type="nvidia", credential_secret="inference")
     ab.check_provider_type(provider, configured)
+
+
+def test_nemoclaw_provider_name_comes_from_the_installer(ab):
+    assert ab.nemoclaw_provider(ab.Provider(name="n", type="nvidia")) == "build"
+    assert ab.nemoclaw_provider(ab.Provider(name="o", type="openai")) == "openai"
+    assert ab.nemoclaw_provider(ab.Provider(name="x", type="nvidia", nemoclaw_provider="routed")) == "routed"
 
 
 def test_disabled_providers_need_no_credential(ab, tmp_path):

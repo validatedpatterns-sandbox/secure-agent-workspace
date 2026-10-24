@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Regenerate the RHDH form and the profile catalogs when a profile (or the
+# generator) is part of the commit, and add them to the commit, so adding a
+# profile is only adding its directory under charts/saw-bom/profiles/.
+#
+# Enable once per clone with: make git-hooks
+# (Portable to macOS's bash 3.2: no mapfile, no associative arrays.)
+set -euo pipefail
+
+# Capture first: `git diff | grep -q` under pipefail can fail with SIGPIPE
+# when grep stops reading early, which would skip the regeneration.
+staged=$(git diff --cached --name-only)
+if ! grep -qE '^(charts/saw-bom/profiles/|scripts/saw-profile-catalog\.py$)' <<<"$staged"; then
+  exit 0
+fi
+
+# Same interpreter choice as `make catalog`: uv when the repo is set up for it
+# (it brings PyYAML), else the system python3.
+catalog() {
+  if command -v uv >/dev/null 2>&1 && [ -f uv.lock ]; then
+    uv run --quiet --locked scripts/saw-profile-catalog.py "$@"
+  else
+    python3 scripts/saw-profile-catalog.py "$@"
+  fi
+}
+
+catalog
+# The generator names the files it owns; paths have no spaces.
+# shellcheck disable=SC2046
+git add -- $(catalog --list)

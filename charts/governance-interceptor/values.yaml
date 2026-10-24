@@ -23,6 +23,11 @@ engine: interceptor
 image: "ghcr.io/validatedpatterns-sandbox/governance-interceptor:v0.1.2"
 # gRPC listen port
 port: 18081
+# Provider profiles a deployment adds to the shipped catalog: a ConfigMap of
+# profile YAML files (one key per profile), built by the
+# governance-extra-profiles app from overrides/governance-profiles/. Mounted
+# next to the shipped profiles; absent = no extra profiles.
+extraProfilesConfigMap: governance-interceptor-extra-profiles
 # Interceptor-to-gateway connection (for hot-reload push)
 gatewayEndpoint: "https://127.0.0.1:17670"
 # Fail-closed: deny all operations if interceptor is unreachable

@@ -19,6 +19,10 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 PORTAL = ROOT / "charts" / "openshell-rhdh" / "files" / "portal.py"
 CATALOG = ROOT / "charts" / "openshell-rhdh" / "files" / "profile-catalog.json"
+# data-science's sandboxes read their model from the inference Secret (each
+# its own key: notebook `model`, cuda-sandbox `cuda_model`); the form submits
+# the profile default unless changed.
+DS_MODEL = "nvidia/nemotron-3.5-lightning-30b-a3b"
 
 from cryptography.hazmat.primitives import hashes  # noqa: E402  (tests/requirements.txt)
 from cryptography.hazmat.primitives.asymmetric import ec  # noqa: E402
@@ -145,7 +149,7 @@ def test_a_request_gets_the_profiles_secrets(portal, catalog):
         "profile": "data-science", "inference.api_key": " nvapi-1 ", "web-search.api_key": "brave-1",
         "inference.url": "https://ignored/v1"}, catalog)
     assert profile == "data-science"
-    assert secrets == {"inference": {"api_key": "nvapi-1", "provider": "nvidia"},
+    assert secrets == {"inference": {"api_key": "nvapi-1", "model": DS_MODEL, "cuda_model": DS_MODEL, "provider": "nvidia"},
                        "web-search": {"api_key": "brave-1", "provider": "brave"}}
 
 
@@ -386,7 +390,7 @@ def test_create_writes_vault_and_the_registry(portal, world):
     fake, signer = world
     fake.request("saw-req-1", ds_request(signer))
     assert portal.main(["create", "saw-req-1"]) == 0
-    assert fake.vault == {f"{KEYS}/inference": {"api_key": "nvapi-1", "provider": "nvidia"},
+    assert fake.vault == {f"{KEYS}/inference": {"api_key": "nvapi-1", "model": DS_MODEL, "cuda_model": DS_MODEL, "provider": "nvidia"},
                           f"{KEYS}/web-search": {"api_key": "brave-1", "provider": "brave"}}
     assert fake.logins == [{"role": "saw-portal-writer", "jwt": "pod-sa-token"}]
     cm = fake.objects["/api/v1/namespaces/saw-portal/configmaps/saw-ws-alice"]
@@ -693,7 +697,7 @@ def test_the_deletion_mark_stays_until_the_keys_are_gone(portal, world, monkeypa
     monkeypatch.setattr(portal.Vault, "destroy", real)
     fake.request("saw-req-4", ds_request(signer, **{"inference.api_key": "nvapi-new"}))
     assert portal.main(["create", "saw-req-4"]) == 0
-    assert fake.vault == {f"{NEW_KEYS}/inference": {"api_key": "nvapi-new", "provider": "nvidia"},
+    assert fake.vault == {f"{NEW_KEYS}/inference": {"api_key": "nvapi-new", "model": DS_MODEL, "cuda_model": DS_MODEL, "provider": "nvidia"},
                           f"{NEW_KEYS}/web-search": {"api_key": "brave-1", "provider": "brave"}}
 
 
@@ -714,7 +718,7 @@ def test_a_stale_cleanup_leaves_a_replacement_alone(portal, world, monkeypatch):
     monkeypatch.setenv("PIPELINE_RUN", "saw-workspace-delete-a")
     assert portal.main(["finish-delete", "alice"]) == 1
     assert REGISTRY in fake.objects
-    assert fake.vault == {f"{NEW_KEYS}/inference": {"api_key": "nvapi-new", "provider": "nvidia"},
+    assert fake.vault == {f"{NEW_KEYS}/inference": {"api_key": "nvapi-new", "model": DS_MODEL, "cuda_model": DS_MODEL, "provider": "nvidia"},
                           f"{NEW_KEYS}/web-search": {"api_key": "brave-1", "provider": "brave"}}
 
 
@@ -751,7 +755,7 @@ def test_a_cleanup_overtaken_after_its_check_leaves_the_replacement_alone(portal
     assert overtaken == [f"{KEYS}/inference"], "A only ever reaches its own generation"
     entry = json.loads(fake.objects[REGISTRY]["data"]["user.json"])
     assert entry["vaultPrefix"] == f"secret/data/{NEW_KEYS}"
-    assert fake.vault == {f"{NEW_KEYS}/inference": {"api_key": "nvapi-new", "provider": "nvidia"},
+    assert fake.vault == {f"{NEW_KEYS}/inference": {"api_key": "nvapi-new", "model": DS_MODEL, "cuda_model": DS_MODEL, "provider": "nvidia"},
                           f"{NEW_KEYS}/web-search": {"api_key": "brave-1", "provider": "brave"}}
 
 

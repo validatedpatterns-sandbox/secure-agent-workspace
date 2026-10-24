@@ -37,7 +37,7 @@ spec:
         - properties:
             profile: {const: custom-inference}
             inference__api_key: {title: 'inference: API key', type: string, 'ui:field': Secret, description: Stored
-                in Vault for your workspace only (provider openai)}
+                in Vault for your workspace only (provider custom-inference)}
             inference__url: {title: 'inference: Endpoint base URL (OpenAI-compatible, ending in /v1)',
               type: string, pattern: '^https?://'}
             inference__model: {title: 'inference: Model', type: string}
@@ -50,6 +50,8 @@ spec:
                 signed in with Keycloak, for you only: notebook (default), cuda-sandbox (cuda-dev)'}
             inference__api_key: {title: 'inference: API key', type: string, 'ui:field': Secret, description: Stored
                 in Vault for your workspace only (provider nvidia)}
+            inference__model: {title: 'inference: Model (notebook)', type: string, default: nvidia/nemotron-3.5-lightning-30b-a3b}
+            inference__cuda_model: {title: 'inference: Model (cuda-sandbox)', type: string, default: nvidia/nemotron-3.5-lightning-30b-a3b}
             web_search__api_key: {title: 'web-search: API key', type: string, 'ui:field': Secret, description: Stored
                 in Vault for your workspace only (provider brave)}
           required: [inference__api_key, web_search__api_key]
@@ -71,7 +73,8 @@ spec:
         stringData: {action: create, token: '${{ secrets.backstageToken }}', profile: '${{ parameters.profile
             }}', forUser: '${{ parameters.forUser }}', inference.api_key: '${{ secrets.inference__api_key
             }}', inference.url: '${{ parameters.inference__url }}', inference.model: '${{ parameters.inference__model
-            }}', web-search.api_key: '${{ secrets.web_search__api_key }}'}
+            }}', web-search.api_key: '${{ secrets.web_search__api_key }}', inference.cuda_model: '${{
+            parameters.inference__cuda_model }}'}
   - id: run
     name: Start the pipeline
     action: http:backstage:request

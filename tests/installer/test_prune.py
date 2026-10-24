@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from conftest import harness_files, profile_files
-from test_custom_endpoint import custom_secrets  # noqa: F401  (reused fixture)
+from test_custom_endpoint import custom_secrets as _custom_secrets  # noqa: F401  (reused fixture)
 
 def _harness(ab):
     return {"bundles": ab.parse_harness_files(harness_files())}
@@ -157,10 +157,24 @@ def test_hand_made_workspace_and_provider_are_never_deleted(ab, fake_env, config
 # --- Repros from the PR #54 review: 6a, 6b, 6c (fixed in this change) -----
 
 @pytest.fixture
+def custom_secrets(_custom_secrets):
+    """The reused Secret, labelled for the `openai` type these repros use."""
+    (_custom_secrets / "inference" / "provider").write_text("openai\n")
+    return _custom_secrets
+
+
+@pytest.fixture
 def custom_inference_profiles(ab):
     """Separate from the module's `profiles` fixture (data-science) to avoid
-    a name collision: this is the custom-inference profile."""
-    return ab.parse_profiles(profile_files("custom-inference"))
+    a name collision: the custom-inference profile with its provider on the
+    shipped `openai` type, as it was when these repros were found (what is
+    under test is a shipped profile being imported, skipped and pruned; the
+    deployment-profile type the shipped BOM uses now is covered in
+    test_custom_endpoint.py)."""
+    files = profile_files("custom-inference")
+    key = next(k for k in files if k.endswith("providers.yaml"))
+    files[key] = files[key].replace("type: custom-inference", "type: openai")
+    return ab.parse_profiles(files)
 
 
 def _apply_on(ab, config, creds, profiles, ledger, docs=None):

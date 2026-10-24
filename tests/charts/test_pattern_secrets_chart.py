@@ -55,7 +55,9 @@ def test_the_inference_template_needs_only_what_every_workspace_has():
     required = set()
     for value in es["spec"]["target"]["template"]["data"].values():
         required |= set(re.findall(r"\{\{\s*\.(\w+)\s*\}\}", value))
-    assert required == {"provider", "api_key"}
+    # `provider` is optional too: a shared hub Secret serving providers of
+    # different types (data-science's nvidia and custom-inference) leaves it out.
+    assert required == {"api_key"}
     # What the portal writes for every profile's inference Secret: the
     # credential field and the provider it adds.
     catalog = json.loads((ROOT / "charts" / "openshell-rhdh" / "files" / "profile-catalog.json").read_text())

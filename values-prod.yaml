@@ -111,6 +111,19 @@ clusterGroup:
       name: governance-policy
       namespace: openshell-agents
       path: charts/governance-policy
+    # Provider profiles this deployment adds to the shipped catalog, from
+    # plain profile files in overrides/governance-profiles (kustomize
+    # ConfigMap generator); the interceptor mounts the result next to the
+    # shipped profiles. See that directory's kustomization.yaml.
+    governance-extra-profiles:
+      name: governance-extra-profiles
+      namespace: openshell-agents
+      path: overrides/governance-profiles
+      kustomize: true
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
     # prune: switching global.governance.engine removes the interceptor's
     # Deployment and Service (APF takes over the Service name) and back.
     governance-interceptor:

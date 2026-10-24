@@ -92,9 +92,11 @@ def test_shipped_optional_apis_do_not_require_keys_by_default(ab, secrets_dir):
     assert all(not p.enabled and not p.base_url_secret_key for p in optional)
     assert workspace.sandboxes[0].providers == ["nvidia"]
     nvidia = next(p for p in workspace.providers if p.name == "nvidia")
-    assert nvidia.model == "nvidia/nemotron-3.5-lightning-30b-a3b"
+    # The model is the sandbox's (inference.model); the provider holds credentials only.
+    assert nvidia.model == ""
     assert nvidia.credential_secret_key == "api_key"
     assert set(ab.resolve_credentials(profiles, secrets_dir)["default"]) == {"nvidia", "brave"}
+    assert ab.sandbox_model(workspace.sandboxes[0], nvidia) == "nvidia/nemotron-3.5-lightning-30b-a3b"
 
 
 def test_each_official_api_reads_its_own_secret(ab, secrets_dir):

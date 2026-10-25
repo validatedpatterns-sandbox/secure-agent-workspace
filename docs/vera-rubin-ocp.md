@@ -146,7 +146,12 @@ bash scripts/vera-rubin/migrate-patterns-operator.sh
 It removes the raw install (Deployments, webhook, RBAC), leaves the Pattern CRD
 and the Pattern CR in place so the GitOps apps keep running, subscribes to
 `patterns-operator` in `openshift-operators` from the catalog's default channel,
-and waits for the CSV. Re-runnable. If the Subscription does not resolve, the
+waits for the CSV, and sets `spec.extraValueFiles` on the Pattern CR from
+`values-global.yaml`. That last step matters: a Pattern CR applied by hand lacks
+the field `./pattern.sh make install` fills in, and without it the clustergroup
+render never loads `overrides/values-vera-rubin.yaml` (the per-application apps
+do, misleadingly), so its subscriptions and per-app `extraValueFiles` silently
+stay at `main`'s values. Re-runnable. If the Subscription does not resolve, the
 script prints the `oc` commands to look at; the usual cause is another
 unresolvable Subscription in `openshift-operators` blocking OLM resolution for
 the namespace.

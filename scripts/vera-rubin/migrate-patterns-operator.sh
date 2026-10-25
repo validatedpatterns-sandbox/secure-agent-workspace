@@ -11,7 +11,12 @@
 #      the Pattern CR stay, so the GitOps apps keep running;
 #   2. subscribes to patterns-operator from community-operators in
 #      openshift-operators, where `./pattern.sh make install` puts it;
-#   3. waits for the CSV and checks the Pattern CR is reconciled again.
+#   3. waits for the CSV and checks the Pattern CR is reconciled again;
+#   4. gives a hand-made Pattern CR the extraValueFiles `./pattern.sh make
+#      install` would have set from values-global.yaml, so the clustergroup
+#      (app-of-apps) loads overrides/values-vera-rubin.yaml too. Without it the
+#      per-application apps see the override but the subscriptions and the
+#      per-app extraValueFiles it defines never apply.
 # Safe to re-run. Logged in as cluster-admin.
 # =============================================================================
 set -euo pipefail
@@ -79,8 +84,33 @@ if [ -z "$csv" ] || [ "$(oc get csv "$csv" -n "$SUB_NS" -o jsonpath='{.status.ph
 fi
 echo "   $csv Succeeded; image: $(oc get deploy -n "$SUB_NS" patterns-operator-controller-manager -o jsonpath='{.spec.template.spec.containers[?(@.name=="manager")].image}' 2>/dev/null)"
 
-echo "== [3/3] the Pattern CR under the new operator =="
-oc get pattern -A -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name,REPO:.spec.gitSpec.targetRepo,REV:.spec.gitSpec.targetRevision,VERSION:.status.version 2>&1
-echo "   (status.version / conditions update once the new controller reconciles; the"
-echo "    app-of-apps in openshift-gitops is untouched by the switch)"
-oc get application -n openshift-gitops -o custom-columns=NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status 2>/dev/null | head -5 || true
+echo "== [3/4] the Pattern CR under the new operator =="
+oc get pattern -A -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name,REPO:.spec.gitSpec.targetRepo,REV:.spec.gitSpec.targetRevision,STEP:.status.lastStep 2>&1
+
+echo "== [4/4] extraValueFiles on the Pattern CR =="
+# values-global.yaml's global.extraValueFiles, as the pattern-install chart
+# copies them into spec.extraValueFiles (a hand-applied CR lacks them).
+want=$(python3 -c '
+import sys, yaml
+g = yaml.safe_load(open("values-global.yaml")) or {}
+print("\n".join((g.get("global") or {}).get("extraValueFiles") or []))' 2>/dev/null || true)
+if [ -z "$want" ]; then
+  echo "   values-global.yaml sets no global.extraValueFiles; nothing to do"
+else
+  pattern_ns=$(oc get pattern -A -o jsonpath='{.items[0].metadata.namespace}')
+  pattern_name=$(oc get pattern -A -o jsonpath='{.items[0].metadata.name}')
+  have=$(oc get pattern "$pattern_name" -n "$pattern_ns" -o jsonpath='{.spec.extraValueFiles[*]}')
+  missing=0
+  for f in $want; do case " $have " in *" $f "*) ;; *) missing=1;; esac; done
+  if [ "$missing" = 0 ]; then
+    echo "   already set: $have"
+  else
+    json=$(printf '%s\n' $want | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
+    oc patch pattern "$pattern_name" -n "$pattern_ns" --type merge -p "{\"spec\":{\"extraValueFiles\":$json}}"
+    echo "   set to $json; the app-of-apps re-renders within a minute"
+  fi
+fi
+
+echo
+echo "Argo CD applications (the switch itself changes none of them):"
+oc get application -n vp-gitops -o custom-columns=NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status 2>/dev/null || true

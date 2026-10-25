@@ -292,4 +292,13 @@ spec:
     # hold 1 MiB.
     syncOptions:
       - ServerSideApply=true
+  # kubemacpool (part of OpenShift Virtualization) stamps a VM with the time
+  # of every admission, the server-side dry run included, so the diff's
+  # desired side always carries a newer timestamp than live and the VM reads
+  # OutOfSync forever. Nothing else about the VM changes, so ignore it.
+  ignoreDifferences:
+    - group: kubevirt.io
+      kind: VirtualMachine
+      jsonPointers:
+        - /metadata/annotations/kubemacpool.io~1transaction-timestamp
 {{- end -}}

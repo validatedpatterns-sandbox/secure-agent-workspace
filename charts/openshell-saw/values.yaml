@@ -51,14 +51,17 @@ source:
   # CDI pull method: "node" (the node's runtime pulls, trusts the internal
   # registry's CA, caches the image) or "pod" (the CDI importer pod).
   pullMethod: "node"
-  # [ocp5-rc5] On verac2 the CDI importer resolves names via node/host DNS and
-  # cannot reach the in-cluster image registry (image-registry.openshift-image-
-  # registry.svc is a cluster-only name -> "no such host"), and the golden image
-  # was never mirrored there. Pull the golden disk directly from the PUBLIC GHCR
-  # multi-arch image instead (amd64+arm64; the arm64 node pulls its own arch).
-  # NB: quay.io/rh-ai-quickstart/openshell-gateway is amd64-only -> do NOT use it.
-  registryURL: "docker://ghcr.io/validatedpatterns-sandbox/openshell-gateway:latest"
+  # A registry image to import the golden disk from instead of the in-cluster
+  # one, e.g. docker://ghcr.io/validatedpatterns-sandbox/openshell-gateway:latest
+  # (multi-arch) when the CDI importer cannot resolve the internal registry.
+  registryURL: ""
   httpURL: ""
+
+# The installer ConfigMap (~300 KiB). replaceOnSync has Argo CD replace it
+# instead of patching, for an Argo CD that ignores the app's ServerSideApply
+# and would overflow the last-applied-configuration annotation (OCP 5.0).
+installer:
+  replaceOnSync: false
 
 vm:
   cores: 4

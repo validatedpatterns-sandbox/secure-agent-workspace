@@ -4,8 +4,15 @@ This guide covers deploying Secure Agent Workspace (SAW) on an **arm64**
 OpenShift **5.0 rc5** cluster (the NVIDIA "Vera Rubin" / `verac2` environment).
 
 All the cluster-specific changes live on the **`openshift-vera-rubin`** branch
-(not `main`). `main` is unchanged and works on GA OpenShift with the productized
-operators; it is not broken. The reason `main` can't deploy here is that OCP 5.0
+(not `main`), as **values overrides**: `values-prod.yaml` and the charts behave
+as on `main`; `values-global.yaml` on this branch attaches
+`overrides/values-vera-rubin.yaml` through `global.extraValueFiles`, and that
+file in turn attaches `overrides/values-vera-rubin-openshell-rhdh.yaml` and
+`overrides/values-vera-rubin-saw-users.yaml` to their applications. The charts
+only gained the toggles those files flip (RHDH sign-in resolver, plugin
+packages, NetworkPolicies; openshell-saw golden-image source and installer
+`Replace=true`), with `main`'s behaviour as the default. `main` is unchanged
+and works on GA OpenShift with the productized operators; it is not broken. The reason `main` can't deploy here is that OCP 5.0
 rc5's operator catalog does not yet ship the productized operators SAW relies on
 (`rhbk`, `rhdh`, `rhods`), and several of them are amd64-only. This branch
 substitutes community/arm64 equivalents and works around the differences those
@@ -33,7 +40,7 @@ Every change on this branch falls into one of three buckets:
 ### 2. rc5 catalog gaps — productized operators missing; use community
 | Change | Reason |
 |---|---|
-| Keycloak via `keycloak-operator` (`community-operators`) | productized `rhbk` operator absent from the rc5 catalog |
+| Keycloak: `rhbk-operator` from the Red Hat catalog when the cluster has it (`oc get packagemanifests -n openshift-marketplace rhbk-operator`), else the commented `keycloak-operator` (`community-operators`) block in `overrides/values-vera-rubin.yaml` | productized `rhbk` operator was absent from the early rc5 catalog |
 | RHDH via `rhdh` (`rhdh-community-catalog`, `fast-2.2`) | productized RHDH operator absent / amd64-only |
 | 3 RHDH dynamic plugins pinned as **OCI** (OIDC provider, http:backstage:request, keycloak catalog) | the community `rhdh:next` image bundles plugins at different paths than productized 1.10, which the chart hard-codes |
 | 2 NetworkPolicies (generator egress, saw-portal→backend ingress) | the community RHDH 2.x operator ships stricter default-deny netpols than 1.10 |
@@ -209,6 +216,15 @@ Everything lives under `scripts/vera-rubin/`:
 | `manifests/` | captured YAML: RHDH CatalogSource, RHDH subscription, StorageClass, HPP CR |
 | `diag-*.sh` | diagnostics used while bringing this up (RBAC, netpols, VM/DataVolume, Keycloak tokens, gateway, sandbox) |
 
-The chart/values changes (community operators, OIDC/plugin pins, NetworkPolicies,
-golden-image source, installer `Replace=true`) are committed to the branch and
-need no manual step.
+The values changes (community operators, OIDC/plugin pins, NetworkPolicies,
+golden-image source, installer `Replace=true`) live in `overrides/values-vera-rubin*.yaml`
+and need no manual step:
+
+| File | Attached by | Holds |
+|---|---|---|
+| `overrides/values-vera-rubin.yaml` | `global.extraValueFiles` in `values-global.yaml` | operator subscriptions (RHDH community catalog, no RHODS, optional community Keycloak); attaches the two files below |
+| `overrides/values-vera-rubin-openshell-rhdh.yaml` | `openshell-rhdh` application | community RHDH image: Keycloak catalog OCI plugin, email sign-in resolver, http-request and OIDC-provider OCI plugins, NetworkPolicies; `sawUsers` defaults for portal workspaces |
+| `overrides/values-vera-rubin-saw-users.yaml` | `saw-users` application | golden disk from the GHCR multi-arch image, installer ConfigMap `Replace=true`, for the users in `overrides/saw-users.yaml` |
+
+The `apply-*.sh` scripts under `scripts/vera-rubin/` patched these same things
+into a live cluster before they were values; they are kept for reference.

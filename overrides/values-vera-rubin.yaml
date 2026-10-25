@@ -1,0 +1,39 @@
+# Vera Rubin (NVIDIA arm64, OpenShift 5.0 rc5 / verac2) overrides for the
+# `prod` clustergroup. Applied on top of values-prod.yaml through
+# global.extraValueFiles in values-global.yaml; values-prod.yaml itself is the
+# same as on main. Everything that is specific to this cluster lives here and
+# in the two per-application files it attaches:
+#   overrides/values-vera-rubin-openshell-rhdh.yaml   community RHDH image
+#   overrides/values-vera-rubin-saw-users.yaml        golden image, installer
+# See docs/vera-rubin-ocp.md.
+clusterGroup:
+  subscriptions:
+    # Keycloak: the productized rhbk-operator (Red Hat catalog, values-prod.yaml)
+    # when the cluster catalog has it:
+    #   oc get packagemanifests -n openshift-marketplace rhbk-operator
+    # On an rc5 catalog without it, use the community operator instead:
+    # rhbk:
+    #   name: keycloak-operator
+    #   channel: fast
+    #   source: community-operators
+    #   sourceNamespace: openshift-marketplace
+    # RHDH: the productized rhdh-operator is amd64-only / absent; the community
+    # operator from CatalogSource/rhdh-community-catalog (preinstall.sh).
+    rhdh:
+      channel: fast-2.2
+      source: rhdh-community-catalog
+      sourceNamespace: openshift-marketplace
+    # rhods-operator is absent from the rc5 catalog; the pattern creates no
+    # DataScienceCluster here. null drops the subscription values-prod.yaml
+    # defines (the redhat-ods-operator namespace is still created, harmlessly).
+    openshift-ai: null
+  applications:
+    openshell-rhdh:
+      extraValueFiles:
+        - /overrides/values-vera-rubin-openshell-rhdh.yaml
+    saw-users:
+      # Lists replace rather than merge, so the file values-prod.yaml attaches
+      # is repeated here.
+      extraValueFiles:
+        - /overrides/saw-users.yaml
+        - /overrides/values-vera-rubin-saw-users.yaml

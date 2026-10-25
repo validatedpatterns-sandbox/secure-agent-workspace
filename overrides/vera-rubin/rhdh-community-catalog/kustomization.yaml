@@ -1,0 +1,8 @@
+# The RHDH community operator catalog (arm64). An Argo CD app of the `prod`
+# clustergroup on Vera Rubin (overrides/values-vera-rubin.yaml); the `rhdh`
+# Subscription there resolves from it. OLM retries resolution until the
+# CatalogSource reports READY, so the order the two sync in does not matter.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - catalogsource.yaml

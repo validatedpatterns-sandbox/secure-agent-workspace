@@ -40,7 +40,7 @@ Every change on this branch falls into one of three buckets:
 ### 2. rc5 catalog gaps — productized operators missing; use community
 | Change | Reason |
 |---|---|
-| Keycloak: `rhbk-operator` from the Red Hat catalog when the cluster has it (`oc get packagemanifests -n openshift-marketplace rhbk-operator`), else the commented `keycloak-operator` (`community-operators`) block in `overrides/values-vera-rubin.yaml` | productized `rhbk` operator was absent from the early rc5 catalog |
+| Keycloak via `keycloak-operator` (`community-operators`), in `overrides/values-vera-rubin.yaml` | productized `rhbk-operator` absent from the rc5 catalog (`oc get packagemanifests -n openshift-marketplace rhbk-operator`); drop the override once it appears |
 | RHDH via `rhdh` (`rhdh-community-catalog`, `fast-2.2`) | productized RHDH operator absent / amd64-only |
 | 3 RHDH dynamic plugins pinned as **OCI** (OIDC provider, http:backstage:request, keycloak catalog) | the community `rhdh:next` image bundles plugins at different paths than productized 1.10, which the chart hard-codes |
 | 2 NetworkPolicies (generator egress, saw-portal→backend ingress) | the community RHDH 2.x operator ships stricter default-deny netpols than 1.10 |

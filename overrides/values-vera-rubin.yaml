@@ -8,15 +8,15 @@
 # See docs/vera-rubin-ocp.md.
 clusterGroup:
   subscriptions:
-    # Keycloak: the productized rhbk-operator (Red Hat catalog, values-prod.yaml)
-    # when the cluster catalog has it:
+    # Keycloak: the rc5 catalog has no rhbk-operator (the productized one
+    # values-prod.yaml subscribes to), so the community operator. Once
     #   oc get packagemanifests -n openshift-marketplace rhbk-operator
-    # On an rc5 catalog without it, use the community operator instead:
-    # rhbk:
-    #   name: keycloak-operator
-    #   channel: fast
-    #   source: community-operators
-    #   sourceNamespace: openshift-marketplace
+    # finds it, delete this block and values-prod.yaml's rhbk applies.
+    rhbk:
+      name: keycloak-operator
+      channel: fast
+      source: community-operators
+      sourceNamespace: openshift-marketplace
     # RHDH: the productized rhdh-operator is amd64-only / absent; the community
     # operator from CatalogSource/rhdh-community-catalog (preinstall.sh).
     rhdh:

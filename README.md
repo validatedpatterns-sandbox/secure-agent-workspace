@@ -195,8 +195,8 @@ make prereqs-check
 > **Deploying on arm64 / OpenShift 5.0 rc5 (NVIDIA Vera Rubin)?** The productized
 > operators SAW uses are not in the rc5 catalog on arm64. Use the
 > `openshift-vera-rubin` branch and follow
-> **[Deploying SAW on OpenShift 5.0 rc5 / arm64](docs/vera-rubin-ocp.md)**, which
-> wraps the steps below with a pre/post-install script set.
+> **[Deploying SAW on OpenShift 5.0 rc5 / arm64](docs/vera-rubin-ocp.md)**: the
+> same steps below, with the cluster-specific values in `overrides/`.
 
 Two deployment paths are available:
 

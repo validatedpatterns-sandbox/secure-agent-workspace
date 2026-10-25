@@ -13,6 +13,10 @@ global:
   #   ./pattern.sh make install GOVERNANCE_ENGINE=apf
   governance:
     engine: interceptor
+  # Vera Rubin (arm64, OpenShift 5.0 rc5): the cluster-specific values, applied
+  # on top of values-prod.yaml, which stays as on main (docs/vera-rubin-ocp.md).
+  extraValueFiles:
+    - /overrides/values-vera-rubin.yaml
 main:
   clusterGroupName: prod
   multiSourceConfig:

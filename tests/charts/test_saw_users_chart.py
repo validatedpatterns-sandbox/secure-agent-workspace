@@ -101,6 +101,11 @@ def test_two_users_get_labelled_namespaces_and_six_apps(tmp_path):
         assert (application["metadata"]["annotations"]["argocd.argoproj.io/compare-options"]
                 == "ServerSideDiff=true,IncludeMutationWebhook=true")
         assert "ignoreMissingValueFiles" not in application["spec"]["source"]["helm"]
+        # Found on verac2: kubemacpool stamps the VM on every admission, the
+        # dry run included, so the VM stayed OutOfSync on that one annotation.
+        assert application["spec"]["ignoreDifferences"] == [{
+            "group": "kubevirt.io", "kind": "VirtualMachine",
+            "jsonPointers": ["/metadata/annotations/kubemacpool.io~1transaction-timestamp"]}]
 
 
 def test_waves_release_names_and_value_overrides(tmp_path):

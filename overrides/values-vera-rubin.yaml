@@ -1,0 +1,54 @@
+# Vera Rubin (NVIDIA arm64, OpenShift 5.0 rc5 / verac2) overrides for the
+# `prod` clustergroup. Applied on top of values-prod.yaml through
+# global.extraValueFiles in values-global.yaml; values-prod.yaml itself is the
+# same as on main. Everything that is specific to this cluster lives here and
+# in the two per-application files it attaches:
+#   overrides/values-vera-rubin-openshell-rhdh.yaml   community RHDH image
+#   overrides/values-vera-rubin-saw-users.yaml        golden image, installer
+# plus the rhdh-community-catalog app (overrides/vera-rubin/). A Pattern CR
+# made by `./pattern.sh make install` carries this file in spec.extraValueFiles;
+# one applied by hand needs it added (migrate-patterns-operator.sh does).
+# See docs/vera-rubin-ocp.md.
+clusterGroup:
+  subscriptions:
+    # Keycloak: the rc5 catalog has no rhbk-operator (the productized one
+    # values-prod.yaml subscribes to), so the community operator. Once
+    #   oc get packagemanifests -n openshift-marketplace rhbk-operator
+    # finds it, delete this block and values-prod.yaml's rhbk applies.
+    rhbk:
+      name: keycloak-operator
+      channel: fast
+      source: community-operators
+      sourceNamespace: openshift-marketplace
+    # RHDH: the productized rhdh-operator is amd64-only / absent; the community
+    # operator from CatalogSource/rhdh-community-catalog (the app below). Its
+    # default Postgres image is amd64 ("Exec format error" on arm64); the
+    # Subscription's config.env points the operator at a multi-arch one.
+    rhdh:
+      channel: fast-2.2
+      source: rhdh-community-catalog
+      sourceNamespace: openshift-marketplace
+      config:
+        env:
+          - name: RELATED_IMAGE_postgresql
+            value: registry.redhat.io/rhel9/postgresql-15:latest
+    # rhods-operator is absent from the rc5 catalog; the pattern creates no
+    # DataScienceCluster here. null drops the subscription values-prod.yaml
+    # defines (the redhat-ods-operator namespace is still created, harmlessly).
+    openshift-ai: null
+  applications:
+    # The CatalogSource the rhdh Subscription above resolves from.
+    rhdh-community-catalog:
+      name: rhdh-community-catalog
+      namespace: openshift-marketplace
+      path: overrides/vera-rubin/rhdh-community-catalog
+      kustomize: true
+    openshell-rhdh:
+      extraValueFiles:
+        - /overrides/values-vera-rubin-openshell-rhdh.yaml
+    saw-users:
+      # Lists replace rather than merge, so the file values-prod.yaml attaches
+      # is repeated here.
+      extraValueFiles:
+        - /overrides/saw-users.yaml
+        - /overrides/values-vera-rubin-saw-users.yaml

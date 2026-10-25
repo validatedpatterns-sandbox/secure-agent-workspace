@@ -23,7 +23,7 @@ print(yaml.safe_dump_all(out,default_flow_style=False,sort_keys=False))
 
 echo "### patterns-operator image + install style"
 oc get deploy -n openshift-operators patterns-operator-controller-manager -o jsonpath='image={.spec.template.spec.containers[?(@.name=="manager")].image}{"\n"}' 2>&1
-oc get subscription -A 2>&1 | grep -i patterns || echo "(no patterns-operator Subscription -> installed out-of-catalog as raw manifests)"
+oc get subscription -A 2>&1 | grep -i patterns || echo "(no patterns-operator Subscription -> still the out-of-catalog raw install; run migrate-patterns-operator.sh)"
 
 echo "### RHDH community CatalogSource -> $OUT/rhdh-community-catalog.yaml"
 oc get catalogsource rhdh-community-catalog -n openshift-marketplace -o yaml 2>/dev/null | clean > "$OUT/rhdh-community-catalog.yaml" && cat "$OUT/rhdh-community-catalog.yaml"

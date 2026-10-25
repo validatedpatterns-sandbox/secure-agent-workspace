@@ -1,0 +1,12 @@
+# charts/saw-users on Vera Rubin, for the workspaces listed in
+# overrides/saw-users.yaml (portal workspaces get the same through sawUsers in
+# overrides/values-vera-rubin-openshell-rhdh.yaml). Attached by
+# overrides/values-vera-rubin.yaml.
+defaults:
+  openshellSaw:
+    source:
+      # The CDI importer resolves names through node DNS on verac2 and cannot
+      # reach the in-cluster registry (and the golden image was never mirrored
+      # there): import the golden disk from the public multi-arch GHCR image.
+      # quay.io/rh-ai-quickstart/openshell-gateway is amd64-only; do not use it.
+      registryURL: docker://ghcr.io/validatedpatterns-sandbox/openshell-gateway:latest

@@ -57,11 +57,7 @@ data:
               resolvers:
                 # user:default/<Keycloak username>. Users are not imported
                 # into the catalog; the pipeline trusts only the signed token.
-                # [ocp5-rc5] The generic OIDC provider registers only email-based
-                # resolvers (preferredUsername* is Keycloak/MS-provider only), so
-                # match the email local-part. keycloak-add-users sets each email to
-                # <username>@openshell.local, giving the same user:default/<username>.
-                - resolver: emailLocalPartMatchingUserEntityName
+                - resolver: {{ .Values.rhdh.auth.signInResolver }}
                   dangerouslyAllowSignInWithoutUserInCatalog: true
     catalog:
       rules:

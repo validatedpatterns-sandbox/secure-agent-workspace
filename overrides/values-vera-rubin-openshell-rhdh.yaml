@@ -1,0 +1,34 @@
+# charts/openshell-rhdh on Vera Rubin: the community RHDH 2.x operator and its
+# rhdh:next hub image (the productized 1.10 operator is amd64-only / absent
+# from the rc5 catalog). Attached by overrides/values-vera-rubin.yaml.
+rhdh:
+  rbac:
+    # The community image has no bundled copy at the path RHDH 1.10 uses; the
+    # Keycloak catalog module ships as an OCI plugin the image's default config
+    # disables. The digest is the one the community image already references
+    # (arch-neutral JS; the arm64 hub image carries its own variant).
+    keycloakCatalogPlugin: oci://quay.io/rhdh/backstage-community-plugin-catalog-backend-module-keycloak@sha256:9cc716bf061e969d8b90e9c7a38687c97758dbfc3124fd67673463707648136a
+  auth:
+    # The generic OIDC provider registers only the email resolvers
+    # (preferredUsername* is Keycloak/MS-provider only). keycloak-add-users sets
+    # each email to <username>@openshell.local, so the entity name is unchanged.
+    signInResolver: emailLocalPartMatchingUserEntityName
+  plugins:
+    # http:backstage:request is not bundled in the community hub image; the OCI
+    # package, pinned by amd64 digest (no arm64 variant; arch-neutral JS).
+    httpRequest: oci://quay.io/rhdh/roadiehq-scaffolder-backend-module-http-request@sha256:b7e9e36a73a132e12843bc1feac599cc8f928f32228a02d5bd5ac8f3b1e20b7a!roadiehq-scaffolder-backend-module-http-request
+    extra:
+      # Neither is the OIDC auth backend provider (productized RHDH bundles it);
+      # without it signInPage: oidc fails with "Unknown auth provider 'oidc'".
+      - package: oci://quay.io/rhdh/backstage-plugin-auth-backend-module-oidc-provider@sha256:1f52bc30019ab66d9a37b304f6801f2c9ba7b3fcd5f70fcbad810ae080e0b3d7!backstage-plugin-auth-backend-module-oidc-provider
+        disabled: false
+  # The 2.x operator gives the backend default-deny NetworkPolicies.
+  networkPolicies:
+    enabled: true
+# Portal-created workspaces are one-user saw-users releases; they need the
+# same openshell-saw settings as overrides/values-vera-rubin-saw-users.yaml.
+sawUsers:
+  defaults:
+    openshellSaw:
+      source:
+        registryURL: docker://ghcr.io/validatedpatterns-sandbox/openshell-gateway:latest

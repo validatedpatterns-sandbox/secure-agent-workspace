@@ -10,8 +10,8 @@ as on `main`; `values-global.yaml` on this branch attaches
 file in turn attaches `overrides/values-vera-rubin-openshell-rhdh.yaml` and
 `overrides/values-vera-rubin-saw-users.yaml` to their applications. The charts
 only gained the toggles those files flip (RHDH sign-in resolver, plugin
-packages, NetworkPolicies; openshell-saw golden-image source and installer
-`Replace=true`), with `main`'s behaviour as the default. `main` is unchanged
+packages, NetworkPolicies; openshell-saw golden-image source), with `main`'s
+behaviour as the default. `main` is unchanged
 and works on GA OpenShift with the productized operators; it is not broken. The reason `main` can't deploy here is that OCP 5.0
 rc5's operator catalog does not yet ship the productized operators SAW relies on
 (`rhbk`, `rhdh`, `rhods`), and several of them are amd64-only. This branch
@@ -51,10 +51,9 @@ Every change on this branch falls into one of three buckets:
 |---|---|
 | `saw-hostpath` StorageClass uses `kubevirt.io.hostpath-provisioner` (dots) | HPP registers the CSI driver with that exact name on this cluster |
 | golden disk from GHCR (also here) | the CDI importer resolves via node DNS and can't reach the in-cluster image registry on verac2 |
-| installer ConfigMap annotated `argocd.argoproj.io/sync-options: Replace=true` | OCP 5.0's Argo CD does not honor app-level ServerSideApply, so the ~300 KiB ConfigMap overflows the 256 KiB `last-applied-configuration` annotation |
 
-> The one change arguably **general** enough to also land on `main` is the
-> `Replace=true` sync option (harmless on older Argo, more robust everywhere).
+> The installer ConfigMap's `Replace=true` sync option, first needed here, is
+> on `main` now and no longer a branch change.
 
 ---
 
@@ -206,7 +205,7 @@ Everything lives under `scripts/vera-rubin/`:
 | `diag-*.sh` | diagnostics used while bringing this up (RBAC, netpols, VM/DataVolume, Keycloak tokens, gateway, sandbox) |
 
 The values changes (community operators, OIDC/plugin pins, NetworkPolicies,
-golden-image source, installer `Replace=true`) live in `overrides/values-vera-rubin*.yaml`
+golden-image source) live in `overrides/values-vera-rubin*.yaml`
 and need no manual step:
 
 | File | Attached by | Holds |
@@ -214,7 +213,7 @@ and need no manual step:
 | `overrides/values-vera-rubin.yaml` | `global.extraValueFiles` in `values-global.yaml` | operator subscriptions (community Keycloak; RHDH from the community catalog with the arm64 Postgres image; no RHODS), the `rhdh-community-catalog` app; attaches the two files below |
 | `overrides/vera-rubin/rhdh-community-catalog/` | the `rhdh-community-catalog` application | the RHDH community CatalogSource (kustomize) |
 | `overrides/values-vera-rubin-openshell-rhdh.yaml` | `openshell-rhdh` application | community RHDH image: Keycloak catalog OCI plugin, email sign-in resolver, http-request and OIDC-provider OCI plugins, NetworkPolicies; `sawUsers` defaults for portal workspaces |
-| `overrides/values-vera-rubin-saw-users.yaml` | `saw-users` application | golden disk from the GHCR multi-arch image, installer ConfigMap `Replace=true`, for the users in `overrides/saw-users.yaml` |
+| `overrides/values-vera-rubin-saw-users.yaml` | `saw-users` application | golden disk from the GHCR multi-arch image, for the users in `overrides/saw-users.yaml` |
 
 The `apply-*.sh` scripts under `scripts/vera-rubin/` patched these same things
 into a live cluster before they were values; they are kept for reference.

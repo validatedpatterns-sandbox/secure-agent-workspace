@@ -10,7 +10,3 @@ defaults:
       # there): import the golden disk from the public multi-arch GHCR image.
       # quay.io/rh-ai-quickstart/openshell-gateway is amd64-only; do not use it.
       registryURL: docker://ghcr.io/validatedpatterns-sandbox/openshell-gateway:latest
-    installer:
-      # OCP 5.0's Argo CD client-side-applies the ~300 KiB installer ConfigMap
-      # and overflows the last-applied-configuration annotation; replace it.
-      replaceOnSync: true

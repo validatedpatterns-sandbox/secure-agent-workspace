@@ -57,12 +57,6 @@ source:
   registryURL: ""
   httpURL: ""
 
-# The installer ConfigMap (~300 KiB). replaceOnSync has Argo CD replace it
-# instead of patching, for an Argo CD that ignores the app's ServerSideApply
-# and would overflow the last-applied-configuration annotation (OCP 5.0).
-installer:
-  replaceOnSync: false
-
 vm:
   cores: 4
   memory: 8Gi

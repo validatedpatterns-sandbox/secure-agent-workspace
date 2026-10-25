@@ -32,5 +32,3 @@ sawUsers:
     openshellSaw:
       source:
         registryURL: docker://ghcr.io/validatedpatterns-sandbox/openshell-gateway:latest
-      installer:
-        replaceOnSync: true

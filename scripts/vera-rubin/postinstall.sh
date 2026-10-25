@@ -2,18 +2,17 @@
 # =============================================================================
 # SAW on OpenShift 5.0 rc5 / arm64 (Vera Rubin / verac2) — POST-INSTALL
 # -----------------------------------------------------------------------------
-# Run AFTER applying the Pattern CR, while the operators are installing.
+# Run AFTER `./pattern.sh make install`, while the operators are installing.
 # Each step waits for its prerequisite, so it is safe to run once (or re-run).
 #   1. ensure the saw-hostpath StorageClass uses the HPP CSI provisioner name
 #   2. inject the arm64 Postgres image into the RHDH subscription config.env
-#   3. remove any resolution-poisoning orphan subscription in openshift-operators
 # See docs/vera-rubin-ocp.md.
 # =============================================================================
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"; MAN="$HERE/manifests"
 oc whoami >/dev/null || { echo "ERROR: not logged in (oc login)"; exit 1; }
 
-echo "== [1/3] storage: saw-hostpath StorageClass must use the HPP CSI name =="
+echo "== [1/2] storage: saw-hostpath StorageClass must use the HPP CSI name =="
 # OpenShift Virtualization's HPP registers provisioner 'kubevirt.io.hostpath-provisioner'
 # (dots). A StorageClass with the slash form never binds. StorageClasses are
 # immutable, so a wrong one is deleted and recreated.
@@ -29,7 +28,7 @@ else
   echo "   creating saw-hostpath"; oc apply -f "$MAN/storageclass-saw-hostpath.yaml"
 fi
 
-echo "== [2/3] RHDH: inject arm64 Postgres image into the subscription config.env =="
+echo "== [2/2] RHDH: inject arm64 Postgres image into the subscription config.env =="
 # The community RHDH operator defaults to an amd64 Postgres image -> 'Exec format
 # error' on arm64. `oc set env` is reverted by OLM; Subscription .spec.config.env
 # survives reconcile.
@@ -42,15 +41,6 @@ if oc get subscription rhdh -n rhdh-operator >/dev/null 2>&1; then
 else
   echo "   subscription/rhdh not present yet -> re-run this script once it is."
 fi
-
-echo "== [3/3] clean up resolution-poisoning orphan subscriptions =="
-# One unresolvable Subscription blocks OLM resolution for the whole namespace.
-for s in patterns-operator; do
-  if oc get subscription "$s" -n openshift-operators >/dev/null 2>&1; then
-    echo "   deleting orphan subscription/$s in openshift-operators"
-    oc delete subscription "$s" -n openshift-operators
-  fi
-done
 
 cat <<'NEXT'
 

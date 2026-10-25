@@ -7,12 +7,16 @@ All the cluster-specific changes live on the **`openshift-vera-rubin`** branch
 (not `main`). `main` is unchanged and works on GA OpenShift with the productized
 operators; it is not broken. The reason `main` can't deploy here is that OCP 5.0
 rc5's operator catalog does not yet ship the productized operators SAW relies on
-(`patterns-operator`, `rhbk`, `rhdh`, `rhods`), and several of them are
-amd64-only. This branch substitutes community/arm64 equivalents and works around
-the differences those introduce.
+(`rhbk`, `rhdh`, `rhods`), and several of them are amd64-only. This branch
+substitutes community/arm64 equivalents and works around the differences those
+introduce. The patterns-operator itself is no longer one of them: the released
+operator in `community-operators` runs on arm64, so the pattern is installed
+the standard way (`./pattern.sh make install`).
 
-> **TL;DR:** run `preinstall.sh`, apply the Pattern CR, run `postinstall.sh`,
-> load secrets, set up DNS. See [Install](#install).
+> **TL;DR:** run `preinstall.sh`, `./pattern.sh make install`, run
+> `postinstall.sh`, load secrets, set up DNS. See [Install](#install). A cluster
+> that still runs the early out-of-catalog patterns-operator build: run
+> `migrate-patterns-operator.sh` first (see [Migrating](#migrating-off-the-out-of-catalog-patterns-operator)).
 
 ---
 
@@ -23,7 +27,6 @@ Every change on this branch falls into one of three buckets:
 ### 1. Architecture — productized artifacts are amd64-only
 | Change | Reason |
 |---|---|
-| patterns-operator built for arm64 (`quay.io/sauagarw/patterns-operator:0.0.4-arm64`) | the productized operator ships amd64 only / is absent from rc5 |
 | RHDH Postgres image pinned to `rhel9/postgresql-15` | the community operator's default DB image is amd64 → `Exec format error` on arm64 |
 | VM golden disk pulled from the GHCR **multi-arch** image | a VM boot disk is arch-specific; GHCR is amd64+arm64, quay's is amd64-only |
 
@@ -54,14 +57,10 @@ Every change on this branch falls into one of three buckets:
 - **OpenShift Virtualization (CNV) + HPP storage** available (the pattern
   installs the CNV operator; the `saw-hostpath` StorageClass must use the HPP
   CSI provisioner — `postinstall.sh` ensures this).
-- Access to pull `quay.io/sauagarw/patterns-operator:0.0.4-arm64` (the arm64
-  build of the patterns-operator). To rebuild it yourself, in a checkout of the
-  patterns-operator fork:
-  ```
-  make podman-build-arm64 IMG=quay.io/<you>/patterns-operator:<tag>
-  podman push quay.io/<you>/patterns-operator:<tag>
-  ```
-  then edit the image in `scripts/vera-rubin/manifests/patterns-operator-arm64.yaml`.
+- `patterns-operator` in the cluster's `community-operators` catalog
+  (`oc get packagemanifests -n openshift-marketplace patterns-operator`);
+  `preinstall.sh` reports it. Earlier rc5 builds shipped no arm64 patterns-operator
+  and the branch carried its own; that is gone now.
 - A way to resolve `*.apps.<cluster-domain>` from your workstation (these are not
   public DNS on verac2). See [DNS](#dns-for-apps-routes).
 - `python3` (used by the export/diagnostic helpers).
@@ -79,29 +78,27 @@ cd secure-agent-workspace
 git checkout openshift-vera-rubin
 ```
 
-### 1. Pre-install (operators the rc5 catalog can't provide)
+### 1. Pre-install (the one catalog the rc5 cluster lacks)
 
 ```
 bash scripts/vera-rubin/preinstall.sh
 ```
 
-Installs the RHDH community CatalogSource and the arm64 patterns-operator
-(with its service-CA webhook cert).
+Installs the RHDH community CatalogSource (arm64) and checks that
+`patterns-operator` is available from the cluster catalog.
 
-### 2. Apply the Pattern CR
+### 2. Install the pattern
 
 ```
-oc apply -f scripts/vera-rubin/manifests/pattern-cr.yaml
+./pattern.sh make install
 ```
 
-This points the patterns-operator at `sauagarwa/secure-agent-workspace` @
-`openshift-vera-rubin`, which bootstraps OpenShift GitOps and the `prod`
-clustergroup. Argo CD then installs the operators (Keycloak, RHDH, pipelines,
+Standard Validated Patterns install: it subscribes to `patterns-operator` from
+`community-operators`, and creates the Pattern CR from `values-global.yaml` and
+this checkout's git remote and branch (`sauagarwa/secure-agent-workspace` @
+`openshift-vera-rubin`). The operator bootstraps OpenShift GitOps and the `prod`
+clustergroup; Argo CD then installs the operators (Keycloak, RHDH, pipelines,
 CNV, external-secrets, Vault) and the SAW charts.
-
-> Do **not** use `./pattern.sh make install` here — it would try to install the
-> patterns-operator from the (missing) catalog. `preinstall.sh` already
-> installed it, so apply the Pattern CR directly.
 
 ### 3. Post-install fixes
 
@@ -111,9 +108,8 @@ Once the operators begin installing:
 bash scripts/vera-rubin/postinstall.sh
 ```
 
-Fixes the StorageClass provisioner, injects the arm64 Postgres image into the
-RHDH subscription, and removes any resolution-poisoning orphan subscription.
-Safe to re-run; each step waits for its prerequisite.
+Fixes the StorageClass provisioner and injects the arm64 Postgres image into
+the RHDH subscription. Safe to re-run; each step waits for its prerequisite.
 
 ### 4. Load secrets
 
@@ -128,6 +124,25 @@ Once Vault is running:
 > ```
 > echo "<router-ip>  openshell-keycloak-ingress-saw-keycloak.apps.<cluster-domain>" | sudo tee -a /etc/hosts
 > ```
+
+### Migrating off the out-of-catalog patterns-operator
+
+A cluster brought up with an earlier version of this branch runs the arm64
+patterns-operator as raw manifests in the `patterns-operator` namespace
+(`quay.io/sauagarw/patterns-operator:0.0.4-arm64`). Switch it to the released
+operator without redeploying the pattern:
+
+```
+bash scripts/vera-rubin/migrate-patterns-operator.sh
+```
+
+It removes the raw install (Deployments, webhook, RBAC), leaves the Pattern CRD
+and the Pattern CR in place so the GitOps apps keep running, subscribes to
+`patterns-operator` in `openshift-operators` from the catalog's default channel,
+and waits for the CSV. Re-runnable. If the Subscription does not resolve, the
+script prints the `oc` commands to look at; the usual cause is another
+unresolvable Subscription in `openshift-operators` blocking OLM resolution for
+the namespace.
 
 ### DNS for *.apps routes
 
@@ -187,10 +202,11 @@ Everything lives under `scripts/vera-rubin/`:
 
 | Script | Purpose |
 |---|---|
-| `preinstall.sh` | RHDH community catalog + arm64 patterns-operator |
-| `postinstall.sh` | StorageClass provisioner, RHDH arm64 Postgres, orphan-sub cleanup |
-| `export-cluster-state.sh` / `export-patterns-operator.sh` | capture the manual-step objects from a live cluster into `manifests/` |
-| `manifests/` | captured YAML: patterns-operator (arm64), CRD, RHDH CatalogSource, RHDH subscription, StorageClass, HPP CR, Pattern CR |
+| `preinstall.sh` | RHDH community catalog; reports whether `patterns-operator` is in the cluster catalog |
+| `migrate-patterns-operator.sh` | replace the early out-of-catalog patterns-operator with the released one from the catalog |
+| `postinstall.sh` | StorageClass provisioner, RHDH arm64 Postgres |
+| `export-cluster-state.sh` | capture the manual-step objects from a live cluster into `manifests/` |
+| `manifests/` | captured YAML: RHDH CatalogSource, RHDH subscription, StorageClass, HPP CR |
 | `diag-*.sh` | diagnostics used while bringing this up (RBAC, netpols, VM/DataVolume, Keycloak tokens, gateway, sandbox) |
 
 The chart/values changes (community operators, OIDC/plugin pins, NetworkPolicies,

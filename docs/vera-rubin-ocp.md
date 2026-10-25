@@ -3,8 +3,8 @@
 This guide covers deploying Secure Agent Workspace (SAW) on an **arm64**
 OpenShift **5.0 rc5** cluster (the NVIDIA "Vera Rubin" / `verac2` environment).
 
-All the cluster-specific changes live on the **`openshift-vera-rubin`** branch
-(not `main`), as **values overrides**: `values-prod.yaml` and the charts behave
+All the cluster-specific changes live on the **`ocp-5.0`** branch (not
+`main`), as **values overrides**: `values-prod.yaml` and the charts behave
 as on `main`; `values-global.yaml` on this branch attaches
 `overrides/values-vera-rubin.yaml` through `global.extraValueFiles`, and that
 file in turn attaches `overrides/values-vera-rubin-openshell-rhdh.yaml` and
@@ -78,13 +78,14 @@ Every change on this branch falls into one of three buckets:
 
 ## Install
 
-All commands run from a checkout of this fork on the **`openshift-vera-rubin`**
-branch:
+All commands run from a checkout on the **`ocp-5.0`** branch. Fork the
+repository first if you will change anything (`make install` points the
+Pattern CR at the checkout's own remote and branch):
 
 ```
-git clone https://github.com/sauagarwa/secure-agent-workspace.git
+git clone https://github.com/<you>/secure-agent-workspace.git
 cd secure-agent-workspace
-git checkout openshift-vera-rubin
+git checkout ocp-5.0
 ```
 
 ### 1. Install the pattern
@@ -97,7 +98,7 @@ Standard Validated Patterns install: it creates the `saw-hostpath` StorageClass
 if needed, subscribes to `patterns-operator` from `community-operators`, and
 creates the Pattern CR from `values-global.yaml` (including its
 `extraValueFiles`) and this checkout's git remote and branch
-(`sauagarwa/secure-agent-workspace` @ `openshift-vera-rubin`). The operator
+(your fork @ `ocp-5.0`). The operator
 bootstraps OpenShift GitOps and the `prod` clustergroup; Argo CD then creates
 the RHDH community CatalogSource, installs the operators (Keycloak, RHDH,
 pipelines, CNV, external-secrets, Vault) and the SAW charts. The `rhdh`

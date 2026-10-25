@@ -19,7 +19,7 @@ git push
 echo "=== sync the workspace app so the VM template picks up the GHCR source ==="
 oc annotate application saw-alice -n vp-gitops argocd.argoproj.io/refresh=hard --overwrite 2>/dev/null || true
 oc patch application saw-alice -n vp-gitops --type merge \
-  -p '{"operation":{"sync":{"revision":"openshift-vera-rubin"}}}' 2>/dev/null || true
+  -p '{"operation":{"sync":{"revision":"ocp-5.0"}}}' 2>/dev/null || true
 echo "waiting ~20s for the VM manifest to update..."; sleep 20
 echo "VM dataVolumeTemplate source now:"
 oc get vm alice -n saw-alice -o jsonpath='{.spec.dataVolumeTemplates[0].spec.source.registry.url}{"\n"}' 2>&1

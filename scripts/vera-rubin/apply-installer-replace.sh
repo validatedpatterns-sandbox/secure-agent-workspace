@@ -17,7 +17,7 @@ Assisted-By: Claude" || echo "(nothing to commit)"
 git push
 oc annotate application saw-alice -n vp-gitops argocd.argoproj.io/refresh=hard --overwrite
 oc patch application saw-alice -n vp-gitops --type merge \
-  -p '{"operation":{"sync":{"revision":"openshift-vera-rubin"}}}'
+  -p '{"operation":{"sync":{"revision":"ocp-5.0"}}}'
 echo "waiting for saw-alice to sync..."
 for i in $(seq 1 18); do
   sleep 10

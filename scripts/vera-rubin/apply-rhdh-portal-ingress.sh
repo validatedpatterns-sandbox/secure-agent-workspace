@@ -16,7 +16,7 @@ Assisted-By: Claude" || echo "(nothing new to commit)"
 git push
 oc annotate application openshell-rhdh -n vp-gitops argocd.argoproj.io/refresh=hard --overwrite
 oc patch application openshell-rhdh -n vp-gitops --type merge \
-  -p '{"operation":{"sync":{"revision":"openshift-vera-rubin"}}}'
+  -p '{"operation":{"sync":{"revision":"ocp-5.0"}}}'
 echo "waiting for the ingress netpol to exist..."
 until oc get networkpolicy saw-rhdh-allow-portal-ingress -n rhdh >/dev/null 2>&1; do sleep 5; done
 echo "netpol present. testing generator -> backend JWKS (expect 80 OK now)..."

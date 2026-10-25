@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Ship the http:backstage:request dynamic-plugin change on openshift-vera-rubin
+# Ship the http:backstage:request dynamic-plugin change on ocp-5.0
 # and roll the RHDH backend. Run from anywhere: it cd's to the repo root.
 set -euo pipefail
 cd "$(cd "$(dirname "$0")/../.." && pwd)"
@@ -18,7 +18,7 @@ git push
 
 oc annotate application openshell-rhdh -n vp-gitops argocd.argoproj.io/refresh=hard --overwrite
 oc patch application openshell-rhdh -n vp-gitops --type merge \
-  -p '{"operation":{"sync":{"revision":"openshift-vera-rubin"}}}'
+  -p '{"operation":{"sync":{"revision":"ocp-5.0"}}}'
 
 echo "waiting for the http-request digest to land in the configmap..."
 until oc get cm saw-rhdh-dynamic-plugins -n rhdh -o jsonpath='{.data.dynamic-plugins\.yaml}' | grep -q b7e9e36a; do sleep 5; done

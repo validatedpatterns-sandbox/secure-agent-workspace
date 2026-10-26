@@ -25,7 +25,7 @@ data:
       - name: incluster-mcp-probe
         type: incluster-mcp-probe
         credentialFree: true
-    
+
   profiles__incluster-mcp-test__default__sandbox.yaml: |
     apiVersion: saw.redhat.com/v1alpha1
     kind: Sandboxes
@@ -43,14 +43,14 @@ data:
           name: incluster-mcp
         ui:
           route: true
-    
+
   profiles__incluster-mcp-test__default__workspace.yaml: |
     apiVersion: saw.redhat.com/v1alpha1
     kind: Workspace
     metadata:
       name: default
       description: Data science workspace with NVIDIA inference and web search
-    
+
   harness__incluster-mcp__47802c0b27b4f54f: "ewogICJpZCI6ICJzYXctZWNobyIsCiAgIm5hbWUiOiAiU0FXIGVjaG8iLAogICJkZXNjcmlwdGlvbiI6ICJTYW1wbGUgdG9vbCBkZWxpdmVyZWQgYnkgYSBTQVcgaGFybmVzcyBidW5kbGUuIEVjaG9lcyBpdHMgaW5wdXQ7IG5vIG5ldHdvcmsuIiwKICAiY2F0ZWdvcmllcyI6IFsib3RoZXIiXSwKICAiY29udHJhY3RzIjogeyAidG9vbHMiOiBbInNhd19lY2hvIl0gfSwKICAiYWN0aXZhdGlvbiI6IHsgIm9uU3RhcnR1cCI6IHRydWUgfSwKICAiY29uZmlnU2NoZW1hIjogeyAidHlwZSI6ICJvYmplY3QiLCAiYWRkaXRpb25hbFByb3BlcnRpZXMiOiBmYWxzZSB9Cn0K"
   harness__incluster-mcp__63d6e503123c7a8f: "LS0tCm5hbWU6IHBhdHRlcm4tYXV0aG9yCmRlc2NyaXB0aW9uOiBNYW5hZ2VkIGV4YW1wbGUgc2tpbGwuIFByb3ZlcyBoYXJuZXNzLWRlbGl2ZXJlZCBza2lsbHMgbG9hZCBpbiB0aGUgc2FuZGJveC4KLS0tCgojIHBhdHRlcm4tYXV0aG9yCgpNYW5hZ2VkIGV4YW1wbGUgc2tpbGwuIFJlYWwgcHJvbXB0IGNvbnRlbnQgbGl2ZXMgaGVyZSBhbmQgaXMgdmVyc2lvbmVkIHdpdGggdGhlIEJPTS4K"
   harness__incluster-mcp__65e12b385a1d8a9f: "ewogICIkc2NoZW1hIjogImh0dHBzOi8vYWdlbnQtcGx1Z2lucy5vcmcvc2NoZW1hcy8xLjAuMC9tY3Auc2NoZW1hLmpzb24iLAogICJtY3BTZXJ2ZXJzIjogewogICAgImluY2x1c3Rlci1wcm9iZSI6IHsKICAgICAgInR5cGUiOiAic3RyZWFtYWJsZS1odHRwIiwKICAgICAgInVybCI6ICJodHRwOi8vaW5jbHVzdGVyLW1jcC1wcm9iZS5zYXctbWNwLXByb2JlLnN2Yy5jbHVzdGVyLmxvY2FsOjgwODAvbWNwIgogICAgfSwKICAgICJzYXctbWNwLWVjaG8iOiB7CiAgICAgICJ0eXBlIjogInN0ZGlvIiwKICAgICAgImNvbW1hbmQiOiAibm9kZSIsCiAgICAgICJhcmdzIjogWwogICAgICAgICIke1BMVUdJTl9ST09UfS9tY3AvZWNoby1zZXJ2ZXIubWpzIgogICAgICBdCiAgICB9CiAgfQp9Cg=="

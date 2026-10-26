@@ -1,0 +1,89 @@
+{
+  "dateUTC": "2026-10-07",
+  "status": "partial",
+  "prBranchCommit": "6225f51",
+  "temporaryTestBranchCommit": "33382c8",
+  "clusterVersion": "4.22.14",
+  "goldenImage": {
+    "namespace": "saw-identity-verified-image",
+    "release": "signed-golden",
+    "build": "openshell-gateway-2",
+    "imageDigest": "sha256:57152dbd6ee7f329b8ae5a80150fa4270a22c80a4176952c206f1b98b35cb384",
+    "dataVolumePhase": "Succeeded",
+    "guestSELinuxPolicy": "selinux-policy-43.3-1.fc44.noarch",
+    "testPublicKey": "saw-test.pub"
+  },
+  "canary": {
+    "namespace": "saw-identity-p",
+    "vm": "identity-p",
+    "vmUID": "c410e053-5572-4c34-b51c-83be760f0919",
+    "enrollmentGeneration": "1",
+    "installerBOM": "openshell-0-1-2-rhaiv-0",
+    "installPhase": "Done",
+    "applyPhase": "Done",
+    "bundleSignature": "verified",
+    "bundleVerifierMessage": "installer bundle verified by saw-test.pub",
+    "defaultProtected": {
+      "http": 200,
+      "aud": "saw-protected-service",
+      "subAzpClientId": "spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-p/identity-p/ws/default/sandbox/agent"
+    },
+    "researchProtected": {
+      "http": 200,
+      "aud": "saw-protected-service",
+      "subAzpClientId": "spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-p/identity-p/ws/research/sandbox/agent"
+    }
+  },
+  "isolatedSignatureProbes": {
+    "unchangedInstallerCopy": {
+      "enforceExit": 0,
+      "signature": "verified",
+      "published": true
+    },
+    "tamperedInstallerCopy": {
+      "enforceExit": 1,
+      "signature": "failed",
+      "published": false
+    },
+    "componentMethod": "ComponentInstaller._verify_signature from the guest's verified installer",
+    "testSignedCliMirror": "default-route-openshift-image-registry.apps.cluster-2p7tv.dyn.redhatworkshops.io/saw-identity-verified-image/odh-openshell-cli@sha256:7d04766147c6960da7d06580f3efd6538679d147aa3b0cd364993c534c3a6c7b",
+    "testSignedCliMirrorResult": "verified",
+    "originalCliImageWithTestKey": "rejected",
+    "actualInstalledComponentSignatures": {
+      "cli": "unsigned",
+      "gateway": "unsigned",
+      "sandbox": "unsigned",
+      "supervisor": "unsigned"
+    },
+    "registryConfigRestored": true,
+    "pullServiceAccountRemoved": true
+  },
+  "patternDeployment": {
+    "attemptedSeparatePattern": "idp",
+    "result": "blocked",
+    "reason": "admission webhook vpattern.gitops.hybrid-cloud-patterns.io denied the request: only one Pattern resource is allowed",
+    "existingPattern": "secure-agent-workspace",
+    "existingPatternUIDUnchanged": "7cae9ece-6f1d-44ca-9787-c8afdab98f8c",
+    "existingPatternRevisionUnchanged": "codex/custom-inference-vm-installer",
+    "existingAliceUIDUnchanged": "4d9604bb-4ebc-438a-a4e2-85175a744328"
+  },
+  "cleanup": {
+    "identityPWorkloadEntriesRemaining": 0,
+    "identityPAgentBanned": true,
+    "identityPNamespaceDeleted": true,
+    "verifiedImageNamespaceDeleted": true,
+    "demoIssuerValuesRestoredExactly": true,
+    "demoIssuerRestoredRevision": 12,
+    "aliceUIDUnchanged": "4d9604bb-4ebc-438a-a4e2-85175a744328",
+    "aliceReady": true,
+    "spireServerReady": "1/1",
+    "temporaryPullCredentialRemoved": true,
+    "localTestPrivateKeyRemoved": true
+  },
+  "limits": [
+    "The component positive control used a run-owned mirror signed by the test key; it does not verify the upstream publisher signature.",
+    "The four production BOM components remained unsigned in this installation; full signing.mode=enforce installation was not demonstrated.",
+    "The cluster admits only one Pattern resource, so the identity canary was deployed through a dedicated Helm release instead of the Pattern path.",
+    "The complete automated TCP acceptance suite and correlated proxy audit remain open."
+  ]
+}

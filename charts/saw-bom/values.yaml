@@ -2,6 +2,9 @@
 profiles:
   - data-science
 
+# Additional operator-approved profile documents, keyed as profiles/<profile>/<workspace>/<file>.yaml.
+profileFiles: {}
+
 # CI may replace a profile sandbox image with this run's build digest.
 # Keys are sandbox names. Normal deployments leave this map empty.
 imageOverrides: {}

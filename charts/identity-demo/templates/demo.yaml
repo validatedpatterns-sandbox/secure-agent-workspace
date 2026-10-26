@@ -1,0 +1,84 @@
+{{- if .Values.enabled }}
+{{- $_ := required "spiffeIssuer required" .Values.spiffeIssuer }}
+{{- if not .Values.allowedPrefixes }}{{ fail "allowedPrefixes required" }}{{ end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: identity-demo
+data:
+  server.js: |
+{{ .Files.Get "files/server.js" | indent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: identity-demo
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: identity-demo
+  template:
+    metadata:
+      labels:
+        app: identity-demo
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: demo
+          image: {{ .Values.image | quote }}
+          command: [node, /app/server.js]
+          env:
+            - name: ISSUER
+              value: {{ .Values.issuer | quote }}
+            - name: SPIFFE_ISSUER
+              value: {{ .Values.spiffeIssuer | quote }}
+            - name: ALLOWED_PREFIXES
+              value: {{ toJson .Values.allowedPrefixes | quote }}
+            - name: ENROLLMENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.enrollmentSecret }}
+                  key: token
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: script
+              mountPath: /app
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: identity-demo
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: identity-demo
+spec:
+  selector:
+    app: identity-demo
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+{{- end }}

@@ -9,8 +9,10 @@ import sys
 
 import pytest
 
+IDENTITY_FILES = ("identity.py", "saw_spire.pp.b64")
+TOOL_GATE_FILES = ("tool-actions.yaml", "tool-gate.mjs", "tool-gate-plugin.mjs")
 BUNDLE_FILES = ("installer-bom.yaml", "apply_bom.py", "setup-dashboard.sh",
-                "tool-actions.yaml", "tool-gate.mjs", "tool-gate-plugin.mjs")
+                *IDENTITY_FILES, *TOOL_GATE_FILES)
 
 
 def _write_bundle_files(directory):
@@ -27,9 +29,11 @@ def test_manifest_requires_every_tool_gate_file():
     spec.loader.exec_module(module)
     data = {name: name + "\n" for name in BUNDLE_FILES}
     assert len(module.build_manifest(data).splitlines()) == len(BUNDLE_FILES)
-    for name in BUNDLE_FILES[3:]:
+    for name in TOOL_GATE_FILES:
         with pytest.raises(SystemExit, match=name):
             module.build_manifest({k: v for k, v in data.items() if k != name})
+    without_identity = {k: v for k, v in data.items() if k not in IDENTITY_FILES}
+    assert len(module.build_manifest(without_identity).splitlines()) == len(BUNDLE_FILES) - len(IDENTITY_FILES)
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="shell verifier uses Linux tools")
@@ -350,12 +354,33 @@ def _manifest_text(directory, names):
     return "".join(lines)
 
 
+def test_identity_inputs_are_covered_by_signed_manifest():
+    """A signed installer must cover the identity script and SELinux module."""
+    import importlib.util
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location(
+        "build_installer_manifest", root / "scripts" / "build-installer-manifest.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    data = {
+        "installer-bom.yaml": "bom", "apply_bom.py": "installer",
+        "setup-dashboard.sh": "dashboard", "identity.py": "identity",
+        "saw_spire.pp.b64": "policy",
+    }
+    data.update({name: name for name in TOOL_GATE_FILES})
+    manifest = module.build_manifest(data)
+    assert "  identity.py\n" in manifest
+    assert "  saw_spire.pp.b64\n" in manifest
+    data["identity.py"] = "tampered"
+    assert module.build_manifest(data) != manifest
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="shell verifier uses Linux tools")
-def test_edited_bundle_fails_enforce_and_warns(tmp_path):
-    """A test key signs the manifest covering the three installer files.
-    Editing apply_bom.py changes its hash, which changes the manifest and
-    makes enforce stop and warn continue, without touching an already
-    installed binary."""
+@pytest.mark.parametrize("edited", ("apply_bom.py", "identity.py", "saw_spire.pp.b64"))
+def test_edited_bundle_fails_enforce_and_warns(tmp_path, edited):
+    """Tampering with installer or identity inputs invalidates the signed bundle."""
     from pathlib import Path
     root = Path(__file__).resolve().parents[2]
     script = root / "charts" / "openshell-saw" / "files" / "guest" / "verify-bundle"
@@ -402,7 +427,7 @@ def test_edited_bundle_fails_enforce_and_warns(tmp_path):
     assert run("enforce").returncode == 0
     assert json.loads(status.read_text())["bundle"]["signature"] == "verified"
     assert staged_apply_bom.read_text() == "apply_bom.py\n"
-    (installer / "apply_bom.py").write_text("tampered\n")
+    (installer / edited).write_text("tampered\n")
     enforced = run("enforce")
     assert enforced.returncode == 1
     assert json.loads(status.read_text())["bundle"]["signature"] == "failed"
@@ -415,9 +440,12 @@ def test_edited_bundle_fails_enforce_and_warns(tmp_path):
     assert warned.returncode == 0
     assert json.loads(status.read_text())["bundle"]["signature"] == "failed"
     assert installed.read_text() == "old-binary\n"
-    # warn does publish a failed bundle, so it takes effect (matches the
-    # documented "warn logs ... and continues").
-    assert staged_apply_bom.read_text() == "tampered\n"
+    # warn does publish a failed bundle, so the edited file takes effect
+    # (matches the documented "warn logs ... and continues"). Other covered
+    # files stay as they were.
+    assert (tmp_path / "verified" / "installer" / edited).read_text() == "tampered\n"
+    if edited != "apply_bom.py":
+        assert staged_apply_bom.read_text() == "apply_bom.py\n"
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="shell verifier uses Linux tools")

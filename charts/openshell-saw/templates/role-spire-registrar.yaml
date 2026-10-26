@@ -1,0 +1,41 @@
+{{- if .Values.spiffe.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "openshell-sandbox.fullname" . }}-spire-registrar
+rules:
+  - apiGroups: [kubevirt.io]
+    resources: [virtualmachines, virtualmachines/finalizers]
+    resourceNames: [{{ include "openshell-sandbox.fullname" . | quote }}]
+    verbs: [get, update, patch]
+  - apiGroups: [subresources.kubevirt.io]
+    resources: [virtualmachines/restart]
+    resourceNames: [{{ include "openshell-sandbox.fullname" . | quote }}]
+    verbs: [update]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [{{ printf "%s-spire-join-token" (include "openshell-sandbox.fullname" .) | quote }}]
+    verbs: [get, update]
+  - apiGroups: [""]
+    resources: [configmaps, pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "openshell-sandbox.fullname" . }}-spire-registrar
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "openshell-sandbox.fullname" . }}-spire-registrar
+subjects:
+  - kind: ServiceAccount
+    name: saw-spire-registrar
+    namespace: {{ .Values.spiffe.registrarNamespace }}
+{{- end }}

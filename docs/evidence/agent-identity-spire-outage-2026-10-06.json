@@ -1,0 +1,81 @@
+{
+  "scenario": "spire-server-outage",
+  "executed": true,
+  "acceptanceComplete": false,
+  "status": "pass",
+  "timestamp": "2026-10-06T11:46:46.329880+00:00",
+  "sharedConsumersBefore": {
+    "agents": 18,
+    "entries": 59
+  },
+  "before": {
+    "identity": {
+      "generation": "1",
+      "vmi": "c8690752-ced5-4e6b-835b-ee05a3ca7a1c",
+      "agentPresent": true,
+      "pathHash": "b8ac0ea46cba",
+      "registrarReady": true
+    },
+    "guestState": "present",
+    "guestGeneration": "1",
+    "provider": "protected/saw-demo-cc",
+    "grant": {
+      "http": 200,
+      "curlExit": 0,
+      "sub": "spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-u/identity-u/ws/default/sandbox/agent",
+      "aud": "saw-protected-service",
+      "azp": "spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-u/identity-u/ws/default/sandbox/agent",
+      "client_id": "spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-u/identity-u/ws/default/sandbox/agent",
+      "exp": 1791287530,
+      "error": null,
+      "diagnostic": "id: cannot find name for user ID 1000 {\"sub\":\"spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-u/identity-u/ws/default/sandbox/agent\",\"azp\":\"spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-u/identity-u/w"
+    }
+  },
+  "outageStart": "2026-10-06T11:47:18.332882+00:00",
+  "denied": {
+    "epoch": 1791287558,
+    "grant": {
+      "http": 502,
+      "curlExit": 0,
+      "diagnostic": "id: cannot find name for user ID 1000"
+    },
+    "guest": {
+      "epoch": 1791287571,
+      "state": "present",
+      "generation": "1",
+      "credentialsPresent": true
+    },
+    "serverReplicas": [
+      0,
+      0
+    ]
+  },
+  "faultRestored": true,
+  "sharedConsumersAfter": {
+    "agents": 18,
+    "entries": 59
+  },
+  "restored": {
+    "identity": {
+      "generation": "1",
+      "vmi": "c8690752-ced5-4e6b-835b-ee05a3ca7a1c",
+      "agentPresent": true,
+      "pathHash": "b8ac0ea46cba",
+      "registrarReady": true
+    },
+    "guestGeneration": "1",
+    "guestState": "present",
+    "grant": {
+      "http": 200,
+      "curlExit": 0,
+      "sub": "spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-u/identity-u/ws/default/sandbox/agent",
+      "aud": "saw-protected-service",
+      "azp": "spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-u/identity-u/ws/default/sandbox/agent",
+      "client_id": "spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-u/identity-u/ws/default/sandbox/agent",
+      "exp": 1791287921,
+      "error": null,
+      "diagnostic": "id: cannot find name for user ID 1000 {\"sub\":\"spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-u/identity-u/ws/default/sandbox/agent\",\"azp\":\"spiffe://saw.cluster-2p7tv.dyn.redhatworkshops.io/saw/saw-identity-u/identity-u/w"
+    }
+  },
+  "result": "post-expiry fail-closed and fresh grant on the same enrollment"
+}

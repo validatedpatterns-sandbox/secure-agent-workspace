@@ -1,0 +1,28 @@
+# Shared infrastructure only. VM enrollment is gated separately.
+spiffe:
+  enabled: false
+  trustDomain: ""
+  clusterName: ""
+  jwtIssuer: ""
+  # Use Go's canonical duration spelling: ZTWIM normalizes these fields.
+  jwtValidity: 5m0s
+  x509Validity: 1h0m0s
+operator:
+  enabled: true
+  channel: stable-v1
+  startingCSV: zero-trust-workload-identity-manager.v1.1.1
+operands:
+  # First install the operator with this false; enable after CRDs exist.
+  enabled: false
+persistence:
+  size: 2Gi
+  storageClass: ""
+registrar:
+  enabled: false
+  image: ""
+  # Whole seconds. Join tokens already stored on a VM keep their minted
+  # expiry. JWT and X.509 lifetimes are reconciled onto existing entries.
+  # They must not exceed the SPIRE server jwtValidity and x509Validity.
+  joinTokenTTL: 600
+  jwtSvidTTL: 300
+  x509SvidTTL: 3600

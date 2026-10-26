@@ -6,7 +6,8 @@
 # Optional: OWNER, OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_TOKEN_DIR, NS, SAW_NS,
 #           KEYCLOAK_NS, ENDPOINT_URL, WEB_SEARCH, SCRIPTS_DIR,
 #           PROFILES (comma-separated SAW-BOM profiles, default: the chart's),
-#           SAW_VALUES_FILE (other Helm settings; topology is discovered)
+#           SAW_VALUES_FILE or SAW_VALUES (Helm settings; topology is discovered),
+#           SAW_BOM_VALUES (additional SAW-BOM settings), DYNAMIC_PROVIDERS
 #
 # Custom OpenAI-compatible endpoint (vLLM, Ollama, ...):
 #   PROVIDER=custom-inference MODEL=<served model> ENDPOINT_URL=https://<host>/v1 \
@@ -37,6 +38,34 @@ SAW_CHART="${SAW_CHART:?SAW_CHART is required}"
 SAW_VALUES_FILE="${SAW_VALUES_FILE:-}"
 if [[ -n "${SAW_VALUES_FILE}" && ! -f "${SAW_VALUES_FILE}" ]]; then
   echo "Error: SAW_VALUES_FILE does not exist: ${SAW_VALUES_FILE}" >&2
+  exit 1
+fi
+DYNAMIC_MODE="${DYNAMIC_PROVIDERS:-false}"
+if [[ "${DYNAMIC_MODE}" != true && "${DYNAMIC_MODE}" != false ]]; then
+  echo "Error: DYNAMIC_PROVIDERS must be true or false." >&2
+  exit 1
+fi
+SAW_VALUES_ARGS=()
+SAW_VALUE_FILES=()
+if [[ -n "${SAW_VALUES_FILE}" ]]; then
+  SAW_VALUE_FILES+=("${SAW_VALUES_FILE}")
+fi
+if [[ -n "${SAW_VALUES:-}" ]]; then
+  IFS=',' read -r -a extra_saw_values <<< "${SAW_VALUES}"
+  SAW_VALUE_FILES+=("${extra_saw_values[@]}")
+fi
+for values_file in "${SAW_VALUE_FILES[@]}"; do
+  [[ -f "${values_file}" ]] || { echo "SAW values file not found: ${values_file}" >&2; exit 1; }
+  SAW_VALUES_ARGS+=(-f "${values_file}")
+done
+BOM_VALUES_ARGS=()
+SAW_BOM_VALUES="${SAW_BOM_VALUES:-}"
+if [[ -n "${SAW_BOM_VALUES}" ]]; then
+  [[ -f "${SAW_BOM_VALUES}" ]] || { echo "SAW-BOM values file not found: ${SAW_BOM_VALUES}" >&2; exit 1; }
+  BOM_VALUES_ARGS=(-f "${SAW_BOM_VALUES}")
+fi
+if [[ "${DYNAMIC_MODE}" == true && ( ${#SAW_VALUES_ARGS[@]} -eq 0 || -z "${SAW_BOM_VALUES}" ) ]]; then
+  echo 'Dynamic providers require SAW_VALUES and SAW_BOM_VALUES files.' >&2
   exit 1
 fi
 PROVIDER="${PROVIDER:-}"
@@ -87,7 +116,7 @@ if [[ -n "$(oc get namespace "${SAW_NS}" -o name --ignore-not-found)" ]]; then
     inference_exists=true
   fi
 fi
-if [[ "${inference_exists}" == false && ( -z "${PROVIDER}" || -z "${MODEL}" ) ]]; then
+if [[ "${DYNAMIC_MODE}" != true && "${inference_exists}" == false && ( -z "${PROVIDER}" || -z "${MODEL}" ) ]]; then
   echo "Error: PROVIDER and MODEL are required when the inference Secret is absent." >&2
   exit 1
 fi
@@ -151,11 +180,11 @@ if [[ "${OIDC_ISSUER}" == "none" ]]; then
   OIDC_ISSUER=""
   oidc_disabled=true
   oidc_enabled=false
-elif [[ -z "${OIDC_ISSUER}" ]]; then
+elif [[ -z "${OIDC_ISSUER}" && "${DYNAMIC_MODE}" != true ]]; then
   KC_HOST="$("${SCRIPTS_DIR}/keycloak-host.sh" "${KEYCLOAK_NS}")"
   OIDC_ISSUER="https://${KC_HOST}/realms/${KEYCLOAK_REALM}"
   local_keycloak=true
-elif KC_HOST="$("${SCRIPTS_DIR}/keycloak-host.sh" "${KEYCLOAK_NS}")"; then
+elif [[ -n "${OIDC_ISSUER}" ]] && KC_HOST="$("${SCRIPTS_DIR}/keycloak-host.sh" "${KEYCLOAK_NS}")"; then
   if [[ "${OIDC_ISSUER%/}" == "https://${KC_HOST}/realms/${KEYCLOAK_REALM}" ]]; then
     local_keycloak=true
   fi
@@ -189,7 +218,9 @@ fi
 # follows SAW_VALUES_FILE so manually supplied stale topology cannot win.
 NETWORK_TOPOLOGY_VALUES="$(mktemp)"
 topology_opts=(--output "${NETWORK_TOPOLOGY_VALUES}")
-[[ -z "${SAW_VALUES_FILE}" ]] || topology_opts+=(--values-file "${SAW_VALUES_FILE}")
+for values_file in "${SAW_VALUE_FILES[@]}"; do
+  topology_opts+=(--values-file "${values_file}")
+done
 python3 "$(dirname "$0")/network-topology.py" discover "${topology_opts[@]}"
 
 # --- Build OIDC helm options ---
@@ -234,7 +265,7 @@ fi
 # --- Provider credential Secret ---
 # The VM's installer reads provider keys only from mounted Secrets, so the
 # key goes into the "inference" Secret instead of the Helm release values.
-if [[ -n "${API_KEY}" || "${inference_exists}" == false ]]; then
+if [[ "${DYNAMIC_MODE}" != true && ( -n "${API_KEY}" || "${inference_exists}" == false ) ]]; then
   umask 077
   inference_key_file="$(mktemp)"
   # OpenShell requires a nonempty credential even for a keyless endpoint.
@@ -290,7 +321,8 @@ if [[ "${web_search_enabled}" == false ]]; then
   BOM_OPTS+=(--set webSearch.enabled=false)
 fi
 # ${arr[@]+...}: an empty array is "unbound" under set -u in bash < 4.4 (macOS).
-helm upgrade --install saw-bom "${SAW_BOM_CHART}" --namespace "${DEPLOY_NS}" ${BOM_OPTS[@]+"${BOM_OPTS[@]}"} >/dev/null
+helm upgrade --install saw-bom "${SAW_BOM_CHART}" --namespace "${DEPLOY_NS}" \
+  ${BOM_OPTS[@]+"${BOM_OPTS[@]}"} ${BOM_VALUES_ARGS[@]+"${BOM_VALUES_ARGS[@]}"} >/dev/null
 echo "SAW-BOM profiles installed in ${DEPLOY_NS}${PROFILES:+ (${PROFILES})}."
 
 # --- Deploy ---
@@ -298,42 +330,50 @@ echo "Provisioning sandbox '${OPENSHELL_SAW_NAME}' for owner '${OWNER}' in names
 
 helm_opts=(
   --set-string "sandboxName=${OPENSHELL_SAW_NAME}"
-  --set "oidc.enabled=${oidc_enabled}"
   --set-string "accessControl.owner=${OWNER}"
   --set-string "oidc.keycloakNamespace=${KEYCLOAK_NS}"
   --set-string "governance.namespace=${NS}"
   --set-string "source.dataSourceNamespace=${NS}"
   --set-string "containerRuntime=${CONTAINER_RUNTIME}"
-  --set "governance.enabled=${GOVERNANCE_ENABLED}"
-  --set-string "governance.engine=${GOVERNANCE_ENGINE}"
-  --set route.enabled=true --set route.dashboard=true
 )
-if [[ -n "${SAW_VALUES_FILE}" ]]; then
-  helm_opts=(-f "${SAW_VALUES_FILE}" -f "${NETWORK_TOPOLOGY_VALUES}" "${helm_opts[@]}")
+if [[ "${DYNAMIC_MODE}" != true ]]; then
+  helm_opts+=(
+    --set "oidc.enabled=${oidc_enabled}"
+    --set "governance.enabled=${GOVERNANCE_ENABLED}"
+    --set-string "governance.engine=${GOVERNANCE_ENGINE}"
+    --set route.enabled=true --set route.dashboard=true
+  )
+fi
+if [[ "${#SAW_VALUES_ARGS[@]}" -gt 0 ]]; then
+  helm_opts=("${SAW_VALUES_ARGS[@]}" -f "${NETWORK_TOPOLOGY_VALUES}" "${helm_opts[@]}")
 else
   helm_opts=(-f "${NETWORK_TOPOLOGY_VALUES}" "${helm_opts[@]}")
 fi
-if [[ "${dashboard_enabled}" != true ]]; then
+if [[ "${dashboard_enabled}" != true && "${DYNAMIC_MODE}" != true ]]; then
   # External OIDC providers cannot be updated through the Keycloak Admin API.
   helm_opts+=(--set dashboard.enabled=false --set route.dashboard=false
     --set route.webui=false)
 fi
-if [[ "${oidc_disabled}" == true ]]; then
+if [[ "${oidc_disabled}" == true && "${DYNAMIC_MODE}" != true ]]; then
   helm_opts+=(--set-string oidc.issuerUrl= --set-json 'sandboxUi=[]')
 fi
 [[ -z "${OWNER_SUBJECT}" ]] || helm_opts+=(--set-string "accessControl.ownerSubject=${OWNER_SUBJECT}")
-[[ -z "${ROUTE_HOST}" ]] || helm_opts+=(--set-string "route.host=${ROUTE_HOST}")
+if [[ "${DYNAMIC_MODE}" != true && -n "${ROUTE_HOST}" ]]; then
+  helm_opts+=(--set-string "route.host=${ROUTE_HOST}")
+fi
 if [[ -n "${APPS_DOMAIN}" ]]; then
-  helm_opts+=(--set-string "route.webuiHost=${OPENSHELL_SAW_NAME}-webui-${DEPLOY_NS}.${APPS_DOMAIN}")
-  if [[ "${APPS_DOMAIN}" == apps.* ]]; then
-    helm_opts+=(--set-string "global.clusterDomain=${APPS_DOMAIN#apps.}")
-  fi
-  if [[ "${dashboard_enabled}" == true ]]; then
-    helm_opts+=(--set-string "route.dashboardHost=${OPENSHELL_SAW_NAME}-dashboard-${DEPLOY_NS}.${APPS_DOMAIN}")
+  if [[ "${DYNAMIC_MODE}" != true ]]; then
+    helm_opts+=(--set-string "route.webuiHost=${OPENSHELL_SAW_NAME}-webui-${DEPLOY_NS}.${APPS_DOMAIN}")
+    if [[ "${APPS_DOMAIN}" == apps.* ]]; then
+      helm_opts+=(--set-string "global.clusterDomain=${APPS_DOMAIN#apps.}")
+    fi
+    if [[ "${dashboard_enabled}" == true ]]; then
+      helm_opts+=(--set-string "route.dashboardHost=${OPENSHELL_SAW_NAME}-dashboard-${DEPLOY_NS}.${APPS_DOMAIN}")
+    fi
   fi
 fi
 ui_routes='[]'
-if [[ "${dashboard_enabled}" == true ]]; then
+if [[ "${dashboard_enabled}" == true && "${DYNAMIC_MODE}" != true ]]; then
   ui_routes="$(uv run --locked python "${SCRIPTS_DIR}/sandbox-ui-values.py" "${PROFILES:-data-science}")"
   if [[ "${ui_routes}" != '[]' && "${APPS_DOMAIN}" != apps.* ]]; then
     echo "Error: sandbox UI routes need an apps.<cluster-domain> ingress domain." >&2
@@ -352,7 +392,7 @@ echo "Sandbox '${OPENSHELL_SAW_NAME}' resources created. Wait for the VM install
 echo "  Owner:     ${OWNER}"
 echo "  Namespace: ${DEPLOY_NS}"
 
-GW_URL=$(oc get route "${OPENSHELL_SAW_NAME}-gateway" -n "${DEPLOY_NS}" -o jsonpath='https://{.spec.host}')
+GW_URL=$(oc get route "${OPENSHELL_SAW_NAME}-gateway" -n "${DEPLOY_NS}" -o jsonpath='https://{.spec.host}' || true)
 if [[ -n "${GW_URL}" ]]; then
   echo "  Gateway:   ${GW_URL}"
 fi

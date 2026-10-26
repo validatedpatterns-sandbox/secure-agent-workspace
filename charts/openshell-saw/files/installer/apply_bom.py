@@ -340,7 +340,7 @@ def validate_bom(doc):
         raise InstallerError("InstallerBOM metadata.name must be a DNS label")
     spec = doc["spec"]
     _require_keys(spec, {"installerVersion", "openshell"},
-                  {"installerVersion", "openshell", "nemoclaw"}, "InstallerBOM spec")
+                  {"installerVersion", "openshell", "nemoclaw", "spireAgent"}, "InstallerBOM spec")
     if spec["installerVersion"] != INSTALLER_VERSION:
         raise InstallerError(
             f"InstallerBOM targets installer {spec['installerVersion']}, "
@@ -363,7 +363,8 @@ def validate_bom(doc):
     if len(versions) > 1:
         raise InstallerError("spec.openshell components must all have the same version, got "
                              + ", ".join(sorted(versions)))
-    if "nemoclaw" in spec:
+    # Helm null / omitted both mean "no nemoclaw component".
+    if spec.get("nemoclaw") is not None:
         _require_keys(spec["nemoclaw"], {"cliImage"}, {"cliImage"}, "spec.nemoclaw")
         image = spec["nemoclaw"]["cliImage"]
         # Optional add-on: a tag is accepted (no digest is published for it
@@ -372,6 +373,14 @@ def validate_bom(doc):
             raise InstallerError("spec.nemoclaw.cliImage is not a valid image reference")
         if not DIGEST_IMAGE_RE.match(image):
             log(f"WARN: spec.nemoclaw.cliImage {image} is not pinned by digest")
+    else:
+        spec.pop("nemoclaw", None)
+    if spec.get("spireAgent") is not None:
+        entry = spec["spireAgent"]
+        _require_keys(entry, {"image", "version", "path"}, {"image", "version", "path"}, "spec.spireAgent")
+        _check_digest_image(entry["image"], "spec.spireAgent.image")
+        if not VERSION_RE.match(entry["version"]) or not entry["path"].startswith("/"):
+            raise InstallerError("spec.spireAgent needs a version and absolute binary path")
     return doc
 
 
@@ -637,6 +646,8 @@ class Provider:
     model_secret_key: str = ""
     inference_timeout: int = 0
     base_url: str = ""
+    runtime_credentials: bool = False
+    externally_managed: bool = False
     credential_free: bool = False
     # Optional `credentials:` mapping, keyed by the profile's credential name
     # ({api_key: {secretKey: ...}, app_secret: {secretKey: ...}}): one value
@@ -1406,6 +1417,8 @@ def parse_profiles(files):
                         base_url_secret_key=p.get("baseUrlSecretKey", ""),
                         model_secret_key=p.get("modelSecretKey", ""),
                         inference_timeout=int(p.get("inferenceTimeout", 0) or 0),
+                        runtime_credentials=p.get("runtimeCredentials", False),
+                        externally_managed=p.get("externallyManaged", False),
                         credentials_spec=cred_spec if cred_spec is not None else {}))
             if "sandbox.yaml" in docs:
                 key, text = docs["sandbox.yaml"]
@@ -1564,6 +1577,26 @@ def validate_profiles(profiles, known_profiles=(), governed=False):
         for p in ws.providers:
             if not p.enabled:
                 continue
+            if not isinstance(p.runtime_credentials, bool) or not isinstance(p.externally_managed, bool):
+                errors.append(f"{where}: dynamic provider flags must be booleans")
+            if p.runtime_credentials and p.externally_managed:
+                errors.append(f"{where}: provider '{p.name}' cannot be both runtime and externally managed")
+            if p.runtime_credentials or p.externally_managed:
+                if not isinstance(p.credential_free, bool):
+                    errors.append(f"{where}: provider '{p.name}' credentialFree must be a boolean")
+                if p.credential_free:
+                    errors.append(f"{where}: dynamic provider '{p.name}' cannot be credentialFree")
+                if p.credential_secret:
+                    errors.append(f"{where}: dynamic provider '{p.name}' cannot use credentialSecret")
+                if p.credentials_spec:
+                    errors.append(f"{where}: dynamic provider '{p.name}' cannot use credentials")
+                if (p.model or p.nemoclaw_provider or p.model_secret_key or p.base_url_secret_key
+                        or p.base_url or p.inference_timeout):
+                    errors.append(f"{where}: dynamic provider '{p.name}' cannot use static provider settings")
+                if not NAME_RE.match(p.type or "") or len(p.type) > OPENSHELL_NAME_LIMIT:
+                    errors.append(f"{where}: dynamic provider profile type must be a DNS label of at most "
+                                  f"{OPENSHELL_NAME_LIMIT} characters")
+                continue
             if not isinstance(p.credential_free, bool):
                 errors.append(f"{where}: provider '{p.name}' credentialFree must be a boolean")
             elif p.credential_free:
@@ -1707,7 +1740,7 @@ def resolve_credentials(profiles, secrets_dir):
         for p in ws.providers:
             if not p.enabled:
                 continue
-            if p.credential_free:
+            if p.runtime_credentials or p.externally_managed or p.credential_free:
                 continue
             base = secrets_dir / p.credential_secret
             if p.credentials_spec:
@@ -2238,7 +2271,11 @@ class ComponentInstaller:
         changed = []
         if not self.sh.dry_run:
             self.bin_dir.mkdir(parents=True, exist_ok=True)
-        for comp, entry in bom["spec"]["openshell"].items():
+        components = dict(bom["spec"]["openshell"])
+        if "spireAgent" in bom["spec"]:
+            components["spireAgent"] = bom["spec"]["spireAgent"]
+        for comp, entry in components.items():
+            layout = COMPONENTS.get(comp, {"dest": "spire-agent", "image_path": "/opt/spire/bin/spire-agent"})
             image = entry["image"]
             if comp in IMAGE_COMPONENTS:
                 # Pulled for the gateway, which uses it by reference; nothing
@@ -2252,7 +2289,7 @@ class ComponentInstaller:
                                    "signature": self.signatures.get(comp, "unsigned")}
                 changed.append(comp)
                 continue
-            dest = self.bin_dir / COMPONENTS[comp]["dest"]
+            dest = self.bin_dir / layout["dest"]
             if self._is_current(installed.get(comp), image, dest):
                 log(f"{comp}: {entry['version']} already installed")
                 continue
@@ -2263,7 +2300,7 @@ class ComponentInstaller:
                 continue
             with tempfile.TemporaryDirectory(dir=self.bin_dir, prefix=".saw-") as tmp:
                 staged = Path(tmp) / dest.name
-                self._extract(image, entry.get("path", COMPONENTS[comp]["image_path"]), staged)
+                self._extract(image, entry.get("path", layout["image_path"]), staged)
                 if not staged.is_file():
                     raise InstallerError(f"{comp}: {image} did not contain a file at the expected path")
                 os.chmod(staged, 0o755)
@@ -2764,6 +2801,9 @@ def _env_keys(text):
     return keys
 
 
+# The chart emits this only while identity is enabled. Opt-out must not keep
+# a copy that the golden image or an earlier boot appended.
+IDENTITY_ENV_KEYS = {"OPENSHELL_GATEWAY_SPIFFE_WORKLOAD_API_SOCKET"}
 # Keys an earlier chart wrote that must not survive as "extra" keys.
 # OPENSHELL_DRIVERS became OPENSHELL_COMPUTE_DRIVER in OpenShell 0.1.x; the
 # old name is only a deprecated alias there.
@@ -2772,10 +2812,14 @@ RETIRED_ENV_KEYS = {"OPENSHELL_DRIVERS", "OPENSHELL_CONFIG_FILE", "OPENSHELL_SSH
 
 def merge_user_env(chart_env, current):
     """The chart's gateway.env wins; keys only the golden image's first-boot
-    setup adds (runtime bridge endpoint, podman socket) are kept."""
+    setup adds (runtime bridge endpoint, podman socket) are kept.
+
+    The Workload API socket is not one of those keys. When the chart omits
+    it, the merged file omits it too.
+    """
     chart_keys = _env_keys(chart_env)
     extra = [line for key, line in _env_keys(current).items()
-             if key not in chart_keys and key not in RETIRED_ENV_KEYS]
+             if key not in chart_keys and key not in IDENTITY_ENV_KEYS | RETIRED_ENV_KEYS]
     text = chart_env.rstrip("\n") + "\n"
     return text + ("\n".join(extra) + "\n" if extra else "")
 
@@ -3468,6 +3512,28 @@ class ProfileApplier:
         `--credential NAME` (no value) makes the CLI read the key from the
         environment variable NAME, so the key never appears in argv
         (/proc/<pid>/cmdline) or in logs."""
+        if provider.runtime_credentials or provider.externally_managed:
+            if not (self.cfg.get("spiffe") or {}).get("enabled"):
+                raise InstallerError("dynamic token-grant providers require spiffe.enabled")
+            if provider.type not in self.provider_profiles:
+                raise InstallerError(f"dynamic provider '{provider.type}' has no approved shipped profile")
+            doc = _yaml(self.provider_profiles[provider.type], provider.type)
+            grants = [c.get("token_grant") for c in doc.get("credentials", []) if c.get("token_grant")]
+            if provider.externally_managed:
+                if not grants or any(g.get("grant_type") != "token_exchange" for g in grants):
+                    raise InstallerError("externally managed providers require a token_exchange profile")
+                self.reconcile_dynamic_profile(ws, provider.type)
+                if not self.cli("provider", "get", provider.name, *ws_args(ws.name), check=False, quiet=True).ok:
+                    raise InstallerError(f"provider '{provider.name}' must be created with openshell-saw-token-provider")
+                return
+            if not grants or any(g.get("grant_type", "client_credentials") != "client_credentials" for g in grants):
+                raise InstallerError("runtime providers require a client_credentials token-grant profile")
+            self.reconcile_dynamic_profile(ws, provider.type)
+            result = self.cli("provider", "create", "--name", provider.name, "--type", provider.type,
+                              *ws_args(ws.name), "--runtime-credentials", ok_if_exists=True, check=False)
+            if not result.ok:
+                raise InstallerError(f"could not create runtime provider '{provider.name}'")
+            return
         env, credential_args = {}, ()
         env_name = credential_env_name(provider.type, self.provider_profiles)
         if provider.credential_free:
@@ -3609,6 +3675,73 @@ class ProfileApplier:
         self.catalog_details.pop(ws.name, None)
         self.remember("profile", ws.name, profile_id)
 
+    @staticmethod
+    def profile_contains(current, desired):
+        """Compare shipped fields with an export that includes server defaults."""
+        if isinstance(desired, dict):
+            return isinstance(current, dict) and all(
+                key in current and ProfileApplier.profile_contains(current[key], value)
+                for key, value in desired.items())
+        if isinstance(desired, list):
+            return isinstance(current, list) and len(current) == len(desired) and all(
+                ProfileApplier.profile_contains(actual, value)
+                for actual, value in zip(current, desired))
+        return current == desired
+
+    def reconcile_dynamic_profile(self, ws, profile_id):
+        """Keep an approved custom profile aligned with the installer disk.
+
+        OpenShell import accepts an existing profile without changing it.
+        Updates need the resource_version from the gateway export.
+        """
+        desired = _yaml(self.provider_profiles[profile_id], profile_id)
+        current = self.cli("provider", "profile", "export", profile_id,
+                           *ws_args(ws.name), check=False, quiet=True, force=True)
+        if not current.ok:
+            detail = current.out + " " + current.err
+            if not ("provider profile" in detail.lower() and "not found" in detail.lower()):
+                raise InstallerError(f"could not export the '{profile_id}' provider profile")
+            self.import_provider_profile(ws, profile_id)
+            return
+        try:
+            exported = _yaml(current.out, f"exported {profile_id}")
+        except InstallerError as exc:
+            raise InstallerError(f"could not parse the '{profile_id}' provider profile export") from exc
+        if not isinstance(exported, dict):
+            raise InstallerError(f"invalid '{profile_id}' provider profile export")
+
+        # OpenShell exports the default grant type without a grant_type key
+        # and turns cache_ttl_seconds into a duration string.
+        for credential in desired.get("credentials", []):
+            grant = credential.get("token_grant")
+            if not isinstance(grant, dict):
+                continue
+            grant_type = grant.pop("grant_type", None)
+            if grant_type not in ("client_credentials", "token_exchange"):
+                raise InstallerError(f"unsupported grant type in '{profile_id}' provider profile")
+            seconds = grant.pop("cache_ttl_seconds", None)
+            if seconds is not None:
+                grant["cache_ttl"] = f"{seconds}s"
+        if self.profile_contains(exported, desired):
+            self.remember("profile", ws.name, profile_id)
+            return
+        if exported.get("scope") != "workspace" or exported.get("source") != "user":
+            raise InstallerError(f"'{profile_id}' provider profile differs from the approved "
+                                 "profile and is not a workspace custom profile")
+        version = exported.get("resource_version")
+        if not isinstance(version, int) or version <= 0:
+            raise InstallerError(f"'{profile_id}' provider profile has no resource version")
+        replacement = _yaml(self.provider_profiles[profile_id], profile_id)
+        replacement["resource_version"] = version
+        with tempfile.TemporaryDirectory(prefix="saw-profile-") as tmp:
+            path = Path(tmp) / f"{profile_id}.yaml"
+            path.write_text(yaml.safe_dump(replacement), encoding="utf-8")
+            result = self.cli("provider", "profile", "update", profile_id,
+                              "-f", str(path), *ws_args(ws.name), check=False)
+        if not result.ok:
+            raise InstallerError(f"could not update the '{profile_id}' provider profile")
+        self.remember("profile", ws.name, profile_id)
+
     # -- sandboxes -------------------------------------------------------
 
     def find_provider(self, ws, names, sb=None):
@@ -3634,6 +3767,26 @@ class ProfileApplier:
         if re.search(r"Phase:\s*Deleting", clean):
             return "deleting"
         return "broken" if ("Error" in clean or "Phase: Completed" in clean) else "running"
+
+    def workload_api_mount_must_go(self, ws, sb):
+        """Identity opt-out has to recreate a sandbox that still bind-mounts the Workload API."""
+        if (self.cfg.get("spiffe") or {}).get("enabled"):
+            return False
+        listed = self.sh.run(
+            ["podman", "ps", "-a",
+             "--filter", f"label=openshell.ai/sandbox-name={sb.name}",
+             "--filter", f"label=openshell.ai/sandbox-workspace={ws.name}",
+             "--filter", f"label={WORKLOAD_ROLE_LABEL}",
+             "--format", "{{.Names}}"], check=False, quiet=True)
+        if not listed.ok:
+            return False
+        for name in listed.out.split():
+            inspected = self.sh.run(
+                ["podman", "inspect", "--format", "{{json .HostConfig.Binds}}", name],
+                check=False, quiet=True)
+            if inspected.ok and "/spiffe-workload-api" in (inspected.out or ""):
+                return True
+        return False
 
     # Found live after a VM restart: a sandbox reports an error for a while
     # as its supervisor reconnects, then recovers. Recreating it would lose
@@ -4090,6 +4243,23 @@ class ProfileApplier:
             log(f"Sandbox '{sb.name}' reports an error; waiting up to "
                 f"{self.BROKEN_GRACE_SECONDS}s for it to recover")
             state = self.wait_sandbox(ws, sb, lambda s: s != "broken", self.BROKEN_GRACE_SECONDS)
+        if state == "running" and self.workload_api_mount_must_go(ws, sb):
+            log(f"Sandbox '{sb.name}' still mounts the Workload API; recreating it")
+            self.delete_sandbox_and_wait(ws, sb)
+            state = "missing"
+        if state == "running" and not self.sh.dry_run and not self.harness_mount_ok(ws, sb):
+            # Mounts are fixed at create: a sandbox created before its
+            # harnessRef, one that still mounts a harness it no longer has,
+            # or one that mounts another volume there is created again.
+            # OpenShell 0.1.x deletes the per-sandbox /sandbox workspace
+            # volume, including /sandbox/persist. Preserve needed files
+            # separately before a recreation; the harness volume is distinct.
+            want = self.desired_harness_mount(ws, sb)
+            log(f"Sandbox '{sb.name}' " + (f"does not mount its harness volume {want}"
+                                           if want else "still mounts a removed harness")
+                + "; recreating it")
+            self.delete_sandbox_and_wait(ws, sb)
+            state = "missing"
         if state == "broken":
             log(f"Sandbox '{sb.name}' is not running; recreating it")
             self.cli("sandbox", "delete", sb.name, *ws_args(ws.name), check=False)
@@ -6209,6 +6379,15 @@ def cmd_install(args):
         if not args.dry_run:
             issuer_ca = select_issuer_ca(cfg.get("oidcIssuer", ""), issuer_ca)
         trust_changed = trust_issuer_ca(shell, issuer_ca, home, owner, dry_run=args.dry_run)
+        identity_script = str(inputs.installer / "identity.py")
+        if (cfg.get("spiffe") or {}).get("enabled"):
+            if "spireAgent" not in bom["spec"]:
+                raise InstallerError("identity requires a pinned spireAgent BOM component")
+            shell.run([sys.executable, identity_script, str(inputs.config)], timeout=600)
+        else:
+            shell.run([sys.executable, identity_script, "disable"], timeout=120)
+        if (cfg.get("spiffe") or {}).get("testMode"):
+            shell.run([sys.executable, identity_script, "test-helper"], timeout=300)
         # Remember that a restart is owed until it has actually happened, so
         # a failure between here and the restart cannot leave the old
         # gateway running on a retry.

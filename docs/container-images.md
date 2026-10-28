@@ -99,6 +99,13 @@ make images-mirror MIRROR_IMAGES=openshell-gateway-docker
 skopeo inspect --no-creds docker://ghcr.io/validatedpatterns-sandbox/nemoclaw-cli:latest
 ```
 
+Registry tooling verifies TLS. Route-based mirroring and publishing discover the
+ingress CA through the authenticated `oc` session. In-cluster mirror Jobs and the
+golden-image import use the OpenShift service CA for the internal registry. Local
+registry commands also accept `REGISTRY_CA_BUNDLE=/path/to/ca.pem` for private
+registries; the bundle supplements system trust. CA lookup or certificate failures
+never enable an insecure retry.
+
 `IMAGE_REPO` replaces the former `QUAY_REPO` option; `IMAGE_TAG` replaces the
 former `OPENSHELL_VERSION` mirror/build tag option. These image tags do not select
 the OpenShell release inside the VM: that is pinned separately by the installer

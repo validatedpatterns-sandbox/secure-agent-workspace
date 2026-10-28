@@ -25,7 +25,9 @@ if [ -z "$REGISTRY" ]; then
 fi
 
 # Authenticate to the internal registry using the current user's token
-oc registry login --registry="${REGISTRY}" --insecure=true
+source "$(dirname "$0")/registry-tls.sh"
+saw_registry_tls_init "${REGISTRY}"
+oc registry login --registry="${REGISTRY}"
 
 # oc image mirror uses the current containers auth file. It reports any
 # missing GHCR credentials with a nonzero exit status below.
@@ -33,10 +35,10 @@ oc registry login --registry="${REGISTRY}" --insecure=true
 VERSION_TAG="${4:-}"
 
 oc image mirror "${REGISTRY}/${NAMESPACE}/${IMAGE}:latest" \
-  "${IMAGE_REPO}/${IMAGE}:latest" --insecure=true
+  "${IMAGE_REPO}/${IMAGE}:latest" "${REGISTRY_TLS_OPTS[@]}"
 
 if [[ -n "$VERSION_TAG" && "$VERSION_TAG" != latest ]]; then
   echo "  Tagging ${IMAGE_REPO}/${IMAGE}:${VERSION_TAG}..."
   oc image mirror "${REGISTRY}/${NAMESPACE}/${IMAGE}:latest" \
-    "${IMAGE_REPO}/${IMAGE}:${VERSION_TAG}" --insecure=true
+    "${IMAGE_REPO}/${IMAGE}:${VERSION_TAG}" "${REGISTRY_TLS_OPTS[@]}"
 fi

@@ -160,6 +160,8 @@ def test_harden_sets_the_policy_and_the_generated_passwords(tmp_path):
     result = run(tmp_path, "harden")
     assert result.returncode == 0, result.stdout + result.stderr
     calls = [json.loads(line) for line in (tmp_path / "state" / "curl.log").read_text().splitlines()]
+    assert all(not any(a == "--insecure" or (a.startswith("-") and not a.startswith("--") and "k" in a)
+                       for a in c) for c in calls)
     realm = next(c for c in calls if c[-1] == "https://sso.example.com/admin/realms/openshell")
     settings = json.loads(realm[realm.index("-d") + 1])
     assert settings["bruteForceProtected"] is True

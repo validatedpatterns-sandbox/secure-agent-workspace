@@ -9,7 +9,10 @@ manage-clients in the OpenShell realm.
 {{- if .Values.redirectRegistrar.enabled }}
 {{- $r := .Values.redirectRegistrar }}
 {{- $kc := .Values.keycloak.existing | default .Values.keycloak.name }}
-{{- $kcUrl := $r.keycloakUrl | default (printf "http://%s-service.%s.svc:8080" $kc .Release.Namespace) }}
+{{- $kcUrl := $r.keycloakUrl | default "" }}
+{{- if and $kcUrl (not (hasPrefix "https://" $kcUrl)) }}
+{{- fail "redirectRegistrar.keycloakUrl must use HTTPS" }}
+{{- end }}
 {{- $name := "saw-redirect-registrar" }}
 apiVersion: v1
 kind: ServiceAccount
@@ -52,6 +55,31 @@ subjects:
     name: {{ $name }}
     namespace: {{ .Release.Namespace }}
 ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-{{ .Release.Namespace }}
+  namespace: openshift-config-managed
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["default-ingress-cert"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-{{ .Release.Namespace }}
+  namespace: openshift-config-managed
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}-{{ .Release.Namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -59,6 +87,10 @@ metadata:
   labels:
     app.kubernetes.io/name: {{ $name }}
 data:
+  ca-bundle.crt: |
+{{ $r.caBundle | default "" | indent 4 }}
+  saw_tls.py: |
+{{ .Files.Get "files/saw_tls.py" | indent 4 }}
   redirect-registrar.py: |
 {{ .Files.Get "files/redirect-registrar.py" | indent 4 }}
 ---
@@ -80,7 +112,7 @@ spec:
       labels:
         app.kubernetes.io/name: {{ $name }}
       annotations:
-        checksum/script: {{ .Files.Get "files/redirect-registrar.py" | sha256sum }}
+        checksum/script: {{ print (.Files.Get "files/redirect-registrar.py") (.Files.Get "files/saw_tls.py") ($r.caBundle | default "") | sha256sum }}
     spec:
       serviceAccountName: {{ $name }}
       securityContext:
@@ -96,6 +128,14 @@ spec:
           env:
             - name: KC_URL
               value: {{ $kcUrl | quote }}
+            - name: KEYCLOAK_NAME
+              value: {{ $kc | quote }}
+            - name: KEYCLOAK_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            {{- if $r.caBundle }}
+            - name: CA_FILE
+              value: /scripts/ca-bundle.crt
+            {{- end }}
             - name: REALM
               value: {{ .Values.keycloak.realm | quote }}
             - name: CLIENT_ID
@@ -129,6 +169,14 @@ spec:
           env:
             - name: KC_URL
               value: {{ $kcUrl | quote }}
+            - name: KEYCLOAK_NAME
+              value: {{ $kc | quote }}
+            - name: KEYCLOAK_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            {{- if $r.caBundle }}
+            - name: CA_FILE
+              value: /scripts/ca-bundle.crt
+            {{- end }}
             - name: REALM
               value: {{ .Values.keycloak.realm | quote }}
             - name: CLIENT_ID

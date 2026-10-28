@@ -35,6 +35,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import saw_tls
+
 SA = "/var/run/secrets/kubernetes.io/serviceaccount"
 # The URIs and origins this registrar set, so it removes only its own.
 MANAGED_ATTRIBUTE = "saw.redhat.com/managed-redirects"
@@ -48,13 +50,16 @@ def log(msg):
     print(f"[redirect-registrar] {msg}", flush=True)
 
 
-class HttpError(Exception):
+class HttpError(OSError):
+    """An OSError so saw_tls.tls_context treats it as a failed cluster read."""
+
     def __init__(self, code, msg):
         super().__init__(msg)
         self.code = code
 
 
 def call(url, method="GET", body=None, token=None, form=None, ctx=None, ok404=False):
+    require_https(url)
     req = urllib.request.Request(url, method=method)
     data = None
     if form is not None:
@@ -66,7 +71,9 @@ def call(url, method="GET", body=None, token=None, form=None, ctx=None, ok404=Fa
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, data=data, context=ctx, timeout=30) as resp:
+        opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx),
+                                             saw_tls.NoRedirect())
+        with opener.open(req, data=data, timeout=30) as resp:
             raw = resp.read()
             return json.loads(raw) if raw else None
     except urllib.error.HTTPError as exc:
@@ -85,15 +92,23 @@ def env(name, default=None):
     return value
 
 
+def require_https(url):
+    return saw_tls.require_https(url)
+
+
 def tls_context(url):
-    return ssl.create_default_context() if url.startswith("https") else None
+    return saw_tls.tls_context(url, Kube().get, log, os.environ.get("CA_FILE"))
+
+
+def keycloak_url():
+    return saw_tls.keycloak_url(env("KEYCLOAK_NAME"), env("KEYCLOAK_NAMESPACE"), Kube().get)
 
 
 class Keycloak:
     """The admin API of one realm, with a token from `grant`."""
 
     def __init__(self, url, realm, token_realm, form):
-        self.url, self.realm = url.rstrip("/"), realm
+        self.url, self.realm = (url or keycloak_url()).rstrip("/"), realm
         self.ctx = tls_context(self.url)
         self.token = call(f"{self.url}/realms/{token_realm}/protocol/openid-connect/token", "POST",
                           form=form, ctx=self.ctx)["access_token"]
@@ -120,7 +135,7 @@ REGISTRAR_CLIENT = {
 
 
 def bootstrap():
-    url, realm, client_id = env("KC_URL"), env("REALM"), env("CLIENT_ID")
+    url, realm, client_id = env("KC_URL", ""), env("REALM"), env("CLIENT_ID")
     admin = env("ADMIN_DIR")
     user = open(os.path.join(admin, "username"), encoding="utf-8").read().strip()
     password = open(os.path.join(admin, "password"), encoding="utf-8").read().strip()
@@ -253,13 +268,13 @@ def reconcile(client, uris, origins, suffix, present=frozenset()):
 
 
 def ingress_domain(kube):
-    return kube.get("/apis/config.openshift.io/v1/ingresses/cluster")["spec"]["domain"]
+    return saw_tls.ingress_domain(kube.get)
 
 
 def sync(kube, suffix):
     uris, origins, present = wanted(kube, env("NAMESPACE_SELECTOR"), env("ROUTE_SELECTOR"), suffix)
     secret = open(env("SECRET_FILE"), encoding="utf-8").read().strip()
-    kc = Keycloak(env("KC_URL"), env("REALM"), env("REALM"),
+    kc = Keycloak(env("KC_URL", ""), env("REALM"), env("REALM"),
                   {"grant_type": "client_credentials", "client_id": env("CLIENT_ID"), "client_secret": secret})
     name = env("DASHBOARD_CLIENT_ID")
     found = kc.client(name)

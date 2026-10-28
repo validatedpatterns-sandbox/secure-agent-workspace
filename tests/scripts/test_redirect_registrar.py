@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import stat
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -12,7 +13,11 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from keycloak_tls import keycloak_tls  # noqa: F401
+
 ROOT = Path(__file__).resolve().parents[2]
+# The registrar imports saw_tls from its own /scripts mount.
+sys.path.insert(0, str(ROOT / "charts" / "openshell-keycloak" / "files"))
 SCRIPT = ROOT / "charts" / "openshell-keycloak" / "files" / "redirect-registrar.py"
 SUFFIX = ".apps.example.com"
 SAW = "openshell.pattern/saw"
@@ -43,7 +48,7 @@ class FakeKeycloak:
         self.realm_ready = True
         self.puts, self.role_posts, self.tokens = [], [], []
 
-    def serve(self):
+    def serve(self, tls_context):
         kc = self
 
         class H(BaseHTTPRequestHandler):
@@ -129,8 +134,9 @@ class FakeKeycloak:
                 pass
 
         server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        server.socket = tls_context.wrap_socket(server.socket, server_side=True)
         threading.Thread(target=server.serve_forever, daemon=True).start()
-        return server, f"http://127.0.0.1:{server.server_address[1]}"
+        return server, f"https://127.0.0.1:{server.server_address[1]}"
 
 
 class FakeKube:
@@ -165,9 +171,11 @@ def route(ns, host, labelled=True, path=None):
 
 
 @pytest.fixture
-def world(reg, monkeypatch, tmp_path):
+def world(reg, monkeypatch, tmp_path, keycloak_tls):
     kc = FakeKeycloak()
-    server, url = kc.serve()
+    context, ca = keycloak_tls
+    server, url = kc.serve(context)
+    monkeypatch.setenv("CA_FILE", str(ca))
     admin = tmp_path / "admin"
     admin.mkdir()
     (admin / "username").write_text("admin\n")
@@ -186,6 +194,90 @@ def world(reg, monkeypatch, tmp_path):
 
 def dashboard(kc):
     return kc.clients["c-dash"]
+
+
+def test_registrar_refuses_http_before_sending_credentials(world):
+    reg, kc, _, _ = world
+    with pytest.raises(ValueError, match="HTTPS"):
+        reg.Keycloak(os.environ["KC_URL"].replace("https://", "http://"), "openshell", "master", {
+            "username": "admin", "password": "pw",
+        })
+    assert kc.tokens == []
+
+
+def test_registrar_loads_ingress_ca_for_ingress_hosts(reg, monkeypatch):
+    import ssl
+    pem = ssl.DER_cert_to_PEM_cert(ssl.create_default_context().get_ca_certs(binary_form=True)[0])
+    paths = []
+
+    class Kube:
+        def get(self, path):
+            paths.append(path)
+            if path.endswith("/ingresses/cluster"):
+                return {"spec": {"domain": "apps.example.com"}}
+            return {"data": {"ca-bundle.crt": pem}}
+
+    monkeypatch.setattr(reg, "Kube", Kube)
+    context = reg.tls_context("https://kc.apps.example.com")
+    assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname
+    assert any(path.endswith("/configmaps/default-ingress-cert") for path in paths)
+
+
+@pytest.mark.parametrize("trust", ["missing", "wrong-host"])
+def test_registrar_checks_real_certificates(world, monkeypatch, trust):
+    import urllib.error
+    reg, kc, _, _ = world
+    url = os.environ["KC_URL"]
+    if trust == "missing":
+        monkeypatch.delenv("CA_FILE")
+    else:
+        url = url.replace("127.0.0.1", "localhost")
+    with pytest.raises(urllib.error.URLError, match="CERTIFICATE_VERIFY_FAILED"):
+        reg.Keycloak(url, "openshell", "master", {"username": "admin", "password": "pw"})
+    assert kc.tokens == []
+
+
+def test_registrar_discovers_actual_route_host(reg, monkeypatch):
+    monkeypatch.setenv("KEYCLOAK_NAME", "sso")
+    monkeypatch.setenv("KEYCLOAK_NAMESPACE", "keycloak")
+    paths = []
+
+    class Kube:
+        def get(self, path):
+            paths.append(path)
+            return {"items": [{"metadata": {
+                "name": "sso-ingress-r4ndm", "ownerReferences": [{
+                    "kind": "Ingress", "name": "sso-ingress", "controller": True,
+                }]}, "spec": {"host": "custom-sso.apps.example.com",
+                              "to": {"name": "sso-service"},
+                              "tls": {"termination": "edge"}}}]}
+
+    monkeypatch.setattr(reg, "Kube", Kube)
+    assert reg.keycloak_url() == "https://custom-sso.apps.example.com"
+    assert paths == ["/apis/route.openshift.io/v1/namespaces/keycloak/routes"]
+
+
+def test_bootstrap_uses_discovered_https_route(world, monkeypatch):
+    reg, kc, kube, _ = world
+    url = os.environ["KC_URL"]
+    monkeypatch.setenv("KC_URL", "")
+    monkeypatch.setenv("KEYCLOAK_NAME", "openshell-keycloak")
+    monkeypatch.setenv("KEYCLOAK_NAMESPACE", "keycloak")
+    original = kube.get
+
+    def get(path):
+        if path.endswith("/namespaces/keycloak/routes"):
+            return {"items": [{"metadata": {
+                "name": "openshell-keycloak-ingress-abcde", "ownerReferences": [{
+                    "kind": "Ingress", "name": "openshell-keycloak-ingress", "controller": True,
+                }]}, "spec": {"host": urlsplit(url).netloc,
+                              "to": {"name": "openshell-keycloak-service"},
+                              "tls": {"termination": "edge"}}}]}
+        return original(path)
+
+    monkeypatch.setattr(kube, "get", get)
+    reg.bootstrap()
+    assert kc.tokens == ["master"]
 
 
 # -- bootstrap ---------------------------------------------------------------------------

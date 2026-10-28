@@ -243,7 +243,9 @@ admin_login() {
   BASE="${host:-https://$("$(dirname "$0")/keycloak-host.sh" "${NS}")}"
   admin_user="$(oc get secret "${KC_NAME}-initial-admin" -n "${NS}" -o jsonpath='{.data.username}' | base64 -d)"
   admin_pass="$(oc get secret "${KC_NAME}-initial-admin" -n "${NS}" -o jsonpath='{.data.password}' | base64 -d)"
-  token="$(curl -sk --data-urlencode "username=${admin_user}" --data-urlencode "password=${admin_pass}" \
+  source "$(dirname "$0")/issuer-tls.sh"
+  saw_tls_init "${BASE}" || return
+  token="$(curl -sS "${CURL_TLS_OPTS[@]}" --data-urlencode "username=${admin_user}" --data-urlencode "password=${admin_pass}" \
     -d grant_type=password -d client_id=admin-cli \
     "${BASE}/realms/master/protocol/openid-connect/token" | jq -r '.access_token // empty')"
   if [[ -z "${token}" ]]; then
@@ -256,11 +258,11 @@ admin_login() {
 api_code() {  # METHOD path [json]: prints the HTTP status
   local data=()
   [[ $# -ge 3 ]] && data=(-d "$3")
-  curl -sk -o /dev/null -w '%{http_code}' -X "$1" "${AUTH[@]}" "${data[@]}" "${BASE}/admin/realms/${REALM}$2"
+  curl -sS "${CURL_TLS_OPTS[@]}" -o /dev/null -w '%{http_code}' -X "$1" "${AUTH[@]}" "${data[@]}" "${BASE}/admin/realms/${REALM}$2"
 }
 
 api_get() {  # path
-  curl -sk "${AUTH[@]}" "${BASE}/admin/realms/${REALM}$1"
+  curl -sS "${CURL_TLS_OPTS[@]}" "${AUTH[@]}" "${BASE}/admin/realms/${REALM}$1"
 }
 
 user_id() {  # username; empty when not in the realm
@@ -274,7 +276,7 @@ resolve_subject() {
     return 2
   }
   admin_login
-  response="$(curl -fsSk "${AUTH[@]}" "${BASE}/admin/realms/${REALM}/users?exact=true&username=${user}")" || {
+  response="$(curl -fsS "${CURL_TLS_OPTS[@]}" "${AUTH[@]}" "${BASE}/admin/realms/${REALM}/users?exact=true&username=${user}")" || {
     echo "Error: Keycloak user lookup failed." >&2
     return 1
   }

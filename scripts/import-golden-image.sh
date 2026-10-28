@@ -40,12 +40,14 @@ fi
 # Mirror image to internal registry so CDI can import with pullMethod: node
 INTERNAL_REGISTRY="image-registry.openshift-image-registry.svc:5000"
 INTERNAL_IMAGE="${INTERNAL_REGISTRY}/${NS}/${GOLDEN_IMAGE_NAME}:latest"
+source "$(dirname "$0")/registry-tls.sh"
+saw_registry_tls_init "${INTERNAL_REGISTRY}"
 
 echo "Mirroring image to internal registry..."
 oc image mirror \
   "${GOLDEN_IMAGE_URL#docker://}" \
   "${INTERNAL_IMAGE}" \
-  --insecure=true 2>&1 | tail -3 || {
+  "${REGISTRY_TLS_OPTS[@]}" 2>&1 | tail -3 || {
   echo "Mirror failed. Trying oc import-image..."
   oc import-image "${GOLDEN_IMAGE_NAME}:latest" \
     --from="${GOLDEN_IMAGE_URL#docker://}" \

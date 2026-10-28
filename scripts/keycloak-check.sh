@@ -15,6 +15,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${SCRIPT_DIR}/issuer-tls.sh"
 NS="${KEYCLOAK_NS:-saw-keycloak}"
 REALM="${KEYCLOAK_REALM:-openshell}"
 CLIENT="${OIDC_CLIENT_ID:-openshell-cli}"
@@ -35,8 +36,9 @@ else
 fi
 issuer="https://${host}/realms/${REALM}"
 ok "Keycloak at https://${host}"
+saw_tls_init "${issuer}" || exit 2
 
-if disc="$(curl -skS --max-time 15 "${issuer}/.well-known/openid-configuration")"; then
+if disc="$(curl -sS "${CURL_TLS_OPTS[@]}" --max-time 15 "${issuer}/.well-known/openid-configuration")"; then
   :
 else
   echo "Error: could not query Keycloak discovery at ${issuer}." >&2
@@ -65,7 +67,7 @@ else
   # the device authorization request too.
   verifier="$(openssl rand -hex 32)"
   challenge="$(printf '%s' "${verifier}" | openssl dgst -sha256 -binary | openssl base64 -A | tr '+/' '-_' | tr -d '=')"
-  if resp="$(curl -skS --max-time 15 -X POST "${device_ep}" -d "client_id=${CLIENT}" \
+  if resp="$(curl -sS "${CURL_TLS_OPTS[@]}" --max-time 15 -X POST "${device_ep}" -d "client_id=${CLIENT}" \
       -d "code_challenge=${challenge}" -d "code_challenge_method=S256")"; then
     :
   else

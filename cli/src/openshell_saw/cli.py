@@ -36,8 +36,10 @@ def main(ctx, namespace, shared_namespace, ssh_key):
 @main.command()
 @click.option("--issuer", default=None, help="OIDC issuer URL")
 @click.option("--flow", type=click.Choice(["browser", "device-code"]), default=None)
+@click.option("--ca-bundle", type=click.Path(exists=True, dir_okay=False), envvar="OIDC_CA_BUNDLE",
+              help="PEM CA bundle for the issuer (or OIDC_CA_BUNDLE)")
 @click.pass_context
-def login(ctx, issuer, flow):
+def login(ctx, issuer, flow, ca_bundle):
     """Authenticate with the OIDC provider (for provisioning)."""
     cfg = ctx.obj["cfg"]
     oidc_cfg = cfg["oidc"]
@@ -48,6 +50,7 @@ def login(ctx, issuer, flow):
         flow=flow or oidc_cfg["flow"],
         token_dir=oidc_cfg["token_dir"],
         callback_port=oidc_cfg.get("callback_port", 8400),
+        ca_bundle=ca_bundle,
     )
 
 

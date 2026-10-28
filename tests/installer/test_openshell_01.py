@@ -403,9 +403,18 @@ def issuer(tmp_path_factory):
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
+            if self.path.endswith("/redirect"):
+                self.send_response(307)
+                self.send_header("Location", f"https://127.0.0.1:{self.server.server_address[1]}/target")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             self.send_response(200)
+            self.send_header("Content-Length", "2")
             self.end_headers()
             self.wfile.write(b"{}")
+
+        do_POST = do_GET
 
         def log_message(self, *a):
             pass
@@ -419,6 +428,22 @@ def issuer(tmp_path_factory):
     server.shutdown()
 
 
+def test_shell_refuses_redirects_before_forwarding_credentials(issuer, tmp_path):
+    import os
+    import subprocess
+    from pathlib import Path
+    url, ca, _ = issuer
+    bundle = tmp_path / "ca.pem"
+    bundle.write_text(ca)
+    helper = Path(__file__).resolve().parents[2] / "scripts" / "issuer-tls.sh"
+    result = subprocess.run([
+        "bash", "-c", 'set -e; source "$1"; saw_tls_init "$2"; '
+        'curl -fsSL "${CURL_TLS_OPTS[@]}" --data "refresh_token=test-only" "$2/redirect"',
+        "bash", str(helper), url,
+    ], env={**os.environ, "OIDC_CA_BUNDLE": str(bundle)}, capture_output=True, text=True)
+    assert result.returncode == 47, result.stderr
+
+
 def test_the_issuer_ca_is_installed_only_when_it_signs_the_issuer(ab, issuer, tmp_path):
     """Verified with the extra CA alone, over a real TLS connection."""
     url, ca, other = issuer
@@ -426,6 +451,53 @@ def test_the_issuer_ca_is_installed_only_when_it_signs_the_issuer(ab, issuer, tm
     # Neither the extra CA nor the public CAs verify it: fail with the fix.
     with pytest.raises(ab.InstallerError, match="does not sign the OIDC issuer"):
         ab.select_issuer_ca(url, other)
+
+
+@pytest.mark.parametrize("transport", ["python", "shell"])
+@pytest.mark.parametrize("trust", ["issuer", "unrelated", "system", "wrong-host", "system-trusted"])
+def test_local_clients_verify_real_https(issuer, tmp_path, monkeypatch, transport, trust):
+    """The same private-CA server must fail without its CA in both clients."""
+    import os
+    import subprocess
+    from pathlib import Path
+    import click
+    from openshell_saw import oidc
+
+    url, ca, other = issuer
+    monkeypatch.delenv("OIDC_CA_BUNDLE", raising=False)
+    monkeypatch.setattr(oidc.tls, "_oc_json", lambda *args: {})
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "oc").write_text("#!/bin/sh\nexit 1\n")
+    (bin_dir / "oc").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    if trust == "wrong-host":
+        url = url.replace("127.0.0.1", "localhost")
+    if trust != "system":
+        bundle = tmp_path / "issuer CA.pem"
+        bundle.write_text(other if trust == "unrelated" else ca)
+        if trust == "system-trusted":
+            monkeypatch.setenv("REQUESTS_CA_BUNDLE", str(bundle))
+            monkeypatch.setenv("CURL_CA_BUNDLE", str(bundle))
+        else:
+            monkeypatch.setenv("OIDC_CA_BUNDLE", str(bundle))
+    if transport == "python":
+        if trust in ("issuer", "system-trusted"):
+            assert oidc._discover(url) == {}
+        else:
+            with pytest.raises(click.ClickException, match="CERTIFICATE_VERIFY_FAILED"):
+                oidc._discover(url)
+    else:
+        helper = Path(__file__).resolve().parents[2] / "scripts" / "issuer-tls.sh"
+        result = subprocess.run([
+            "bash", "-c", 'set -e; source "$1"; saw_tls_init "$2"; curl -fsS "${CURL_TLS_OPTS[@]}" "$2"',
+            "bash", str(helper), url,
+        ], capture_output=True, text=True)
+        if trust in ("issuer", "system-trusted"):
+            assert result.returncode == 0, result.stderr
+            assert result.stdout == "{}"
+        else:
+            assert result.returncode == 60, result.stderr
 
 
 def test_a_publicly_trusted_issuer_gets_no_extra_ca(ab, issuer, tmp_path):

@@ -113,6 +113,13 @@ from the release is enough and keeps renders stable.
 {{/* saw-users values every portal workspace starts from. */}}
 {{- define "openshell-rhdh.sawUsersValues" -}}
 {{- $v := deepCopy (.Values.sawUsers | default dict) -}}
+{{- /* The Pattern supplies overrides/saw-users.yaml to both charts. Share
+      its operator defaults (including the proxy image pin), while explicit
+      portal sawUsers.defaults overrides retain precedence. */ -}}
+{{- if or .Values.defaults (hasKey $v "defaults") -}}
+{{- $shared := deepCopy (.Values.defaults | default dict) -}}
+{{- $_ := set $v "defaults" (mergeOverwrite $shared (deepCopy (index $v "defaults" | default dict))) -}}
+{{- end -}}
 {{- $g := dict "repoURL" .Values.global.repoURL "targetRevision" .Values.global.targetRevision
       "clusterDomain" .Values.global.clusterDomain "pattern" (.Values.global.pattern | default "secure-agent-workspace")
       "vpArgoNamespace" (.Values.global.vpArgoNamespace | default "vp-gitops") -}}

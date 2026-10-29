@@ -165,6 +165,8 @@ additionalProviderSecrets:
 # multi-arch index digest, not a per-platform digest (skopeo inspect --raw
 # docker://<image>:sha-<commit> | sha256sum).
 credentialProxy:
+  # secrets[].refresh: true mints the bound credential in this proxy from
+  # the shipped provider profile. Material keys never get their own marker.
   image: ""
   replicas: 1
   secrets:

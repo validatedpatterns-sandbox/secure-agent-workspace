@@ -51,5 +51,17 @@ def test_live_scan_never_transmits_a_provider_needle_to_the_vm():
     assert 'base64 -d | vm_exec' not in script
     assert 'needle = sys.stdin' not in script
     assert 'vm_exec "$remote" </dev/null' in script
-    assert 'hashlib.sha256(key).digest()[:8]' in script
+    assert 'hashlib.sha256(part).digest()[:8]' in script
     assert 'key = key.strip()' in script
+
+
+def test_google_material_components_are_in_the_key_blind_scan(tmp_path):
+    import hashlib
+    import re
+    material = [b"123456789012-private-client-identifier.apps.googleusercontent.com",
+                b"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7890", b"1//private-refresh-token-12345678901234567890"]
+    (tmp_path / "leaked-material").write_bytes(b"\n".join(material))
+    digests = scan.token_digests(str(tmp_path))
+    for value in material:
+        parts = re.findall(rb"[A-Za-z0-9_-]{20,512}", value)
+        assert parts and all(hashlib.sha256(part).digest()[:8] in digests for part in parts)

@@ -168,6 +168,9 @@ applicationSet:
 # saw-users chart values for portal workspaces, on top of the chart defaults
 # (e.g. defaults.openshellSaw). Each workspace is a one-user saw-users release.
 sawUsers: {}
+# Shared operator defaults from overrides/saw-users.yaml in Pattern installs.
+# Explicit sawUsers.defaults above overrides these for portal workspaces.
+defaults: {}
 
 # Stubs for `helm template`; the pattern sets these.
 global:

@@ -156,7 +156,9 @@ def test_shipped_tool_actions_yaml_parses_in_node():
     doc = yaml.safe_load(policy.read_text())
     assert doc["version"] == 1 and doc["defaultAction"] == "deny"
     assert [rule["tool"] for rule in doc["rules"] if rule["action"] == "allow"] == [
-        "exec", "exec", "exec", "exec", "read", "memory_search", "memory_get",
+        "exec", "exec", "exec", "exec", "exec", "tool_search", "tool_call",
+        "slack-reader__new_messages", "slack-reader__channels", "gmail-reader__new_messages",
+        "briefing-writer__save_briefing", "read", "memory_search", "memory_get",
         "session_status", "sessions_list", "sessions_history"]
     script = r"""
 import { parsePolicy } from "./tool-gate.mjs";

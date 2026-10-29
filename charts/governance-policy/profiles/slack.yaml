@@ -12,12 +12,9 @@ credentials:
     required: true
     auth_style: bearer
     header_name: authorization
-    # With Slack token rotation on, a token lasts 12 hours. The gateway
-    # exchanges the refresh token for a new one before it expires and keeps
-    # the rotated refresh token; the sandbox only ever sees a placeholder.
-    # (`openshell provider refresh configure`, done by the SAW installer for
-    # providers with `refresh:` in their SAW-BOM profile.) A non-rotating
-    # token needs no refresh: leave it unconfigured.
+    # Rotating-token contract for compatible consumers. SAW currently uses
+    # a static bot token: Slack rotation would require persisting the new
+    # refresh token back to Vault and is not supported by the SAW broker.
     refresh:
       strategy: oauth2_refresh_token
       token_url: https://slack.com/api/oauth.v2.access

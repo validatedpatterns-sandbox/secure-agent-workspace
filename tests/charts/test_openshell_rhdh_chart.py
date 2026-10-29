@@ -585,3 +585,24 @@ def test_tekton_resources_compare_with_their_webhook_defaults(docs):
         options = d["metadata"]["annotations"]["argocd.argoproj.io/compare-options"]
         assert set(options.split(",")) == {"ServerSideDiff=true", "IncludeMutationWebhook=true"}, \
             d["metadata"]["name"]
+
+
+@pytest.mark.ci_external
+@pytest.mark.parametrize("portal_override", [False, True])
+def test_portal_workspaces_inherit_the_shared_proxy_image_pin(tmp_path, portal_override):
+    shared = "registry.example.test/proxy@sha256:" + "a" * 64
+    explicit = "registry.example.test/proxy@sha256:" + "b" * 64
+    values = {"users": [{"name": "git-listed-user"}], "defaults": {
+        "openshellSaw": {"credentialProxy": {"image": shared}, "vm": {"memory": "12Gi"}}}}
+    if portal_override:
+        values["sawUsers"] = {"defaults": {"openshellSaw": {"credentialProxy": {"image": explicit}}}}
+    path = tmp_path / "shared-users.yaml"
+    path.write_text(yaml.safe_dump(values))
+    result = generator_defaults(render("-f", str(path)))
+    machine = result["defaults"]["openshellSaw"]
+    assert machine["credentialProxy"]["image"] == (explicit if portal_override else shared)
+    assert machine["vm"]["memory"] == "12Gi"
+    assert "users" not in result, "the portal generates its own single-user list"
+    pattern = yaml.safe_load((ROOT / "values-prod.yaml").read_text())
+    for app_name in ["saw-users", "openshell-rhdh"]:
+        assert "/overrides/saw-users.yaml" in pattern["clusterGroup"]["applications"][app_name]["extraValueFiles"]

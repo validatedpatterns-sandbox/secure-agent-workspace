@@ -18,6 +18,10 @@ kind: RoleBinding
 metadata:
   name: {{ include "openshell-sandbox.fullname" . }}-{{ .Release.Namespace }}-golden-image-puller
   namespace: {{ $golden }}
+  annotations:
+    # The credential-proxy CA hook also pulls from this namespace. Apply the
+    # existing pull permission before any hook tries to start a container.
+    argocd.argoproj.io/sync-wave: "-25"
   labels:
     {{- include "openshell-sandbox.labels" . | nindent 4 }}
 subjects:

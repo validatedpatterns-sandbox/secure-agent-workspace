@@ -12,6 +12,8 @@ import (
 	"github.com/validatedpatterns-sandbox/secure-agent-workspace/credential-proxy/internal/config"
 )
 
+var ErrRefresh = errors.New("credential refresh failed")
+
 var ErrMarker = errors.New("unknown or unbound credential marker")
 
 // Request replaces only markers bound to the TLS host. It never logs or
@@ -21,6 +23,7 @@ func Request(r *http.Request, host, prefix string, bindings []config.Resolved) (
 	used := map[string]bool{}
 	replace := func(input string) (string, error) {
 		bad := false
+		var refreshErr error
 		result := markerRE.ReplaceAllStringFunc(input, func(marker string) string {
 			for _, b := range bindings {
 				if b.Marker != marker {
@@ -29,6 +32,14 @@ func Request(r *http.Request, host, prefix string, bindings []config.Resolved) (
 				for _, pattern := range b.Hosts {
 					if config.MatchHost(host, pattern) {
 						used[b.Secret] = true
+						if b.Token != nil {
+							value, err := b.Token(r.Context())
+							if err != nil {
+								refreshErr = ErrRefresh
+								return marker
+							}
+							return value
+						}
 						return b.Value
 					}
 				}
@@ -36,6 +47,9 @@ func Request(r *http.Request, host, prefix string, bindings []config.Resolved) (
 			bad = true
 			return marker
 		})
+		if refreshErr != nil {
+			return "", refreshErr
+		}
 		if bad || strings.Contains(result, prefix+".") {
 			return "", ErrMarker
 		}

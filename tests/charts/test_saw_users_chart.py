@@ -658,3 +658,16 @@ def test_a_user_can_opt_into_the_demo_harness(tmp_path):
     assert helm_values(app(docs, "saw-alice-bom")) == {
         "profiles": ["data-science"], "harnessEnabled": True,
         "imageOverrides": {}}
+
+
+@pytest.mark.ci_external
+def test_the_personal_assistant_profile_turns_its_harness_on(tmp_path):
+    docs = docs_from(render_file(tmp_path, [{'name':'carol','profiles':['personal-assistant']}]))
+    assert helm_values(app(docs,'saw-carol-bom'))['harnessEnabled'] is True
+    machine = helm_values(app(docs,'saw-carol'))
+    assert machine['allowDriverConfig'] is True
+    bindings = machine['credentialProxy']['secrets']
+    assert {(b['name'],b['key']) for b in bindings} == {('gmail','access_token'),('slack','bot_token'),('inference','api_key')}
+    assert next(b for b in bindings if b['name']=='gmail')['refresh'] is True
+    metadata = helm_values(app(docs,'saw-carol-secrets'))['metaKeys']
+    assert metadata['gmail'] == ['provider'] and metadata['slack'] == ['provider']

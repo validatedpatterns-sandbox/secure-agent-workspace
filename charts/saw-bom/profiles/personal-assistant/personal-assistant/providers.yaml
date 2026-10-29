@@ -1,0 +1,25 @@
+apiVersion: saw.redhat.com/v1alpha1
+kind: Providers
+metadata:
+  profile: personal-assistant
+spec:
+  providers:
+    - name: nvidia
+      type: nvidia
+      nemoclawProvider: build
+      model: nvidia/nemotron-3-super-120b-a12b
+      credentialSecret: inference
+      credentialSecretKey: api_key
+    # The credential proxy holds the static Slack bot token and the Gmail
+    # OAuth material. It mints Gmail access tokens outside the VM; sandboxes
+    # receive placeholders only. See docs/personal-assistant.md.
+    - name: slack
+      type: slack
+      credentialSecret: slack
+      credentialSecretKey: bot_token
+    - name: gmail
+      type: gmail
+      credentialSecret: gmail
+      credentialSecretKey: access_token
+      refresh:
+        strategy: oauth2_refresh_token

@@ -220,14 +220,13 @@ re-signed bundle changes new sandboxes' policy. Confirm these on a new install:
   the provider's endpoint with a nonsecret marker through the sandbox proxy; the
   namespace credential proxy injects the real key only at the bound HTTPS host.
   This still needs the profile's `endpoints` and `binaries` (kept).
-- **Expiring tokens.** A credential's `source` says where APF gets it. `host-env` is a static value,
-  so a token that expires (a Google access token, after about an hour) stops working. A profile
-  credential with an OAuth2 `refresh` therefore becomes `source: {kind: oauth2, grant:
-  refresh-token, tokenUrl, refreshBeforeSeconds, parameters}`, whose parameters are the refresh
-  material the installer hands the gateway (`client_id`, `client_secret`, `refresh_token`).
-  Profiles whose refresh is optional stay `host-env` (`OPTIONAL_REFRESH` in
-  `scripts/apf-bundle.py`): Slack, where a bot token (`xoxb-`) never expires. Check on a new
-  install that `openshell provider refresh status gmail` shows a refreshed token after an hour.
+- **Expiring tokens.** SAW's namespace credential proxy mints Gmail access
+  tokens from a `refresh: true` binding using the shipped provider profile.
+  The VM and gateway receive only the access-token marker, never refresh
+  material. Slack uses a static bot token; rotating Slack tokens are not yet
+  supported. Check `oc -n saw-<user> logs deploy/<user>-credential-proxy` for
+  successful `oauth-refresh` events about 55 minutes apart. See
+  [credential isolation](credential-isolation.md) for the refresh contract.
 - `provider profile import` of a profile that is in the bundle is allowed or refused cleanly
   (the installer treats a refusal as non-fatal).
 - The APF pod stays up with `interceptor.gatewayEndpoint` empty (SAW has a gateway per user VM,

@@ -12,10 +12,9 @@ credentials:
     required: true
     auth_style: bearer
     header_name: authorization
-    # Google access tokens last an hour. The gateway exchanges the user's
-    # refresh token for a new one 5 minutes before expiry; the client
-    # secret and the refresh token stay at the gateway and the sandbox only
-    # ever sees a placeholder.
+    # The namespace credential proxy exchanges refresh material for short-lived
+    # access tokens five minutes before expiry. The VM receives a marker;
+    # refresh material and real access tokens remain outside it.
     refresh:
       strategy: oauth2_refresh_token
       token_url: https://oauth2.googleapis.com/token

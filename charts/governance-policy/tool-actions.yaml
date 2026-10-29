@@ -31,6 +31,37 @@ rules:
     action: allow
     whenCommandMatches:
       - git show
+  - id: exec-briefing-cron-list
+    tool: exec
+    action: allow
+    whenCommandMatches:
+      - openclaw cron list
+  - id: exec-briefing-cron-change
+    tool: exec
+    action: approval
+    whenCommandMatches:
+      - openclaw cron add
+      - openclaw cron rm
+  # OpenClaw 2026.9.2 runs the hook again for each dispatched target.
+  # These discovery rules never replace the target's own named rule.
+  - id: tool-search
+    tool: tool_search
+    action: allow
+  - id: tool-call
+    tool: tool_call
+    action: allow
+  - id: slack-new-messages
+    tool: slack-reader__new_messages
+    action: allow
+  - id: slack-channels
+    tool: slack-reader__channels
+    action: allow
+  - id: gmail-new-messages
+    tool: gmail-reader__new_messages
+    action: allow
+  - id: briefing-save
+    tool: briefing-writer__save_briefing
+    action: allow
   - id: read
     tool: read
     action: allow

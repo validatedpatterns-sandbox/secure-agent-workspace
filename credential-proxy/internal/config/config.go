@@ -1,9 +1,12 @@
 package config
 
 import (
+	"context"
 	"encoding/json"
+
 	"errors"
 	"fmt"
+	"github.com/validatedpatterns-sandbox/secure-agent-workspace/credential-proxy/internal/oauth"
 	"net"
 	"net/url"
 	"os"
@@ -23,13 +26,17 @@ type Policy struct {
 	Bindings     []Binding           `json:"bindings"`
 }
 
+type Refresh = oauth.Refresh
+
 type Binding struct {
+	Refresh   *Refresh `json:"refresh,omitempty"`
 	Secret    string   `json:"secret"`
 	Key       string   `json:"key"`
 	Providers []string `json:"providers"`
 }
 
 type Resolved struct {
+	Token  func(context.Context) (string, error)
 	Marker string
 	Secret string
 	Key    string
@@ -38,6 +45,7 @@ type Resolved struct {
 }
 
 type Store struct {
+	Broker     *oauth.Broker
 	path       string
 	secretsDir string
 	mu         sync.RWMutex
@@ -48,7 +56,7 @@ var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*[a-z0-9]$|^[a-z0-9]$`)
 var keyRE = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 
 func New(path, secretsDir string) (*Store, error) {
-	s := &Store{path: path, secretsDir: secretsDir}
+	s := &Store{path: path, secretsDir: secretsDir, Broker: &oauth.Broker{}}
 	if err := s.Reload(); err != nil {
 		return nil, err
 	}
@@ -90,6 +98,33 @@ func (s *Store) Reload() error {
 		if !nameRE.MatchString(b.Secret) || !keyRE.MatchString(b.Key) || len(b.Providers) == 0 {
 			return errors.New("invalid credential binding")
 		}
+		if b.Refresh != nil {
+			spec := b.Refresh
+			u, err := url.Parse(spec.TokenURL)
+			if err != nil || u.Scheme != "https" || !validDNSHost(u.Hostname()) ||
+				strings.Contains(u.Hostname(), "*") || u.User != nil || u.RawQuery != "" ||
+				u.ForceQuery || u.Fragment != "" || strings.Contains(spec.TokenURL, "#") ||
+				(u.Port() != "" && u.Port() != "443") ||
+				spec.Strategy != "oauth2_refresh_token" || len(b.Providers) != 1 ||
+				spec.RefreshBeforeSeconds < 0 || spec.RefreshBeforeSeconds >= spec.MaxLifetimeSeconds ||
+				spec.MaxLifetimeSeconds > 86400 {
+				return errors.New("invalid refresh binding")
+			}
+			allowed := false
+			for _, h := range p.AllowHosts {
+				if MatchHost(u.Hostname(), h) {
+					allowed = true
+				}
+			}
+			if !allowed {
+				return errors.New("refresh token host is not allowlisted")
+			}
+			for _, key := range []string{spec.Material.ClientID, spec.Material.ClientSecret, spec.Material.RefreshToken} {
+				if !keyRE.MatchString(key) || key == "." || key == ".." {
+					return errors.New("invalid refresh material key")
+				}
+			}
+		}
 		marker := p.MarkerPrefix + "." + b.Secret + "." + b.Key
 		if seen[marker] {
 			return fmt.Errorf("duplicate credential binding %s", marker)
@@ -123,7 +158,13 @@ func (s *Store) Snapshot() (Policy, []Resolved, error) {
 	resolved := make([]Resolved, 0, len(p.Bindings))
 	for _, b := range p.Bindings {
 		base := filepath.Join(s.secretsDir, b.Secret)
-		value, err := os.ReadFile(filepath.Join(base, b.Key))
+		var value []byte
+		var err error
+		if b.Refresh != nil {
+			_, err = oauth.ReadMaterial(*b.Refresh, base)
+		} else {
+			value, err = os.ReadFile(filepath.Join(base, b.Key))
+		}
 		if err != nil {
 			return p, nil, fmt.Errorf("Secret %s key %s is missing or empty", b.Secret, b.Key)
 		}
@@ -177,13 +218,21 @@ func (s *Store) Snapshot() (Policy, []Resolved, error) {
 		if plainHTTP && (len(hosts) == 0 || strings.TrimSpace(string(value)) == "") {
 			continue
 		}
-		if strings.TrimSpace(string(value)) == "" {
+		if b.Refresh == nil && strings.TrimSpace(string(value)) == "" {
 			return p, nil, fmt.Errorf("Secret %s key %s is missing or empty", b.Secret, b.Key)
 		}
 		if len(hosts) == 0 {
 			return p, nil, fmt.Errorf("Secret %s has no bound hosts", b.Secret)
 		}
-		resolved = append(resolved, Resolved{
+		var token func(context.Context) (string, error)
+		if b.Refresh != nil {
+			if s.Broker == nil {
+				return p, nil, errors.New("refresh broker unavailable")
+			}
+			spec, id := *b.Refresh, b.Secret+"/"+b.Key
+			token = func(ctx context.Context) (string, error) { return s.Broker.Token(ctx, id, spec, base) }
+		}
+		resolved = append(resolved, Resolved{Token: token,
 			Marker: p.MarkerPrefix + "." + b.Secret + "." + b.Key,
 			Secret: b.Secret, Key: b.Key, Hosts: hosts, Value: strings.TrimSpace(string(value)),
 		})
@@ -246,4 +295,16 @@ func Allowed(host string, p Policy, bindings []Resolved) bool {
 		}
 	}
 	return false
+}
+
+func validDNSHost(host string) bool {
+	if len(host) > 253 || !strings.Contains(host, ".") || net.ParseIP(host) != nil {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if len(label) > 63 || !regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`).MatchString(label) {
+			return false
+		}
+	}
+	return true
 }

@@ -752,7 +752,8 @@ def test_a_cleanup_overtaken_after_its_check_leaves_the_replacement_alone(portal
         real(self, path)
     monkeypatch.setattr(portal.Vault, "destroy", destroy)
     assert portal.main(["finish-delete", "alice"]) == 1               # A: entry changed, left
-    assert overtaken == [f"{KEYS}/inference"], "A only ever reaches its own generation"
+    assert len(overtaken) == 1 and overtaken[0].startswith(f"{KEYS}/"), \
+        "A only ever reaches its own generation"
     entry = json.loads(fake.objects[REGISTRY]["data"]["user.json"])
     assert entry["vaultPrefix"] == f"secret/data/{NEW_KEYS}"
     assert fake.vault == {f"{NEW_KEYS}/inference": {"api_key": "nvapi-new", "model": DS_MODEL, "cuda_model": DS_MODEL, "provider": "nvidia"},

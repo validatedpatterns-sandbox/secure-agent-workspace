@@ -1,6 +1,8 @@
 package config
 
 import (
+	"encoding/json"
+	"github.com/validatedpatterns-sandbox/secure-agent-workspace/credential-proxy/internal/oauth"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -152,6 +154,71 @@ func TestWildcardIsOneLabel(t *testing.T) {
 	} {
 		if got := MatchHost(tc.host, "*-aiplatform.googleapis.com"); got != tc.want {
 			t.Fatalf("%s: got %t, want %t", tc.host, got, tc.want)
+		}
+	}
+}
+
+func TestRefreshBindingValidationAndMetadataOnlySnapshot(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "gmail")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"client_id", "client_secret", "refresh_token"} {
+		if err := os.WriteFile(filepath.Join(dir, key), []byte("present"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	spec := &Refresh{Strategy: "oauth2_refresh_token", TokenURL: "https://oauth2.googleapis.com/token", RefreshBeforeSeconds: 300, MaxLifetimeSeconds: 3600, Material: oauth.Material{ClientID: "client_id", ClientSecret: "client_secret", RefreshToken: "refresh_token"}}
+	policy := Policy{MarkerPrefix: "saw-cred", AllowHosts: []string{"oauth2.googleapis.com"}, Profiles: map[string][]string{"gmail": {"gmail.googleapis.com"}}, Bindings: []Binding{{Secret: "gmail", Key: "access_token", Providers: []string{"gmail"}, Refresh: spec}}}
+	path := filepath.Join(root, "config.json")
+	save := func() {
+		raw, _ := json.Marshal(policy)
+		if err := os.WriteFile(path, raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	save()
+	store, err := New(path, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, bindings, err := store.Snapshot()
+	if err != nil || len(bindings) != 1 || bindings[0].Value != "" || bindings[0].Token == nil {
+		t.Fatal("refresh snapshot must need no access_token file or HTTP request")
+	}
+	for _, key := range []string{"client_id", "client_secret", "refresh_token"} {
+		if err := os.Remove(filepath.Join(dir, key)); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := store.Snapshot(); err == nil {
+			t.Fatal("missing refresh material accepted")
+		}
+		if err := os.WriteFile(filepath.Join(dir, key), []byte("present"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, bad := range []string{"http://oauth2.googleapis.com/token", "https://oauth2.googleapis.com:8443/token", "https://user@oauth2.googleapis.com/token", "https://oauth2.googleapis.com/token?x=y", "https://oauth2.googleapis.com/token#fragment", "https://else.example.test/token", "https://oauth2..googleapis.com/token"} {
+		spec.TokenURL = bad
+		save()
+		if _, err := New(path, root); err == nil {
+			t.Errorf("accepted invalid tokenURL %s", bad)
+		}
+	}
+	spec.TokenURL = "https://oauth2.googleapis.com/token"
+	for _, key := range []string{"../client_id", "..", "bad/key", ""} {
+		spec.Material.ClientID = key
+		save()
+		if _, err := New(path, root); err == nil {
+			t.Error("accepted invalid material key")
+		}
+	}
+	spec.Material.ClientID = "client_id"
+	for _, limits := range [][2]int{{-1, 3600}, {3600, 3600}, {0, 86401}, {0, 0}} {
+		spec.RefreshBeforeSeconds, spec.MaxLifetimeSeconds = limits[0], limits[1]
+		save()
+		if _, err := New(path, root); err == nil {
+			t.Error("accepted invalid refresh lifetime")
 		}
 	}
 }

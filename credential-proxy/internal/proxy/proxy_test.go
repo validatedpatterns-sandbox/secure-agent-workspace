@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
+	"github.com/validatedpatterns-sandbox/secure-agent-workspace/credential-proxy/internal/oauth"
 	"io"
 	"net"
 	"net/http"
@@ -23,6 +25,9 @@ import (
 )
 
 type fixture struct {
+	store      *config.Store
+	server     *Server
+	policyPath string
 	proxy      *httptest.Server
 	upstream   *httptest.Server
 	client     *http.Client
@@ -76,7 +81,7 @@ func newFixture(t *testing.T, upstreamHost string, handler http.HandlerFunc) *fi
 		DialUpstream: func(_ context.Context, _, _ string) (net.Conn, error) {
 			return net.Dial("tcp", upstream.Listener.Addr().String())
 		}}
-	f := &fixture{upstream: upstream, proxyCA: proxyCert, secretPath: secretPath}
+	f := &fixture{store: store, server: s, policyPath: policy, upstream: upstream, proxyCA: proxyCert, secretPath: secretPath}
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodConnect {
 			f.connects.Add(1)
@@ -279,5 +284,122 @@ func TestInterceptFlushesStreamingResponses(t *testing.T) {
 	line, err := bufio.NewReader(resp.Body).ReadString('\n')
 	if err != nil || line != "data: first\n" {
 		t.Fatalf("stream line %q %v", line, err)
+	}
+}
+
+func TestGmailRefreshAndFailureIsolation(t *testing.T) {
+	var fail atomic.Bool
+	var transient atomic.Bool
+	var posts atomic.Int32
+	issuer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts.Add(1)
+		if transient.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, `<html>temporarily unavailable</html>`)
+			return
+		}
+		if fail.Load() {
+			w.WriteHeader(400)
+			_, _ = io.WriteString(w, `{"error":"invalid_grant","error_description":"private-material"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"access_token":"minted-gmail-private","expires_in":3600}`)
+	}))
+	defer issuer.Close()
+	f := newFixture(t, "gmail.googleapis.com", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer minted-gmail-private" && r.Header.Get("Authorization") != "Bearer real-test-key" {
+			t.Error("upstream did not receive resolved credential")
+		}
+		w.WriteHeader(200)
+	})
+	root := filepath.Dir(filepath.Dir(f.secretPath))
+	gmail := filepath.Join(root, "gmail")
+	if err := os.MkdirAll(gmail, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"client_id", "client_secret", "refresh_token"} {
+		if err := os.WriteFile(filepath.Join(gmail, k), []byte("private-material"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	spec := &config.Refresh{Strategy: "oauth2_refresh_token", TokenURL: "https://oauth2.googleapis.com/token", RefreshBeforeSeconds: 300, MaxLifetimeSeconds: 3600, Material: oauth.Material{ClientID: "client_id", ClientSecret: "client_secret", RefreshToken: "refresh_token"}}
+	policy := config.Policy{MarkerPrefix: "saw-cred", AllowHosts: []string{"gmail.googleapis.com", "oauth2.googleapis.com", "api.example.test"}, Profiles: map[string][]string{"gmail": {"gmail.googleapis.com"}, "nvidia": {"gmail.googleapis.com", "api.example.test"}}, Bindings: []config.Binding{{Secret: "gmail", Key: "access_token", Providers: []string{"gmail"}, Refresh: spec}, {Secret: "inference", Key: "api_key", Providers: []string{"nvidia"}}}}
+	policy.Bindings = append(policy.Bindings, config.Binding{Secret: "gmail", Key: "secondary_token",
+		Providers: []string{"gmail"}, Refresh: spec})
+	raw, _ := json.Marshal(policy)
+	if err := os.WriteFile(f.policyPath, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	transport := issuer.Client().Transport.(*http.Transport).Clone()
+	transport.TLSClientConfig.ServerName = "127.0.0.1"
+	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, issuer.Listener.Addr().String())
+	}
+	now := time.Unix(1700000000, 0)
+	f.store.Broker = &oauth.Broker{Client: &http.Client{Transport: transport}, Now: func() time.Time { return now }}
+	health := func() {
+		w := httptest.NewRecorder()
+		f.server.Health(w, httptest.NewRequest("GET", "/healthz", nil))
+		if w.Code != 200 {
+			t.Fatal("proxy unhealthy")
+		}
+	}
+	health()
+	if posts.Load() != 0 {
+		t.Fatal("health contacted token endpoint")
+	}
+	request := func(host, marker string, want int, body string) {
+		req, _ := http.NewRequest("GET", "https://"+host+"/gmail/v1/users/me/messages", nil)
+		req.Header.Set("Authorization", "Bearer "+marker)
+		resp, err := f.client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != want || !strings.Contains(string(raw), body) {
+			t.Fatalf("response %d %q", resp.StatusCode, raw)
+		}
+	}
+	request("gmail.googleapis.com", "saw-cred.gmail.access_token", 200, "")
+	request("api.example.test", "saw-cred.gmail.access_token", 502, "unknown or unbound credential marker")
+	if posts.Load() != 1 {
+		t.Fatal("unbound host triggered refresh")
+	}
+	// Distinct binding keys in one Secret have independent token caches.
+	request("gmail.googleapis.com", "saw-cred.gmail.secondary_token", 200, "")
+	request("gmail.googleapis.com", "saw-cred.gmail.access_token", 200, "")
+	if posts.Load() != 2 {
+		t.Fatal("refresh bindings shared or invalidated each other's cache")
+	}
+	transient.Store(true)
+	now = now.Add(3300 * time.Second)
+	request("gmail.googleapis.com", "saw-cred.gmail.access_token", 200, "")
+	if posts.Load() != 3 {
+		t.Fatal("transient refresh did not make one issuer request")
+	}
+	now = now.Add(30 * time.Second)
+	request("gmail.googleapis.com", "saw-cred.gmail.access_token", 200, "")
+	if posts.Load() != 3 {
+		t.Fatal("transient refresh ignored its backoff")
+	}
+	now = time.Unix(1700000000, 0).Add(3600 * time.Second)
+	request("gmail.googleapis.com", "saw-cred.gmail.access_token", 502, "credential refresh failed")
+	if posts.Load() != 4 {
+		t.Fatal("expired cached token did not fail closed")
+	}
+	transient.Store(false)
+	fail.Store(true)
+	if err := os.WriteFile(filepath.Join(gmail, "refresh_token"), []byte("wrong-refresh-material"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	request("gmail.googleapis.com", "saw-cred.gmail.access_token", 502, "credential refresh failed")
+	request("gmail.googleapis.com", "saw-cred.inference.api_key", 200, "")
+	health()
+	if posts.Load() != 5 {
+		t.Fatal("static request or health triggered OAuth")
 	}
 }

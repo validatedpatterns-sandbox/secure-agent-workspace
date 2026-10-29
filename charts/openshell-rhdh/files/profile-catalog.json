@@ -2,6 +2,7 @@
   "profiles": {
     "ci-nvidia": {
       "description": "CI workspace with NVIDIA inference",
+      "harnessRequired": false,
       "secrets": {
         "inference": {
           "fields": [
@@ -26,18 +27,21 @@
           "sandboxes": [
             {
               "enabled": true,
+              "harnessRequired": false,
               "name": "notebook",
               "type": "openclaw",
               "uiRoute": true
             },
             {
               "enabled": false,
+              "harnessRequired": false,
               "name": "cuda-sandbox",
               "type": "nemoclaw",
               "uiRoute": false
             },
             {
               "enabled": false,
+              "harnessRequired": false,
               "name": "toolbox",
               "type": "generic",
               "uiRoute": false
@@ -48,6 +52,7 @@
     },
     "custom-inference": {
       "description": "Agent workspace backed by a custom OpenAI-compatible endpoint (vLLM, Ollama, ...)",
+      "harnessRequired": false,
       "secrets": {
         "inference": {
           "fields": [
@@ -98,6 +103,7 @@
           "sandboxes": [
             {
               "enabled": true,
+              "harnessRequired": false,
               "name": "notebook",
               "type": "openclaw",
               "uiRoute": false
@@ -108,6 +114,7 @@
     },
     "data-science": {
       "description": "Data science workspace with NVIDIA inference and web search; CUDA development workspace with NVIDIA inference",
+      "harnessRequired": false,
       "secrets": {
         "inference": {
           "fields": [
@@ -160,18 +167,21 @@
           "sandboxes": [
             {
               "enabled": true,
+              "harnessRequired": false,
               "name": "notebook",
               "type": "openclaw",
               "uiRoute": true
             },
             {
               "enabled": false,
+              "harnessRequired": false,
               "name": "cuda-sandbox",
               "type": "nemoclaw",
               "uiRoute": false
             },
             {
               "enabled": false,
+              "harnessRequired": false,
               "name": "toolbox",
               "type": "generic",
               "uiRoute": false
@@ -185,15 +195,100 @@
           "sandboxes": [
             {
               "enabled": true,
+              "harnessRequired": false,
               "name": "cuda-sandbox",
               "type": "nemoclaw",
               "uiRoute": true
             },
             {
               "enabled": false,
+              "harnessRequired": false,
               "name": "toolbox",
               "type": "generic",
               "uiRoute": false
+            }
+          ]
+        }
+      ]
+    },
+    "personal-assistant": {
+      "description": "Personal assistant: NemoClaw agent with NVIDIA inference and a daily Slack and Gmail briefing",
+      "harnessRequired": true,
+      "secrets": {
+        "gmail": {
+          "fields": [
+            {
+              "key": "client_id",
+              "kind": "secret",
+              "refreshMaterial": true,
+              "required": true,
+              "title": "Google OAuth client ID"
+            },
+            {
+              "key": "client_secret",
+              "kind": "secret",
+              "refreshMaterial": true,
+              "required": true,
+              "title": "Google OAuth client secret"
+            },
+            {
+              "key": "refresh_token",
+              "kind": "secret",
+              "refreshMaterial": true,
+              "required": true,
+              "title": "Google OAuth refresh token (scope gmail.readonly)"
+            }
+          ],
+          "provider": "gmail",
+          "providers": [
+            "gmail"
+          ],
+          "refresh": {
+            "credentialKey": "access_token",
+            "strategy": "oauth2_refresh_token"
+          }
+        },
+        "inference": {
+          "fields": [
+            {
+              "key": "api_key",
+              "kind": "secret",
+              "required": true,
+              "title": "API key"
+            }
+          ],
+          "provider": "nvidia",
+          "providers": [
+            "nvidia"
+          ]
+        },
+        "slack": {
+          "fields": [
+            {
+              "key": "bot_token",
+              "kind": "secret",
+              "required": true,
+              "title": "API key"
+            }
+          ],
+          "provider": "slack",
+          "providers": [
+            "slack"
+          ]
+        }
+      },
+      "workspaces": [
+        {
+          "description": "Personal assistant: NemoClaw agent with NVIDIA inference and a daily Slack and Gmail briefing",
+          "enabled": true,
+          "name": "personal-assistant",
+          "sandboxes": [
+            {
+              "enabled": true,
+              "harnessRequired": true,
+              "name": "assistant",
+              "type": "nemoclaw",
+              "uiRoute": true
             }
           ]
         }

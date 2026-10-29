@@ -10,6 +10,7 @@ import (
 	"github.com/validatedpatterns-sandbox/secure-agent-workspace/credential-proxy/internal/ca"
 	"github.com/validatedpatterns-sandbox/secure-agent-workspace/credential-proxy/internal/config"
 	"github.com/validatedpatterns-sandbox/secure-agent-workspace/credential-proxy/internal/kube"
+	"github.com/validatedpatterns-sandbox/secure-agent-workspace/credential-proxy/internal/oauth"
 	"github.com/validatedpatterns-sandbox/secure-agent-workspace/credential-proxy/internal/proxy"
 )
 
@@ -35,6 +36,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
+		store.Broker = &oauth.Broker{}
 		s := &proxy.Server{Store: store, CA: ca.New(
 			env("SAW_CA_CERT", "/var/run/saw/ca/tls.crt"),
 			env("SAW_CA_KEY", "/var/run/saw/ca/tls.key"))}

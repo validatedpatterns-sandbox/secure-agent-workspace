@@ -77,12 +77,32 @@ def required_string(obj, key, source):
     return value
 
 
+def refresh_spec(provider, source="provider"):
+    strategy = (provider.get("refresh") or {}).get("strategy")
+    if not strategy:
+        return None
+    profile = load(GOVERNANCE_PROFILES / f"{provider['type']}.yaml")
+    key = provider.get("credentialSecretKey", "api_key")
+    credential = next((c for c in profile.get("credentials", []) if c.get("name") == key), {})
+    spec = credential.get("refresh") or {}
+    if strategy != "oauth2_refresh_token" or spec.get("strategy") != strategy:
+        raise ValueError(f"{source}: refresh strategy does not match shipped provider profile")
+    if not spec.get("material"):
+        raise ValueError(f"{source}: refresh material is required")
+    return spec
+
+
 def secret_fields(provider, source="provider"):
     """The fields a provider reads from its Secret, as the installer does
     (resolve_credentials): the credential(s), and optionally a base URL and
     a model (the older provider-level fields)."""
+    refresh = refresh_spec(provider, source)
     creds = provider.get("credentials")
-    if isinstance(creds, dict) and creds:
+    if refresh:
+        fields = [{"key": m["name"], "kind": "secret", "refreshMaterial": True,
+                   "required": bool(m.get("required")), "title": m.get("description") or m["name"]}
+                  for m in refresh["material"]]
+    elif isinstance(creds, dict) and creds:
         fields = []
         for i, (cname, entry) in enumerate(creds.items()):
             fields.append({"key": required_string(entry, "secretKey", f"{source}: credential {cname}"),
@@ -163,7 +183,8 @@ def catalog():
                 ui = sb.get("ui") or {}
                 sandboxes.append({"name": sb["name"], "type": sb.get("type", "generic"),
                                   "enabled": sb.get("enabled", True),
-                                  "uiRoute": bool(ui.get("route", False))})
+                                  "uiRoute": bool(ui.get("route", False)),
+                                  "harnessRequired": bool(sb.get("harnessRef") and sb.get("harnessRequired"))})
             workspaces.append({"name": name, "description": description, "enabled": enabled,
                                "sandboxes": sandboxes})
             if not enabled:
@@ -174,6 +195,12 @@ def catalog():
                     continue
                 entry = secrets.setdefault(prov["credentialSecret"],
                                            {"providers": [], "fields": []})
+                if refresh_spec(prov, wdir / "providers.yaml"):
+                    refresh = {"strategy": "oauth2_refresh_token",
+                               "credentialKey": prov.get("credentialSecretKey", "api_key")}
+                    if entry.get("refresh", refresh) != refresh:
+                        raise ValueError("conflicting refresh credentials in one Secret")
+                    entry["refresh"] = refresh
                 entry["providers"] = sorted(set(entry["providers"]) | {prov.get("type", "")})
                 for f in secret_fields(prov, (wdir / "providers.yaml").relative_to(ROOT)):
                     if f["key"] not in {x["key"] for x in entry["fields"]}:
@@ -201,7 +228,10 @@ def catalog():
             # a key for another service; only set when it is unambiguous.
             entry["provider"] = entry["providers"][0] if len(entry["providers"]) == 1 else ""
         out[pdir.name] = {"description": "; ".join(dict.fromkeys(descriptions)),
-                          "workspaces": workspaces, "secrets": secrets}
+                          "workspaces": workspaces, "secrets": secrets,
+                          "harnessRequired": any(sb["enabled"] and sb["harnessRequired"]
+                                                 for ws in workspaces if ws["enabled"]
+                                                 for sb in ws["sandboxes"])}
     return {"profiles": out}
 
 

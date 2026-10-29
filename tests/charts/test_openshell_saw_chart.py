@@ -747,7 +747,8 @@ def test_egress_without_an_issuer_adds_no_empty_hostname(default_docs):
 
 @pytest.mark.ci_external
 def test_egress_custom_allow_list_cannot_drop_the_deny():
-    docs = render("--set-string", "egress.allow[0]=only.example.net")
+    # Refresh issuers are required even with a custom allowlist.
+    docs = render("--set-json", 'egress.allow=["only.example.net","oauth2.googleapis.com","slack.com"]')
     rules, allowed = _egress_names(docs)
     _assert_safe_order(rules)
     assert "only.example.net" in allowed

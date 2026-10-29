@@ -90,7 +90,9 @@ remote="sudo python3 -c 'import base64; exec(base64.b64decode(\"$guest_b64\"))'"
 import json, sys
 cfg = json.load(open(sys.argv[1]))['data']['config.json']
 for b in json.loads(cfg)['credentialProxy']['secrets']:
-    print(b['name'], b['key'], sep='\t')
+    keys = ['client_id', 'client_secret', 'refresh_token'] if b.get('refresh') else [b['key']]
+    for key in keys:
+        print(b['name'], key, sep='\t')
 PY
 vm_exec "$remote" </dev/null > "$tmp/guest-digests.b64"
 while IFS=$'\t' read -r secret key; do
@@ -100,11 +102,14 @@ key = base64.b64decode(json.load(sys.stdin).get("data", {}).get(sys.argv[1], "")
 if not key:
     print(f"SKIP {sys.argv[2]}: empty key (keyless endpoint)"); raise SystemExit(0)
 key = key.strip()  # Secret files can end in a newline; HTTP credentials cannot.
-if not re.fullmatch(rb"[A-Za-z0-9_-]{20,512}", key):
-    raise SystemExit(f"FAIL {sys.argv[2]}: key shape outside [A-Za-z0-9_-]{{20,512}}; cannot check")
+# Google material contains separators (dots and slashes). Check every long
+# component with the same tokenizer used by the guest; values never go there.
+parts = re.findall(rb"[A-Za-z0-9_-]{20,512}", key)
+if not parts:
+    raise SystemExit(f"FAIL {sys.argv[2]}: no checkable credential component")
 blob = gzip.decompress(base64.b64decode(open(sys.argv[3], "rb").read()))
-mine = hashlib.sha256(key).digest()[:8]
-if any(blob[i:i + 8] == mine for i in range(0, len(blob), 8)):
+mine = {hashlib.sha256(part).digest()[:8] for part in parts}
+if any(blob[i:i + 8] in mine for i in range(0, len(blob), 8)):
     raise SystemExit(f"FAIL {sys.argv[2]}: provider key found in guest files")
 print(f"PASS {sys.argv[2]} absent from VM files")' "$key" "$secret/$key" "$tmp/guest-digests.b64"
 done < "$tmp/bindings.tsv"

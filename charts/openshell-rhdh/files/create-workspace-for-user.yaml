@@ -26,10 +26,12 @@ spec:
       profile:
         title: Profile
         type: string
-        enum: [ci-nvidia, custom-inference, data-science]
+        enum: [ci-nvidia, custom-inference, data-science, personal-assistant]
         enumNames: ['ci-nvidia: CI workspace with NVIDIA inference', 'custom-inference: Agent workspace
             backed by a custom OpenAI-compatible endpoint (vLLM, Ollama, ...)', 'data-science: Data science
-            workspace with NVIDIA inference and web search; CUDA development workspace with NVIDIA inference']
+            workspace with NVIDIA inference and web search; CUDA development workspace with NVIDIA inference',
+          'personal-assistant: Personal assistant: NemoClaw agent with NVIDIA inference and a daily Slack
+            and Gmail briefing']
         default: data-science
     dependencies:
       profile:
@@ -62,6 +64,23 @@ spec:
             web_search__api_key: {title: 'web-search: API key', type: string, 'ui:field': Secret, description: Stored
                 in Vault for your workspace only (provider brave)}
           required: [inference__api_key, web_search__api_key]
+        - properties:
+            profile: {const: personal-assistant}
+            uiRoutes: {title: Sandbox web UIs, type: 'null', description: 'Published on their own route,
+                signed in with Keycloak, for you only: assistant (personal-assistant)'}
+            gmail__client_id: {title: 'gmail: Google OAuth client ID', type: string, 'ui:field': Secret,
+              description: Stored in Vault for your workspace only (provider gmail)}
+            gmail__client_secret: {title: 'gmail: Google OAuth client secret', type: string, 'ui:field': Secret,
+              description: Stored in Vault for your workspace only (provider gmail)}
+            gmail__refresh_token: {title: 'gmail: Google OAuth refresh token (scope gmail.readonly)',
+              type: string, 'ui:field': Secret, description: Stored in Vault for your workspace only (provider
+                gmail)}
+            inference__api_key: {title: 'inference: API key', type: string, 'ui:field': Secret, description: Stored
+                in Vault for your workspace only (provider nvidia)}
+            slack__bot_token: {title: 'slack: API key', type: string, 'ui:field': Secret, description: Stored
+                in Vault for your workspace only (provider slack)}
+          required: [gmail__client_id, gmail__client_secret, gmail__refresh_token, inference__api_key,
+            slack__bot_token]
   steps:
   - id: request
     name: Submit the request
@@ -81,7 +100,9 @@ spec:
             }}', forUser: '${{ parameters.forUser }}', inference.api_key: '${{ secrets.inference__api_key
             }}', inference.url: '${{ parameters.inference__url }}', inference.model: '${{ parameters.inference__model
             }}', web-search.api_key: '${{ secrets.web_search__api_key }}', inference.cuda_model: '${{
-            parameters.inference__cuda_model }}'}
+            parameters.inference__cuda_model }}', gmail.client_id: '${{ secrets.gmail__client_id }}',
+          gmail.client_secret: '${{ secrets.gmail__client_secret }}', gmail.refresh_token: '${{ secrets.gmail__refresh_token
+            }}', slack.bot_token: '${{ secrets.slack__bot_token }}'}
   - id: run
     name: Start the pipeline
     action: http:backstage:request

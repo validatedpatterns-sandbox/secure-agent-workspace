@@ -134,7 +134,7 @@ user's `values` on top. Nested maps merge; the user's keys win.
      refuses to mount without allow_driver_config; derive it here so the two
      flags can't drift apart. The user's own `values.allowDriverConfig`
      still wins if set. */ -}}
-{{- if $user.harnessEnabled -}}
+{{- if eq (include "saw-users.harnessEnabled" .) "true" -}}
 {{- $_ := set $base "allowDriverConfig" true -}}
 {{- end -}}
 {{- $overlay := deepCopy ($user.values | default dict) -}}
@@ -237,14 +237,26 @@ an enabled workspace). pattern-secrets syncs only these.
 {{- end -}}
 
 {{/* Only fields marked kind=secret become proxy bindings. */}}
+{{- define "saw-users.harnessEnabled" -}}
+{{- $required := false -}}
+{{- range (include "saw-users.userCatalog" . | fromJsonArray) -}}
+{{- if .harnessRequired -}}{{- $required = true -}}{{- end -}}
+{{- end -}}
+{{- or (.user.harnessEnabled | default false) $required -}}
+{{- end -}}
+
 {{- define "saw-users.credentialBindings" -}}
 {{- $bindings := dict -}}
 {{- $secretNames := include "saw-users.secretNames" . | fromJsonArray -}}
 {{- $known := include "saw-users.userCatalog" . | fromJsonArray -}}
 {{- range $profile := $known -}}
   {{- range $secret, $entry := $profile.secrets | default dict -}}
-    {{- range $field := $entry.fields | default list -}}
-      {{- if and (has $secret $secretNames) (eq $field.kind "secret") -}}
+    {{- $fields := $entry.fields | default list -}}
+    {{- if $entry.refresh -}}
+      {{- $fields = append $fields (dict "key" $entry.refresh.credentialKey "kind" "secret" "proxyRefresh" true) -}}
+    {{- end -}}
+    {{- range $field := $fields -}}
+      {{- if and (has $secret $secretNames) (eq $field.kind "secret") (not $field.refreshMaterial) -}}
         {{- $id := printf "%s/%s" $secret $field.key -}}
         {{- $previous := index $bindings $id | default (dict "name" $secret "key" $field.key "providers" (list)) -}}
         {{- $providers := $previous.providers -}}
@@ -252,6 +264,7 @@ an enabled workspace). pattern-secrets syncs only these.
           {{- if not (has . $providers) -}}{{- $providers = append $providers . -}}{{- end -}}
           {{- if and (eq . "nvidia") (not (has "build" $providers)) -}}{{- $providers = append $providers "build" -}}{{- end -}}
         {{- end -}}
+        {{- if $field.proxyRefresh -}}{{- $_ := set $previous "refresh" true -}}{{- end -}}
         {{- $_ := set $previous "providers" $providers -}}
         {{- $_ := set $bindings $id $previous -}}
       {{- end -}}
@@ -276,7 +289,7 @@ an enabled workspace). pattern-secrets syncs only these.
 {{- $_ := set $imageOverrides $name $image -}}
 {{- end -}}
 {{- $_ := set $bomValues "imageOverrides" $imageOverrides -}}
-{{- if $user.harnessEnabled -}}
+{{- if eq (include "saw-users.harnessEnabled" .) "true" -}}
 {{- $_ := set $bomValues "harnessEnabled" true -}}
 {{- end -}}
 {{- if not (include "saw-users.webSearch" .) -}}

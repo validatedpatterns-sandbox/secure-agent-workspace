@@ -1,0 +1,7 @@
+apiVersion: saw.redhat.com/v1alpha1
+kind: Workspace
+metadata:
+  name: personal-assistant
+  description: "Personal assistant: NemoClaw agent with NVIDIA inference and a daily Slack and Gmail briefing"
+spec:
+  enabled: true

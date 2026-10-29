@@ -148,14 +148,36 @@ gateway PKI and causes the same sandbox recreation.
   changed gateway trust archives `/sandbox` from the workload volume before
   recreation, because the old supervisor cannot connect to serve an archive.
   Archive failures leave the original sandbox and files intact.
-- OAuth2 refresh declared by the Slack/Gmail profiles is unsupported under
-  isolation until refresh runs in the namespace proxy. Do not configure
-  refresh credentials or refresh execution on the in-VM gateway.
+- Gmail OAuth2 refresh runs in the namespace credential proxy. A binding
+  with `refresh: true` gets its token URL only from the shipped provider
+  profile, never from a Secret, Vault or the VM: a tenant-controlled URL
+  could redirect the client secret. The proxy reads `client_id`,
+  `client_secret`, and `refresh_token`, caches access tokens in memory, and
+  refreshes five minutes before expiry. Material keys never get their own
+  marker or binding. The VM receives only `saw-cred.gmail.access_token`.
+  Readiness checks material presence without making token requests. A transient
+  failure (network error, timeout, HTTP 429/5xx, `temporarily_unavailable`, or
+  `server_error`) during early refresh keeps serving the cached token until it
+  actually expires and retries every 60 seconds. An authorization failure
+  (`invalid_grant`, `invalid_client`, and related permanent errors) drops the
+  token at once and returns a sanitized 502. Static Slack and inference
+  bindings continue working either way.
+- Slack uses a static bot token. Slack rotating refresh tokens are unsupported:
+  persisting their rotation back to Vault requires a separate implementation.
+- Google OAuth clients in **Testing** issue refresh tokens that expire after
+  seven days for Gmail scopes. Use an **In production** client (internal
+  where appropriate) for longer deployments. See [Google's token expiration
+  rules](https://developers.google.com/identity/protocols/oauth2#expiration).
 
 Pattern E2E mounts `registry.authSecret` unchanged: a four-hour
 `registry-viewer` token for `openshell-agents`, readable by VM root. This
 CI-only pull token is outside the guarantee for provider API keys and
 platform-admin mTLS authority. It must use a dedicated Secret.
+
+The Pattern passes `overrides/saw-users.yaml` to both `saw-users` and the
+portal chart. Its `defaults` (including the proxy image pin) apply to portal
+workspaces as well as Git-listed users. Explicit `sawUsers.defaults` in the
+portal chart takes precedence when a separate portal override is needed.
 
 ## Rotation operations
 
@@ -163,6 +185,10 @@ platform-admin mTLS authority. It must use a dedicated Secret.
   ExternalSecret and projected volume to sync, then check proxy readiness and
   make an inference or search request. Revoke the old provider key after the
   new one works. The VM does not need a restart.
+- **Gmail OAuth material:** revoke access at Google, or change the user's
+  Vault entry. ESO updates the mounted Secret and the broker discards its
+  cached token and any in-memory rotated refresh token when material changes.
+  Tokens remain only in memory; a proxy restart mints a fresh access token.
 - **Proxy CA:** schedule a maintenance window. Remove the namespace
   `saw-credential-proxy-ca` Secret, then run a Helm upgrade or Argo sync so the
   `init-ca` hook creates a new Secret and refreshes `saw-proxy-ca`. Restart the

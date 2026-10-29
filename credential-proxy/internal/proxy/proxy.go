@@ -173,7 +173,9 @@ func (s *Server) intercept(client net.Conn, host string) {
 		policy, bindings, snapshotErr := s.Store.Snapshot()
 		path := r.URL.Path // capture before rewriting: logging the new path could leak a key
 		for _, b := range bindings {
-			path = strings.ReplaceAll(path, b.Value, "***")
+			if b.Value != "" {
+				path = strings.ReplaceAll(path, b.Value, "***")
+			}
 		}
 		status := &statusWriter{ResponseWriter: w}
 		binding := "-"
@@ -198,7 +200,9 @@ func (s *Server) intercept(client net.Conn, host string) {
 		var err error
 		binding, err = rewrite.Request(r, host, policy.MarkerPrefix, bindings)
 		if err != nil {
-			if errors.Is(err, rewrite.ErrMarker) {
+			if errors.Is(err, rewrite.ErrRefresh) {
+				http.Error(status, "credential refresh failed", http.StatusBadGateway)
+			} else if errors.Is(err, rewrite.ErrMarker) {
 				http.Error(status, "unknown or unbound credential marker", http.StatusBadGateway)
 			} else {
 				http.Error(status, "invalid request", http.StatusBadGateway)

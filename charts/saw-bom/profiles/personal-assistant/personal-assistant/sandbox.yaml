@@ -1,0 +1,33 @@
+apiVersion: saw.redhat.com/v1alpha1
+kind: Sandboxes
+metadata: {}
+spec:
+  sandboxes:
+    - name: assistant
+      type: nemoclaw
+      enabled: true
+      agent: openclaw
+      # NemoClaw v0.0.133 (#101): OpenClaw 2026.9.2, which loads the bundle's
+      # MCP servers (2026.7.1 loaded only its skills).
+      image: ghcr.io/validatedpatterns-sandbox/nemoclaw-sandbox:latest
+      providers:
+        - nvidia
+        - slack
+        - gmail
+      # The daily-briefing harness bundle (charts/saw-bom/harness, CI also
+      # publishes harness-bundles/daily-briefing as an image): the skill and
+      # two MCP servers that read Slack and Gmail through the providers
+      # above. Mounted read-only at /sandbox/harness; needs harnessEnabled on
+      # the user. The installer creates this NemoClaw sandbox itself (with
+      # the mount) instead of `nemoclaw onboard`. Asked to, the agent
+      # schedules a briefing update every 5 minutes.
+      harnessRef:
+        name: daily-briefing
+      # The sandbox is for this bundle: users of this profile get
+      # harnessEnabled without asking (saw-users, the portal).
+      harnessRequired: true
+      # The NemoClaw sandbox runs the OpenClaw gateway: its control UI gets
+      # its own route, <user>-personal-assistant-assistant-ui, behind an
+      # oauth2-proxy that signs in with Keycloak and admits only the owner.
+      ui:
+        route: true

@@ -53,6 +53,8 @@ test("the consequential set is the policy file, not the gate source", () => {
   const policy = parsePolicy(policyText);
   assert.deepEqual(policy.rules.map((rule) => rule.id), [
     "exec-consequential", "exec-git-status", "exec-git-diff", "exec-git-log", "exec-git-show",
+    "exec-briefing-cron-list", "exec-briefing-cron-change", "tool-search", "tool-call",
+    "slack-new-messages", "slack-channels", "gmail-new-messages", "briefing-save",
     "read", "memory-search", "memory-get", "session-status", "sessions-list", "sessions-history",
     "message-send", "saw-denied-tool",
   ]);
@@ -105,6 +107,48 @@ test("message sends require approval", () => {
   const decided = call({ toolName: "message", params: { action: "send" } });
   assert.equal(decided.effect.kind, "approval");
   assert.equal(decided.record.rule, "message-send");
+});
+
+test("briefing discovery and exact read/write targets have named allows", () => {
+  for (const toolName of ["tool_search", "tool_call", "slack-reader__new_messages",
+    "slack-reader__channels", "gmail-reader__new_messages", "briefing-writer__save_briefing"]) {
+    const result = call({ toolName, params: {} });
+    assert.equal(result.effect.kind, "allow", toolName);
+    assert.notEqual(result.record.rule, "default", toolName);
+  }
+  // Runtime evidence verifies OpenClaw re-enters the hook for the target;
+  // that second decision still denies every target without a named allow.
+  for (const toolName of ["write", "slack-reader__post_message", "gmail-reader__send_message",
+    "briefing-writer__write_file", "tool_search_code", "unknown-tool"]) {
+    const result = call({ toolName, params: {} });
+    assert.equal(result.effect.kind, "deny", toolName);
+    assert.equal(result.record.rule, "default", toolName);
+  }
+});
+
+test("briefing cron inspection is allowed but schedule changes require approval", () => {
+  assert.equal(call({ params: { command: "openclaw cron list --json" } }).record.rule,
+    "exec-briefing-cron-list");
+  for (const command of [
+    "openclaw cron add --name daily-briefing --every 5m --session isolated --message 'Update my daily briefing.'",
+    "openclaw cron rm job-id",
+  ]) {
+    const result = call({ params: { command } });
+    assert.equal(result.effect.kind, "approval", command);
+    assert.equal(result.record.rule, "exec-briefing-cron-change", command);
+  }
+  for (const command of ["openclaw cron run job-id", "openclaw cron listx", "openclaw cron rm-all"]) {
+    assert.equal(call({ params: { command } }).effect.kind, "deny", command);
+  }
+  for (const command of [
+    "openclaw cron add --name daily-briefing; rm -rf /",
+    "openclaw cron list --json && rm -rf /",
+    "sh -c 'openclaw cron add --name daily-briefing'",
+  ]) {
+    const result = call({ params: { command } });
+    assert.equal(result.effect.kind, "deny", command);
+    assert.equal(result.record.rule, "exec-opaque", command);
+  }
 });
 
 test("a call with no current task is blocked and still names the user", () => {

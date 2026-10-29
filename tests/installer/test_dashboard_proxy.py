@@ -41,3 +41,6 @@ def test_proxy_can_read_only_the_explicit_user_allowlist(tmp_path):
     proxy_env = (config / "dashboard-proxy.env").read_text()
     assert "OAUTH2_PROXY_AUTHENTICATED_EMAILS_FILE=/etc/saw/dashboard-users" in proxy_env
     assert "OAUTH2_PROXY_EMAIL_DOMAINS=" not in proxy_env
+    dashboard_env = (config / "dashboard.env").read_text().splitlines()
+    assert "ADMIN_ROLE=openshell-admin" in dashboard_env
+    assert "USER_ROLE=openshell-user" in dashboard_env

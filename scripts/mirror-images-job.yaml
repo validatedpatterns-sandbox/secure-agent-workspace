@@ -33,8 +33,20 @@ spec:
           TOKEN="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
           # Use the exact CI tag; a missing version must fail rather than use latest.
           echo "Copying ${MIRROR_REPO}/${MIRROR_IMAGE}:${MIRROR_TAG}"
-          skopeo copy --all --src-tls-verify=true --dest-tls-verify=false \
+          skopeo copy --all --src-tls-verify=true --dest-tls-verify=true \
+            --dest-cert-dir=/etc/registry-ca \
             --dest-creds="unused:${TOKEN}" \
             "docker://${MIRROR_REPO}/${MIRROR_IMAGE}:${MIRROR_TAG}" \
             "docker://image-registry.openshift-image-registry.svc:5000/${MIRROR_NAMESPACE}/${MIRROR_IMAGE}:${MIRROR_TAG}"
           echo "Mirror complete: ${MIRROR_IMAGE}:${MIRROR_TAG} -> ${MIRROR_IMAGE}:${MIRROR_TAG}"
+        volumeMounts:
+        - name: service-ca
+          mountPath: /etc/registry-ca
+          readOnly: true
+      volumes:
+      - name: service-ca
+        configMap:
+          name: openshift-service-ca.crt
+          items:
+          - key: service-ca.crt
+            path: ca.crt

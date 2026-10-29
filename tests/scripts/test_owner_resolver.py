@@ -1,10 +1,13 @@
 """The central resolver accepts one enabled exact Keycloak account."""
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
+# The resolver imports saw_tls from its own /scripts mount.
+sys.path.insert(0, str(ROOT / "charts/openshell-keycloak/files"))
 SCRIPT = ROOT / "charts/openshell-keycloak/files/owner-resolver.py"
 SPEC = importlib.util.spec_from_file_location("owner_resolver", SCRIPT)
 resolver = importlib.util.module_from_spec(SPEC)
@@ -86,6 +89,39 @@ def test_token_outage_sets_lookup_error(monkeypatch, tmp_path):
         resolver.run()
     assert kube.subject == ""
     assert kube.patches[0][1]["metadata"]["annotations"]["saw.redhat.com/owner-resolution"] == "lookup-error"
+
+
+def test_resolver_refuses_plaintext_before_sending_the_admin_credential(monkeypatch):
+    sent = []
+    monkeypatch.setattr(resolver.urllib.request, "build_opener", lambda *_: sent.append(1))
+    with pytest.raises(ValueError, match="HTTPS"):
+        resolver.request("http://keycloak.test/realms/master/protocol/openid-connect/token",
+                         "POST", form={"username": "admin", "password": "pw"})
+    assert sent == []
+
+
+def test_resolver_discovers_the_operators_https_route(monkeypatch):
+    paths = []
+
+    class Kube:
+        def call(self, path, method="GET", body=None):
+            paths.append(path)
+            if path.endswith("/routes"):
+                return {"items": [{"metadata": {"name": "sso-ingress"},
+                                   "spec": {"host": "sso.apps.example.com",
+                                            "to": {"name": "sso-service"},
+                                            "tls": {"termination": "edge"}}}]}
+            return {"spec": {"domain": "other.example.com"}}
+
+    monkeypatch.delenv("KC_URL", raising=False)
+    monkeypatch.delenv("CA_FILE", raising=False)
+    monkeypatch.setenv("KEYCLOAK_NAME", "sso")
+    monkeypatch.setenv("KEYCLOAK_NAMESPACE", "keycloak")
+    monkeypatch.setattr(resolver, "Kubernetes", Kube)
+    url, ctx = resolver.keycloak_endpoint()
+    assert url == "https://sso.apps.example.com"
+    assert ctx.verify_mode == resolver.ssl.CERT_REQUIRED and ctx.check_hostname
+    assert paths[0] == "/apis/route.openshift.io/v1/namespaces/keycloak/routes"
 
 
 def test_kubernetes_requests_use_rotated_service_account_token(monkeypatch, tmp_path):

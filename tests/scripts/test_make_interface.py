@@ -373,7 +373,7 @@ esac
     expected = [
         f"image mirror ghcr.io/validatedpatterns-sandbox/openshell-gateway:{tag} "
         f"registry.example/openshell-agents/openshell-gateway:{tag} "
-        "--insecure=true --keep-manifest-list=true"]
+        "--keep-manifest-list=true"]
     destinations = f"openshell-gateway:{tag}"
     if tag != "latest":
         expected.append(f"tag openshell-agents/openshell-gateway:{tag} openshell-agents/openshell-gateway:latest")

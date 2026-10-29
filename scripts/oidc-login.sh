@@ -17,12 +17,7 @@ OIDC_CA_BUNDLE="${OIDC_CA_BUNDLE:-}"
 NS="${NS:-saw-keycloak}"
 KEYCLOAK_REALM="${KEYCLOAK_REALM:-openshell}"
 
-# TLS verification: use --cacert when OIDC_CA_BUNDLE is set, --insecure otherwise.
-if [[ -n "${OIDC_CA_BUNDLE}" ]]; then
-  CURL_TLS_OPTS="--cacert ${OIDC_CA_BUNDLE}"
-else
-  CURL_TLS_OPTS="--insecure"
-fi
+source "${SCRIPT_DIR}/issuer-tls.sh"
 
 # --- Helper functions ---
 
@@ -49,9 +44,10 @@ auto_detect_issuer() {
 }
 
 discover_endpoints() {
+  saw_tls_init "${OIDC_ISSUER}" || return
   local well_known="${OIDC_ISSUER}/.well-known/openid-configuration"
   local config
-  config="$(curl -fsSL ${CURL_TLS_OPTS} --connect-timeout 5 --max-time 10 "${well_known}" 2>/dev/null)" \
+  config="$(curl -fsSL "${CURL_TLS_OPTS[@]}" --connect-timeout 5 --max-time 10 "${well_known}")" \
     || die "Failed to fetch OIDC discovery document from ${well_known}"
 
   AUTHORIZATION_ENDPOINT="$(echo "${config}" | jq -r '.authorization_endpoint // empty')"
@@ -75,6 +71,7 @@ generate_pkce() {
 
 do_browser_login() {
   [[ -n "${AUTHORIZATION_ENDPOINT}" ]] || die "Authorization endpoint not found"
+  saw_tls_check_url "${AUTHORIZATION_ENDPOINT}" || return
 
   generate_pkce
   local state
@@ -141,7 +138,7 @@ print(result["code"])
   [[ -n "${auth_code}" ]] || die "No authorization code received"
 
   local token_response
-  token_response="$(curl -fsSL ${CURL_TLS_OPTS} --connect-timeout 5 --max-time 10 -X POST "${TOKEN_ENDPOINT}" \
+  token_response="$(curl -fsSL "${CURL_TLS_OPTS[@]}" --connect-timeout 5 --max-time 10 -X POST "${TOKEN_ENDPOINT}" \
     -H "Content-Type: application/x-www-form-urlencoded" \
     -d "grant_type=authorization_code" \
     -d "client_id=${OIDC_CLIENT_ID}" \
@@ -158,11 +155,14 @@ print(result["code"])
 do_device_login() {
   [[ -n "${DEVICE_AUTHORIZATION_ENDPOINT}" ]] || die "Device authorization endpoint not found. The OIDC provider may not support the device code flow. Try: OIDC_FLOW=browser"
 
+  generate_pkce
   local device_response
-  device_response="$(curl -fsSL ${CURL_TLS_OPTS} --connect-timeout 5 --max-time 10 -X POST "${DEVICE_AUTHORIZATION_ENDPOINT}" \
+  device_response="$(curl -fsSL "${CURL_TLS_OPTS[@]}" --connect-timeout 5 --max-time 10 -X POST "${DEVICE_AUTHORIZATION_ENDPOINT}" \
     -H "Content-Type: application/x-www-form-urlencoded" \
     -d "client_id=${OIDC_CLIENT_ID}" \
     -d "scope=openid email profile" \
+    -d "code_challenge=${CODE_CHALLENGE}" \
+    -d "code_challenge_method=S256" \
     2>/dev/null)" || die "Device authorization request failed"
 
   local device_code user_code verification_uri interval
@@ -172,6 +172,7 @@ do_device_login() {
   interval="$(echo "${device_response}" | jq -r '.interval // 5')"
 
   [[ -n "${device_code}" ]] || die "No device code received"
+  saw_tls_check_url "${verification_uri}" || return
 
   echo ""
   echo "To sign in, open this URL in a browser:"
@@ -187,12 +188,14 @@ do_device_login() {
   while (( SECONDS < deadline )); do
     sleep "${interval}"
     local token_response
-    token_response="$(curl -fsSL ${CURL_TLS_OPTS} --connect-timeout 5 --max-time 10 -X POST "${TOKEN_ENDPOINT}" \
+    # OAuth pending/slow_down responses use HTTP 400; preserve their JSON body.
+    token_response="$(curl -sSL "${CURL_TLS_OPTS[@]}" --connect-timeout 5 --max-time 10 -X POST "${TOKEN_ENDPOINT}" \
       -H "Content-Type: application/x-www-form-urlencoded" \
       -d "grant_type=urn:ietf:params:oauth:grant-type:device_code" \
       -d "client_id=${OIDC_CLIENT_ID}" \
       -d "device_code=${device_code}" \
-      2>/dev/null)" || true
+      -d "code_verifier=${CODE_VERIFIER}" \
+      2>/dev/null)" || die "Token polling failed"
 
     local error
     error="$(echo "${token_response}" | jq -r '.error // empty' 2>/dev/null)"
@@ -263,7 +266,7 @@ do_refresh() {
   discover_endpoints
 
   local token_response
-  token_response="$(curl -fsSL ${CURL_TLS_OPTS} --connect-timeout 5 --max-time 10 -X POST "${TOKEN_ENDPOINT}" \
+  token_response="$(curl -fsSL "${CURL_TLS_OPTS[@]}" --connect-timeout 5 --max-time 10 -X POST "${TOKEN_ENDPOINT}" \
     -H "Content-Type: application/x-www-form-urlencoded" \
     -d "grant_type=refresh_token" \
     -d "client_id=${OIDC_CLIENT_ID}" \
@@ -366,7 +369,9 @@ do_logout() {
     refresh_token="$(jq -r '.refresh_token // empty' "${OIDC_TOKEN_FILE}")"
 
     if [[ -n "${stored_issuer}" && -n "${refresh_token}" ]]; then
-      if ! end_session_ep="$(curl -fsSL ${CURL_TLS_OPTS} --connect-timeout 2 --max-time 3 \
+      if ! saw_tls_init "${stored_issuer}"; then
+        revocation_rc=1
+      elif ! end_session_ep="$(curl -fsSL "${CURL_TLS_OPTS[@]}" --connect-timeout 2 --max-time 3 \
         "${stored_issuer}/.well-known/openid-configuration" \
         | jq -r '.end_session_endpoint // empty')"; then
         revocation_rc=1
@@ -377,7 +382,7 @@ do_logout() {
         printf 'client_id=%s&refresh_token=%s' \
           "$(jq -rn --arg v "${OIDC_CLIENT_ID}" '$v | @uri')" \
           "$(jq -rn --arg v "${refresh_token}" '$v | @uri')" > "${form_file}"
-        if ! curl -fsSL ${CURL_TLS_OPTS} --connect-timeout 2 --max-time 3 \
+        if ! curl -fsSL "${CURL_TLS_OPTS[@]}" --connect-timeout 2 --max-time 3 \
           -X POST "${end_session_ep}" \
           -H "Content-Type: application/x-www-form-urlencoded" \
           --data-binary "@${form_file}" >/dev/null; then

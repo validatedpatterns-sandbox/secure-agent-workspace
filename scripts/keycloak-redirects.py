@@ -30,8 +30,8 @@ Env: KEYCLOAK_NS (saw-keycloak), KEYCLOAK_NAME (openshell-keycloak),
 KEYCLOAK_REALM (openshell), DASHBOARD_CLIENT_ID (openshell-dashboard),
 NAMESPACE_SELECTOR (openshell.pattern/saw=true), ROUTE_SELECTOR
 (saw.redhat.com/oidc-redirect=true), HOST_SUFFIX (default: the ingress
-domain), WAIT (600), KEYCLOAK_CA (a CA bundle for Keycloak's certificate),
-KEYCLOAK_INSECURE (true: do not verify it; test clusters only).
+domain), WAIT (600), OIDC_CA_BUNDLE (an explicit CA bundle; KEYCLOAK_CA
+is also accepted). Cluster ingress CAs are discovered through oc.
 """
 import base64
 import json
@@ -40,10 +40,15 @@ import re
 import ssl
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "cli" / "src"))
+from openshell_saw import tls
 
 MANAGED_ATTRIBUTE = "saw.redhat.com/managed-redirects"
 PATH_ANNOTATION = "saw.redhat.com/oidc-redirect-path"
@@ -115,14 +120,22 @@ def wanted(routes, suffix, only_namespace=None):
 
 # -- Keycloak ------------------------------------------------------------------------------
 
-def tls_context():
-    ctx = ssl.create_default_context(cafile=os.environ.get("KEYCLOAK_CA") or None)
+def tls_context(url):
     if os.environ.get("KEYCLOAK_INSECURE") == "true":
-        ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
-    return ctx
+        raise Error("KEYCLOAK_INSECURE is no longer supported; set OIDC_CA_BUNDLE")
+    with tempfile.TemporaryDirectory(prefix="saw-redirect-ca-") as directory:
+        bundle = tls.prepare_ca_bundle(url, Path(directory) / "ca.pem",
+                                       os.environ.get("OIDC_CA_BUNDLE") or os.environ.get("KEYCLOAK_CA"))
+        return ssl.create_default_context(cafile=bundle)
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def call(url, method="GET", body=None, token=None, form=None, ctx=None):
+    tls.require_https(url)
     req = urllib.request.Request(url, method=method)
     data = None
     if form is not None:
@@ -134,7 +147,8 @@ def call(url, method="GET", body=None, token=None, form=None, ctx=None):
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, data=data, context=ctx, timeout=30) as resp:
+        opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx), NoRedirect())
+        with opener.open(req, data=data, timeout=30) as resp:
             raw = resp.read()
             return json.loads(raw) if raw else None
     except urllib.error.HTTPError as exc:
@@ -194,7 +208,7 @@ def keycloak():
     url = keycloak_url(ns, name)
     data = oc_json("get", "secret", f"{name}-initial-admin", "-n", ns).get("data") or {}
     user, password = (base64.b64decode(data.get(k, "")).decode() for k in ("username", "password"))
-    return Keycloak(url, env("KEYCLOAK_REALM", "openshell"), user, password, tls_context())
+    return Keycloak(url, env("KEYCLOAK_REALM", "openshell"), user, password, tls_context(url))
 
 
 # -- the client's lists ----------------------------------------------------------------------
@@ -337,7 +351,7 @@ def main(argv):
             return cmd_register(argv[2])
         if argv[1:2] == ["sync"]:
             return cmd_sync()
-    except Error as exc:
+    except (Error, OSError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     print(__doc__, file=sys.stderr)

@@ -52,6 +52,8 @@ def test_check_passes_for_a_configured_realm(kc):
     r = kc.run("keycloak-check.sh", KEYCLOAK_REALM="sso")
     assert r.returncode == 0, r.stdout
     assert "OIDC issuer: https://sso.example.com/realms/sso" in r.stdout
+    assert all(not any(a == "--insecure" or (a.startswith("-") and not a.startswith("--") and "k" in a)
+                       for a in c) for c in kc.calls("curl"))
 
 
 @pytest.mark.parametrize("realm, expect", [

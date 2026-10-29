@@ -128,8 +128,11 @@ redirectRegistrar:
   enabled: true
   image: registry.access.redhat.com/ubi9/python-311:latest
   clientId: saw-redirect-registrar
-  # Empty: http://<keycloak>-service.<namespace>.svc:8080 (in-cluster).
+  # Empty: discover the operator's <keycloak>-ingress HTTPS Route.
   keycloakUrl: ""
+  # Optional PEM CA for an external/private issuer. Otherwise use system
+  # trust plus the cluster ingress CA for hosts under its ingress domain.
+  caBundle: ""
   # Empty: <keycloak>-initial-admin (the operator's).
   adminSecret: ""
   namespaceSelector: openshell.pattern/saw=true
@@ -146,7 +149,11 @@ ownerResolver:
   name: saw-owner-resolver
   image: registry.access.redhat.com/ubi9/python-311:latest
   clientId: saw-owner-resolver
+  # Empty: discover the operator's <keycloak>-ingress HTTPS Route.
   keycloakUrl: ""
+  # Optional PEM CA for an external/private issuer. Otherwise use system
+  # trust plus the cluster ingress CA for hosts under its ingress domain.
+  caBundle: ""
   adminSecret: ""
   namespaceSelector: openshell.pattern/saw=true
   intervalSeconds: 30

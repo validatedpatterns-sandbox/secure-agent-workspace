@@ -28,10 +28,11 @@ if [[ -z "${registry}" ]]; then
   echo "Error: image registry route did not become available." >&2
   exit 1
 fi
-oc registry login --registry="${registry}" --insecure=true >/dev/null
+source "${script_dir}/registry-tls.sh"
+saw_registry_tls_init "${registry}"
+oc registry login --registry="${registry}" >/dev/null
 
-log="$(mktemp)"
-trap 'rm -f "${log}"' EXIT
+log="${REGISTRY_TLS_DIR}/mirror.log"
 for image in ${images}; do
   if [[ ! "${image}" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then
     echo "Error: invalid image name: ${image}." >&2
@@ -39,7 +40,7 @@ for image in ${images}; do
   fi
   if ! oc image mirror "${repo}/${image}:${version}" \
     "${registry}/${build_ns}/${image}:${version}" \
-    --insecure=true --keep-manifest-list=true >"${log}" 2>&1; then
+    "${REGISTRY_TLS_OPTS[@]}" --keep-manifest-list=true >"${log}" 2>&1; then
     cat "${log}" >&2
     echo "Error: image mirror failed for ${repo}/${image}:${version}. Check the tag and registry access." >&2
     exit 1

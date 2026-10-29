@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import secrets
+import tempfile
 import time
 import urllib.parse
 import webbrowser
@@ -13,18 +14,24 @@ from pathlib import Path
 import click
 import requests
 
-from . import helm, kube
+from . import helm, kube, tls
+
+
+def _request(method, url, ca_bundle=None, **kwargs):
+    with tempfile.TemporaryDirectory(prefix="saw-oidc-ca-") as directory:
+        bundle = tls.prepare_ca_bundle(url, Path(directory) / "ca.pem", ca_bundle)
+        return method(url, verify=bundle or True, allow_redirects=False, **kwargs)
 
 
 def _token_file(token_dir):
     return Path(token_dir) / "token.json"
 
 
-def _discover(issuer):
+def _discover(issuer, ca_bundle=None):
     """Fetch OIDC discovery document."""
     url = f"{issuer}/.well-known/openid-configuration"
     try:
-        r = requests.get(url, timeout=10, verify=False)
+        r = _request(requests.get, url, ca_bundle=ca_bundle, timeout=10)
         r.raise_for_status()
         return r.json()
     except Exception as e:
@@ -107,7 +114,7 @@ def auto_detect_issuer(issuer, namespace, token_dir, client_id, shared_namespace
     return None
 
 
-def login(issuer, namespace, client_id, flow, token_dir, callback_port=8400):
+def login(issuer, namespace, client_id, flow, token_dir, callback_port=8400, ca_bundle=None):
     """Perform OIDC login."""
     issuer = auto_detect_issuer(issuer, namespace, token_dir, client_id)
     if not issuer:
@@ -115,20 +122,21 @@ def login(issuer, namespace, client_id, flow, token_dir, callback_port=8400):
             "OIDC issuer not found. Set --issuer, deploy Keycloak, or deploy the gateway with OIDC."
         )
 
-    discovery = _discover(issuer)
+    discovery = _discover(issuer, ca_bundle)
     if flow == "browser":
-        _browser_login(issuer, discovery, client_id, token_dir, callback_port)
+        _browser_login(issuer, discovery, client_id, token_dir, callback_port, ca_bundle)
     elif flow in ("device-code", "device"):
-        _device_login(issuer, discovery, client_id, token_dir)
+        _device_login(issuer, discovery, client_id, token_dir, ca_bundle)
     else:
         raise click.ClickException(f"Unknown OIDC flow: {flow}. Use 'browser' or 'device-code'.")
 
 
-def _browser_login(issuer, discovery, client_id, token_dir, callback_port):
+def _browser_login(issuer, discovery, client_id, token_dir, callback_port, ca_bundle=None):
     auth_endpoint = discovery.get("authorization_endpoint")
     token_endpoint = discovery.get("token_endpoint")
     if not auth_endpoint or not token_endpoint:
         raise click.ClickException("Authorization or token endpoint not found in discovery.")
+    tls.require_https(auth_endpoint)
 
     verifier, challenge = _generate_pkce()
     state = secrets.token_hex(16)
@@ -153,8 +161,9 @@ def _browser_login(issuer, discovery, client_id, token_dir, callback_port):
     if not auth_code:
         raise click.ClickException("No authorization code received.")
 
-    resp = requests.post(
+    resp = _request(requests.post,
         token_endpoint,
+        ca_bundle=ca_bundle,
         data={
             "grant_type": "authorization_code",
             "client_id": client_id,
@@ -163,7 +172,6 @@ def _browser_login(issuer, discovery, client_id, token_dir, callback_port):
             "code_verifier": verifier,
         },
         timeout=10,
-        verify=False,
     )
     if resp.status_code != 200:
         raise click.ClickException(f"Token exchange failed: {resp.text}")
@@ -204,7 +212,7 @@ def _wait_for_callback(port):
     return code_holder.get("code")
 
 
-def _device_login(issuer, discovery, client_id, token_dir):
+def _device_login(issuer, discovery, client_id, token_dir, ca_bundle=None):
     device_endpoint = discovery.get("device_authorization_endpoint")
     token_endpoint = discovery.get("token_endpoint")
     if not device_endpoint:
@@ -212,11 +220,13 @@ def _device_login(issuer, discovery, client_id, token_dir):
             "Device authorization endpoint not found. Try --flow browser."
         )
 
-    resp = requests.post(
+    verifier, challenge = _generate_pkce()
+    resp = _request(requests.post,
         device_endpoint,
-        data={"client_id": client_id, "scope": "openid email profile"},
+        ca_bundle=ca_bundle,
+        data={"client_id": client_id, "scope": "openid email profile",
+              "code_challenge": challenge, "code_challenge_method": "S256"},
         timeout=10,
-        verify=False,
     )
     if resp.status_code != 200:
         raise click.ClickException(f"Device authorization failed: {resp.text}")
@@ -225,6 +235,7 @@ def _device_login(issuer, discovery, client_id, token_dir):
     device_code = data.get("device_code")
     user_code = data.get("user_code")
     verification_uri = data.get("verification_uri_complete") or data.get("verification_uri")
+    tls.require_https(verification_uri)
     interval = int(data.get("interval", 5))
 
     click.echo(f"\nTo sign in, open this URL:\n  {verification_uri}")
@@ -235,15 +246,16 @@ def _device_login(issuer, discovery, client_id, token_dir):
     deadline = time.time() + 600
     while time.time() < deadline:
         time.sleep(interval)
-        resp = requests.post(
+        resp = _request(requests.post,
             token_endpoint,
+            ca_bundle=ca_bundle,
             data={
                 "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
                 "client_id": client_id,
                 "device_code": device_code,
+                "code_verifier": verifier,
             },
             timeout=10,
-            verify=False,
         )
         body = resp.json()
         error = body.get("error", "")
@@ -284,7 +296,7 @@ def _save_token(response, issuer, token_dir):
     click.echo(f"Token saved to: {tf}")
 
 
-def get_token(token_dir, client_id=None, issuer=None):
+def get_token(token_dir, client_id=None, issuer=None, ca_bundle=None):
     """Get a valid access token, refreshing if needed. Returns the token string or None."""
     tf = _token_file(token_dir)
     if not tf.exists():
@@ -308,17 +320,17 @@ def get_token(token_dir, client_id=None, issuer=None):
         return None
 
     try:
-        discovery = _discover(stored_issuer)
+        discovery = _discover(stored_issuer, ca_bundle)
         token_endpoint = discovery.get("token_endpoint")
-        resp = requests.post(
+        resp = _request(requests.post,
             token_endpoint,
+            ca_bundle=ca_bundle,
             data={
                 "grant_type": "refresh_token",
                 "client_id": client_id or "openshell-cli",
                 "refresh_token": refresh_token,
             },
             timeout=10,
-            verify=False,
         )
         if resp.status_code == 200 and "access_token" in resp.json():
             _save_token(resp.json(), stored_issuer, token_dir)
@@ -365,7 +377,7 @@ def whoami(token_dir):
     click.echo(f"  Status:     {'valid' if is_valid else 'EXPIRED'}")
 
 
-def logout(token_dir, client_id, namespace):
+def logout(token_dir, client_id, namespace, ca_bundle=None):
     """Revoke OIDC token, clear local file, clear tokens from running VMs."""
     tf = _token_file(token_dir)
     if tf.exists():
@@ -378,17 +390,17 @@ def logout(token_dir, client_id, namespace):
         # Revoke at IdP
         if stored_issuer and refresh_token:
             try:
-                discovery = _discover(stored_issuer)
+                discovery = _discover(stored_issuer, ca_bundle)
                 end_session = discovery.get("end_session_endpoint")
                 if end_session:
-                    requests.post(
+                    _request(requests.post,
                         end_session,
+                        ca_bundle=ca_bundle,
                         data={
                             "client_id": client_id,
                             "refresh_token": refresh_token,
                         },
                         timeout=3,
-                        verify=False,
                     )
             except Exception:
                 pass

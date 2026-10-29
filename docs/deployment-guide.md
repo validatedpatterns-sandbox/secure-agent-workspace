@@ -85,14 +85,18 @@ RHBK operator deploys Keycloak. A `KeycloakRealmImport` creates the `openshell` 
 
 Every web UI has its own route host (each VM's dashboard, and each sandbox UI route), and Keycloak matches redirect URIs exactly apart from a trailing wildcard, so each host has to be registered on `openshell-dashboard`. The routes to register are labelled `saw.redhat.com/oidc-redirect=true` in namespaces labelled `openshell.pattern/saw=true`; their redirect URI is `https://<host>/oauth2/callback` and their web origin `https://<host>`. No pod in a SAW namespace holds Keycloak credentials for it.
 
-By default the redirect registrar registers them (`redirectRegistrar` in `openshell-keycloak`): one Deployment, `saw-redirect-registrar` in Keycloak's namespace, every 15 seconds adds the entries of routes it finds and removes those it added for routes that are gone from every SAW namespace. It keeps an entry while its route still exists (labelled or not), keeps entries it did not add (recorded in the client attribute `saw.redhat.com/managed-redirects`), and on its first run adopts the per-VM entries the prepare Jobs used to add. A failed route list removes nothing. It signs in as its own confidential client, `saw-redirect-registrar`, whose service account has only `manage-clients` in the OpenShell realm; its init container sets that client up with the operator's `<keycloak>-initial-admin` Secret and hands the client secret over in memory, so the registrar container never sees the master admin. It reads routes, namespaces and the ingress domain only, and reaches Keycloak in-cluster (`http://<keycloak>-service.<namespace>.svc:8080`; set `redirectRegistrar.keycloakUrl` for an existing Keycloak without HTTP, and `redirectRegistrar.adminSecret` for another admin Secret name). `manage-clients` still covers every client of the realm; Keycloak's fine-grained admin permissions could narrow it to `openshell-dashboard`.
+By default the redirect registrar registers them (`redirectRegistrar` in `openshell-keycloak`): one Deployment, `saw-redirect-registrar` in Keycloak's namespace, every 15 seconds adds the entries of routes it finds and removes those it added for routes that are gone from every SAW namespace. It keeps an entry while its route still exists (labelled or not), keeps entries it did not add (recorded in the client attribute `saw.redhat.com/managed-redirects`), and on its first run adopts the per-VM entries the prepare Jobs used to add. A failed route list removes nothing. It signs in as its own confidential client, `saw-redirect-registrar`, whose service account has only `manage-clients` in the OpenShell realm; its init container sets that client up with the operator's `<keycloak>-initial-admin` Secret and hands the client secret over in memory, so the registrar container never sees the master admin. It discovers the HTTPS host from the operator's `<keycloak>-ingress` Route and verifies its certificate. Its service account can read only `openshift-config-managed/default-ingress-cert` for ingress CA trust, alongside its existing route, namespace and ingress-domain reads. Set `redirectRegistrar.keycloakUrl` for a custom HTTPS Route, `redirectRegistrar.caBundle` for a private CA outside the cluster ingress domain, and `redirectRegistrar.adminSecret` for another admin Secret name. `manage-clients` still covers every client of the realm; Keycloak's fine-grained admin permissions could narrow it to `openshell-dashboard`.
 
 The Pattern also enables `saw-owner-resolver` in the Keycloak namespace. Its
 separate client has only `realm-management/view-users` in the OpenShell realm.
 It finds each existing account by the exact `users[].name` and writes its
 subject to a dedicated ConfigMap in that user's namespace. A namespaced Role
 permits only `get` and `patch` on that ConfigMap. No Keycloak admin Secret
-reaches a tenant namespace or VM. A missing, disabled, ambiguous, or
+reaches a tenant namespace or VM. Like the redirect registrar, it reaches
+Keycloak over the operator's `<keycloak>-ingress` HTTPS Route and verifies its
+certificate, instead of sending the admin credential over the plaintext
+Service; set `ownerResolver.keycloakUrl` for a custom HTTPS Route and
+`ownerResolver.caBundle` for a private CA outside the cluster ingress domain. A missing, disabled, ambiguous, or
 mismatched account gets no membership. The resolver records its state in the
 ConfigMap annotation `saw.redhat.com/owner-resolution`.
 
@@ -142,6 +146,30 @@ No workspace needs RBAC on `openshift-config-managed`, and nothing reads a priva
 - **Turning it off.** Set saw-users `defaults.clusterCaSecret: ""`, for example when the issuer is external or the cluster has a public certificate.
 
 ##### Setting oidc.caBundle
+
+The local Python CLI, `make login` (including refresh and logout), and the
+Keycloak deployment/check/user and manual redirect-registration scripts verify HTTPS certificates. For hosts
+under the current `oc` cluster's ingress domain, they read
+`openshift-config-managed/default-ingress-cert` through your existing `oc`
+session and combine its CA with system trust. They never fetch a trust anchor
+from the unverified issuer. If cluster metadata is unavailable, they use normal
+certificate verification; a private CA then needs an explicit bundle.
+
+For an external issuer, a custom ingress domain, or a caller without permission
+to read that ConfigMap, supply a PEM bundle:
+
+```bash
+make login OIDC_CA_BUNDLE="/path/to/issuer-ca.pem"
+OIDC_CA_BUNDLE="/path/to/issuer-ca.pem" make keycloak-add-users USERS_FILE=users.yaml
+openshell-saw login --ca-bundle "/path/to/issuer-ca.pem"
+```
+
+`OIDC_CA_BUNDLE` also works with the Python CLI. An explicit bundle takes
+precedence over cluster discovery. Missing or invalid bundles fail before a
+request is sent; certificate failures never trigger an insecure retry.
+Browser authorization and device verification URLs must also use HTTPS. The localhost callback remains HTTP.
+The browser must separately trust the issuer's certificate to complete its
+interactive sign-in. These local settings do not replace the VM settings below.
 
 1. **Get the CA.** For the cluster's own ingress CA:
 

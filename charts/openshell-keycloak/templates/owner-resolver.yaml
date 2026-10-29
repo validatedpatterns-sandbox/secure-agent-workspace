@@ -1,7 +1,10 @@
 {{- if .Values.ownerResolver.enabled }}
 {{- $r := .Values.ownerResolver }}
 {{- $kc := .Values.keycloak.existing | default .Values.keycloak.name }}
-{{- $url := $r.keycloakUrl | default (printf "http://%s-service.%s.svc:8080" $kc .Release.Namespace) }}
+{{- $url := $r.keycloakUrl | default "" }}
+{{- if and $url (not (hasPrefix "https://" $url)) }}
+{{- fail "ownerResolver.keycloakUrl must use HTTPS" }}
+{{- end }}
 {{- $name := $r.name }}
 apiVersion: v1
 kind: ServiceAccount
@@ -16,6 +19,60 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["list"]
+  # Read only: the CA that signs the ingress certificate.
+  - apiGroups: ["config.openshift.io"]
+    resources: ["ingresses"]
+    resourceNames: ["cluster"]
+    verbs: ["get"]
+---
+# Read only: the operator's HTTPS Route, so the admin credential is never
+# sent over the plaintext Service.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+rules:
+  - apiGroups: ["route.openshift.io"]
+    resources: ["routes"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-{{ .Release.Namespace }}
+  namespace: openshift-config-managed
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["default-ingress-cert"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-{{ .Release.Namespace }}
+  namespace: openshift-config-managed
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}-{{ .Release.Namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -35,6 +92,10 @@ kind: ConfigMap
 metadata:
   name: {{ $name }}
 data:
+  ca-bundle.crt: |
+{{ $r.caBundle | default "" | indent 4 }}
+  saw_tls.py: |
+{{ .Files.Get "files/saw_tls.py" | indent 4 }}
   owner-resolver.py: |
 {{ .Files.Get "files/owner-resolver.py" | indent 4 }}
 ---
@@ -54,7 +115,7 @@ spec:
       labels:
         app.kubernetes.io/name: {{ $name }}
       annotations:
-        checksum/script: {{ .Files.Get "files/owner-resolver.py" | sha256sum }}
+        checksum/script: {{ print (.Files.Get "files/owner-resolver.py") (.Files.Get "files/saw_tls.py") ($r.caBundle | default "") | sha256sum }}
     spec:
       serviceAccountName: {{ $name }}
       securityContext:
@@ -68,6 +129,14 @@ spec:
           env:
             - name: KC_URL
               value: {{ $url | quote }}
+            - name: KEYCLOAK_NAME
+              value: {{ $kc | quote }}
+            - name: KEYCLOAK_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            {{- if $r.caBundle }}
+            - name: CA_FILE
+              value: /scripts/ca-bundle.crt
+            {{- end }}
             - name: REALM
               value: {{ .Values.keycloak.realm | quote }}
             - name: CLIENT_ID
@@ -95,6 +164,14 @@ spec:
           env:
             - name: KC_URL
               value: {{ $url | quote }}
+            - name: KEYCLOAK_NAME
+              value: {{ $kc | quote }}
+            - name: KEYCLOAK_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            {{- if $r.caBundle }}
+            - name: CA_FILE
+              value: /scripts/ca-bundle.crt
+            {{- end }}
             - name: REALM
               value: {{ .Values.keycloak.realm | quote }}
             - name: CLIENT_ID

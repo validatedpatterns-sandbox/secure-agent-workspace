@@ -744,6 +744,15 @@ def test_egress_rejects_unsafe_hosts(host):
 
 # -- installer ConfigMap -----------------------------------------------------
 
+@pytest.mark.parametrize("settings", [(), PATTERN_SAW_SETTINGS], ids=["standalone", "multi-user"])
+@pytest.mark.parametrize("skip", [None, True], ids=["secure-default", "explicit-override"])
+def test_rendered_proxies_verify_issuer_tls_by_default(settings, skip):
+    override = ("--set", "dashboard.insecureSkipIssuerTlsVerify=true") if skip else ()
+    config = json.loads(installer_data(render(*settings, *override))["config.json"])
+    for proxy in ("dashboard", "sandboxUiProxy"):
+        assert config[proxy]["insecureSkipTlsVerify"] is bool(skip)
+
+
 def test_installer_configmap_ships_the_real_files(default_docs, ab):
     data = installer_data(default_docs)
     assert data["apply_bom.py"] == (CHART / "files" / "installer" / "apply_bom.py").read_text()

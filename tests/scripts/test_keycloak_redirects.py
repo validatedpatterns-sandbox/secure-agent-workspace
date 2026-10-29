@@ -12,6 +12,8 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from keycloak_tls import keycloak_tls  # noqa: F401
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "keycloak-redirects.py"
 SUFFIX = ".apps.example.com"
@@ -28,7 +30,7 @@ class FakeKeycloak:
                        "attributes": {"pkce.code.challenge.method": "S256"}}
         self.puts, self.logins = [], []
 
-    def serve(self):
+    def serve(self, tls_context):
         kc = self
 
         class H(BaseHTTPRequestHandler):
@@ -75,8 +77,9 @@ class FakeKeycloak:
                 pass
 
         server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        server.socket = tls_context.wrap_socket(server.socket, server_side=True)
         threading.Thread(target=server.serve_forever, daemon=True).start()
-        return server, f"http://127.0.0.1:{server.server_address[1]}"
+        return server, f"https://127.0.0.1:{server.server_address[1]}"
 
 
 def route(ns, host, labelled=True, path=None):
@@ -122,16 +125,18 @@ class FakeOc:
 
 
 @pytest.fixture
-def world(monkeypatch):
+def world(monkeypatch, keycloak_tls):
     spec = importlib.util.spec_from_file_location("keycloak_redirects", SCRIPT)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     kc = FakeKeycloak()
-    server, url = kc.serve()
+    context, ca = keycloak_tls
+    server, url = kc.serve(context)
     oc = FakeOc(url)
     monkeypatch.setattr(mod, "oc_json", oc)
     for k in ("HOST_SUFFIX", "WAIT", "KEYCLOAK_CA", "KEYCLOAK_INSECURE"):
         monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("OIDC_CA_BUNDLE", str(ca))
     yield mod, kc, oc
     server.shutdown()
 
@@ -155,6 +160,51 @@ def test_register_adds_one_users_web_uis(world, capsys):
     assert kc.logins == [{"grant_type": "password", "client_id": "admin-cli", "username": "admin", "password": "pw"}]
     assert mod.main(["x", "register", "alice"]) == 0
     assert len(kc.puts) == 1, "registering again changes nothing"
+
+
+def test_manual_registration_uses_shared_oidc_trust(world, monkeypatch):
+    import os
+    from openshell_saw import tls
+    mod, _, oc = world
+    oc.keycloak_cr = {"status": {"externalURL": "https://kc.apps.example.com"}}
+    seen = []
+
+    def prepare(url, destination, ca_bundle=None):
+        seen.append((url, ca_bundle))
+        return None
+
+    monkeypatch.setattr(tls, "prepare_ca_bundle", prepare)
+    monkeypatch.setattr(mod, "call", lambda *args, **kwargs: {"access_token": "token"})
+    mod.keycloak()
+    assert seen == [("https://kc.apps.example.com", os.environ["OIDC_CA_BUNDLE"])]
+
+
+def test_manual_registration_refuses_http_before_sending_credentials(world):
+    mod, kc, oc = world
+    oc.keycloak_cr["status"]["externalURL"] = oc.url.replace("https://", "http://")
+    with pytest.raises((ValueError, mod.Error), match="HTTPS"):
+        mod.keycloak()
+    assert kc.logins == []
+
+
+@pytest.mark.parametrize("trust", ["missing", "wrong-host", "legacy"])
+def test_manual_registration_checks_real_certificates(world, monkeypatch, trust):
+    mod, kc, oc = world
+    if trust == "legacy":
+        import os
+        monkeypatch.setenv("KEYCLOAK_CA", os.environ["OIDC_CA_BUNDLE"])
+    if trust in ("missing", "legacy"):
+        monkeypatch.delenv("OIDC_CA_BUNDLE")
+    if trust == "wrong-host":
+        oc.keycloak_cr["status"]["externalURL"] = oc.url.replace("127.0.0.1", "localhost")
+    monkeypatch.setattr(mod.tls, "_oc_json", lambda *args: {})
+    if trust == "legacy":
+        mod.keycloak()
+        assert len(kc.logins) == 1
+    else:
+        with pytest.raises(mod.Error, match="CERTIFICATE_VERIFY_FAILED"):
+            mod.keycloak()
+        assert kc.logins == []
 
 
 def test_register_keeps_what_is_there(world):

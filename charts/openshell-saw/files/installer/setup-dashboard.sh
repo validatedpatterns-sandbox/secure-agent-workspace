@@ -53,6 +53,7 @@ OPENSHELL_GATEWAY_URL=grpcs://localhost:17670
 GATEWAY_CA_CERT=/tls/ca.crt
 AUTH_DISABLED=false
 ADMIN_ROLE=openshell-admin
+USER_ROLE=openshell-user
 ENVEOF
 
 # The issuer CA (oidc.caBundle / oidc.clusterCaSecret), when one is

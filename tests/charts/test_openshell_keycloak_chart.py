@@ -173,7 +173,20 @@ def test_owner_resolver_has_read_only_cluster_role_and_separate_client():
     docs = render("--set", "ownerResolver.enabled=true")
     role = next(d for d in docs if d["kind"] == "ClusterRole" and
                 d["metadata"]["name"].startswith("saw-owner-resolver"))
-    assert role["rules"] == [{"apiGroups": [""], "resources": ["namespaces"], "verbs": ["list"]}]
+    assert role["rules"] == [
+        {"apiGroups": [""], "resources": ["namespaces"], "verbs": ["list"]},
+        {"apiGroups": ["config.openshift.io"], "resources": ["ingresses"],
+         "resourceNames": ["cluster"], "verbs": ["get"]},
+    ]
+    # Verified HTTPS to Keycloak, not the plaintext Service: the Route and the
+    # CA that signs it, read-only and namespaced.
+    namespaced = {(d["metadata"].get("namespace"), rule["resources"][0]): rule
+                  for d in docs if d["kind"] == "Role"
+                  and d["metadata"]["name"].startswith("saw-owner-resolver")
+                  for rule in d["rules"]}
+    assert namespaced[(None, "routes")]["verbs"] == ["list"]
+    ca = namespaced[("openshift-config-managed", "configmaps")]
+    assert ca["resourceNames"] == ["default-ingress-cert"] and ca["verbs"] == ["get"]
     deployment = next(d for d in docs if d["kind"] == "Deployment" and
                       d["metadata"]["name"] == "saw-owner-resolver")
     pod = deployment["spec"]["template"]["spec"]
@@ -209,7 +222,7 @@ def env_of(container):
 def test_the_registrar_runs_in_keycloaks_namespace_with_its_own_client():
     pod = registrar(render("--set", "redirectRegistrar.enabled=true"))
     (init,), (main,) = pod["initContainers"], pod["containers"]
-    assert env_of(init)["KC_URL"] == env_of(main)["KC_URL"] == "http://openshell-keycloak-service.keycloak.svc:8080"
+    assert env_of(init)["KC_URL"] == env_of(main)["KC_URL"] == ""
     assert env_of(main)["DASHBOARD_CLIENT_ID"] == "openshell-dashboard"
     assert env_of(main)["CLIENT_ID"] == env_of(init)["CLIENT_ID"] == "saw-redirect-registrar"
     assert env_of(main)["NAMESPACE_SELECTOR"] == "openshell.pattern/saw=true"
@@ -239,12 +252,15 @@ def test_the_registrar_may_only_read_routes_and_namespaces():
     (binding,) = [d for d in docs if d["kind"] == "ClusterRoleBinding"]
     assert binding["subjects"] == [{"kind": "ServiceAccount", "name": "saw-redirect-registrar",
                                     "namespace": "keycloak"}]
-    assert not [d for d in docs if d["kind"] in ("Role", "RoleBinding")]
+    (role,) = [d for d in docs if d["kind"] == "Role"]
+    assert role["metadata"]["namespace"] == "openshift-config-managed"
+    assert role["rules"][0]["resourceNames"] == ["default-ingress-cert"]
 
 
 def test_an_existing_keycloak_is_reached_by_its_own_name():
     pod = registrar(render("--set", "redirectRegistrar.enabled=true", "--set", "keycloak.existing=sso"))
-    assert env_of(pod["containers"][0])["KC_URL"] == "http://sso-service.keycloak.svc:8080"
+    assert env_of(pod["containers"][0])["KC_URL"] == ""
+    assert env_of(pod["containers"][0])["KEYCLOAK_NAME"] == "sso"
     assert any(v.get("secret", {}).get("secretName") == "sso-initial-admin" for v in pod["volumes"])
     pod = registrar(render("--set", "redirectRegistrar.enabled=true", "--set", "keycloak.existing=sso", "--set", "redirectRegistrar.adminSecret=sso-admin",
                            "--set", "redirectRegistrar.keycloakUrl=https://sso.example.com"))
@@ -256,3 +272,31 @@ def test_the_registrar_script_is_shipped_byte_for_byte():
     docs = render("--set", "redirectRegistrar.enabled=true")
     (cm,) = [d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "saw-redirect-registrar"]
     assert cm["data"]["redirect-registrar.py"] == (CHART / "files" / "redirect-registrar.py").read_text()
+
+
+def test_registrar_never_defaults_to_cleartext_and_can_read_only_ingress_ca():
+    docs = render()
+    pod = registrar(docs)
+    for container in pod["initContainers"] + pod["containers"]:
+        assert not env_of(container)["KC_URL"].startswith("http://")
+        assert env_of(container)["KEYCLOAK_NAME"] == "openshell-keycloak"
+        assert env_of(container)["KEYCLOAK_NAMESPACE"] == "keycloak"
+    (role,) = [d for d in docs if d["kind"] == "Role" and
+               d["metadata"].get("namespace") == "openshift-config-managed"]
+    assert role["rules"] == [{"apiGroups": [""], "resources": ["configmaps"],
+                               "resourceNames": ["default-ingress-cert"], "verbs": ["get"]}]
+
+
+def test_registrar_custom_ca_reaches_both_containers():
+    docs = render("--set-string", "redirectRegistrar.caBundle=custom-ca")
+    pod = registrar(docs)
+    for container in pod["initContainers"] + pod["containers"]:
+        assert env_of(container)["CA_FILE"] == "/scripts/ca-bundle.crt"
+    (cm,) = [d for d in docs if d["kind"] == "ConfigMap"]
+    assert cm["data"]["ca-bundle.crt"].strip() == "custom-ca"
+
+
+def test_registrar_http_override_is_rejected():
+    result = helm("--set", "redirectRegistrar.keycloakUrl=http://sso.example.com")
+    assert result.returncode != 0
+    assert "must use HTTPS" in result.stderr

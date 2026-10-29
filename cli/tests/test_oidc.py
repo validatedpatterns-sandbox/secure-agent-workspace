@@ -4,7 +4,14 @@ import json
 import time
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from openshell_saw import oidc
+
+
+@pytest.fixture(autouse=True)
+def no_live_cluster(monkeypatch):
+    monkeypatch.setattr(oidc.tls, "_oc_json", lambda *args: {})
 
 
 class TestDecodeJwtPayload:
@@ -118,8 +125,97 @@ class TestLogout:
         }))
         with (
             patch("openshell_saw.oidc._discover", return_value={"end_session_endpoint": "https://issuer/logout"}),
-            patch("requests.post"),
+            patch("requests.post") as post,
             patch("openshell_saw.helm.list_sandboxes", return_value=[]),
         ):
             oidc.logout(str(tmp_path), "client", "ns")
         assert not token_file.exists()
+        assert post.call_args.kwargs["verify"] is not False
+
+
+def test_discovery_verifies_tls():
+    with patch("requests.get") as get:
+        oidc._discover("https://external.test")
+    assert get.call_args.kwargs["verify"] is not False
+
+
+def test_device_authorization_and_poll_verify_tls(tmp_path):
+    import base64
+    import hashlib
+
+    with patch("requests.post") as post, patch.object(oidc.time, "sleep"):
+        post.side_effect = [
+            MagicMock(status_code=200, json=lambda: {"device_code": "code", "interval": 0,
+                                                    "verification_uri": "https://external.test/verify"}),
+            MagicMock(json=lambda: {"access_token": "tok", "expires_in": 300}),
+        ]
+        oidc._device_login("https://external.test", {
+            "device_authorization_endpoint": "https://external.test/device",
+            "token_endpoint": "https://external.test/token",
+        }, "client", str(tmp_path))
+    assert all(call.kwargs["verify"] is not False for call in post.call_args_list)
+    authorization, poll = [call.kwargs["data"] for call in post.call_args_list]
+    assert authorization["code_challenge_method"] == "S256"
+    verifier = poll["code_verifier"]
+    expected = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    assert authorization["code_challenge"] == expected
+
+
+def test_browser_token_exchange_verifies_tls(tmp_path):
+    with patch("requests.post") as post, patch.object(oidc, "_wait_for_callback", return_value="code"), \
+            patch.object(oidc.webbrowser, "open"):
+        post.return_value = MagicMock(status_code=200, json=lambda: {"access_token": "tok"})
+        oidc._browser_login("https://external.test", {
+            "authorization_endpoint": "https://external.test/auth",
+            "token_endpoint": "https://external.test/token",
+        }, "client", str(tmp_path), 8400)
+    assert post.call_args.kwargs["verify"] is not False
+
+
+def test_refresh_verifies_tls(tmp_path):
+    (tmp_path / "token.json").write_text(json.dumps({
+        "refresh_token": "ref", "issuer_url": "https://external.test", "saved_at": 0,
+    }))
+    with patch("requests.get") as get, patch("requests.post") as post:
+        get.return_value.json.return_value = {"token_endpoint": "https://external.test/token"}
+        post.return_value = MagicMock(status_code=200, json=lambda: {"access_token": "new"})
+        assert oidc.get_token(str(tmp_path)) == "new"
+    assert get.call_args.kwargs["verify"] is not False
+    assert post.call_args.kwargs["verify"] is not False
+
+
+def test_login_ca_option_reaches_oidc(tmp_path):
+    from click.testing import CliRunner
+    from openshell_saw.cli import main
+
+    ca = tmp_path / "custom CA.pem"
+    ca.write_text("configured by the caller")
+    with patch.object(oidc, "login") as login:
+        result = CliRunner().invoke(main, ["login", "--ca-bundle", str(ca)])
+    assert result.exit_code == 0, result.output
+    assert login.call_args.kwargs["ca_bundle"] == str(ca)
+
+
+@pytest.mark.parametrize("url", ["http://issuer.test/auth", "https://user:pass@issuer.test/auth"])
+def test_browser_rejects_unsafe_authorization_url(tmp_path, url):
+    with patch.object(oidc.webbrowser, "open") as browser, \
+            patch.object(oidc, "_wait_for_callback", return_value=None):
+        with pytest.raises(ValueError, match="HTTPS"):
+            oidc._browser_login("https://issuer.test", {
+                "authorization_endpoint": url, "token_endpoint": "https://issuer.test/token",
+            }, "client", str(tmp_path), 8400)
+        browser.assert_not_called()
+
+
+def test_device_rejects_http_verification_url(tmp_path, capsys):
+    response = MagicMock(status_code=200, json=lambda: {
+        "device_code": "code", "verification_uri": "http://issuer.test/verify",
+    })
+    with patch("requests.post", return_value=response) as post:
+        with pytest.raises(ValueError, match="HTTPS"):
+            oidc._device_login("https://issuer.test", {
+                "device_authorization_endpoint": "https://issuer.test/device",
+                "token_endpoint": "https://issuer.test/token",
+            }, "client", str(tmp_path))
+        assert post.call_count == 1
+    assert "http://issuer.test/verify" not in capsys.readouterr().out

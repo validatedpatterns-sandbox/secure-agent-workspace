@@ -8,6 +8,7 @@ NS="${KEYCLOAK_NS:-saw-keycloak}"
 CHART="${KEYCLOAK_CHART:-charts/openshell-keycloak}"
 REALM="${KEYCLOAK_REALM:-openshell}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${SCRIPT_DIR}/issuer-tls.sh"
 # yes/no: use a Keycloak already running in NS (asked interactively if unset).
 USE_EXISTING="${USE_EXISTING_KEYCLOAK:-}"
 DEMO_ENABLED="${DEMO_ENABLED:-false}"
@@ -63,7 +64,8 @@ if [[ -n "${existing}" && -z "${ours}" ]]; then
     exit 1
   fi
   host="$("${SCRIPT_DIR}/keycloak-host.sh" "${NS}")"
-  discovery_status="$(curl -sk --max-time 15 -o /dev/null -w '%{http_code}' \
+  saw_tls_init "https://${host}" || exit 1
+  discovery_status="$(curl -sS "${CURL_TLS_OPTS[@]}" --max-time 15 -o /dev/null -w '%{http_code}' \
     "https://${host}/realms/${REALM}/.well-known/openid-configuration")"
   if [[ "${discovery_status}" == 200 ]]; then
     echo "Error: realm '${REALM}' already exists on '${existing}' but is not configured for OpenShell" >&2

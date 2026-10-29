@@ -119,7 +119,7 @@ Before installing, `make check-oidc-ca` tells you which case you are in. It look
 `make prereqs-check` also runs this CA check as a warning. It does not change
 the cluster, but the CA check can save `ingress-ca.pem` in the current directory.
 
-To check from inside a VM (`make openshell-saw-vm-ssh` or `virtctl ssh`):
+To check from inside a VM (`make saw-vm-ssh` or `virtctl ssh`):
 
 ```bash
 curl -sS -o /dev/null -w '%{http_code}\n' <issuer>/.well-known/openid-configuration
@@ -155,7 +155,7 @@ No workspace needs RBAC on `openshift-config-managed`, and nothing reads a priva
    - Validated pattern, every user: put it under `defaults.openshellSaw.oidc.caBundle` (a literal block, `caBundle: |`) in the saw-users values.
    - Validated pattern, one user: put it under that user's `values.oidc.caBundle` in `overrides/saw-users.yaml`.
      A user's `values` are admin input: whoever can change `overrides/saw-users.yaml` decides which CA that user's gateway and proxies trust, and can also turn off the proxies' verification (`dashboard.insecureSkipIssuerTlsVerify`). Treat write access to that file like admin access to those workspaces. The self-service portal never writes `values`.
-   - Quickstart, after `make -f Makefile-quickstart openshell-saw-create`: `helm upgrade <name> charts/openshell-saw -n <namespace> --reuse-values --set-file oidc.caBundle=ingress-ca.pem`.
+   - Quickstart, after `make saw-create`: `helm upgrade <name> charts/openshell-saw -n <namespace> --reuse-values --set-file oidc.caBundle=ingress-ca.pem`.
 
 3. **Restart the VM** so it reads the new config: `virtctl restart <user> -n saw-<user>`. On boot, the installer writes the issuer trust files described above and restarts the gateway. The console log shows `Trusting the issuer CA (N certificate(s)) for the gateway and the oauth2-proxies only`, then `install: Done`. Emptying the setting removes the files again.
 

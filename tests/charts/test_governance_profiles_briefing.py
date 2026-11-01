@@ -35,7 +35,8 @@ def test_read_only_and_reachable_from_node(name):
 
 @pytest.mark.ci_external
 @pytest.mark.parametrize("name, paths", [
-    ("slack", ["/api/conversations.list", "/api/conversations.history", "/api/users.info"]),
+    ("slack", ["/api/conversations.list", "/api/conversations.history",
+               "/api/conversations.replies", "/api/users.info"]),
     ("gmail", ["/gmail/v1/users/me/messages", "/gmail/v1/users/me/messages/18c2f0a1b2c3d4e5"])])
 def test_the_briefing_readers_calls_are_allowed(name, paths):
     # OpenShell drops the query string and glob-matches the path; '*' stays

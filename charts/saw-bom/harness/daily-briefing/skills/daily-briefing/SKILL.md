@@ -29,6 +29,9 @@ credentials.
    - `## Needs attention`: direct asks, questions to the user, deadlines,
      unread email from people (not newsletters). At most 7 bullets.
    - `## Slack`: per channel, 1–3 bullets summarizing the discussion.
+     A reply has `in_thread` (the start of its thread's first message):
+     summarize it with that discussion, even if the thread started on an
+     earlier day.
    - `## Email`: one bullet per relevant email (sender, subject, gist);
      group newsletters and notifications into one line.
    - `## Sources`: a tool that returned an error, with its message as is.

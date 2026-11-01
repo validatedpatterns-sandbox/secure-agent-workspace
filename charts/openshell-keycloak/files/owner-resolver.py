@@ -204,9 +204,9 @@ def run():
     if not 5 <= interval <= 300:
         raise ValueError("INTERVAL must be 5 to 300 seconds")
     kube = Kubernetes()
-    url, ctx = keycloak_endpoint()
     while True:
         try:
+            url, ctx = keycloak_endpoint()
             with open(os.environ["SECRET_FILE"], encoding="utf-8") as stream:
                 secret = stream.read().strip()
             token = keycloak_token(url, realm, {"grant_type": "client_credentials",

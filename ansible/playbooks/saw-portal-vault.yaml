@@ -8,6 +8,7 @@
   gather_facts: false
   vars:
     vault_addr: https://vault.vault.svc:8200
+    vault_ca: /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt
     keys_ns: imperative
     auth_mount: hub
     kv_mount: secret
@@ -16,6 +17,19 @@
     portal_ns: saw-portal
     portal_sa: saw-portal-provisioner
   tasks:
+    - name: The service CA to verify Vault with
+      ansible.builtin.stat:
+        path: "{{ vault_ca }}"
+      register: vault_ca_file
+
+    - name: Refuse to send the root token to an unverified Vault
+      ansible.builtin.fail:
+        msg: >-
+          {{ vault_ca }} is missing, so Vault's certificate cannot be verified;
+          not sending the root token. Mount ConfigMap openshift-service-ca.crt
+          (key service-ca.crt) at that path.
+      when: not vault_ca_file.stat.exists
+
     - name: Read the Vault root token
       kubernetes.core.k8s_info:
         kind: Secret
@@ -49,7 +63,8 @@
               capabilities = ["read", "list", "delete"]
             }
         status_code: [200, 204]
-        validate_certs: false
+        validate_certs: true
+        ca_path: "{{ vault_ca }}"
       no_log: true
 
     - name: Kubernetes auth role {{ role }}
@@ -65,5 +80,6 @@
           policies: ["{{ role }}"]
           ttl: 15m
         status_code: [200, 204]
-        validate_certs: false
+        validate_certs: true
+        ca_path: "{{ vault_ca }}"
       no_log: true

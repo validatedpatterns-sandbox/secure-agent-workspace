@@ -7,6 +7,8 @@ import base64
 import importlib.util
 import json
 import os
+import ssl
+import subprocess
 import sys
 import threading
 import time
@@ -36,6 +38,53 @@ def portal():
     sys.modules["portal"] = module
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize("trust,host,status,ready", [
+    (True, "127.0.0.1", 200, True),
+    (False, "127.0.0.1", 200, False),
+    (True, "localhost", 200, False),
+    (True, "127.0.0.1", 401, True),
+    (True, "127.0.0.1", 503, False),
+])
+def test_readiness_checks_ingress_certificate_and_hostname(portal, tmp_path, monkeypatch,
+                                                         trust, host, status, ready):
+    ca, key = tmp_path / "ca.pem", tmp_path / "key.pem"
+    subprocess.run([
+        "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2",
+        "-subj", "/CN=Portal test CA", "-keyout", str(key), "-out", str(ca),
+        "-addext", "subjectAltName=IP:127.0.0.1",
+        "-addext", "basicConstraints=critical,CA:TRUE",
+    ], check=True, capture_output=True)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(ca, key)
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            self.send_response(status)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+    if trust:
+        monkeypatch.setenv("SSL_CERT_FILE", str(ca))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        assert portal.ping_url(f"https://{host}:{server.server_port}") is ready
+        if not trust or host == "localhost":
+            assert not requests, "an untrusted peer must not receive an HTTP request"
+    finally:
+        server.shutdown()
+        worker.join()
+        server.server_close()
 
 
 def b64u(raw):

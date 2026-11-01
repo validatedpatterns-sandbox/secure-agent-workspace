@@ -158,7 +158,7 @@ def test_portal_workspaces_without_governance_keep_the_default(docs):
 @pytest.mark.ci_external
 def test_the_pipeline_task_runs_portal_py(docs):
     task = one(docs, "Task", "saw-workspace")
-    step = task["spec"]["steps"][0]
+    step = next(s for s in task["spec"]["steps"] if s["name"] == "run")
     assert step["command"] == ["python3", "/opt/saw/portal.py", "$(params.action)", "$(params.arg)",
                                "$(params.timeout)"]
     assert [r["name"] for r in task["spec"]["results"]] == ["user"]
@@ -457,7 +457,7 @@ def test_admins_get_templates_for_another_user():
     targets = [loc["target"] for loc in config["catalog"]["locations"]]
     assert "/opt/app-root/src/saw/create-workspace-for-user.yaml" in targets
     task = one(docs, "Task", "saw-workspace")
-    env = {e["name"]: e["value"] for e in task["spec"]["steps"][0]["env"]}
+    env = {e["name"]: e["value"] for e in next(s for s in task["spec"]["steps"] if s["name"] == "run")["env"]}
     assert env["PORTAL_ADMINS"] == "admin"
     none = render("--set", "portal.admins=null")
     assert "create-workspace-for-user.yaml" not in one(none, "ConfigMap", "saw-rhdh-templates")["data"]
@@ -481,12 +481,31 @@ def _envs(container):
     return {e["name"]: e.get("value") for e in container.get("env", [])}
 
 
+@pytest.mark.ci_external
+@pytest.mark.parametrize("rbac", ["true", "false"])
+def test_readiness_uses_the_ingress_ca_in_generator_and_pipeline(rbac):
+    docs = render("--set", f"rhdh.rbac.enabled={rbac}")
+    generator = one(docs, "Deployment", "saw-workspaces-generator")["spec"]["template"]["spec"]
+    task = one(docs, "Task", "saw-workspace")["spec"]
+    run = next(s for s in task["steps"] if s["name"] == "run")
+    for container in (generator["containers"][0], run):
+        assert _envs(container)["SSL_CERT_FILE"] == "/opt/saw-ca/ca-bundle.crt"
+        assert {"name": "saw-ca", "mountPath": "/opt/saw-ca", "readOnly": True} in container["volumeMounts"]
+    init = task["steps"][0]
+    assert init["name"] == "saw-ca-bundle"
+    expected = dict(generator["initContainers"][0])
+    expected["computeResources"] = expected.pop("resources")
+    assert init == expected
+    ca_volumes = [v for v in generator["volumes"] if v["name"].startswith("saw-")]
+    assert all(v in task["volumes"] for v in ca_volumes)
+
+
 def tls_settings(docs):
     backstage = next(d for d in docs if d["kind"] == "Backstage")
     config = yaml.safe_load(one(docs, "ConfigMap", "saw-rhdh-app-config")["data"]["app-config-saw.yaml"])
     generator = one(docs, "Deployment", "saw-workspaces-generator")["spec"]["template"]["spec"]
     job = one(docs, "Job", "saw-rhdh-keycloak-client")["spec"]["template"]["spec"]
-    task = one(docs, "Task", "saw-workspace")["spec"]["steps"][0]
+    task = next(s for s in one(docs, "Task", "saw-workspace")["spec"]["steps"] if s["name"] == "run")
     return {
         "node": {e["name"]: e["value"] for e in backstage["spec"]["application"]["extraEnvs"]["envs"]},
         "patch": (backstage["spec"].get("deployment") or {}).get("patch"),

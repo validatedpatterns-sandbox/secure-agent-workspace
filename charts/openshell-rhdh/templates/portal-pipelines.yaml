@@ -34,7 +34,13 @@ spec:
     - name: scripts
       configMap:
         name: saw-portal-scripts
+    {{- include "openshell-rhdh.caVolumes" . | nindent 4 }}
   steps:
+    {{- /* Reuse the pod's CA builder; Tekton calls resources computeResources. */}}
+    {{- $ca := include "openshell-rhdh.caInitContainer" . | fromYamlArray | first }}
+    {{- $_ := set $ca "computeResources" $ca.resources }}
+    {{- $_ := unset $ca "resources" }}
+    {{- toYaml (list $ca) | nindent 4 }}
     - name: run
       image: {{ .Values.portal.image }}
       command: ["python3", "/opt/saw/portal.py", "$(params.action)", "$(params.arg)", "$(params.timeout)"]
@@ -46,7 +52,12 @@ spec:
         - name: scripts
           mountPath: /opt/saw
           readOnly: true
+        - name: saw-ca
+          mountPath: /opt/saw-ca
+          readOnly: true
       env:
+        - name: SSL_CERT_FILE
+          value: /opt/saw-ca/ca-bundle.crt
         - name: NAMESPACE
           value: {{ .Values.portal.namespace }}
         - name: PIPELINE_RUN

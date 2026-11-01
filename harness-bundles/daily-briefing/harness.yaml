@@ -4,7 +4,7 @@ metadata:
   name: daily-briefing
 spec:
   agent: openclaw
-  version: 0.1.0
+  version: 0.2.0
   # A daily briefing of the user's Slack and Gmail messages: the
   # daily-briefing skill, and two stdio MCP servers that read new messages.
   # Mounted read-only at /sandbox/harness; the servers keep their state and

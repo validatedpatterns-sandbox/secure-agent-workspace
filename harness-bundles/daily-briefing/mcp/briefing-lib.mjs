@@ -212,7 +212,7 @@ export function serve(name, tools) {
       out({ id: msg.id, result: {
         protocolVersion: msg.params?.protocolVersion || "2025-06-18",
         capabilities: { tools: {} },
-        serverInfo: { name, version: "0.1.0" },
+        serverInfo: { name, version: "0.2.0" },
       } });
     } else if (msg.method === "tools/list") {
       out({ id: msg.id, result: { tools: tools.map(({ run, ...t }) => t) } });

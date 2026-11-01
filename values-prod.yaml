@@ -1,3 +1,13 @@
+# Vault is reached through its ingress Route, whose CA differs from the API CA.
+ocpExternalSecrets:
+  caProvider:
+    enabled: true
+    hostCluster:
+      type: ConfigMap
+      name: default-ingress-cert
+      namespace: openshift-config-managed
+      key: ca-bundle.crt
+
 clusterGroup:
   name: prod
   namespaces:

@@ -18,12 +18,12 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_shipped_paths_have_no_tls_verification_bypasses():
-    bypass = re.compile(r"\bverify\s*=\s*False|--insecure(?:=true)?(?:\s|$)|"
+    bypass = re.compile(r"\bverify\s*=\s*False|validate_certs:\s*false|--insecure(?:=true)?(?:\s|$)|"
                         r"--(?:src|dest)-tls-verify=false|\bcurl\s+-[a-zA-Z]*k[a-zA-Z]*\b")
     offenders = []
-    for directory in ("scripts", "charts", "image-builder-charts", "cli/src"):
+    for directory in ("scripts", "charts", "image-builder-charts", "cli/src", "ansible"):
         for path in (ROOT / directory).rglob("*"):
-            if path.suffix in (".sh", ".py", ".yaml") and bypass.search(path.read_text()):
+            if path.suffix in (".sh", ".py", ".yaml", ".yml") and bypass.search(path.read_text()):
                 offenders.append(str(path.relative_to(ROOT)))
     assert not offenders
 

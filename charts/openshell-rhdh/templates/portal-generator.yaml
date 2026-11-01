@@ -45,6 +45,8 @@ spec:
             - name: http
               containerPort: {{ $port }}
           env:
+            - name: SSL_CERT_FILE
+              value: /opt/saw-ca/ca-bundle.crt
             - name: NAMESPACE
               value: {{ $ns }}
             - name: PORT

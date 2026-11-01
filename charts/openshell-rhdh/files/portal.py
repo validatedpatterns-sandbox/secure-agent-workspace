@@ -755,13 +755,11 @@ POLL_SECONDS = 5
 
 
 def ping_url(url, timeout=3):
-    """True when the URL answers with a non-5xx status. The router answers
-    503 until the VM's UI proxy listens. No credentials are sent, so the
-    route's certificate is not checked (often the cluster's own CA)."""
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    """True when a verified URL answers with a non-5xx status. The router
+    answers 503 until the VM's UI proxy listens. SSL_CERT_FILE supplies the
+    cluster's ingress CA alongside the public roots."""
     try:
+        ctx = ssl.create_default_context()
         with urllib.request.urlopen(urllib.request.Request(url, method="GET"), context=ctx,
                                     timeout=timeout) as resp:
             return resp.status < 500

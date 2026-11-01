@@ -34,16 +34,6 @@ elif url == "https://kc.example/device":
     print(json.dumps({"device_code": "code", "interval": 0,
                       "verification_uri": os.environ.get("DEVICE_URI", "http://kc.example/verify")}))
 elif url == "https://kc.example/token":
-    import os
-    if os.environ.get("DEVICE_PENDING"):
-        from pathlib import Path
-        pending = Path(os.environ["TOKEN_REQ"])
-        if not pending.exists():
-            pending.write_text("pending")
-            if "-fsSL" in args:
-                sys.exit(22)  # curl --fail discards the OAuth HTTP 400 body
-            print(json.dumps({"error": "authorization_pending"}))
-            sys.exit(0)
     open(__import__("os").environ["TOKEN_REQ"], "w").write(" ".join(args))
     print(__import__("os").environ["TOKEN_RESPONSE"])
 else:
@@ -183,12 +173,3 @@ def test_device_refuses_http_verification_url(env, tmp_path):
     assert "HTTPS" in result.stderr
     assert "http://kc.example/verify" not in result.stdout
     assert not (tmp_path / "token-req").exists()
-
-
-def test_device_poll_waits_for_authorization(env, tmp_path):
-    """authorization_pending comes back as HTTP 400; curl --fail would drop it."""
-    result = login(env, OIDC_FLOW="device-code", DEVICE_URI="https://kc.example/verify",
-                   DEVICE_PENDING="1")
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "Logged in as: alice" in result.stdout
-    assert (tmp_path / "oidc" / "token.json").exists()

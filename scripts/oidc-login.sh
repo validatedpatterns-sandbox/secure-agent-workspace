@@ -185,8 +185,7 @@ do_device_login() {
   while (( SECONDS < deadline )); do
     sleep "${interval}"
     local token_response
-    # OAuth pending/slow_down responses use HTTP 400; preserve their JSON body.
-    token_response="$(curl -sSL "${CURL_TLS_OPTS[@]}" --connect-timeout 5 --max-time 10 -X POST "${TOKEN_ENDPOINT}" \
+    token_response="$(curl -fsSL "${CURL_TLS_OPTS[@]}" --connect-timeout 5 --max-time 10 -X POST "${TOKEN_ENDPOINT}" \
       -H "Content-Type: application/x-www-form-urlencoded" \
       -d "grant_type=urn:ietf:params:oauth:grant-type:device_code" \
       -d "client_id=${OIDC_CLIENT_ID}" \

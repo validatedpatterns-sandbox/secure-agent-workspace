@@ -91,6 +91,45 @@ def test_token_outage_sets_lookup_error(monkeypatch, tmp_path):
     assert kube.patches[0][1]["metadata"]["annotations"]["saw.redhat.com/owner-resolution"] == "lookup-error"
 
 
+@pytest.mark.parametrize("startup_lookup_error", [False, True], ids=["ca-rotation", "lookup-recovery"])
+def test_resolver_recovers_after_ingress_trust_changes(monkeypatch, tmp_path, startup_lookup_error):
+    secret = tmp_path / "client-secret"
+    secret.write_text("test-value")
+    kube = FakeKube()
+    contexts = [object(), object()]
+    cycle = 0
+
+    def endpoint():
+        if startup_lookup_error and cycle == 0:
+            raise OSError("ingress metadata temporarily unavailable")
+        return "https://keycloak.test", contexts[cycle]
+
+    def request(_url, _method="GET", _body=None, _token=None, form=None, ctx=None):
+        if ctx is not contexts[cycle]:
+            raise resolver.ssl.SSLCertVerificationError("ingress CA changed")
+        if form is not None:
+            return {"access_token": "test-token"}
+        return [{"username": "alice", "enabled": True, "id": "subject-a"}]
+
+    def next_cycle(_seconds):
+        nonlocal cycle
+        cycle += 1
+        if cycle == 2:
+            raise StopIteration
+        # A new owner lookup must succeed with the changed ingress trust.
+        kube.subject = ""
+
+    monkeypatch.setattr(resolver, "Kubernetes", lambda: kube)
+    monkeypatch.setattr(resolver, "keycloak_endpoint", endpoint)
+    monkeypatch.setattr(resolver, "request", request)
+    monkeypatch.setattr(resolver.time, "sleep", next_cycle)
+    for key, value in {"REALM": "test", "CLIENT_ID": "resolver", "SECRET_FILE": str(secret)}.items():
+        monkeypatch.setenv(key, value)
+    with pytest.raises(StopIteration):
+        resolver.run()
+    assert kube.subject == "subject-a"
+
+
 def test_resolver_refuses_plaintext_before_sending_the_admin_credential(monkeypatch):
     sent = []
     monkeypatch.setattr(resolver.urllib.request, "build_opener", lambda *_: sent.append(1))

@@ -18,6 +18,8 @@ credentials.
 ## Update the briefing
 
 1. Call `slack-reader__new_messages` and `gmail-reader__new_messages`.
+   If a reader returns `busy: true`, another update is collecting from that
+   source right now: do not call it again; continue with the saved items.
 2. Read today's whole `items.jsonl`, even when both tools return `new: 0`.
    An earlier update may have collected messages and then failed before saving
    the briefing. Always rebuild from the saved items; the new-message counts

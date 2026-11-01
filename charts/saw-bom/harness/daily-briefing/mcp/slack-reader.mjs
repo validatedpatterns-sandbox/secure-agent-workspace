@@ -1,7 +1,7 @@
 // MCP server (stdio): new Slack messages for the daily briefing, read-only.
 // SLACK_BOT_TOKEN holds an OpenShell placeholder; the `slack` provider
 // profile lets the sandbox proxy put the real token in for slack.com only.
-import { appendItems, clip, drain, getJson, loadState, pageSize, saveState, serve, today } from "./briefing-lib.mjs";
+import { appendItems, clip, drain, getJson, loadState, LockBusy, pageSize, saveState, serve, today, withLock } from "./briefing-lib.mjs";
 
 const API = process.env.SLACK_API_URL || "https://slack.com/api";
 
@@ -44,7 +44,7 @@ async function history(ch, oldest) {
   return messages;
 }
 
-async function newMessages() {
+async function collect() {
   const { day, startSec } = today();
   const state = loadState("slack", day, { channels: {}, users: {} });
   const userName = async (id) => {
@@ -75,13 +75,16 @@ async function newMessages() {
     for (const m of messages) {
       if (m.subtype && m.subtype !== "bot_message") continue;
       chItems.push({
-        source: "slack", channel: `#${ch.name}`, from: await userName(m.user || m.bot_id),
+        source: "slack", id: `slack:${ch.id}:${m.ts}`, channel: `#${ch.name}`, from: await userName(m.user || m.bot_id),
         time: new Date(Number(m.ts) * 1000).toISOString(), text: clip(m.text),
         replies: m.reply_count || 0,
       });
     }
-    if (chItems.length) file = appendItems(day, chItems);
-    items.push(...chItems);
+    if (chItems.length) {
+      const appended = await appendItems(day, chItems);
+      items.push(...appended.added);
+      if (appended.added.length) file = appended.file;
+    }
     state.channels[ch.id] = messages.reduce((a, m) => (Number(m.ts) > Number(a) ? m.ts : a), oldest);
     saveState("slack", state);
   }
@@ -93,6 +96,18 @@ async function newMessages() {
     day, channels: list.map((c) => `#${c.name}`), new: items.length,
     items: items.slice(-50), more: Math.max(0, items.length - 50), file,
   };
+}
+
+async function newMessages() {
+  try {
+    return await withLock("slack", collect);
+  } catch (err) {
+    if (err instanceof LockBusy && err.lockName === "slack") {
+      return { day: today().day, busy: true, new: 0, items: [], more: 0, file: null,
+        note: "another update is collecting Slack messages now; they are saved to items.jsonl" };
+    }
+    throw err;
+  }
 }
 
 serve("slack-reader", [

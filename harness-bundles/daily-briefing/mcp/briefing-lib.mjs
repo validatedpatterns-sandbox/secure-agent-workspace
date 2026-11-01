@@ -2,7 +2,8 @@
 // (newline-delimited JSON-RPC, no dependencies), and the briefing store in
 // /sandbox/briefing: per-source state for the day, and <day>/items.jsonl
 // with every message collected that day.
-import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import { join } from "node:path";
@@ -12,6 +13,62 @@ import { rootCertificates } from "node:tls";
 export const ROOT = process.env.BRIEFING_DIR || "/sandbox/briefing";
 const TEXT_LIMIT = 500;
 const MAX_PAGES = 200;
+const LOCK_STALE_MS = 10 * 60 * 1000;
+
+export class LockBusy extends Error {
+  constructor(lockName) {
+    super(`lock busy: ${lockName}`);
+    this.name = "LockBusy";
+    this.lockName = lockName;
+  }
+}
+
+function lockWaitMs() {
+  const value = Number(process.env.BRIEFING_LOCK_WAIT_MS);
+  return Number.isInteger(value) && value >= 0 && process.env.BRIEFING_LOCK_WAIT_MS !== "" ? value : 20000;
+}
+
+export async function withLock(name, fn, waitMs = lockWaitMs()) {
+  const dir = join(ROOT, ".locks");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `${name}.lock`);
+  const token = `${process.pid}-${randomUUID()}`;
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    try {
+      writeFileSync(path, token, { flag: "wx", mode: 0o600 });
+      break;
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+      try {
+        if (Date.now() - statSync(path).mtimeMs > LOCK_STALE_MS) {
+          const stale = `${path}.stale-${randomUUID()}`;
+          try {
+            renameSync(path, stale);
+            unlinkSync(stale);
+          } catch (race) {
+            if (race.code !== "ENOENT") throw race;
+          }
+          continue;
+        }
+      } catch (race) {
+        if (race.code !== "ENOENT") throw race;
+        continue;
+      }
+      if (Date.now() >= deadline) throw new LockBusy(name);
+      await new Promise((resolve) => setTimeout(resolve, Math.min(100 + Math.floor(Math.random() * 151), Math.max(1, deadline - Date.now()))));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    try {
+      if (readFileSync(path, "utf8") === token) unlinkSync(path);
+    } catch (err) {
+      if (err.code !== "ENOENT") throw err;
+    }
+  }
+}
 
 export function today() {
   const now = new Date();
@@ -22,7 +79,7 @@ export function today() {
 export function loadState(source, day, empty) {
   try {
     const state = JSON.parse(readFileSync(join(ROOT, `state-${source}.json`), "utf8"));
-    if (state.day === day) return state;
+    if (state.day === day) return { day, ...empty, ...state };
   } catch {}
   return { day, ...empty };
 }
@@ -30,21 +87,44 @@ export function loadState(source, day, empty) {
 export function saveState(source, state) {
   mkdirSync(ROOT, { recursive: true });
   const file = join(ROOT, `state-${source}.json`);
-  writeFileSync(`${file}.tmp`, JSON.stringify(state, null, 2));
-  renameSync(`${file}.tmp`, file);
+  const temp = join(ROOT, `.state-${source}-${process.pid}-${randomUUID()}.tmp`);
+  try {
+    writeFileSync(temp, JSON.stringify(state, null, 2), { flag: "wx", mode: 0o600 });
+    renameSync(temp, file);
+  } finally {
+    try { unlinkSync(temp); } catch (err) { if (err.code !== "ENOENT") throw err; }
+  }
 }
 
-export function appendItems(day, items) {
-  const dir = join(ROOT, day);
-  mkdirSync(dir, { recursive: true });
-  const file = join(dir, "items.jsonl");
-  appendFileSync(file, items.map((i) => JSON.stringify(i) + "\n").join(""));
-  return file;
+export async function appendItems(day, items) {
+  return withLock("items", () => {
+    const dir = join(ROOT, day);
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, "items.jsonl");
+    const ids = new Set();
+    try {
+      for (const line of readFileSync(file, "utf8").split("\n")) {
+        try {
+          const id = JSON.parse(line).id;
+          if (id) ids.add(id);
+        } catch {} // Old items or a torn line should not prevent collection.
+      }
+    } catch (err) {
+      if (err.code !== "ENOENT") throw err;
+    }
+    const added = items.filter((item) => {
+      if (item.id && ids.has(item.id)) return false;
+      if (item.id) ids.add(item.id);
+      return true;
+    });
+    if (added.length) appendFileSync(file, added.map((item) => JSON.stringify(item) + "\n").join(""));
+    return { file, added };
+  }, 10000);
 }
 
-export function clip(text) {
+export function clip(text, limit = TEXT_LIMIT) {
   const t = String(text || "").replace(/\s+/g, " ").trim();
-  return t.length > TEXT_LIMIT ? t.slice(0, TEXT_LIMIT) + "…" : t;
+  return t.length > limit ? t.slice(0, limit) + "…" : t;
 }
 
 // Keep test and live page sizes small when needed, while never exceeding the

@@ -1821,7 +1821,9 @@ def _resolve_direct(profiles, secrets_dir):
                     values[primary] = values[primary] or REFRESH_BOOTSTRAP_CREDENTIAL
             for name, entry in entries.items():
                 if not values[name]:
-                    hint = (f"; {RESTART_MODE_HINT}" if base.is_dir() else
+                    metadata_only = (base.is_dir() and not any(values.values())
+                                     and not any(p.refresh_material.values()))
+                    hint = (f"; {RESTART_MODE_HINT}" if metadata_only else
                             ". List the Secret in openshell-saw additionalProviderSecrets and make sure it exists.")
                     raise InstallerError(f"credential for provider '{p.name}' in workspace '{ws.name}' "
                                          f"not found: Secret '{p.credential_secret}' key '{entry['secretKey']}'{hint}")
@@ -6762,8 +6764,10 @@ def prepare_credential_mode(state_dir, cfg, home, etc_dir, dry_run=False):
             if not dry_run:
                 (Path(state_dir) / "user/refresh.json").unlink(missing_ok=True)
             if transition["to"] == "proxy":
-                exposed = state["exposed"] or [f"{b['name']}/{b['key']}"
-                                               for b in cfg["credentialProxy"]["secrets"]]
+                exposed = state["exposed"] or [f"{b['name']}/{key}"
+                    for b in cfg["credentialProxy"]["secrets"]
+                    for key in ([b["key"], *REFRESH_MATERIAL["oauth2_refresh_token"]]
+                                if b.get("refresh") else [b["key"]])]
                 state["rotationRequired"] = sorted(set(exposed))
                 state["keyGeneration"] = cfg["credentialProxy"].get("keyGeneration", 1)
                 if not dry_run:

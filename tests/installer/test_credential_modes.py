@@ -37,6 +37,10 @@ def test_direct_named_credentials_and_metadata_only_restart_hint(ab, config, sec
     assert creds == {"default": {"nvidia": "primary-sentinel"}}
     assert p.credential_values == {"api_key": "primary-sentinel", "app_secret": "secondary-sentinel"}
     (secrets_dir / "inference/secondary").unlink()
+    with pytest.raises(ab.InstallerError, match="not found") as missing:
+        ab.resolve_credentials(profiles, secrets_dir, {}, "direct")
+    assert "saw-restart-pending" not in str(missing.value)
+    (secrets_dir / "inference/primary").unlink()
     with pytest.raises(ab.InstallerError, match="saw-restart-pending"):
         ab.resolve_credentials(profiles, secrets_dir, {}, "direct")
 

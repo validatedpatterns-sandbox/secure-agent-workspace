@@ -394,7 +394,8 @@ if [[ "${web_search_enabled}" == false ]]; then
   BOM_OPTS+=(--set webSearch.enabled=false)
 fi
 # ${arr[@]+...}: an empty array is "unbound" under set -u in bash < 4.4 (macOS).
-previous_mode="$(oc get cm "${OPENSHELL_SAW_NAME}-installer" -n "${DEPLOY_NS}" --ignore-not-found -o json | jq -r '.data["config.json"] // "{}" | fromjson | .credentialMode // "proxy"')"
+previous_installer="$(oc get cm "${OPENSHELL_SAW_NAME}-installer" -n "${DEPLOY_NS}" --ignore-not-found -o json)"
+previous_mode="$(jq -r '.data["config.json"] // "{}" | fromjson | .credentialMode // "proxy"' <<<"${previous_installer}")"
 helm upgrade --install saw-bom "${SAW_BOM_CHART}" --namespace "${DEPLOY_NS}" ${BOM_OPTS[@]+"${BOM_OPTS[@]}"} >/dev/null
 echo "SAW-BOM profiles installed in ${DEPLOY_NS}${PROFILES:+ (${PROFILES})}."
 
@@ -473,6 +474,9 @@ helm upgrade --install "${OPENSHELL_SAW_NAME}" "${SAW_CHART}" \
 
 if [[ "${CREDENTIAL_PROXY_ENABLED}" == false ]]; then
   stale_meta=(inference-meta web-search-meta)
+  while IFS= read -r name; do
+    [[ -z "${name}" ]] || stale_meta+=("${name}-meta")
+  done < <(jq -r '.data["config.json"] // "{}" | fromjson | .credentialProxy.secrets[]?.name' <<<"${previous_installer}")
   for name in "${additional_provider_secrets[@]}"; do
     [[ -z "${name}" ]] || stale_meta+=("${name}-meta")
   done

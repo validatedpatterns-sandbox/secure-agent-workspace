@@ -498,3 +498,21 @@ def test_direct_mode_skips_image_metadata_and_bindings(run):
     assert "create secret generic inference-meta" not in commands
     assert "create secret generic web-search-meta" not in commands
     assert "Credential mode: direct" in result.stdout
+
+
+def test_direct_mode_can_come_from_values_file_without_image(run, tmp_path):
+    path = tmp_path / "direct.yaml"
+    path.write_text("credentialProxy:\n  enabled: false\n")
+    result, commands, _ = run.invoke(CREDENTIAL_PROXY_ENABLED="", CREDENTIAL_PROXY_IMAGE="",
+                                      SAW_VALUES_FILE=str(path), PROVIDER="build", MODEL="test-model")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "credentialProxy.enabled=false" in commands
+
+
+def test_environment_credential_mode_overrides_values_file(run, tmp_path):
+    path = tmp_path / "direct.yaml"
+    path.write_text("credentialProxy:\n  enabled: false\n")
+    result, commands, _ = run.invoke(CREDENTIAL_PROXY_ENABLED="true", SAW_VALUES_FILE=str(path),
+                                      PROVIDER="build", MODEL="test-model")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "credentialProxy.enabled=true" in commands

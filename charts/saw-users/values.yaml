@@ -50,6 +50,9 @@ defaults:
   clusterCaSecret: saw-ingress-ca
   # Merged under each user's `values`. owner is the user name.
   openshellSaw:
+    credentialProxy:
+      enabled: true
+      # Set image to a published digest when enabled; direct mode needs no image.
     signing:
       mode: warn
     prune:

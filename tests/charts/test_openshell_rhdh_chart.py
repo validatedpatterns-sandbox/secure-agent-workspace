@@ -625,3 +625,13 @@ def test_portal_workspaces_inherit_the_shared_proxy_image_pin(tmp_path, portal_o
     pattern = yaml.safe_load((ROOT / "values-prod.yaml").read_text())
     for app_name in ["saw-users", "openshell-rhdh"]:
         assert "/overrides/saw-users.yaml" in pattern["clusterGroup"]["applications"][app_name]["extraValueFiles"]
+
+
+@pytest.mark.ci_external
+@pytest.mark.parametrize("enabled", [False, "false", True])
+def test_portal_workspaces_inherit_shared_credential_mode(tmp_path, enabled):
+    path = tmp_path / "shared-credential-mode.yaml"
+    path.write_text(yaml.safe_dump({"defaults": {"openshellSaw": {
+        "credentialProxy": {"enabled": enabled}}}}))
+    result = generator_defaults(render("-f", str(path)))
+    assert result["defaults"]["openshellSaw"]["credentialProxy"]["enabled"] == enabled

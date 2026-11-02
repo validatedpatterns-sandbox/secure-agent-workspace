@@ -1,3 +1,4 @@
+{{- if ne (toString .Values.metadataSecrets) "false" }}
 {{- $reserved := list "inference-meta" "web-search-meta" "openshell-ssh-pubkey" "openshell-aap-ssh" (.Values.clusterCaSecret | default "") }}
 {{- range $name := .Values.secrets | default list | uniq }}
 {{- if not (has $name $reserved) }}
@@ -24,4 +25,6 @@ spec:
     - extract:
         key: {{ printf "%s/%s" $.Values.vaultPrefix $name | quote }}
 {{- end }}
+{{- end }}
+
 {{- end }}

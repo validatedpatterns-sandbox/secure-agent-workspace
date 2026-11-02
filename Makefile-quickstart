@@ -48,6 +48,7 @@ SAW_NS         ?= saw-$(OPENSHELL_SAW_NAME)
 HELM_DIR       := image-builder-charts/helm/
 SAW_CHART  := charts/openshell-saw
 SAW_VALUES_FILE ?=
+CREDENTIAL_PROXY_ENABLED ?=
 CREDENTIAL_PROXY_IMAGE ?=
 KEYCLOAK_CHART := charts/openshell-keycloak
 # Keycloak (and the RHBK operator) can live in any namespace.
@@ -69,7 +70,7 @@ export OPENSHELL_SAW_NAME SANDBOX_IMAGE CONTAINER_RUNTIME GOVERNANCE_ENABLED GOV
 export PROVIDER MODEL API_KEY ENDPOINT_URL PROFILES WEB_SEARCH WEB_SEARCH_API_KEY GCP_SA_JSON
 export OIDC_ISSUER OIDC_CLIENT_ID OIDC_FLOW OIDC_TOKEN_DIR OIDC_CA_BUNDLE SSH_KEY_PATH OWNER OWNER_SUBJECT
 export SAW_NS SAW_CHART SAW_VALUES_FILE KEYCLOAK_NS KEYCLOAK_CHART KEYCLOAK_REALM KEYCLOAK_NAME SANDBOX_NAME
-export CREDENTIAL_PROXY_IMAGE
+export CREDENTIAL_PROXY_IMAGE CREDENTIAL_PROXY_ENABLED
 export USE_EXISTING_KEYCLOAK SCRIPTS_DIR GUI_PORT WORKSPACE CMD DASHBOARD
 
 # Explicit install knobs override values-global.yaml through Pattern
@@ -557,6 +558,7 @@ lint-static: ## Lint charts and shell syntax without running pytest
 		test -f "$$chart/Chart.yaml" || continue; \
 		if [ "$$chart" = charts/openshell-saw ]; then \
 			helm lint "$$chart" --set sandboxName=lint -f tests/fixtures/saw-network-topology.yaml -f tests/fixtures/credential-proxy-values.yaml || exit; \
+			helm lint "$$chart" --set sandboxName=lint -f tests/fixtures/saw-network-topology.yaml --set credentialProxy.enabled=false || exit; \
 		else \
 			helm lint "$$chart" --set sandboxName=lint || exit; \
 		fi; \

@@ -6,14 +6,13 @@ import sys
 import yaml
 
 
-def main() -> int:
-    rendered = subprocess.run(
-        ["helm", "template", "saw-lint", "charts/openshell-saw",
+def check_mode(mode) -> int:
+    command = ["helm", "template", "saw-lint", "charts/openshell-saw",
          "--namespace", "saw-lint", "-f", "tests/fixtures/saw-network-topology.yaml",
-         "-f", "tests/fixtures/credential-proxy-values.yaml",
-         "--set", "sandboxName=saw-lint"],
-        capture_output=True, text=True, check=False,
-    )
+         "--set", "sandboxName=saw-lint"]
+    command += (["-f", "tests/fixtures/credential-proxy-values.yaml"] if mode == "proxy" else
+                ["--set", "credentialProxy.enabled=false"])
+    rendered = subprocess.run(command, capture_output=True, text=True, check=False)
     if rendered.returncode:
         sys.stderr.write(rendered.stderr)
         return rendered.returncode
@@ -38,8 +37,12 @@ def main() -> int:
     if checked == 0:
         sys.stderr.write("No rendered ConfigMap shell scripts were found.\n")
         return 1
-    print(f"Checked {checked} rendered shell scripts.")
+    print(f"Checked {checked} rendered shell scripts (mode: {mode}).")
     return 0
+
+
+def main() -> int:
+    return check_mode("proxy") or check_mode("direct")
 
 
 if __name__ == "__main__":

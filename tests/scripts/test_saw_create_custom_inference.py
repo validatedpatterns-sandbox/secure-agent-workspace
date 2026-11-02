@@ -479,3 +479,22 @@ def test_additional_provider_metadata_and_bindings(run, tmp_path, explicit):
     assert 'additionalProviderSecrets=["inference-openai"]' in helm
     bindings = json.loads(helm.split("credentialProxy.secrets=", 1)[1].split(" --", 1)[0])
     assert bindings.count(binding) == 1
+
+
+@pytest.mark.parametrize("value", ["yes", "0", "disabled"])
+def test_invalid_credential_proxy_enabled_fails_before_cluster_work(run, value):
+    result, commands, _ = run.invoke(CREDENTIAL_PROXY_ENABLED=value)
+    assert result.returncode != 0
+    assert "CREDENTIAL_PROXY_ENABLED must be true or false" in result.stderr
+    assert "oc " not in commands
+
+
+def test_direct_mode_skips_image_metadata_and_bindings(run):
+    result, commands, _ = run.invoke(CREDENTIAL_PROXY_ENABLED="false", CREDENTIAL_PROXY_IMAGE="",
+                                      PROVIDER="build", MODEL="test-model")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "credentialProxy.enabled=false" in commands
+    assert "credentialProxy.secrets=" not in commands
+    assert "create secret generic inference-meta" not in commands
+    assert "create secret generic web-search-meta" not in commands
+    assert "Credential mode: direct" in result.stdout

@@ -342,6 +342,10 @@ check_web_search_absent() {
       fi
     done
   done
+  local mode
+  mode="$(oc get configmap "${TEST_PATTERN_SAW_NAME}-installer" -n "${pattern_namespace}" -o json |
+    jq -r '.data["config.json"] | fromjson | .credentialMode // "proxy"')" || return 1
+  if [[ "${mode}" == proxy ]]; then
   if ! policy="$(oc get configmap "${TEST_PATTERN_SAW_NAME}-credential-proxy-config" \
       -n "${pattern_namespace}" -o json)" ||
       ! jq -e '.data["config.json"] | fromjson | .bindings | all(.secret != "web-search")' \
@@ -354,7 +358,8 @@ check_web_search_absent() {
     record "${label}" 1 "credential proxy is not Available"
     return 1
   fi
-  record "${label}" 0 "web-search and web-search-meta are absent; proxy has no web-search binding and is Available"
+  fi
+  record "${label}" 0 "web-search and web-search-meta are absent (credential mode: ${mode})"
 }
 
 echo "Testing commit ${commit} on context ${context}. Evidence: ${evidence}"

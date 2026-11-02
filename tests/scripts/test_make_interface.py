@@ -63,7 +63,8 @@ def test_credential_isolation_offline_render():
     result = subprocess.run(["bash", "tests/test-credential-isolation.sh"], cwd=ROOT,
                             env=dict(os.environ, SKIP_LIVE="1"), capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
-    assert "VM mounts metadata only" in result.stdout
+    assert "credential mode proxy" in result.stdout
+    assert "credential mode direct" in result.stdout
 
 
 def test_invalid_runtime_stops_before_build():

@@ -12,23 +12,37 @@ PYTHON="${PYTHON:-python3}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-helm template saw-check "$ROOT/charts/openshell-saw" -n "$render_ns" \
-  -f "$ROOT/tests/fixtures/saw-network-topology.yaml" \
-  -f "$ROOT/tests/fixtures/credential-proxy-values.yaml" \
-  --set sandboxName=saw-check > "$tmp/rendered.yaml"
-"$PYTHON" - "$tmp/rendered.yaml" <<'PY'
-import sys, yaml
+for mode in proxy direct; do
+  render_opts=(--set credentialProxy.enabled=false)
+  if [[ "$mode" == proxy ]]; then render_opts=(-f "$ROOT/tests/fixtures/credential-proxy-values.yaml"); fi
+  helm template saw-check "$ROOT/charts/openshell-saw" -n "$render_ns" \
+    -f "$ROOT/tests/fixtures/saw-network-topology.yaml" \
+    "${render_opts[@]}" --set sandboxName=saw-check > "$tmp/rendered.yaml"
+  "$PYTHON" - "$tmp/rendered.yaml" "$mode" <<'PYCHECK'
+import json, sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+mode = sys.argv[2]
 vm = next(d for d in docs if d['kind'] == 'VirtualMachine')
 vols = vm['spec']['template']['spec']['volumes']
-sources = {v.get('cloudInitNoCloud', {}).get('secretRef', {}).get('name') for v in vols}
-sources.update(v.get('secret', {}).get('secretName') for v in vols)
-assert 'inference' not in sources and 'web-search' not in sources
-assert 'inference-meta' in sources and 'web-search-meta' in sources
-assert any(v.get('configMap', {}).get('name') == 'saw-proxy-ca' for v in vols)
-assert any(d['kind'] == 'Deployment' and d['metadata']['name'].endswith('-credential-proxy') for d in docs)
-print('PASS offline: VM mounts metadata only and proxy resources render')
-PY
+sources = {v.get('secret', {}).get('secretName') for v in vols}
+cm = next(d for d in docs if d['metadata']['name'] == 'saw-check-installer')
+assert json.loads(cm['data']['config.json'])['credentialMode'] == mode
+if mode == 'proxy':
+    assert 'inference' not in sources and 'web-search' not in sources
+    assert 'inference-meta' in sources and 'web-search-meta' in sources
+    assert any(v.get('configMap', {}).get('name') == 'saw-proxy-ca' for v in vols)
+    assert any(d['kind'] == 'Deployment' and d['metadata']['name'].endswith('-credential-proxy') for d in docs)
+else:
+    assert {'inference', 'web-search'} <= sources
+    assert not any(n and n.endswith('-meta') for n in sources)
+    assert not any('credential-proxy' in d['metadata']['name'] for d in docs)
+    slot = next(d for d in docs if d['metadata']['name'] == 'saw-check-credential-mode')
+    assert slot['data'] == {'mode': 'direct'}
+    assert any(v.get('configMap', {}).get('name') == 'saw-check-credential-mode' for v in vols)
+    assert not any(key in cm['data']['gateway.toml'] for key in ('https_proxy', 'proxy_ca_bundle', 'proxy_connect_by_hostname'))
+print(f'PASS offline: credential mode {mode}')
+PYCHECK
+done
 
 if [[ "${SKIP_LIVE:-}" == 1 ]]; then
   echo 'SKIP live checks (SKIP_LIVE=1)'
@@ -44,18 +58,38 @@ SSH_KEY_PATH="${SSH_KEY_PATH:-$HOME/.generated-ssh-keys/sandbox-ssh}"
 
 oc get vm "$VM_NAME" -n "$SAW_NS" -o json > "$tmp/vm.json"
 oc get cm "$VM_NAME-installer" -n "$SAW_NS" -o json > "$tmp/installer.json"
+credential_mode="$("$PYTHON" -c 'import json,sys; print(json.loads(json.load(open(sys.argv[1]))["data"]["config.json"]).get("credentialMode", "proxy"))' "$tmp/installer.json")"
 "$PYTHON" - "$tmp/vm.json" "$tmp/installer.json" <<'PY'
 import json, sys
 vm, cm = (json.load(open(p)) for p in sys.argv[1:])
 cfg = json.loads(cm['data']['config.json'])
 vols = vm['spec']['template']['spec']['volumes']
 mounted = {v.get('secret', {}).get('secretName') for v in vols}
-for b in cfg['credentialProxy']['secrets']:
-    assert b['name'] not in mounted, f"VM attaches full provider Secret {b['name']}"
-    assert b['name'] + '-meta' in mounted, f"VM lacks metadata Secret {b['name']}-meta"
-assert any(v.get('configMap', {}).get('name') == 'saw-proxy-ca' for v in vols)
-print('PASS live: no full provider Secret is attached to the VM')
+if cfg.get('credentialMode', 'proxy') == 'direct':
+    assert set(cfg['secrets']) <= mounted
+    slot = next(v for v in vols if v['name'] == 'saw-proxy-ca')
+    assert slot['configMap']['name'] == vm['metadata']['name'] + '-credential-mode'
+else:
+    for b in cfg['credentialProxy']['secrets']:
+        assert b['name'] not in mounted, f"VM attaches full provider Secret {b['name']}"
+        assert b['name'] + '-meta' in mounted, f"VM lacks metadata Secret {b['name']}-meta"
+    assert any(v.get('configMap', {}).get('name') == 'saw-proxy-ca' for v in vols)
+    print('PASS live: no full provider Secret is attached to the VM')
 PY
+
+if [[ "$credential_mode" == direct ]]; then
+  oc get deploy,svc,cm,sa,secret,externalsecret,networkpolicy -n "$SAW_NS" -o json > "$tmp/resources.json"
+  "$PYTHON" - "$tmp/resources.json" "$VM_NAME" <<'PYCHECK'
+import json, sys
+items = json.load(open(sys.argv[1]))['items']
+for item in items:
+    name = item['metadata']['name']
+    assert 'credential-proxy' not in name and name != 'saw-proxy-ca' and not name.endswith('-meta'), name
+slot = next(i for i in items if i['kind'] == 'ConfigMap' and i['metadata']['name'] == sys.argv[2] + '-credential-mode')
+assert slot['data'] == {'mode': 'direct'}
+print('PASS live: direct mode has no proxy resources or metadata Secrets')
+PYCHECK
+fi
 
 ssh_args=(-n "$SAW_NS" ssh "cloud-user@vm/$VM_NAME" --identity-file="$SSH_KEY_PATH"
   --local-ssh-opts=-oBatchMode=yes --local-ssh-opts=-oConnectTimeout=10
@@ -79,11 +113,19 @@ for base in (pathlib.Path('/home/cloud-user/.config/openshell'), pathlib.Path('/
 assert not pathlib.Path('/home/cloud-user/.local/state/saw-installer').exists()
 assert not pathlib.Path('/home/cloud-user/.config/openshell/gateways/saw-installer').exists()
 print('PASS guest: no CA key; client CA bundle and admin files are clean', file=sys.stderr)
+if CREDENTIAL_MODE == 'direct':
+    import tomllib
+    driver = tomllib.loads(pathlib.Path('/etc/openshell/gateway.toml').read_text())['openshell']['drivers']['podman']
+    assert not {'https_proxy', 'proxy_ca_bundle', 'proxy_connect_by_hostname'} & driver.keys()
+    assert not pathlib.Path('/etc/openshell/credential-proxy-ca.pem').exists()
+    assert not pathlib.Path('/home/cloud-user/.config/openshell/credential-proxy-ca.pem').exists()
+    print('PASS guest: direct mode has no proxy config or CA', file=sys.stderr)
+    raise SystemExit(0)
 import base64, gzip
 print(base64.b64encode(gzip.compress(b"".join(sorted(token_digests())))).decode())
 PY
 )"
-guest_b64="$(printf %s "$guest_code" | base64 -w0)"
+guest_b64="$(printf 'CREDENTIAL_MODE = "%s"\n%s' "$credential_mode" "$guest_code" | base64 -w0)"
 remote="sudo python3 -c 'import base64; exec(base64.b64decode(\"$guest_b64\"))'"
 
 "$PYTHON" - "$tmp/installer.json" <<'PY' > "$tmp/bindings.tsv"
@@ -95,6 +137,7 @@ for b in json.loads(cfg)['credentialProxy']['secrets']:
         print(b['name'], key, sep='\t')
 PY
 vm_exec "$remote" </dev/null > "$tmp/guest-digests.b64"
+if [[ "$credential_mode" == proxy ]]; then
 while IFS=$'\t' read -r secret key; do
   oc get secret "$secret" -n "$SAW_NS" -o json | "$PYTHON" -c '
 import base64, gzip, hashlib, json, re, sys
@@ -116,6 +159,8 @@ done < "$tmp/bindings.tsv"
 
 oc get deployment "$VM_NAME-credential-proxy" -n "$SAW_NS" -o jsonpath='{.status.readyReplicas}' | grep -qx 1
 echo 'PASS credential proxy Deployment is ready'
+
+fi
 
 if [[ -n "${OLD_ADMIN_CERT:-}" ]]; then
   [[ -f "$OLD_ADMIN_CERT" ]] || { echo "OLD_ADMIN_CERT file is missing" >&2; exit 1; }

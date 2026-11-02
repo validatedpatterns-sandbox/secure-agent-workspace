@@ -1406,11 +1406,13 @@ class Runner:
             raise E2EError("governance deployment does not use the new build digest")
         for user in USERS:
             namespace = f"saw-{user}"
-            proxy = self.oc_json("get", "deployment", f"{user}-credential-proxy", "-n", namespace)
-            actual = proxy["spec"]["template"]["spec"]["containers"][0]["image"]
-            if actual != f"{registry}/saw-credential-proxy@{digests['saw-credential-proxy']}":
-                raise E2EError(f"{user} credential proxy does not use the new build digest")
             config = self.oc_json("get", "configmap", f"{user}-installer", "-n", namespace)
+            cfg = json.loads(config["data"]["config.json"])
+            if cfg.get("credentialMode", "proxy") == "proxy":
+                proxy = self.oc_json("get", "deployment", f"{user}-credential-proxy", "-n", namespace)
+                actual = proxy["spec"]["template"]["spec"]["containers"][0]["image"]
+                if actual != f"{registry}/saw-credential-proxy@{digests['saw-credential-proxy']}":
+                    raise E2EError(f"{user} credential proxy does not use the new build digest")
             bom = yaml.safe_load(config["data"]["installer-bom.yaml"])
             cli_image = bom["spec"]["nemoclaw"]["cliImage"]
             if cli_image != f"{guest_registry}/nemoclaw-cli@{digests['nemoclaw-cli']}":

@@ -985,3 +985,114 @@ def test_briefing_writer_saves_only_today_atomically(tmp_path):
                        {"markdown":"bad", "path": str(tmp_path / "elsewhere")})
     assert refused[3]["result"]["isError"]
     assert file.read_text() == "# My briefing\n" and not (tmp_path / "elsewhere").exists()
+
+
+@pytest.fixture
+def direct_briefing(ab, config, briefing, briefing_secrets, tmp_path):
+    for secret, key, value in (("inference", "api_key", "inference-sentinel"),
+                               ("slack", "bot_token", "slack-static-sentinel")):
+        (briefing_secrets / secret / key).write_text(value)
+    material = {"client_id": "client-id-sentinel.apps", "client_secret": "client-secret-sentinel",
+                "refresh_token": "refresh-token-sentinel"}
+    for key, value in material.items():
+        (briefing_secrets / "gmail" / key).write_text(value)
+    cfg = {**config, "credentialMode": "direct",
+           "credentialProxy": {"url": "", "markerPrefix": "saw-cred", "secrets": []},
+           "prune": {"ledgerPath": str(tmp_path / "user/managed.json")}}
+    creds = ab.resolve_credentials(briefing, briefing_secrets, cfg["credentialProxy"], "direct")
+    ws = next(ws for profile in briefing for ws in profile.workspaces if ws.name == "personal-assistant")
+    gmail = next(p for p in ws.providers if p.name == "gmail")
+    a = applier(ab, cfg, creds)
+    return a, ws, gmail, material
+
+
+def test_direct_refresh_material_uses_environment_and_private_digest(ab, fake_env, direct_briefing, capsys):
+    a, ws, gmail, material = direct_briefing
+    a.apply_provider(ws, gmail)
+    stored = fake_env.openshell_state()["providers"]["personal-assistant/gmail"]
+    assert stored["refresh"]["GMAIL_ACCESS_TOKEN"] == {
+        "strategy": "oauth2-refresh-token", "material": material}
+    assert stored["credential"] == "GMAIL_ACCESS_TOKEN=minted-gmail"
+    config_call = calls(fake_env, "provider", "refresh", "configure")[0]
+    assert "client_id=SAW_REFRESH_CLIENT_ID" in config_call
+    output = capsys.readouterr().out + json.dumps(fake_env.openshell_calls())
+    assert all(value not in output for value in material.values())
+    assert a.refresh_state.stat().st_mode & 0o777 == 0o600
+    assert all(value not in a.refresh_state.read_text() for value in material.values())
+
+
+def test_direct_unchanged_refresh_preserves_minted_token_and_repairs_missing_config(fake_env, direct_briefing):
+    a, ws, gmail, material = direct_briefing
+    a.apply_provider(ws, gmail)
+    a.apply_provider(ws, gmail)
+    assert len(calls(fake_env, "provider", "refresh", "configure")) == 1
+    assert not calls(fake_env, "provider", "update")
+    # A digest alone cannot prove the gateway retained its refresh record.
+    state = fake_env.openshell_state()
+    state["providers"]["personal-assistant/gmail"]["refresh"] = {}
+    fake_env.set_openshell_state(state)
+    a.apply_provider(ws, gmail)
+    assert len(calls(fake_env, "provider", "refresh", "configure")) == 2
+
+
+def test_direct_access_token_fallback_warns(ab, direct_briefing, briefing, briefing_secrets, capsys):
+    a, ws, gmail, material = direct_briefing
+    for key in material:
+        (briefing_secrets / "gmail" / key).unlink()
+    (briefing_secrets / "gmail/access_token").write_text("static-access-token-sentinel")
+    creds = ab.resolve_credentials(briefing, briefing_secrets, {}, "direct")
+    assert creds["personal-assistant"]["gmail"] == "static-access-token-sentinel"
+    assert gmail.refresh_strategy == ""
+    assert "WARN" in capsys.readouterr().out
+
+
+def test_direct_neither_refresh_material_nor_token_is_refused(ab, direct_briefing, briefing, briefing_secrets):
+    _, _, _, material = direct_briefing
+    for key in material:
+        (briefing_secrets / "gmail" / key).unlink()
+    with pytest.raises(ab.InstallerError, match="needs refresh material"):
+        ab.resolve_credentials(briefing, briefing_secrets, {}, "direct")
+
+
+def test_direct_unknown_refresh_strategy_is_refused(ab, direct_briefing, briefing):
+    _, _, gmail, _ = direct_briefing
+    gmail.refresh_strategy = "magic"
+    with pytest.raises(ab.InstallerError, match="unsupported refresh strategy 'magic'"):
+        ab.validate_profiles(briefing)
+
+
+def test_direct_refresh_configuration_failure_is_fatal(fake_env, direct_briefing):
+    a, ws, gmail, _ = direct_briefing
+    fake_env.deny("provider refresh configure")
+    with pytest.raises(Exception, match="could not configure credential refresh"):
+        a.apply_provider(ws, gmail)
+    assert not a.refresh_state.exists()
+
+
+def test_direct_failed_rotate_is_retried_next_apply(fake_env, direct_briefing):
+    a, ws, gmail, _ = direct_briefing
+    fake_env.deny("provider refresh rotate")
+    a.apply_provider(ws, gmail)
+    assert not a.refresh_state.exists()
+    fake_env.deny()
+    a.apply_provider(ws, gmail)
+    assert len(calls(fake_env, "provider", "refresh", "rotate")) == 2
+    assert a.refresh_state.exists()
+
+
+def test_switch_to_proxy_deletes_gateway_refresh_before_marker_update(ab, fake_env, direct_briefing):
+    a, ws, gmail, _ = direct_briefing
+    a.apply_provider(ws, gmail)
+    start = len(fake_env.openshell_calls())
+    cfg = {**a.cfg, "credentialMode": "proxy", "credentialMigration": {"from": "direct", "to": "proxy"}}
+    proxy = ab.ProfileApplier(ab.Shell(), cfg, {ws.name: {gmail.name: "saw-cred.gmail.access_token"}},
+                              a.provider_profiles)
+    ws.sandboxes = []
+    proxy.prepare_credential_migration(ws)
+    proxy.apply_provider(ws, gmail)
+    stored = fake_env.openshell_state()["providers"]["personal-assistant/gmail"]
+    assert stored["refresh"] == {}
+    assert stored["credential"] == "GMAIL_ACCESS_TOKEN=saw-cred.gmail.access_token"
+    recent = fake_env.openshell_calls()[start:]
+    assert next(i for i,c in enumerate(recent) if c[:3] == ["provider", "refresh", "delete"]) < next(
+        i for i,c in enumerate(recent) if c[:2] == ["provider", "update"])

@@ -4,6 +4,11 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(params=["proxy", "direct"])
+def credential_mode(request):
+    return request.param
+
+
 @pytest.fixture
 def legacy(ab, tmp_path, fake_env, config, monkeypatch):
     monkeypatch.setattr(ab.ProfileApplier, "POLL_SECONDS", 0)

@@ -11,6 +11,7 @@ import json
 import shlex
 
 import pytest
+from conftest import TEST_PROXY
 
 from test_apply_profiles import creds, make_applier, profiles  # noqa: F401 (fixtures)
 
@@ -30,7 +31,7 @@ def ui_config(**extra):
 
 def write_config(tmp_path, cfg):
     path = tmp_path / "config.json"
-    path.write_text(json.dumps(cfg))
+    path.write_text(json.dumps({"credentialProxy": TEST_PROXY, **cfg}))
     return path
 
 

@@ -12,6 +12,7 @@ import subprocess
 import sys
 
 import pytest
+from conftest import TEST_PROXY
 import yaml
 
 
@@ -20,6 +21,8 @@ def run(inputs, state, *args, bin_dir=None, opt_dir=None, etc_dir=None, home=Non
     cmd = [sys.executable, str(script), *args]
     if args[0] in ("install", "apply"):
         cmd += ["--inputs", str(inputs), "--state-dir", str(state), "--as-current-user"]
+    if args[0] in ("install", "apply"):
+        cmd += ["--etc-dir", str(etc_dir)]
     if args[0] == "install":
         cmd += ["--bin-dir", str(bin_dir), "--opt-dir", str(opt_dir), "--skip-gateway",
                 "--etc-dir", str(etc_dir)]
@@ -60,7 +63,8 @@ def test_validate_accepts_the_shipped_inputs(world):
     assert world.fake.podman_calls() == [] and world.fake.openshell_calls() == []
 
 
-def test_install_then_apply_reaches_ready(world):
+@pytest.mark.parametrize("credential_mode", ["proxy", "direct"], indirect=True)
+def test_install_then_apply_reaches_ready(world, credential_mode):
     result = world.run("install")
     assert result.returncode == 0, result.stdout + result.stderr
     assert world.status()["install"]["phase"] == "Done"
@@ -83,7 +87,8 @@ def test_install_then_apply_reaches_ready(world):
                        for i, arg in enumerate(call[:-1]) if arg == "--credential"]
     assert set(credential_args) == {"NVIDIA_API_KEY", "BRAVE_API_KEY"}
     assert world.fake.openshell_state()["providers"]["default/brave"]["credential"] == \
-        "BRAVE_API_KEY=saw-cred.web-search.api_key"
+        ("BRAVE_API_KEY=saw-cred.web-search.api_key" if credential_mode == "proxy" else
+         "BRAVE_API_KEY=test-direct-search-key")
 
 
 def test_apply_writes_the_ledger_for_the_runtime_user(world):
@@ -224,7 +229,7 @@ def test_bad_config_is_reported(world):
 
 def test_dashboard_config_requires_images(ab, tmp_path):
     path = tmp_path / "config.json"
-    path.write_text(json.dumps({"vmName": "x", "dashboard": {"enabled": True}}))
+    path.write_text(json.dumps({"vmName": "x", "credentialProxy": TEST_PROXY, "dashboard": {"enabled": True}}))
     with pytest.raises(ab.InstallerError, match="dashboard.image is required"):
         ab.load_config(path)
 

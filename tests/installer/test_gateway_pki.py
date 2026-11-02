@@ -124,7 +124,8 @@ for part in ("server", "client"):
 
 
 @pytest.mark.parametrize("raise_inside", [False, True])
-def test_admin_session_removes_ca_and_key_even_on_failure(ab, fake_env, raise_inside):
+@pytest.mark.parametrize("credential_mode", ["proxy", "direct"], indirect=True)
+def test_admin_session_removes_ca_and_key_even_on_failure(ab, fake_env, raise_inside, credential_mode):
     tls = fake_env.home / ".local/state/openshell/tls"
     ca = (tls / "ca.crt").read_text()
     try:

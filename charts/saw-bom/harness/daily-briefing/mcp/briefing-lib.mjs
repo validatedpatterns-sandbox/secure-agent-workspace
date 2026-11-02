@@ -2,7 +2,8 @@
 // (newline-delimited JSON-RPC, no dependencies), and the briefing store in
 // /sandbox/briefing: per-source state for the day, and <day>/items.jsonl
 // with every message collected that day.
-import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { appendFileSync, closeSync, fstatSync, futimesSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import { join } from "node:path";
@@ -12,6 +13,113 @@ import { rootCertificates } from "node:tls";
 export const ROOT = process.env.BRIEFING_DIR || "/sandbox/briefing";
 const TEXT_LIMIT = 500;
 const MAX_PAGES = 200;
+const LOCK_STALE_MS = 10 * 60 * 1000;
+
+export class LockBusy extends Error {
+  constructor(lockName) {
+    super(`lock busy: ${lockName}`);
+    this.name = "LockBusy";
+    this.lockName = lockName;
+  }
+}
+
+function lockWaitMs() {
+  const value = Number(process.env.BRIEFING_LOCK_WAIT_MS);
+  return Number.isInteger(value) && value >= 0 && process.env.BRIEFING_LOCK_WAIT_MS !== "" ? value : 20000;
+}
+
+function lockSnapshot(path) {
+  try {
+    const before = statSync(path);
+    const token = readFileSync(path, "utf8");
+    const after = statSync(path);
+    if (before.dev !== after.dev || before.ino !== after.ino || before.mtimeMs !== after.mtimeMs) return null;
+    return { dev: after.dev, ino: after.ino, mtimeMs: after.mtimeMs, token };
+  } catch (err) {
+    if (err.code === "ENOENT") return null;
+    throw err;
+  }
+}
+
+function sameLock(a, b) {
+  return !!a && !!b && a.dev === b.dev && a.ino === b.ino && a.token === b.token;
+}
+
+function reclaimStaleLock(path, staleMs) {
+  const observed = lockSnapshot(path);
+  if (!observed || Date.now() - observed.mtimeMs <= staleMs) return false;
+  const current = lockSnapshot(path);
+  if (!sameLock(observed, current) || observed.mtimeMs !== current.mtimeMs) return false;
+
+  const stale = `${path}.stale-${randomUUID()}`;
+  try { renameSync(path, stale); } catch (err) {
+    if (err.code === "ENOENT") return false;
+    throw err;
+  }
+  const moved = lockSnapshot(stale);
+  if (!sameLock(observed, moved) || observed.mtimeMs !== moved.mtimeMs) {
+    // A fresh owner replaced the lock after our last check. Restore its inode
+    // without overwriting a newer lock that another contender may have made.
+    try { linkSync(stale, path); } catch (err) {
+      if (err.code === "EEXIST") throw new Error(`lock changed during stale recovery: ${path}`);
+      throw err;
+    }
+    unlinkSync(stale);
+    return false;
+  }
+  unlinkSync(stale);
+  return true;
+}
+
+export async function withLock(name, fn, waitMs = lockWaitMs(), staleMs = LOCK_STALE_MS) {
+  const dir = join(ROOT, ".locks");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `${name}.lock`);
+  const token = `${process.pid}-${randomUUID()}`;
+  const deadline = Date.now() + waitMs;
+  let fd;
+  for (;;) {
+    try {
+      fd = openSync(path, "wx", 0o600);
+      try { writeFileSync(fd, token); } catch (err) {
+        closeSync(fd);
+        fd = undefined;
+        unlinkSync(path);
+        throw err;
+      }
+      break;
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+      if (reclaimStaleLock(path, staleMs)) continue;
+      if (Date.now() >= deadline) throw new LockBusy(name);
+      await new Promise((resolve) => setTimeout(resolve, Math.min(100 + Math.floor(Math.random() * 151), Math.max(1, deadline - Date.now()))));
+    }
+  }
+  const held = fstatSync(fd);
+  const owned = () => {
+    const current = lockSnapshot(path);
+    return !!current && current.dev === held.dev && current.ino === held.ino && current.token === token;
+  };
+  let lost = false;
+  const heartbeat = setInterval(() => {
+    try {
+      if (!owned()) { lost = true; clearInterval(heartbeat); return; }
+      const now = new Date();
+      futimesSync(fd, now, now);
+    } catch { lost = true; clearInterval(heartbeat); }
+  }, Math.min(60000, Math.max(25, Math.floor(staleMs / 4))));
+  heartbeat.unref();
+  try {
+    const result = await fn();
+    if (lost || !owned()) throw new Error(`lock lost: ${name}`);
+    return result;
+  } finally {
+    clearInterval(heartbeat);
+    try {
+      if (owned()) unlinkSync(path);
+    } finally { closeSync(fd); }
+  }
+}
 
 export function today() {
   const now = new Date();
@@ -22,7 +130,7 @@ export function today() {
 export function loadState(source, day, empty) {
   try {
     const state = JSON.parse(readFileSync(join(ROOT, `state-${source}.json`), "utf8"));
-    if (state.day === day) return state;
+    if (state.day === day) return { day, ...empty, ...state };
   } catch {}
   return { day, ...empty };
 }
@@ -30,21 +138,44 @@ export function loadState(source, day, empty) {
 export function saveState(source, state) {
   mkdirSync(ROOT, { recursive: true });
   const file = join(ROOT, `state-${source}.json`);
-  writeFileSync(`${file}.tmp`, JSON.stringify(state, null, 2));
-  renameSync(`${file}.tmp`, file);
+  const temp = join(ROOT, `.state-${source}-${process.pid}-${randomUUID()}.tmp`);
+  try {
+    writeFileSync(temp, JSON.stringify(state, null, 2), { flag: "wx", mode: 0o600 });
+    renameSync(temp, file);
+  } finally {
+    try { unlinkSync(temp); } catch (err) { if (err.code !== "ENOENT") throw err; }
+  }
 }
 
-export function appendItems(day, items) {
-  const dir = join(ROOT, day);
-  mkdirSync(dir, { recursive: true });
-  const file = join(dir, "items.jsonl");
-  appendFileSync(file, items.map((i) => JSON.stringify(i) + "\n").join(""));
-  return file;
+export async function appendItems(day, items) {
+  return withLock("items", () => {
+    const dir = join(ROOT, day);
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, "items.jsonl");
+    const ids = new Set();
+    try {
+      for (const line of readFileSync(file, "utf8").split("\n")) {
+        try {
+          const id = JSON.parse(line).id;
+          if (id) ids.add(id);
+        } catch {} // Old items or a torn line should not prevent collection.
+      }
+    } catch (err) {
+      if (err.code !== "ENOENT") throw err;
+    }
+    const added = items.filter((item) => {
+      if (item.id && ids.has(item.id)) return false;
+      if (item.id) ids.add(item.id);
+      return true;
+    });
+    if (added.length) appendFileSync(file, added.map((item) => JSON.stringify(item) + "\n").join(""));
+    return { file, added };
+  }, 10000);
 }
 
-export function clip(text) {
+export function clip(text, limit = TEXT_LIMIT) {
   const t = String(text || "").replace(/\s+/g, " ").trim();
-  return t.length > TEXT_LIMIT ? t.slice(0, TEXT_LIMIT) + "…" : t;
+  return t.length > limit ? t.slice(0, limit) + "…" : t;
 }
 
 // Keep test and live page sizes small when needed, while never exceeding the
@@ -132,7 +263,7 @@ export function serve(name, tools) {
       out({ id: msg.id, result: {
         protocolVersion: msg.params?.protocolVersion || "2025-06-18",
         capabilities: { tools: {} },
-        serverInfo: { name, version: "0.1.0" },
+        serverInfo: { name, version: "0.2.0" },
       } });
     } else if (msg.method === "tools/list") {
       out({ id: msg.id, result: { tools: tools.map(({ run, ...t }) => t) } });

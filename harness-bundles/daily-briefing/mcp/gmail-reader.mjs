@@ -2,7 +2,7 @@
 // GMAIL_ACCESS_TOKEN holds an OpenShell placeholder; the `gmail` provider
 // profile lets the namespace credential proxy mint and inject the real token
 // for gmail.googleapis.com only. Refresh material never reaches this process.
-import { appendItems, clip, drain, getJson, loadState, pageSize, saveState, serve, today } from "./briefing-lib.mjs";
+import { appendItems, clip, drain, getJson, loadState, LockBusy, pageSize, saveState, serve, today, withLock } from "./briefing-lib.mjs";
 
 const API = process.env.GMAIL_API_URL || "https://gmail.googleapis.com/gmail/v1/users/me";
 
@@ -12,7 +12,7 @@ function token() {
   return t;
 }
 
-async function newMessages() {
+async function collect() {
   const { day, startSec } = today();
   const state = loadState("gmail", day, { seen: [] });
   const seen = new Set(state.seen);
@@ -31,28 +31,40 @@ async function newMessages() {
   const items = [];
   try {
     for (const id of ids) {
-    if (seen.has(id)) continue;
-    const m = await getJson(`${API}/messages/${id}?format=metadata` +
-      "&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date", token());
-    const header = (n) => (m.payload?.headers || []).find((h) => h.name.toLowerCase() === n)?.value || "";
-    items.push({
-      source: "gmail", from: header("from"), subject: clip(header("subject")),
-      time: new Date(Number(m.internalDate || 0)).toISOString(), snippet: clip(m.snippet),
-      unread: (m.labelIds || []).includes("UNREAD"),
-    });
-    seen.add(id);
+      if (seen.has(id)) continue;
+      const m = await getJson(`${API}/messages/${id}?format=metadata` +
+        "&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date", token());
+      const header = (n) => (m.payload?.headers || []).find((h) => h.name.toLowerCase() === n)?.value || "";
+      items.push({
+        source: "gmail", id: `gmail:${id}`, from: header("from"), subject: clip(header("subject")),
+        time: new Date(Number(m.internalDate || 0)).toISOString(), snippet: clip(m.snippet),
+        unread: (m.labelIds || []).includes("UNREAD"),
+      });
+      seen.add(id);
     }
   } catch (err) {
-    if (items.length) appendItems(day, items);
+    if (items.length) await appendItems(day, items);
     state.seen = [...seen];
     saveState("gmail", state);
     throw err;
   }
   items.sort((a, b) => a.time.localeCompare(b.time));
-  const file = items.length ? appendItems(day, items) : null;
+  const { file, added } = items.length ? await appendItems(day, items) : { file: null, added: [] };
   state.seen = [...seen];
   saveState("gmail", state);
-  return { day, new: items.length, items: items.slice(-50), more: Math.max(0, items.length - 50), file };
+  return { day, new: added.length, items: added.slice(-50), more: Math.max(0, added.length - 50), file: added.length ? file : null };
+}
+
+async function newMessages() {
+  try {
+    return await withLock("gmail", collect);
+  } catch (err) {
+    if (err instanceof LockBusy && err.lockName === "gmail") {
+      return { day: today().day, busy: true, new: 0, items: [], more: 0, file: null,
+        note: "another update is collecting Gmail messages now; they are saved to items.jsonl" };
+    }
+    throw err;
+  }
 }
 
 serve("gmail-reader", [

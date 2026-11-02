@@ -1,9 +1,32 @@
 // MCP server (stdio): new Slack messages for the daily briefing, read-only.
 // SLACK_BOT_TOKEN holds an OpenShell placeholder; the `slack` provider
 // profile lets the sandbox proxy put the real token in for slack.com only.
-import { appendItems, clip, drain, getJson, loadState, pageSize, saveState, serve, today } from "./briefing-lib.mjs";
+import { appendItems, clip, drain, getJson, loadState, LockBusy, pageSize, saveState, serve, today, withLock } from "./briefing-lib.mjs";
 
 const API = process.env.SLACK_API_URL || "https://slack.com/api";
+const SYSTEM_SUBTYPES = new Set([
+  "channel_archive", "channel_convert_to_private", "channel_convert_to_public", "channel_join",
+  "channel_leave", "channel_name", "channel_posting_permissions", "channel_purpose",
+  "channel_topic", "channel_unarchive", "ekm_access_denied", "group_archive",
+  "group_join", "group_leave", "group_name", "group_purpose", "group_topic",
+  "group_unarchive", "message_changed", "message_deleted", "message_replied",
+  "pinned_item", "reminder_add", "unpinned_item",
+]);
+
+function contentMessage(m) {
+  return !m.hidden && !SYSTEM_SUBTYPES.has(m.subtype) &&
+    (m.user || m.bot_id || m.subtype === "bot_message");
+}
+
+function messageText(m, limit) {
+  const names = (m.files || []).map((f) => f.title || f.name).filter(Boolean).join(", ");
+  return clip(m.text || (names ? `Shared file: ${names}` : m.subtype === "file_share" ? "Shared a file" : ""), limit);
+}
+
+function lookbackDays() {
+  const days = Number(process.env.BRIEFING_THREAD_LOOKBACK_DAYS);
+  return Number.isInteger(days) && days >= 1 && days <= 30 ? days : 7;
+}
 
 async function call(method, params) {
   const token = process.env.SLACK_BOT_TOKEN || process.env.SLACK_TOKEN;
@@ -44,9 +67,27 @@ async function history(ch, oldest) {
   return messages;
 }
 
-async function newMessages() {
+async function replies(ch, threadTs, oldest) {
+  const messages = [];
+  await drain(async (cursor) => {
+    const body = await call("conversations.replies", {
+      channel: ch.id, ts: threadTs, oldest, limit: pageSize(200), ...(cursor ? { cursor } : {}),
+    });
+    messages.push(...(body.messages || []));
+    const next = body.response_metadata?.next_cursor || "";
+    if (body.has_more && !next) throw new Error("conversations.replies: has_more without a cursor");
+    return next;
+  });
+  const fresh = messages.filter((m) => m.ts !== threadTs && Number(m.ts) > Number(oldest));
+  return {
+    items: fresh.filter(contentMessage),
+    latestSeen: fresh.reduce((latest, m) => Number(m.ts) > Number(latest) ? m.ts : latest, oldest),
+  };
+}
+
+async function collect() {
   const { day, startSec } = today();
-  const state = loadState("slack", day, { channels: {}, users: {} });
+  const state = loadState("slack", day, { channels: {}, threads: {}, users: {} });
   const userName = async (id) => {
     if (!id) return "unknown";
     if (!state.users[id]) {
@@ -57,15 +98,21 @@ async function newMessages() {
     }
     return state.users[id];
   };
+  const slackItem = async (ch, m) => ({
+    source: "slack", id: `slack:${ch.id}:${m.ts}`, channel: `#${ch.name}`,
+    from: await userName(m.user || m.bot_id),
+    time: new Date(Number(m.ts) * 1000).toISOString(), text: messageText(m),
+  });
   const items = [];
   const list = await channels();
   const failures = [];
   let file = null;
+  const lookback = String(startSec - lookbackDays() * 86400);
   for (const ch of list) {
     const oldest = state.channels[ch.id] || String(startSec);
     let messages;
     try {
-      messages = await history(ch, oldest);
+      messages = await history(ch, lookback);
     } catch (err) {
       failures.push(`#${ch.name}: ${err?.cause?.code || err.message}`);
       continue;
@@ -73,20 +120,38 @@ async function newMessages() {
     messages.sort((a, b) => Number(a.ts) - Number(b.ts));
     const chItems = [];
     for (const m of messages) {
-      if (m.subtype && m.subtype !== "bot_message") continue;
-      chItems.push({
-        source: "slack", channel: `#${ch.name}`, from: await userName(m.user || m.bot_id),
-        time: new Date(Number(m.ts) * 1000).toISOString(), text: clip(m.text),
-        replies: m.reply_count || 0,
-      });
+      if (Number(m.ts) <= Number(oldest)) continue;
+      // A channel broadcast is also returned by replies, where it has its
+      // parent context. Do not append the history copy first.
+      if (!contentMessage(m) || m.subtype === "thread_broadcast" || m.subtype === "reply_broadcast") continue;
+      chItems.push({ ...await slackItem(ch, m), replies: m.reply_count || 0 });
     }
-    if (chItems.length) file = appendItems(day, chItems);
-    items.push(...chItems);
+    state.threads[ch.id] ||= {};
+    for (const parent of messages) {
+      if (!contentMessage(parent) || parent.thread_ts !== parent.ts || !(parent.reply_count > 0)) continue;
+      const position = state.threads[ch.id][parent.ts] || String(startSec);
+      if (parent.latest_reply && Number(parent.latest_reply) <= Number(position)) continue;
+      try {
+        const thread = await replies(ch, parent.ts, position);
+        for (const m of thread.items) {
+          chItems.push({ ...await slackItem(ch, m), in_thread: messageText(parent, 200) });
+        }
+        state.threads[ch.id][parent.ts] = thread.latestSeen;
+      } catch (err) {
+        failures.push(`#${ch.name} thread ${parent.ts}: ${err?.cause?.code || err.message}`);
+      }
+    }
+    chItems.sort((a, b) => a.time.localeCompare(b.time));
+    if (chItems.length) {
+      const appended = await appendItems(day, chItems);
+      items.push(...appended.added);
+      if (appended.added.length) file = appended.file;
+    }
     state.channels[ch.id] = messages.reduce((a, m) => (Number(m.ts) > Number(a) ? m.ts : a), oldest);
     saveState("slack", state);
   }
   if (failures.length) {
-    throw new Error(`conversations.history failed; position kept for: ${failures.join("; ")}`);
+    throw new Error(`Slack read failed; position kept for: ${failures.join("; ")}`);
   }
   saveState("slack", state);
   return {
@@ -95,10 +160,22 @@ async function newMessages() {
   };
 }
 
+async function newMessages() {
+  try {
+    return await withLock("slack", collect);
+  } catch (err) {
+    if (err instanceof LockBusy && err.lockName === "slack") {
+      return { day: today().day, busy: true, new: 0, items: [], more: 0, file: null,
+        note: "another update is collecting Slack messages now; they are saved to items.jsonl" };
+    }
+    throw err;
+  }
+}
+
 serve("slack-reader", [
   {
     name: "new_messages",
-    description: "Slack messages posted today since the last call, in the channels the app is a member of (read-only). Also appends them to /sandbox/briefing/<day>/items.jsonl.",
+    description: "Slack messages posted today since the last call in the channels the app is a member of, including today's replies in threads started in the last 7 days (read-only). Also appends them to /sandbox/briefing/<day>/items.jsonl.",
     inputSchema: { type: "object", properties: {} },
     run: newMessages,
   },

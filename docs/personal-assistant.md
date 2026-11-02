@@ -11,6 +11,7 @@ in to Developer Hub as that user and choose **personal-assistant**. Supply:
 - An NVIDIA inference key for the selected model.
 - A static Slack bot token; invite the bot to the channels it should read and
   grant its read scopes (`channels:read`, `channels:history`, `users:read`).
+  Reading private channels also needs `groups:read` and `groups:history`.
 - A Google OAuth client ID, client secret, and refresh token with the
   `https://www.googleapis.com/auth/gmail.readonly` scope. Obtain offline access
   for the Gmail account through the OAuth consent flow for that client.
@@ -21,7 +22,18 @@ longer deployment. See [Google's expiration documentation](https://developers.go
 Slack rotating refresh tokens are unsupported; use a static bot token.
 
 Create the Slack app as an **internal (custom) app** in the workspace that owns
-the bot, and do not distribute it. Since [2025-05-29](https://docs.slack.dev/changelog/2025/05/29/rate-limit-changes-for-non-marketplace-apps), newly created apps that are not distributed through the Marketplace are limited to one `conversations.history` request per minute with at most 15 messages per page; internal apps retain the higher request allowance. The readers page through every available Gmail message and Slack channel/history page since the last saved position.
+the bot, and do not distribute it. Since [2025-05-29](https://docs.slack.dev/changelog/2025/05/29/rate-limit-changes-for-non-marketplace-apps), newly created apps that are not distributed through the Marketplace are limited to one `conversations.history` request per minute with at most 15 messages per page; internal apps retain the higher request allowance. The Gmail reader pages through every available message since today's start.
+
+Each Slack update reads top-level messages from today and the previous seven
+days, then fetches threads with new replies. It collects replies posted today
+when their first message is at most seven days old; replies to older threads
+are not collected. Set `BRIEFING_THREAD_LOOKBACK_DAYS` to an integer from 1
+to 30 to change the window (default 7). Each update makes at least one
+`conversations.history` request per member channel, with another page for
+every 200 top-level messages in the window, plus one or more
+`conversations.replies` requests per thread with new replies. This request
+rate requires an internal Slack app rather than a non-Marketplace distributed
+app with the one-request-per-minute limit.
 
 The provider Secrets stay in Vault and the namespace credential proxy. The
 VM gets metadata and markers. Gmail access tokens are minted in the proxy,
@@ -43,6 +55,11 @@ need no approval; stopping the schedule requires approval. The local
 and generic writes remain subject to the default-deny tool policy.
 Each update rebuilds from today's saved messages, even when the readers report
 zero new messages, so a summary interrupted after collection can recover.
+Scheduled and manual updates can overlap safely. Each reader takes a
+per-source lock and refreshes it during long collections; saved items are
+deduplicated by ID. Stale-lock recovery checks the lock's identity before
+removing it. A second update may report `busy: true` while another process
+collects from the same source; it should continue using the saved items.
 
 Verify that the proxy Deployment is Ready, `gmail-meta` and `slack-meta` hold
 only `provider`, and `make test-credential-isolation` passes. After the first

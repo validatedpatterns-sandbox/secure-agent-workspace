@@ -441,6 +441,7 @@ CONFIG_DEFAULTS = {
     "mtlsGateway": "saw-installer",
     "relayGateway": "saw-relay",
     "credentialMode": "proxy",
+    "governanceEngine": "interceptor",
     "credentialProxy": {"url": "", "markerPrefix": "saw-cred", "secrets": [], "keyGeneration": 1},
     "gatewayPki": {"generation": 1},
     "ownerSubject": "",
@@ -3734,6 +3735,18 @@ class ProfileApplier:
         errors = []
         for profile, ws in enabled_workspaces(profiles):
             where = f"{profile.name}/{ws.name}"
+            if (self.cfg.get("credentialMode", "proxy") == "direct"
+                    and self.cfg.get("governanceEngine") == "apf"):
+                refreshed = [p for p in ws.providers if p.enabled and p.refresh_strategy]
+                if refreshed:
+                    self.governance_catalog(Workspace(name="default"))
+                for p in refreshed:
+                    record = self.catalog_details.get("default", {}).get(p.type, {})
+                    if not any((c.get("refresh") or {}).get("strategy") == p.refresh_strategy
+                               for c in record.get("credentials", []) if isinstance(c, dict)):
+                        errors.append(f"{where}: direct-mode refresh provider '{p.name}' requires "
+                                      "gateway refresh metadata that APF does not advertise; "
+                                      "use proxy mode or the interceptor engine")
             for prov in ws.providers:
                 if not prov.enabled or not prov.credentials_spec:
                     continue

@@ -81,6 +81,7 @@ changes here reach an existing VM after a restart (unlike cloud-init).
       "mtlsGateway" "saw-installer"
       "relayGateway" "saw-relay"
       "credentialMode" (include "openshell-sandbox.credentialMode" .)
+      "governanceEngine" (ternary (include "openshell-sandbox.governanceEngine" .) "" .Values.governance.enabled)
       "credentialProxy" (dict
           "url" $proxyUrl
           "markerPrefix" "saw-cred"

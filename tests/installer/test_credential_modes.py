@@ -232,3 +232,21 @@ def test_config_refuses_invalid_mode_contract(ab, tmp_path, mode, proxy, error):
     path.write_text(json.dumps({"vmName": "test", "credentialMode": mode, "credentialProxy": proxy}))
     with pytest.raises(ab.InstallerError, match=error):
         ab.load_config(path)
+
+
+@pytest.mark.parametrize("advertises", [False, True])
+def test_direct_apf_refresh_requires_live_gateway_metadata(ab, config, fake_env, advertises):
+    profiles, ws, p = small_profile(ab, refresh_strategy="oauth2_refresh_token")
+    cfg = {**direct(config), "governanceEngine": "apf"}
+    a = ab.ProfileApplier(ab.Shell(), cfg, {})
+    a.catalogs["default"] = {"nvidia": {"integrate.api.nvidia.com"}}
+    credential = {"name": "api_key", "source": {"kind": "oauth2"}}
+    if advertises:
+        credential["refresh"] = {"strategy": "oauth2_refresh_token"}
+    a.catalog_details["default"] = {"nvidia": {"credentials": [credential]}}
+    if advertises:
+        a.preflight(profiles)
+    else:
+        with pytest.raises(ab.InstallerError, match="APF does not advertise"):
+            a.preflight(profiles)
+    assert fake_env.openshell_calls() == []

@@ -229,9 +229,11 @@ re-signed bundle changes new sandboxes' policy. Confirm these on a new install:
   [credential isolation](credential-isolation.md) for the refresh contract.
 - **Direct credentials.** `credentialProxy.enabled: false` hands real keys to
   the gateway. Gmail uses gateway-managed refresh. The APF source bundle also
-  carries the profile refresh declaration; verify `provider refresh configure`
-  against the deployed APF version before using this combination. A rejected
-  configure is fatal. The default interceptor is the live acceptance engine.
+  translates refresh into an APF credential source. If the live catalog lacks
+  the gateway refresh declaration, installer preflight refuses direct-mode
+  Gmail before changing providers or sandboxes. Use proxy mode or the default
+  interceptor, which is the live acceptance engine. A rejected refresh
+  configure is also fatal.
 - `provider profile import` of a profile that is in the bundle is allowed or refused cleanly
   (the installer treats a refusal as non-fatal).
 - The APF pod stays up with `interceptor.gatewayEndpoint` empty (SAW has a gateway per user VM,

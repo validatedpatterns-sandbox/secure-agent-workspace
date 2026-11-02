@@ -311,7 +311,8 @@ A configured/booted mode mismatch means a restart is pending; use
 directory has the same hint. `rotationRequired` means exposed credentials must
 be revoked and replaced before increasing `credentialProxy.keyGeneration`.
 A direct-mode Gmail configure failure requires checking the gateway refresh
-interface and governance engine; APF refresh compatibility is not assumed.
+interface and governance engine; direct-mode APF refresh is refused in
+preflight when the live profile lacks gateway refresh metadata.
 
 
 | Event | Result |

@@ -1,0 +1,51 @@
+[openshell]
+version = 2
+
+[openshell.gateway]
+compute_driver = "podman"
+# Only the governance interceptor vends provider profiles; imported
+# profiles are not used.
+provider_profile_sources = [
+  { type = "interceptor", name = "governance" },
+]
+
+[openshell.gateway.gateway_jwt]
+signing_key_path = "/home/cloud-user/.local/state/openshell/tls/jwt/signing.pem"
+public_key_path = "/home/cloud-user/.local/state/openshell/tls/jwt/public.pem"
+kid_path = "/home/cloud-user/.local/state/openshell/tls/jwt/kid"
+
+[openshell.drivers.podman]
+supervisor_image = "quay.io/opendatahub/odh-openshell-supervisor@sha256:f2178e5ef0948c145b7cc3a7ab3b3238aaf36d2c13a2826aae39b601e987bd7b"
+sandbox_runtime_image = "quay.io/opendatahub/odh-openshell-sandbox@sha256:acc2e36f4b05d494714aaa0a10392d2148bda3c26bbf75078f6b3c3cdf7c67ea"
+# Agent sandboxes mount their trusted gate and audit volumes through caller
+# driver config; an OpenClaw harness adds a third mount. Admission is limited
+# to the installer's admin identity and exact volume targets.
+# Resource admission and enable_bind_mounts keep their defaults (on / off),
+# so only a volume labelled attachable for the caller's workspace can be
+# attached, and no host path or image.
+allow_driver_config = true
+
+[[openshell.gateway.interceptors]]
+name           = "governance"
+grpc_endpoint  = "http://governance-interceptor.openshell-agents.svc.cluster.local:18081"
+allow_insecure_transport = true
+order          = 10
+failure_policy = "fail_closed"
+binding_policy = "allowlist"
+timeout        = "500ms"
+
+[[openshell.gateway.interceptors.bindings]]
+rpc = "openshell.v1.OpenShell/CreateSandbox"
+phases = ["modify_operation", "validate"]
+
+[[openshell.gateway.interceptors.bindings]]
+rpc = "openshell.v1.OpenShell/CreateProvider"
+phases = ["validate"]
+
+[[openshell.gateway.interceptors.bindings]]
+rpc = "openshell.v1.OpenShell/UpdateConfig"
+phases = ["validate"]
+
+[[openshell.gateway.interceptors.bindings]]
+rpc = "openshell.v1.OpenShell/SubmitPolicyAnalysis"
+phases = ["validate"]

@@ -204,3 +204,36 @@ def test_shipped_refresh_url_is_validated_at_render(tmp_path, token_url):
                        '-f', str(ROOT / 'tests/fixtures/credential-proxy-values.yaml')],
                       capture_output=True, text=True)
     assert result.returncode != 0 and 'refresh token_url' in result.stderr
+
+
+@pytest.mark.ci_external
+def test_direct_mode_needs_no_image_and_renders_no_proxy_objects():
+    docs = render(SAW, "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
+                  "--set", "credentialProxy.enabled=false")
+    assert not any("credential-proxy" in d["metadata"]["name"] for d in docs)
+    vm = next(d for d in docs if d["kind"] == "VirtualMachine")
+    vols = vm["spec"]["template"]["spec"]["volumes"]
+    sources = {v.get("secret", {}).get("secretName") for v in vols}
+    assert {"inference", "web-search"} <= sources
+    assert not any(name and name.endswith("-meta") for name in sources)
+    slot = next(v for v in vols if v["name"] == "saw-proxy-ca")
+    assert slot["configMap"]["name"] == "saw-test-credential-mode"
+    cm = next(d for d in docs if d["metadata"]["name"] == "saw-test-credential-mode")
+    assert cm["data"] == {"mode": "direct"}
+    installer = next(d for d in docs if d["metadata"]["name"] == "saw-test-installer")
+    cfg = json.loads(installer["data"]["config.json"])
+    assert cfg["credentialMode"] == "direct"
+    assert cfg["credentialProxy"] == {"url": "", "markerPrefix": "saw-cred", "secrets": [], "keyGeneration": 1}
+    toml = installer["data"]["gateway.toml"]
+    for key in ("https_proxy", "proxy_ca_bundle", "proxy_connect_by_hostname"):
+        assert key not in toml
+
+
+@pytest.mark.ci_external
+def test_direct_mode_still_validates_refresh_token_egress():
+    result = run_helm([HELM, "template", "saw-test", str(SAW),
+                       "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
+                       "--set", "credentialProxy.enabled=false", "--set-json", 'egress.allow=["example.com"]'],
+                      capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "refresh token_url host must be in egress.allow" in result.stderr

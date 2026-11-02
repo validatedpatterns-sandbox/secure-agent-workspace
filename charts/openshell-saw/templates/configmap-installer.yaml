@@ -1,3 +1,4 @@
+{{- include "openshell-sandbox.validateRefreshEgress" . -}}
 {{- /*
 Everything the in-guest installer needs except credentials. Attached to the
 VM as a read-only disk and mounted at /run/saw/installer on every boot, so
@@ -64,8 +65,14 @@ changes here reach an existing VM after a restart (unlike cloud-init).
 {{- $trusted := .Values.sandboxUiProxy.trustedProxy | default dict }}
 {{- $bindings := list }}
 {{- $attached := concat (list .Values.inference.secretName) (.Values.additionalProviderSecrets | default list) | compact }}
+{{- if include "openshell-sandbox.credentialProxyEnabled" . }}
 {{- range .Values.credentialProxy.secrets }}
 {{- if has .name $attached }}{{- $bindings = append $bindings . }}{{- end }}
+{{- end }}
+{{- end }}
+{{- $proxyUrl := "" }}
+{{- if include "openshell-sandbox.credentialProxyEnabled" . }}
+{{- $proxyUrl = printf "http://%s-credential-proxy.%s.svc.cluster.local:3128" (include "openshell-sandbox.fullname" .) .Release.Namespace }}
 {{- end }}
 {{- $config := dict
       "vmName" (include "openshell-sandbox.fullname" .)
@@ -73,10 +80,12 @@ changes here reach an existing VM after a restart (unlike cloud-init).
       "runtimeUser" "cloud-user"
       "mtlsGateway" "saw-installer"
       "relayGateway" "saw-relay"
+      "credentialMode" (include "openshell-sandbox.credentialMode" .)
       "credentialProxy" (dict
-          "url" (printf "http://%s-credential-proxy.%s.svc.cluster.local:3128" (include "openshell-sandbox.fullname" .) .Release.Namespace)
+          "url" $proxyUrl
           "markerPrefix" "saw-cred"
-          "secrets" $bindings)
+          "secrets" $bindings
+          "keyGeneration" .Values.credentialProxy.keyGeneration)
       "gatewayPki" (dict "generation" .Values.gatewayPki.generation)
       "ownerSubject" (.Values.accessControl.ownerSubject | default "")
       "ownerSubjectSource" (.Values.accessControl.ownerSubjectSource | default "")

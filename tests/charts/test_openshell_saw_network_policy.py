@@ -377,3 +377,17 @@ def test_firewall_ports_are_in_network_policy_outside_rule(args):
     outside = next(r for r in vm["egress"] if "ipBlock" in r["to"][0])
     np_ports = {p["port"] for p in outside["ports"]}
     assert firewall_ports <= np_ports, f"EgressFirewall ports {firewall_ports - np_ports} missing from networkPolicy outside rule"
+
+
+@pytest.mark.ci_external
+@pytest.mark.parametrize("cleanup", [True, False])
+def test_direct_mode_policies_and_api_firewall_exception(cleanup):
+    docs = render("--set", "credentialProxy.enabled=false", "--set", f"cleanupOnDelete={str(cleanup).lower()}")
+    ps = policies(docs)
+    assert not any("credential-proxy" in name for name in ps)
+    assert "credential-proxy" not in str(ps)
+    firewall = docs[("EgressFirewall", "default")]
+    allows = [r for r in firewall["spec"]["egress"] if r["type"] == "Allow"]
+    api = [r for r in allows if r.get("to", {}).get("cidrSelector") == "192.0.2.10/32"]
+    assert bool(api) is cleanup
+    assert firewall["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "-30"

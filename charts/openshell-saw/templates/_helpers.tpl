@@ -370,9 +370,11 @@ sandbox_runtime_image = {{ .Values.bom.spec.openshell.sandbox.image | quote }}
 # so only a volume labelled attachable for the caller's workspace can be
 # attached, and no host path or image.
 allow_driver_config = true
+{{- if include "openshell-sandbox.credentialProxyEnabled" . }}
 https_proxy = {{ printf "http://%s-credential-proxy.%s.svc.cluster.local:3128" (include "openshell-sandbox.fullname" .) .Release.Namespace | quote }}
 proxy_ca_bundle = "/home/cloud-user/.config/openshell/credential-proxy-ca.pem"
 proxy_connect_by_hostname = true
+{{- end }}
 {{- if .Values.governance.enabled }}
 
 {{- $engine := include "openshell-sandbox.governanceEngine" . }}
@@ -650,5 +652,35 @@ namespace podSelector is permitted; an empty namespaceSelector is not. */}}
 key-less -meta copies; the issuer CA bundle and registry pull token as is. */}}
 {{- define "openshell-sandbox.vmSecretSource" -}}
 {{- $root := index . 0 -}}{{- $name := index . 1 -}}
-{{- if has $name (list (include "openshell-sandbox.caBundleSecret" $root) ($root.Values.registry.authSecret | default "")) -}}{{ $name }}{{- else -}}{{ $name }}-meta{{- end -}}
+{{- if or (not (include "openshell-sandbox.credentialProxyEnabled" $root)) (has $name (list (include "openshell-sandbox.caBundleSecret" $root) ($root.Values.registry.authSecret | default ""))) -}}{{ $name }}{{- else -}}{{ $name }}-meta{{- end -}}
 {{- end }}
+
+{{/* Pattern parameters may be strings. Only explicit false disables proxying. */}}
+{{- define "openshell-sandbox.credentialProxyEnabled" -}}
+{{- if ne (toString .Values.credentialProxy.enabled) "false" -}}true{{- end -}}
+{{- end -}}
+{{- define "openshell-sandbox.credentialMode" -}}
+{{- if include "openshell-sandbox.credentialProxyEnabled" . -}}proxy{{- else -}}direct{{- end -}}
+{{- end -}}
+{{- define "openshell-sandbox.credentialModeConfigMap" -}}
+{{- if include "openshell-sandbox.credentialProxyEnabled" . -}}saw-proxy-ca{{- else -}}{{ include "openshell-sandbox.fullname" . }}-credential-mode{{- end -}}
+{{- end -}}
+
+{{/* Gateway refresh in direct mode needs the same token host as the broker. */}}
+{{- define "openshell-sandbox.validateRefreshEgress" -}}
+{{- range $path, $_ := .Files.Glob "files/provider-profiles/*.yaml" -}}
+{{- $profile := $.Files.Get $path | fromYaml -}}
+{{- range $credential := $profile.credentials | default list -}}
+{{- $spec := $credential.refresh | default dict -}}
+{{- if eq ($spec.strategy | default "") "oauth2_refresh_token" -}}
+{{- $url := urlParse $spec.token_url -}}
+{{- if or (ne $url.scheme "https") $url.userinfo $url.query $url.fragment (contains "?" $spec.token_url) (contains "#" $spec.token_url) (not (regexMatch "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:443)?$" $url.host)) -}}
+{{- fail (printf "provider %s refresh token_url must be HTTPS on port 443 without userinfo, query or fragment" $profile.id) -}}
+{{- end -}}
+{{- if not (has (trimSuffix ":443" $url.host) ($.Values.egress.allow | default list)) -}}
+{{- fail (printf "provider %s refresh token_url host must be in egress.allow" $profile.id) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

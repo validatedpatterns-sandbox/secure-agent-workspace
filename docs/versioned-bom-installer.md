@@ -781,3 +781,13 @@ interceptor image must be built from the same tag
 sandbox runtime image, image only), provider profiles must list `binaries`,
 and agents call their provider's own endpoint instead of
 `https://inference.local`.
+
+## Credential mode status
+
+Both install and apply status include `credentialMode: {configured, booted,
+applied}`. Applied changes only after a successful apply and all pending sandbox
+restores finish. Proxy status also includes `credentialProxy: {url,
+caFingerprint}`; direct status omits that field. Optional `rotationRequired`
+lists exposed Secret/key names until the operator rotates keys and increases
+`credentialProxy.keyGeneration`. `/var/lib/saw/credential-mode.json` is
+root-owned and never stores credential values.

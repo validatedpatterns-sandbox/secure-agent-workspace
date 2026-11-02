@@ -220,13 +220,18 @@ re-signed bundle changes new sandboxes' policy. Confirm these on a new install:
   the provider's endpoint with a nonsecret marker through the sandbox proxy; the
   namespace credential proxy injects the real key only at the bound HTTPS host.
   This still needs the profile's `endpoints` and `binaries` (kept).
-- **Expiring tokens.** SAW's namespace credential proxy mints Gmail access
+- **Expiring tokens.** In proxy mode, SAW's namespace credential proxy mints Gmail access
   tokens from a `refresh: true` binding using the shipped provider profile.
   The VM and gateway receive only the access-token marker, never refresh
   material. Slack uses a static bot token; rotating Slack tokens are not yet
   supported. Check `oc -n saw-<user> logs deploy/<user>-credential-proxy` for
   successful `oauth-refresh` events about 55 minutes apart. See
   [credential isolation](credential-isolation.md) for the refresh contract.
+- **Direct credentials.** `credentialProxy.enabled: false` hands real keys to
+  the gateway. Gmail uses gateway-managed refresh. The APF source bundle also
+  carries the profile refresh declaration; verify `provider refresh configure`
+  against the deployed APF version before using this combination. A rejected
+  configure is fatal. The default interceptor is the live acceptance engine.
 - `provider profile import` of a profile that is in the bundle is allowed or refused cleanly
   (the installer treats a refusal as non-fatal).
 - The APF pod stays up with `interceptor.gatewayEndpoint` empty (SAW has a gateway per user VM,

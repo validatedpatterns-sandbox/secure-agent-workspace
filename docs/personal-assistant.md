@@ -5,7 +5,7 @@ The `personal-assistant` profile creates a NemoClaw sandbox with the
 under `/sandbox/briefing/<YYYY-MM-DD>/briefing.md`.
 
 Deploy with README **Option A: Validated Pattern**, pinning an image built from
-this branch's `credential-proxy/` sources. Create a Keycloak account, then sign
+this branch's `credential-proxy/` sources when proxy mode is enabled. Create a Keycloak account, then sign
 in to Developer Hub as that user and choose **personal-assistant**. Supply:
 
 - An NVIDIA inference key for the selected model.
@@ -35,7 +35,7 @@ every 200 top-level messages in the window, plus one or more
 rate requires an internal Slack app rather than a non-Marketplace distributed
 app with the one-request-per-minute limit.
 
-The provider Secrets stay in Vault and the namespace credential proxy. The
+In proxy mode the provider Secrets stay in Vault and the namespace credential proxy. The
 VM gets metadata and markers. Gmail access tokens are minted in the proxy,
 cached only in memory, and refreshed five minutes before expiry. The token URL
 comes only from the shipped profile, preventing tenant-controlled redirects
@@ -43,6 +43,19 @@ of refresh material. A transient network, timeout, 429, or 5xx failure during
 early refresh keeps serving the cached token until it really expires and retries
 after 60 seconds; authorization failures drop it immediately and return a
 sanitized 502. Updating the Vault material through ESO drops the cache.
+
+In direct mode (`credentialProxy.enabled: false`) the VM mounts full provider
+Secrets. The gateway configures and rotates Gmail OAuth credentials itself;
+Slack remains a static bot token. Check:
+
+```bash
+openshell provider refresh status gmail --workspace personal-assistant
+```
+
+The token URL host must stay in `egress.allow`. A token-only Gmail Secret is
+accepted with a warning and needs manual renewal. Mode switches preserve
+`/sandbox/briefing`; see [switching modes](credential-isolation.md#switching-modes)
+for the restart, cleanup and mandatory key-rotation sequence.
 
 Once installation reports `apply: Done`, ask **Set up my daily briefing.**
 The agent checks for an existing job, asks approval for `openclaw cron add`,

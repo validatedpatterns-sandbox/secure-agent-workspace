@@ -106,3 +106,16 @@ helm upgrade <name> charts/openshell-saw -n saw-<name> \
 ```
 
 Restore the corrected topology values and scoped rules in the chart or SAW values, then re-enable the policy and repeat `tests/test-network-policy.sh` with a dedicated peer. Disabling NetworkPolicy removes in-cluster isolation; while `cleanupOnDelete: true`, the scoped API EgressFirewall exception remains so a later delete can complete. During that rollback the VM can use that exception until NetworkPolicy is restored.
+
+## Credential mode mismatch or rotation warning
+
+`credential mode mismatch: configured …, booted …` means live installer config
+changed while VM volume sources still describe the old mode. Review
+`make saw-restart-pending` then run it with `CONFIRM=yes`. A missing direct key
+in a metadata-only directory also points to that restart. No gateway changes
+are made while the mismatch remains.
+
+`rotationRequired` persists after direct to proxy migration. Revoke and replace
+the named provider credentials, sync Vault/ESO, then increase
+`credentialProxy.keyGeneration`. A missing proxy CA or unhealthy proxy is only
+a prerequisite in proxy mode. See [credential modes](credential-isolation.md).

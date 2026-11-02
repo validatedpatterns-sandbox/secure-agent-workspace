@@ -6762,7 +6762,8 @@ def prepare_credential_mode(state_dir, cfg, home, etc_dir, dry_run=False):
         prior = "proxy" if (status.get("install", {}).get("credentialProxy", {}).get("url")
                              or (Path(etc_dir) / "credential-proxy-ca.pem").exists()) else "direct"
         # A pristine VM has no previous credentials to migrate.
-        if (not status and not (Path(state_dir) / "installed.json").exists()
+        if (not (status.get("install") or status.get("apply"))
+                and not (Path(state_dir) / "installed.json").exists()
                 and not (Path(etc_dir) / "credential-proxy-ca.pem").exists()):
             prior = cfg["credentialMode"]
         state = {"applied": prior, "transition": None, "exposed": [],

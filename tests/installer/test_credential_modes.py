@@ -196,8 +196,13 @@ def test_static_token_fallback_still_guards_refresh_material_refs(ab, secrets_di
         ab.resolve_credentials(profiles, secrets_dir, {}, "direct")
 
 
-def test_fresh_vm_does_not_require_rotation_even_with_prebooted_gateway_tls(ab, config, fake_env, tmp_path):
-    state = ab.prepare_credential_mode(tmp_path / "state", config, fake_env.home, tmp_path / "etc")
+@pytest.mark.parametrize("bundle_status", [None, {"signature": "unsigned"}, {"signature": "verified"}])
+def test_fresh_vm_does_not_require_rotation_even_with_prebooted_gateway_tls(ab, config, fake_env, tmp_path, bundle_status):
+    state_dir = tmp_path / "state"
+    if bundle_status:
+        state_dir.mkdir()
+        (state_dir / "status.json").write_text(json.dumps({"bundle": bundle_status}))
+    state = ab.prepare_credential_mode(state_dir, config, fake_env.home, tmp_path / "etc")
     assert state["applied"] == "proxy" and not state["transition"]
     assert "rotationRequired" not in state
 

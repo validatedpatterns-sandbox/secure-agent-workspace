@@ -210,3 +210,25 @@ def test_reversing_an_interrupted_direct_migration_still_requires_rotation(ab, c
     state = ab.prepare_credential_mode(state_dir, config, fake_env.home, tmp_path / "etc")
     assert state["rotationRequired"] == ["inference/api_key"]
     assert config["credentialMigration"] == {"from": "direct", "to": "proxy"}
+
+
+@pytest.mark.parametrize("credential_mode", ["proxy", "direct"], indirect=True)
+def test_mode_fallback_uses_credentials_and_ignores_extra_metadata(ab, inputs_dir, credential_mode):
+    for p in (inputs_dir / "proxy-ca").iterdir():
+        p.unlink()
+    (inputs_dir / "secrets/inference/cuda_model").write_text("model-metadata")
+    _, cfg, _, _, _ = ab.Inputs(inputs_dir).load()
+    assert cfg["bootedCredentialMode"] == credential_mode
+
+
+@pytest.mark.parametrize("mode,proxy,error", [
+    ("invalid", TEST_PROXY, "credentialMode"),
+    ("proxy", {"url": "", "markerPrefix": "saw-cred", "secrets": []}, "requires credentialProxy.url"),
+    ("direct", TEST_PROXY, "empty proxy url and no bindings"),
+    ("proxy", {**TEST_PROXY, "keyGeneration": True}, "positive integer"),
+])
+def test_config_refuses_invalid_mode_contract(ab, tmp_path, mode, proxy, error):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"vmName": "test", "credentialMode": mode, "credentialProxy": proxy}))
+    with pytest.raises(ab.InstallerError, match=error):
+        ab.load_config(path)

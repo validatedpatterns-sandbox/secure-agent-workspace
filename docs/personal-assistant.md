@@ -55,10 +55,11 @@ need no approval; stopping the schedule requires approval. The local
 and generic writes remain subject to the default-deny tool policy.
 Each update rebuilds from today's saved messages, even when the readers report
 zero new messages, so a summary interrupted after collection can recover.
-Scheduled and manual updates can overlap safely: each reader takes a
-per-source lock, and saved items are deduplicated by ID. A second update may
-report `busy: true` while another process collects from the same source; it
-should continue using the saved items.
+Scheduled and manual updates can overlap safely. Each reader takes a
+per-source lock and refreshes it during long collections; saved items are
+deduplicated by ID. Stale-lock recovery checks the lock's identity before
+removing it. A second update may report `busy: true` while another process
+collects from the same source; it should continue using the saved items.
 
 Verify that the proxy Deployment is Ready, `gmail-meta` and `slack-meta` hold
 only `provider`, and `make test-credential-isolation` passes. After the first

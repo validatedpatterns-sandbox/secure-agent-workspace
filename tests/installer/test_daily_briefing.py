@@ -614,6 +614,70 @@ def test_a_stale_lock_is_broken(tmp_path):
 
 @pytest.mark.ci_external
 @pytest.mark.skipif(not shutil.which("node"), reason="node is not installed")
+def test_active_lock_stays_fresh_past_the_stale_threshold(tmp_path):
+    import os
+    script = r'''
+import {existsSync} from "node:fs";
+import {join} from "node:path";
+const {withLock, LockBusy} = await import(__LIB__);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const path = join(process.env.BRIEFING_DIR, ".locks", "slack.lock");
+const owner = withLock("slack", () => sleep(1200), 0, 400);
+await sleep(650);
+let busy = false;
+try { await withLock("slack", () => { throw new Error("overlap"); }, 100, 400); }
+catch (err) { busy = err instanceof LockBusy; }
+await owner;
+console.log(JSON.stringify({busy, removed: !existsSync(path)}));
+'''.replace("__LIB__", json.dumps((BUNDLE / "mcp/briefing-lib.mjs").resolve().as_uri()))
+    result = subprocess.run(["node", "--input-type=module", "-e", script], capture_output=True,
+                            text=True, timeout=5, env={**os.environ, "BRIEFING_DIR": str(tmp_path / "briefing")})
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"busy": True, "removed": True}
+
+
+@pytest.mark.ci_external
+@pytest.mark.skipif(not shutil.which("node"), reason="node is not installed")
+def test_stale_recovery_preserves_a_replacement_lock(tmp_path):
+    import os
+    script = r'''
+import {syncBuiltinESMExports, createRequire} from "node:module";
+import {join} from "node:path";
+const require = createRequire(import.meta.url);
+const fs = require("node:fs");
+const dir = join(process.env.BRIEFING_DIR, ".locks");
+fs.mkdirSync(dir, {recursive: true});
+const path = join(dir, "slack.lock");
+fs.writeFileSync(path, "old");
+const old = new Date(Date.now() - 1000);
+fs.utimesSync(path, old, old);
+let swapped = false, entered = false;
+const rename = fs.renameSync;
+fs.renameSync = (from, to) => {
+  if (from === path && to.includes(".stale-") && !swapped) {
+    fs.unlinkSync(path);
+    fs.writeFileSync(path, "fresh");
+    swapped = true;
+  }
+  return rename(from, to);
+};
+syncBuiltinESMExports();
+const {withLock, LockBusy} = await import(__LIB__);
+let busy = false;
+try { await withLock("slack", () => { entered = true; }, 80, 200); }
+catch (err) { busy = err instanceof LockBusy; }
+console.log(JSON.stringify({swapped, busy, entered, token: fs.readFileSync(path, "utf8"),
+  recoveryFiles: fs.readdirSync(dir).filter((name) => name.includes(".stale-")).length}));
+'''.replace("__LIB__", json.dumps((BUNDLE / "mcp/briefing-lib.mjs").resolve().as_uri()))
+    result = subprocess.run(["node", "--input-type=module", "-e", script], capture_output=True,
+                            text=True, timeout=5, env={**os.environ, "BRIEFING_DIR": str(tmp_path / "briefing")})
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"swapped": True, "busy": True, "entered": False,
+                                         "token": "fresh", "recoveryFiles": 0}
+
+
+@pytest.mark.ci_external
+@pytest.mark.skipif(not shutil.which("node"), reason="node is not installed")
 def test_items_are_deduplicated_by_id(tmp_path):
     from datetime import date
     store = tmp_path / "briefing" / date.today().isoformat()
@@ -704,6 +768,38 @@ def test_a_broadcast_reply_is_collected_once(tmp_path):
         assert result["new"] == 1 and result["items"][0]["id"] == f"slack:C1:{reply_ts}"
         saved = Path(result["file"]).read_text().splitlines()
         assert len(saved) == 1 and json.loads(saved[0])["in_thread"] == "Parent"
+    finally:
+        api.kill()
+        api.wait(timeout=5)
+
+
+@pytest.mark.ci_external
+@pytest.mark.skipif(not shutil.which("node"), reason="node is not installed")
+def test_user_authored_reply_subtypes_are_kept_but_system_events_are_skipped(tmp_path):
+    midnight = local_midnight()
+    parent = str(midnight + 60)
+    file_reply, me_reply, join_event, pin_event = (str(midnight + offset) for offset in (120, 180, 240, 300))
+    threads = tmp_path / "threads.json"
+    threads.write_text(json.dumps([{"ts": parent, "text": "Shared parent", "user": "U1",
+                                    "subtype": "file_share", "replies": [
+        {"ts": file_reply, "files": [{"title": "report.pdf"}], "user": "U2", "subtype": "file_share"},
+        {"ts": me_reply, "text": "waves", "user": "U2", "subtype": "me_message"},
+        {"ts": join_event, "text": "joined", "user": "U2", "subtype": "channel_join"},
+        {"ts": pin_event, "text": "pinned", "user": "U2", "subtype": "pinned_item"}]}]))
+    api, port, request_log = start_fake_api(tmp_path, FAKE_SLACK_COUNT="0", FAKE_SLACK_THREADS=str(threads))
+    try:
+        env = reader_env(tmp_path, port)
+        response, result = reader_result("slack", env)
+        assert not response.get("isError"), response
+        assert [item["id"] for item in result["items"]] == [
+            f"slack:C1:{ts}" for ts in (parent, file_reply, me_reply)]
+        assert result["items"][1]["text"] == "Shared file: report.pdf"
+        assert all(item["in_thread"] == "Shared parent" for item in result["items"][1:])
+        state = json.loads((tmp_path / "briefing" / "state-slack.json").read_text())
+        assert state["threads"]["C1"][parent] == pin_event
+        _, again = reader_result("slack", env)
+        assert again["new"] == 0
+        assert len(slack_requests(request_log, "conversations.replies")) == 1
     finally:
         api.kill()
         api.wait(timeout=5)

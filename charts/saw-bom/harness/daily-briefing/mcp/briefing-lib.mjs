@@ -3,7 +3,7 @@
 // /sandbox/briefing: per-source state for the day, and <day>/items.jsonl
 // with every message collected that day.
 import { randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, fstatSync, futimesSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import { join } from "node:path";
@@ -28,45 +28,96 @@ function lockWaitMs() {
   return Number.isInteger(value) && value >= 0 && process.env.BRIEFING_LOCK_WAIT_MS !== "" ? value : 20000;
 }
 
-export async function withLock(name, fn, waitMs = lockWaitMs()) {
+function lockSnapshot(path) {
+  try {
+    const before = statSync(path);
+    const token = readFileSync(path, "utf8");
+    const after = statSync(path);
+    if (before.dev !== after.dev || before.ino !== after.ino || before.mtimeMs !== after.mtimeMs) return null;
+    return { dev: after.dev, ino: after.ino, mtimeMs: after.mtimeMs, token };
+  } catch (err) {
+    if (err.code === "ENOENT") return null;
+    throw err;
+  }
+}
+
+function sameLock(a, b) {
+  return !!a && !!b && a.dev === b.dev && a.ino === b.ino && a.token === b.token;
+}
+
+function reclaimStaleLock(path, staleMs) {
+  const observed = lockSnapshot(path);
+  if (!observed || Date.now() - observed.mtimeMs <= staleMs) return false;
+  const current = lockSnapshot(path);
+  if (!sameLock(observed, current) || observed.mtimeMs !== current.mtimeMs) return false;
+
+  const stale = `${path}.stale-${randomUUID()}`;
+  try { renameSync(path, stale); } catch (err) {
+    if (err.code === "ENOENT") return false;
+    throw err;
+  }
+  const moved = lockSnapshot(stale);
+  if (!sameLock(observed, moved) || observed.mtimeMs !== moved.mtimeMs) {
+    // A fresh owner replaced the lock after our last check. Restore its inode
+    // without overwriting a newer lock that another contender may have made.
+    try { linkSync(stale, path); } catch (err) {
+      if (err.code === "EEXIST") throw new Error(`lock changed during stale recovery: ${path}`);
+      throw err;
+    }
+    unlinkSync(stale);
+    return false;
+  }
+  unlinkSync(stale);
+  return true;
+}
+
+export async function withLock(name, fn, waitMs = lockWaitMs(), staleMs = LOCK_STALE_MS) {
   const dir = join(ROOT, ".locks");
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `${name}.lock`);
   const token = `${process.pid}-${randomUUID()}`;
   const deadline = Date.now() + waitMs;
+  let fd;
   for (;;) {
     try {
-      writeFileSync(path, token, { flag: "wx", mode: 0o600 });
+      fd = openSync(path, "wx", 0o600);
+      try { writeFileSync(fd, token); } catch (err) {
+        closeSync(fd);
+        fd = undefined;
+        unlinkSync(path);
+        throw err;
+      }
       break;
     } catch (err) {
       if (err.code !== "EEXIST") throw err;
-      try {
-        if (Date.now() - statSync(path).mtimeMs > LOCK_STALE_MS) {
-          const stale = `${path}.stale-${randomUUID()}`;
-          try {
-            renameSync(path, stale);
-            unlinkSync(stale);
-          } catch (race) {
-            if (race.code !== "ENOENT") throw race;
-          }
-          continue;
-        }
-      } catch (race) {
-        if (race.code !== "ENOENT") throw race;
-        continue;
-      }
+      if (reclaimStaleLock(path, staleMs)) continue;
       if (Date.now() >= deadline) throw new LockBusy(name);
       await new Promise((resolve) => setTimeout(resolve, Math.min(100 + Math.floor(Math.random() * 151), Math.max(1, deadline - Date.now()))));
     }
   }
-  try {
-    return await fn();
-  } finally {
+  const held = fstatSync(fd);
+  const owned = () => {
+    const current = lockSnapshot(path);
+    return !!current && current.dev === held.dev && current.ino === held.ino && current.token === token;
+  };
+  let lost = false;
+  const heartbeat = setInterval(() => {
     try {
-      if (readFileSync(path, "utf8") === token) unlinkSync(path);
-    } catch (err) {
-      if (err.code !== "ENOENT") throw err;
-    }
+      if (!owned()) { lost = true; clearInterval(heartbeat); return; }
+      const now = new Date();
+      futimesSync(fd, now, now);
+    } catch { lost = true; clearInterval(heartbeat); }
+  }, Math.min(60000, Math.max(25, Math.floor(staleMs / 4))));
+  heartbeat.unref();
+  try {
+    const result = await fn();
+    if (lost || !owned()) throw new Error(`lock lost: ${name}`);
+    return result;
+  } finally {
+    clearInterval(heartbeat);
+    try {
+      if (owned()) unlinkSync(path);
+    } finally { closeSync(fd); }
   }
 }
 

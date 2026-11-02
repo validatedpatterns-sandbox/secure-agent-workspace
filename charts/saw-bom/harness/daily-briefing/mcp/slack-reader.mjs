@@ -4,6 +4,24 @@
 import { appendItems, clip, drain, getJson, loadState, LockBusy, pageSize, saveState, serve, today, withLock } from "./briefing-lib.mjs";
 
 const API = process.env.SLACK_API_URL || "https://slack.com/api";
+const SYSTEM_SUBTYPES = new Set([
+  "channel_archive", "channel_convert_to_private", "channel_convert_to_public", "channel_join",
+  "channel_leave", "channel_name", "channel_posting_permissions", "channel_purpose",
+  "channel_topic", "channel_unarchive", "ekm_access_denied", "group_archive",
+  "group_join", "group_leave", "group_name", "group_purpose", "group_topic",
+  "group_unarchive", "message_changed", "message_deleted", "message_replied",
+  "pinned_item", "reminder_add", "unpinned_item",
+]);
+
+function contentMessage(m) {
+  return !m.hidden && !SYSTEM_SUBTYPES.has(m.subtype) &&
+    (m.user || m.bot_id || m.subtype === "bot_message");
+}
+
+function messageText(m, limit) {
+  const names = (m.files || []).map((f) => f.title || f.name).filter(Boolean).join(", ");
+  return clip(m.text || (names ? `Shared file: ${names}` : m.subtype === "file_share" ? "Shared a file" : ""), limit);
+}
 
 function lookbackDays() {
   const days = Number(process.env.BRIEFING_THREAD_LOOKBACK_DAYS);
@@ -60,8 +78,11 @@ async function replies(ch, threadTs, oldest) {
     if (body.has_more && !next) throw new Error("conversations.replies: has_more without a cursor");
     return next;
   });
-  return messages.filter((m) => m.ts !== threadTs && Number(m.ts) > Number(oldest) &&
-    (!m.subtype || m.subtype === "bot_message" || m.subtype === "thread_broadcast"));
+  const fresh = messages.filter((m) => m.ts !== threadTs && Number(m.ts) > Number(oldest));
+  return {
+    items: fresh.filter(contentMessage),
+    latestSeen: fresh.reduce((latest, m) => Number(m.ts) > Number(latest) ? m.ts : latest, oldest),
+  };
 }
 
 async function collect() {
@@ -80,7 +101,7 @@ async function collect() {
   const slackItem = async (ch, m) => ({
     source: "slack", id: `slack:${ch.id}:${m.ts}`, channel: `#${ch.name}`,
     from: await userName(m.user || m.bot_id),
-    time: new Date(Number(m.ts) * 1000).toISOString(), text: clip(m.text),
+    time: new Date(Number(m.ts) * 1000).toISOString(), text: messageText(m),
   });
   const items = [];
   const list = await channels();
@@ -100,21 +121,22 @@ async function collect() {
     const chItems = [];
     for (const m of messages) {
       if (Number(m.ts) <= Number(oldest)) continue;
-      if (m.subtype && m.subtype !== "bot_message") continue;
+      // A channel broadcast is also returned by replies, where it has its
+      // parent context. Do not append the history copy first.
+      if (!contentMessage(m) || m.subtype === "thread_broadcast" || m.subtype === "reply_broadcast") continue;
       chItems.push({ ...await slackItem(ch, m), replies: m.reply_count || 0 });
     }
     state.threads[ch.id] ||= {};
     for (const parent of messages) {
-      if (parent.thread_ts !== parent.ts || !(parent.reply_count > 0)) continue;
+      if (!contentMessage(parent) || parent.thread_ts !== parent.ts || !(parent.reply_count > 0)) continue;
       const position = state.threads[ch.id][parent.ts] || String(startSec);
       if (parent.latest_reply && Number(parent.latest_reply) <= Number(position)) continue;
       try {
-        const threadReplies = await replies(ch, parent.ts, position);
-        for (const m of threadReplies) {
-          chItems.push({ ...await slackItem(ch, m), in_thread: clip(parent.text, 200) });
+        const thread = await replies(ch, parent.ts, position);
+        for (const m of thread.items) {
+          chItems.push({ ...await slackItem(ch, m), in_thread: messageText(parent, 200) });
         }
-        state.threads[ch.id][parent.ts] = threadReplies.reduce(
-          (latest, m) => Number(m.ts) > Number(latest) ? m.ts : latest, position);
+        state.threads[ch.id][parent.ts] = thread.latestSeen;
       } catch (err) {
         failures.push(`#${ch.name} thread ${parent.ts}: ${err?.cause?.code || err.message}`);
       }

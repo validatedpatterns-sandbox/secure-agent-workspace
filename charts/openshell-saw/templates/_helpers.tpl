@@ -666,10 +666,19 @@ key-less -meta copies; the issuer CA bundle and registry pull token as is. */}}
 {{- if include "openshell-sandbox.credentialProxyEnabled" . -}}saw-proxy-ca{{- else -}}{{ include "openshell-sandbox.fullname" . }}-credential-mode{{- end -}}
 {{- end -}}
 
-{{/* Gateway refresh in direct mode needs the same token host as the broker. */}}
+{{/* Attached refresh mappings select OAuth profiles in both credential modes. */}}
 {{- define "openshell-sandbox.validateRefreshEgress" -}}
+{{- $attached := concat (list .Values.inference.secretName) (.Values.additionalProviderSecrets | default list) | compact -}}
+{{- $selected := dict -}}
+{{- range .Values.credentialProxy.secrets -}}
+{{- if and .refresh (has .name $attached) -}}
+{{- range .providers -}}{{- $_ := set $selected . true -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $allowed := include "openshell-sandbox.egressHosts" . | fromJsonArray -}}
 {{- range $path, $_ := .Files.Glob "files/provider-profiles/*.yaml" -}}
 {{- $profile := $.Files.Get $path | fromYaml -}}
+{{- if hasKey $selected $profile.id -}}
 {{- range $credential := $profile.credentials | default list -}}
 {{- $spec := $credential.refresh | default dict -}}
 {{- if eq ($spec.strategy | default "") "oauth2_refresh_token" -}}
@@ -677,8 +686,9 @@ key-less -meta copies; the issuer CA bundle and registry pull token as is. */}}
 {{- if or (ne $url.scheme "https") $url.userinfo $url.query $url.fragment (contains "?" $spec.token_url) (contains "#" $spec.token_url) (not (regexMatch "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:443)?$" $url.host)) -}}
 {{- fail (printf "provider %s refresh token_url must be HTTPS on port 443 without userinfo, query or fragment" $profile.id) -}}
 {{- end -}}
-{{- if not (has (trimSuffix ":443" $url.host) ($.Values.egress.allow | default list)) -}}
-{{- fail (printf "provider %s refresh token_url host must be in egress.allow" $profile.id) -}}
+{{- if and $.Values.egress.enabled (not (has (trimSuffix ":443" $url.host) $allowed)) -}}
+{{- fail (printf "provider %s refresh token_url host must be in egress.allow or egress.extraAllow" $profile.id) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

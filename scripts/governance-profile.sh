@@ -15,6 +15,11 @@ set -euo pipefail
 
 NS="${NS:-openshell-agents}"
 SAW_NAME="${SAW_NAME:-}"
+if [[ -n "${OPENSHELL_SAW_NAME:-}" && -n "${SAW_NAME}" && "${OPENSHELL_SAW_NAME}" != "${SAW_NAME}" ]]; then
+  echo "Error: OPENSHELL_SAW_NAME and SAW_NAME name different gateways." >&2
+  exit 1
+fi
+SAW_NAME="${OPENSHELL_SAW_NAME:-${SAW_NAME}}"
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PROFILES_DIR="${REPO_DIR}/charts/governance-policy/profiles"
 SSH_KEY="${SSH_KEY:-$HOME/.generated-ssh-keys/sandbox-ssh}"
@@ -23,7 +28,7 @@ usage() {
   echo "Usage: $0 {list|add|remove|create} [profile-name] [file]"
   echo ""
   echo "Commands:"
-  echo "  list                      List active governance profiles"
+  echo "  list                      List local or selected gateway profiles"
   echo "  add <name>                Re-enable a previously removed profile (from git history)"
   echo "  remove <name>             Remove a provider profile file (git push + ArgoCD sync)"
   echo "  create <name> <file>      Create a new profile from a YAML file"

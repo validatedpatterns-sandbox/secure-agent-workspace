@@ -390,6 +390,12 @@ esac
     assert result.returncode != 0
     assert len(log.read_text().splitlines()) == 1
     assert ":latest" not in log.read_text()
+    assert "image mirror failed for ghcr.io/validatedpatterns-sandbox/openshell-gateway:sha-missing" in result.stderr
+    log.unlink()
+    result = run_make("copy-images", "IMAGE_TAG=sha-missing", env=dict(env, FAIL_MIRROR="1"))
+    assert result.returncode != 0
+    assert len(log.read_text().splitlines()) == 1
+    assert ":latest" not in log.read_text()
 
 
 def test_in_cluster_mirror_copies_the_entire_manifest_list():

@@ -41,6 +41,75 @@ def test_invalid_mirror_inputs_stop_before_cluster_work(tmp_path, variable, valu
     assert not calls.exists(), "invalid inputs must fail before any cluster mutation"
 
 
+@pytest.mark.parametrize("script", ["images-mirror.sh", "mirror-images-incluster.sh"])
+@pytest.mark.parametrize("version", ["v0.1.2", ""])
+def test_old_version_input_stops_mirror_before_cluster_work(tmp_path, script, version):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    calls = tmp_path / "oc-calls"
+    executable(bindir / "oc", 'printf "%s\\n" "$*" >> "$CALLS"\n')
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", CALLS=str(calls),
+               OPENSHELL_VERSION=version, IMAGE_TAG="sha-requested")
+    result = subprocess.run(["bash", str(ROOT / "scripts" / script)], env=env,
+                            capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "OPENSHELL_VERSION" in result.stderr
+    assert "IMAGE_TAG" in result.stderr
+    assert not calls.exists()
+
+
+@pytest.mark.parametrize("from_command_line", [False, True])
+def test_copy_images_rejects_old_version_input(tmp_path, from_command_line):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    calls = tmp_path / "oc-calls"
+    executable(bindir / "oc", 'printf "%s\\n" "$*" >> "$CALLS"\n')
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", CALLS=str(calls))
+    env.pop("OPENSHELL_VERSION", None)
+    args = ["make", "-s", "copy-images"]
+    if from_command_line:
+        args.append("OPENSHELL_VERSION=v0.1.2")
+    else:
+        env["OPENSHELL_VERSION"] = "v0.1.2"
+    result = subprocess.run(args, cwd=ROOT, env=env,
+                            capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "Set IMAGE_TAG instead" in result.stderr
+    assert not calls.exists()
+
+
+def test_incluster_missing_tag_fails_without_latest_alias(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    calls = tmp_path / "oc-calls"
+    executable(bindir / "uname", 'printf "Darwin\\n"\n')
+    executable(bindir / "envsubst", 'cat\n')
+    executable(bindir / "oc", r'''
+printf '%s\n' "$*" >> "$CALLS"
+if [[ "$1" == apply ]]; then
+  cat > /dev/null
+elif [[ "$1 $2" == 'get job' ]]; then
+  if [[ "$*" == *'.status.succeeded'* ]]; then
+    printf ''
+  elif [[ "$*" == *'Failed'* ]]; then
+    printf 'True'
+  fi
+elif [[ "$1" == logs ]]; then
+  printf 'manifest unknown\n'
+fi
+''')
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", CALLS=str(calls),
+               IMAGE_TAG="sha-missing", BUILD_NS="test-build",
+               IMAGE_REPO="ghcr.io/validatedpatterns-sandbox")
+    env.pop("OPENSHELL_VERSION", None)
+    result = subprocess.run(["bash", str(ROOT / "scripts/images-mirror.sh")], env=env,
+                            capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "image mirror failed for ghcr.io/validatedpatterns-sandbox/openshell-gateway:sha-missing" in result.stderr
+    assert "manifest unknown" in result.stdout
+    assert all(not call.startswith("tag ") for call in calls.read_text().splitlines())
+
+
 @pytest.mark.skipif(not shutil.which("envsubst"), reason="envsubst (gettext) is not installed")
 def test_mirror_values_are_data_not_shell_source(tmp_path):
     template = (ROOT / "scripts/mirror-images-job.yaml").read_text()

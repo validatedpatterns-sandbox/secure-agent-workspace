@@ -11,6 +11,11 @@ VERSION="${IMAGE_TAG:-latest}"
 IMAGES="${IMAGES:-openshell-gateway}"
 SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+if [[ "${OPENSHELL_VERSION+x}" == x ]]; then
+  echo "Error: OPENSHELL_VERSION no longer selects a mirror tag. Set IMAGE_TAG instead." >&2
+  exit 1
+fi
+
 source "${SCRIPTS_DIR}/lib/image-repo.sh"
 validate_image_repo "$IMAGE_REPO"
 [[ "$BUILD_NS" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ && ${#BUILD_NS} -le 63 ]] || { echo 'Error: invalid BUILD_NS.' >&2; exit 1; }
@@ -45,7 +50,7 @@ for IMAGE in "${images[@]}"; do
     bad=$(oc get job "mirror-${IMAGE}" -n "${BUILD_NS}" -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}')
     [[ "${ok}" == 1 ]] && break
     if [[ "${bad}" == True || $(date +%s) -gt ${deadline} ]]; then
-      echo "ERROR: mirroring ${IMAGE} failed:"
+      echo "Error: image mirror failed for ${IMAGE_REPO}/${IMAGE}:${VERSION}. Check the tag and registry access." >&2
       oc logs -n "${BUILD_NS}" "job/mirror-${IMAGE}" --tail=10 2>&1
       exit 1
     fi

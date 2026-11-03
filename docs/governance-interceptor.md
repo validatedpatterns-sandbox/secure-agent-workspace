@@ -277,4 +277,8 @@ helm upgrade --install governance-policy charts/governance-policy \
   --namespace openshell-agents
 ```
 
-`make governance-profile-list` lists local profiles without a name. Set `OPENSHELL_SAW_NAME` to query that gateway.
+`make governance-profile-list` lists local profiles without a name. Set
+`OPENSHELL_SAW_NAME` to query that gateway. Direct calls to
+`scripts/governance-profile.sh` accept `OPENSHELL_SAW_NAME` or the existing
+`SAW_NAME` input. If both name different gateways, the script stops before it
+reads or changes a profile. Profile changes require a gateway name.

@@ -107,12 +107,14 @@ registries; the bundle supplements system trust. CA lookup or certificate failur
 never enable an insecure retry.
 
 `IMAGE_REPO` replaces the former `QUAY_REPO` option; `IMAGE_TAG` replaces the
-former `OPENSHELL_VERSION` mirror/build tag option. These image tags do not select
-the OpenShell release inside the VM: that is pinned separately by the installer
-BOM. The default internal golden-image reference remains `:latest`; mirroring
-stores the exact selected tag and adds this alias. Changing the disk source
-only affects new VM disks. To roll back, select a previous `sha-<commit>` tag or
-GHCR digest and recreate the VM disk using the documented workspace lifecycle.
+former `OPENSHELL_VERSION` mirror/build tag option. The mirror commands reject a
+set `OPENSHELL_VERSION` before they contact the cluster; use `IMAGE_TAG` instead.
+These image tags do not select the OpenShell release inside the VM. The installer
+BOM pins that release separately. The default internal golden-image reference
+remains `:latest`; mirroring stores the exact selected tag and adds this alias.
+Changing the disk source only affects new VM disks. To roll back, select a
+previous `sha-<commit>` tag or GHCR digest and recreate the VM disk using the
+documented workspace lifecycle.
 
 Manual cluster builds keep images in the internal registry by default. To publish,
 explicitly set `IMAGE_REPO=ghcr.io/<your-owner>`; the upstream namespace

@@ -7,6 +7,11 @@ version="${IMAGE_TAG:-latest}"
 images="${MIRROR_IMAGES:-openshell-gateway}"
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 
+if [[ "${OPENSHELL_VERSION+x}" == x ]]; then
+  echo "Error: OPENSHELL_VERSION no longer selects a mirror tag. Set IMAGE_TAG instead." >&2
+  exit 1
+fi
+
 oc create namespace "${build_ns}" --dry-run=client -o yaml | oc apply -f -
 oc patch configs.imageregistry.operator.openshift.io/cluster \
   --patch '{"spec":{"defaultRoute":true}}' --type=merge >/dev/null

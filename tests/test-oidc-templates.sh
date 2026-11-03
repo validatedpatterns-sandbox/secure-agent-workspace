@@ -122,6 +122,10 @@ echo ""
 echo "=== Sandbox Chart (in-guest installer, no OIDC) ==="
 # ============================================================
 
+SB_DIRECT=$(helm template saw-direct "${CHARTS_DIR}/openshell-saw" --set credentialProxy.enabled=false)
+assert_contains "${SB_DIRECT}" "secretName: inference" "direct mode attaches the full inference Secret"
+assert_contains "${SB_DIRECT}" "mode: direct" "direct mode retains the legacy input slot"
+
 SB_DEFAULT="$(helm template my-sandbox "${CHARTS_DIR}/openshell-saw" \
   --set sandboxName=my-sandbox \
   --set inference.provider=build \

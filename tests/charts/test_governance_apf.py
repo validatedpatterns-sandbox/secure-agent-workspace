@@ -215,6 +215,7 @@ GOLDEN = Path(__file__).resolve().parent / "golden"
 @pytest.mark.ci_external
 @pytest.mark.parametrize("golden,args", [
     ("gateway-interceptor.toml", ()),
+    ("gateway-interceptor-direct.toml", ("--set", "credentialProxy.enabled=false")),
     ("gateway-interceptor-oidc.toml", ("--set", "oidc.issuerUrl=https://kc.example.com/realms/openshell")),
 ])
 def test_interceptor_engine_gateway_toml_is_byte_identical(golden, args):

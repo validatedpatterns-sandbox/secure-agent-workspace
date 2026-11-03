@@ -1,6 +1,102 @@
 # Credential isolation from VM root
 
-Each SAW namespace runs a credential proxy beside its VM. Provider API keys stay
+## Credential modes
+
+`credentialProxy.enabled: true` is the default. Provider keys and Gmail OAuth
+material stay in the namespace proxy, outside the VM. The VM receives only
+metadata, markers and the public proxy CA. The proxy boundary described below
+applies to this mode.
+
+`credentialProxy.enabled: false` selects **direct mode**. Full provider Secrets
+are mounted into the VM and OpenShell receives real keys. VM root can read
+those keys and Gmail refresh material. No proxy Deployment, Service, policy,
+metadata Secret or proxy CA is needed. Custom HTTP and HTTPS endpoints on
+other ports are accepted by the installer; their ports and destinations must
+also be allowed by the deployment's egress policies.
+
+Both modes keep the tmpfs gateway CA, per-apply temporary admin identity,
+nonadmin `saw-relay`, and gateway-CA sandbox recovery. Optional web search,
+named credentials, official OpenAI/Anthropic providers, sandbox recovery,
+ingress-CA trust and daily-briefing thread replies work in both modes.
+
+Set the default in `overrides/saw-users.yaml`:
+
+```yaml
+defaults:
+  openshellSaw:
+    credentialProxy:
+      enabled: false
+```
+
+A user's `values.credentialProxy.enabled` overrides that default. The portal
+inherits the same defaults. The proxy image is required only when enabled.
+Quickstart accepts `CREDENTIAL_PROXY_ENABLED=false` or the same setting in
+`SAW_VALUES_FILE`; the environment variable takes precedence.
+
+## Switching modes
+
+1. Change the value and sync Argo CD (or rerun quickstart).
+2. Run `make saw-restart-pending` to review the VMs, then
+   `make saw-restart-pending CONFIRM=yes`. A live config update alone does not
+   swap the booted volume sources. Until restart, install/apply/validate refuse
+   with a configured/booted credential-mode mismatch before changing the gateway.
+3. Watch `make saw-logs OPENSHELL_SAW_NAME=<user>` and
+   `make saw-status OPENSHELL_SAW_NAME=<user>`. Wait for `apply: Done` and the
+   expected `credentialMode.applied`.
+
+Mode migrations archive `/sandbox` from the workload volume before provider
+updates, then recreate managed sandboxes and restore and verify their files.
+They preserve the daily briefing store too. Failed archives leave the original
+sandbox intact; failed provider updates stop the migration. A pending restore
+keeps the old proxy CA files until all managed sandboxes have migrated.
+User-created, unmanaged sandboxes must be recreated by their owners.
+
+The VM keeps its `saw-proxy-ca` disk/virtiofs slot in direct mode, backed by
+`<release>-credential-mode`, whose only data is `mode: direct`. This compatibility
+shim has no CA or Service URL: cloud-init mount helpers baked into existing
+VM root disks require the slot and are never refreshed by a chart upgrade.
+
+**Proxy to direct:** the gateway config drops all proxy settings. The installer
+archives sandboxes, replaces markers with real keys, configures gateway Gmail
+refresh, and restores the sandboxes. Only after a clean apply does root delete
+both proxy CA files. Per-user Argo apps self-heal but never prune; after the VM
+reports direct mode as Done, delete the GitOps leftovers:
+
+```bash
+oc -n saw-<u> delete deploy/<u>-credential-proxy svc/<u>-credential-proxy cm/<u>-credential-proxy-config \
+  sa/<u>-credential-proxy networkpolicy/saw-credential-proxy secret/saw-credential-proxy-ca cm/saw-proxy-ca \
+  --ignore-not-found
+# data-science:
+oc -n saw-<u> delete externalsecret,secret inference-meta web-search-meta --ignore-not-found
+# personal-assistant:
+oc -n saw-<u> delete externalsecret,secret inference-meta slack-meta gmail-meta --ignore-not-found
+# Remove any remaining CA hook resources as well:
+oc -n saw-<u> delete sa,role,rolebinding,networkpolicy saw-credential-proxy-ca-hook --ignore-not-found
+```
+
+Quickstart deletes stale metadata Secrets and CA objects after Helm upgrades;
+Helm prunes the other resources. Check the direct isolation test after the
+migration. When using Helm alone with `cleanupOnDelete=false`, a direct to
+proxy flip may need the EgressFirewall API exception applied first: Helm's
+pre-upgrade CA hook runs before the firewall update. Argo CD applies the
+firewall at wave -30 before its Sync hook.
+
+**Direct to proxy:** proxy health is a migration precondition. Root deletes
+`~/.nemoclaw/credentials.json`; managed sandboxes are archived, gateway Gmail
+refresh metadata is deleted, and provider keys become markers. After restore
+and the final health check the applied mode becomes proxy. The old
+`<release>-credential-mode` ConfigMap may remain; it is harmless and can be deleted.
+
+**Key rotation is required after direct to proxy.** The root-owned
+`/var/lib/saw/credential-mode.json` records exposed Secret/key names, never
+values. Every apply logs a WARN and reports `rotationRequired` until
+`credentialProxy.keyGeneration` exceeds the generation recorded at transition.
+Revoke the exposed credentials at Google, Slack and NVIDIA, update their Vault
+entries and load/sync Secrets, then bump `keyGeneration` (default 1). The
+counter is an operator acknowledgement of rotation, not proof of revocation.
+
+
+In proxy mode, each SAW namespace runs a credential proxy beside its VM. Provider API keys stay
 in Kubernetes Secrets mounted only into that proxy. The VM receives metadata
 Secrets, a public proxy CA certificate, and nonsecret markers such as
 `saw-cred.inference.api_key`. The gateway, supervisor, NemoClaw, and agents may
@@ -148,7 +244,13 @@ gateway PKI and causes the same sandbox recreation.
   changed gateway trust archives `/sandbox` from the workload volume before
   recreation, because the old supervisor cannot connect to serve an archive.
   Archive failures leave the original sandbox and files intact.
-- Gmail OAuth2 refresh runs in the namespace credential proxy. A binding
+- In direct mode Gmail uses `openshell provider refresh configure` followed by
+  `rotate` on the gateway. Material is passed through environment variables,
+  never argv; only a digest is saved in mode-0600 `user/refresh.json`. A static
+  access token without complete material is accepted with a WARN. Missing both
+  is refused. Configure failures stop apply; failed initial rotation is retried
+  on the next apply. `oauth2.googleapis.com` must remain in `egress.allow`.
+- In proxy mode Gmail OAuth2 refresh runs in the namespace credential proxy. A binding
   with `refresh: true` gets its token URL only from the shipped provider
   profile, never from a Secret, Vault or the VM: a tenant-controlled URL
   could redirect the client secret. The proxy reads `client_id`,
@@ -203,6 +305,15 @@ portal chart takes precedence when a separate portal override is needed.
   `make saw-configure` or `scripts/extract-gateway-ca.sh`.
 
 ## Failure modes and checks
+
+A configured/booted mode mismatch means a restart is pending; use
+`make saw-restart-pending CONFIRM=yes`. A direct-mode missing key in a metadata
+directory has the same hint. `rotationRequired` means exposed credentials must
+be revoked and replaced before increasing `credentialProxy.keyGeneration`.
+A direct-mode Gmail configure failure requires checking the gateway refresh
+interface and governance engine; direct-mode APF refresh is refused in
+preflight when the live profile lacks gateway refresh metadata.
+
 
 | Event | Result |
 | --- | --- |

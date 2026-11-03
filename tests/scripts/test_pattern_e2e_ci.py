@@ -1561,6 +1561,8 @@ def test_verify_images_refuses_a_stale_credential_proxy(runner, monkeypatch):
         "governance-interceptor", "saw-credential-proxy")}
     registry = f"image-registry.openshift-image-registry.svc:5000/{pattern_e2e.NAMESPACE}"
     def fake_oc_json(*args):
+        if args[1] == "configmap":
+            return {"data": {"config.json": json.dumps({"credentialMode": "proxy"})}}
         image = (f"{registry}/governance-interceptor@{digest}" if args[2] == "governance-interceptor"
                  else f"{registry}/saw-credential-proxy:old")
         return {"spec": {"template": {"spec": {"containers": [{"image": image}]}}}}

@@ -17,8 +17,8 @@ saw-mount-inputs mounts either kind under /run/saw:
     /run/saw/installer/tool-gate.mjs        tool-call decision engine
     /run/saw/installer/tool-gate-plugin.mjs OpenClaw before_tool_call hook
     /run/saw/profiles/<flat key>.yaml       SAW-BOM profiles (saw-bom chart)
-    /run/saw/secrets/<secret>/<key>         non-secret provider metadata only
-    /run/saw/proxy-ca/ca.crt                public credential-proxy CA
+    /run/saw/secrets/<secret>/<key>         provider metadata (proxy) or full Secrets (direct)
+    /run/saw/proxy-ca/ca.crt                public credential-proxy CA, or mode: direct
 
 Commands:
     validate        check BOM, config, profiles and credentials; changes nothing
@@ -27,8 +27,9 @@ Commands:
     reconcile       re-run install and/or apply when virtiofs inputs changed
     apply-profiles  (runtime user) internal; reads its plan from stdin
 
-The installer gives OpenShell a non-secret credential marker, never a live
-provider key. Its admin mTLS identity exists only during apply in tmpfs.
+Proxy mode gives OpenShell non-secret markers; direct mode passes provider
+keys to the gateway. In both modes its admin mTLS identity exists only during
+apply in tmpfs.
 End users log in with their own OIDC token; this script never performs an
 OIDC login and never configures the CLI for OAuth.
 """
@@ -108,6 +109,12 @@ ALREADY_RE = re.compile(r"already (exists|a member)", re.IGNORECASE)
 # the requested scope".
 NO_PROFILE_RE = re.compile(r"provider profile '[^']*' (was )?not\s+found|unsupported provider type",
                            re.IGNORECASE)
+
+REFRESH_MATERIAL = {
+    "oauth2_refresh_token": ("client_id", "client_secret", "refresh_token"),
+}
+REFRESH_BOOTSTRAP_CREDENTIAL = "saw-refresh-pending"
+RESTART_MODE_HINT = "run make saw-restart-pending CONFIRM=yes to boot the new credential mode"
 
 PROVIDER_CRED_MAP = {
     "gemini": "GEMINI_API_KEY",
@@ -433,7 +440,9 @@ CONFIG_DEFAULTS = {
     "runtimeUser": "cloud-user",
     "mtlsGateway": "saw-installer",
     "relayGateway": "saw-relay",
-    "credentialProxy": {"url": "", "markerPrefix": "saw-cred", "secrets": []},
+    "credentialMode": "proxy",
+    "governanceEngine": "interceptor",
+    "credentialProxy": {"url": "", "markerPrefix": "saw-cred", "secrets": [], "keyGeneration": 1},
     "gatewayPki": {"generation": 1},
     "ownerSubject": "",
     "ownerSubjectSource": "",
@@ -492,10 +501,21 @@ def load_config(path):
         raise InstallerError("installer config: invalid mtlsGateway name")
     if not NAME_RE.match(merged["relayGateway"]):
         raise InstallerError("installer config: invalid relayGateway name")
+    mode = merged["credentialMode"]
+    if mode not in ("proxy", "direct"):
+        raise InstallerError("installer config: credentialMode must be proxy or direct")
     proxy = merged["credentialProxy"]
     if not isinstance(proxy, dict) or not isinstance(proxy.get("secrets"), list) or not re.fullmatch(
             r"[A-Za-z0-9_.-]+", str(proxy.get("markerPrefix", ""))):
         raise InstallerError("installer config: credentialProxy must have markerPrefix and secrets")
+    if mode == "proxy" and not proxy.get("url"):
+        raise InstallerError("installer config: proxy mode requires credentialProxy.url")
+    if mode == "direct" and (proxy.get("url") or proxy["secrets"]):
+        raise InstallerError("installer config: direct mode requires an empty proxy url and no bindings")
+    key_generation = proxy.get("keyGeneration", 1)
+    if type(key_generation) is not int or key_generation < 1:
+        raise InstallerError("installer config: credentialProxy.keyGeneration must be a positive integer")
+    merged["credentialProxy"] = proxy = {**proxy, "keyGeneration": key_generation}
     if proxy.get("url"):
         url = urlsplit(proxy["url"])
         if url.scheme != "http" or not url.hostname or url.port != 3128:
@@ -668,7 +688,8 @@ class Provider:
     # `--credential ENV` with the env var that credential declares. The
     # single-credential shorthand credentialSecretKey is one entry for the
     # profile's first credential.
-    proxy_refresh: str = ""
+    refresh_strategy: str = ""
+    refresh_material: dict = field(default_factory=dict)
     credentials_spec: dict = field(default_factory=dict)
     credential_values: dict = field(default_factory=dict)   # credential name -> value
 
@@ -1434,7 +1455,7 @@ def parse_profiles(files):
                         base_url_secret_key=p.get("baseUrlSecretKey", ""),
                         model_secret_key=p.get("modelSecretKey", ""),
                         inference_timeout=int(p.get("inferenceTimeout", 0) or 0),
-                        proxy_refresh=str((p.get("refresh") or {}).get("strategy", "")),
+                        refresh_strategy=str((p.get("refresh") or {}).get("strategy", "")),
                         credentials_spec=cred_spec if cred_spec is not None else {}))
             if "sandbox.yaml" in docs:
                 key, text = docs["sandbox.yaml"]
@@ -1647,8 +1668,8 @@ def validate_profiles(profiles, known_profiles=(), governed=False):
                               f"(supported: {', '.join(sorted(BASE_URL_CONFIG_KEYS))})")
             if p.inference_timeout < 0:
                 errors.append(f"{where}: provider '{p.name}' has a negative inferenceTimeout")
-            if p.proxy_refresh and p.proxy_refresh != "oauth2_refresh_token":
-                errors.append(f"{where}: provider '{p.name}' has unsupported refresh strategy '{p.proxy_refresh}'")
+            if p.refresh_strategy and p.refresh_strategy != "oauth2_refresh_token":
+                errors.append(f"{where}: provider '{p.name}' has unsupported refresh strategy '{p.refresh_strategy}'")
             if p.credentials_spec:
                 if not isinstance(p.credentials_spec, dict):
                     errors.append(f"{where}: provider '{p.name}' credentials must be a mapping of "
@@ -1744,7 +1765,88 @@ def check_proxy_endpoint(url, what):
                              "the credential proxy supports port 443 only")
 
 
-def resolve_credentials(profiles, secrets_dir, proxy):
+def provider_secret_keys(profiles):
+    """Credential names only; used to prevent typed inputs exposing key values."""
+    keys = set()
+    for _, ws in enabled_workspaces(profiles):
+        for p in ws.providers:
+            if not p.enabled or p.credential_free:
+                continue
+            for key in ([e["secretKey"] for e in p.credentials_spec.values()]
+                        if p.credentials_spec else [p.credential_secret_key]):
+                keys.add((p.credential_secret, key))
+            for key in set(REFRESH_MATERIAL.get(p.refresh_strategy, ())) | set(p.refresh_material):
+                keys.add((p.credential_secret, key))
+    return keys
+
+
+def resolve_credentials(profiles, secrets_dir, proxy, mode="proxy"):
+    forbidden = provider_secret_keys(profiles) if mode == "direct" else set()
+    creds = (_resolve_direct(profiles, secrets_dir) if mode == "direct"
+             else _resolve_proxy(profiles, secrets_dir, proxy))
+    for _, ws in enabled_workspaces(profiles):
+        for sb in ws.sandboxes:
+            if sb.enabled:
+                sb.inference_values = (resolve_sandbox_inference(
+                    ws, sb, secrets_dir, mode, forbidden) if sb.inference else {})
+    return creds
+
+
+def _resolve_direct(profiles, secrets_dir):
+    """Resolve real keys, including each named credential, from full Secrets."""
+    creds = {}
+    forbidden = provider_secret_keys(profiles)
+    for _, ws in enabled_workspaces(profiles):
+        for p in ws.providers:
+            if not p.enabled or p.credential_free:
+                continue
+            base = Path(secrets_dir) / p.credential_secret
+            entries = p.credentials_spec or {"primary": {"secretKey": p.credential_secret_key}}
+            p.credential_secret_key = next(iter(entries.values()))["secretKey"]
+            values = {name: read_secret_value(base, entry["secretKey"])
+                      for name, entry in entries.items()}
+            primary = next(iter(values))
+            if p.refresh_strategy:
+                p.refresh_material = {k: read_secret_value(base, k)
+                                      for k in REFRESH_MATERIAL[p.refresh_strategy]}
+                missing = [k for k, v in p.refresh_material.items() if not v]
+                if missing and values[primary]:
+                    log(f"WARN: provider '{p.name}' has incomplete refresh material; "
+                        "using its access token as a static credential (no refresh)")
+                    p.refresh_strategy = ""
+                elif missing:
+                    raise InstallerError(f"credential for provider '{p.name}' not found: "
+                                         f"Secret '{p.credential_secret}' needs refresh material "
+                                         f"({', '.join(missing)}) or an access_token; {RESTART_MODE_HINT}")
+                else:
+                    values[primary] = values[primary] or REFRESH_BOOTSTRAP_CREDENTIAL
+            for name, entry in entries.items():
+                if not values[name]:
+                    metadata_only = (base.is_dir() and not any(values.values())
+                                     and not any(p.refresh_material.values()))
+                    hint = (f"; {RESTART_MODE_HINT}" if metadata_only else
+                            ". List the Secret in openshell-saw additionalProviderSecrets and make sure it exists.")
+                    raise InstallerError(f"credential for provider '{p.name}' in workspace '{ws.name}' "
+                                         f"not found: Secret '{p.credential_secret}' key '{entry['secretKey']}'{hint}")
+            check_provider_type(p, read_secret_value(base, "provider"))
+            for key in (p.model_secret_key, p.base_url_secret_key):
+                if key and (p.credential_secret, key) in forbidden:
+                    raise InstallerError(f"provider '{p.name}': credential key cannot be used as metadata")
+            if p.model_secret_key:
+                p.model = read_secret_value(base, p.model_secret_key) or p.model
+            if p.base_url_secret_key:
+                p.base_url = read_secret_value(base, p.base_url_secret_key)
+                if p.base_url:
+                    try:
+                        p.base_url = check_base_url(p.base_url)
+                    except ValueError as exc:
+                        raise InstallerError(f"provider '{p.name}': {exc}") from None
+            p.credential_values = values if p.credentials_spec else {}
+            creds.setdefault(ws.name, {})[p.name] = values[primary]
+    return creds
+
+
+def _resolve_proxy(profiles, secrets_dir, proxy):
     """Return non-secret markers, after checking the proxy binding catalog.
 
     Any credential key on a VM input disk is a deployment error even when it
@@ -1770,7 +1872,7 @@ def resolve_credentials(profiles, secrets_dir, proxy):
                     f"provider '{p.name}' in workspace '{ws.name}' uses Secret "
                     f"'{p.credential_secret}' key '{p.credential_secret_key}', but credentialProxy.secrets "
                     "has no binding; add it before applying")
-            if binding.get("refresh", False) is not bool(p.proxy_refresh):
+            if binding.get("refresh", False) is not bool(p.refresh_strategy):
                 raise InstallerError(f"provider '{p.name}' refresh binding does not match proxy refresh strategy")
             for material in ("client_id", "client_secret", "refresh_token"):
                 file = base / material
@@ -1815,13 +1917,6 @@ def resolve_credentials(profiles, secrets_dir, proxy):
                 p.credential_values[cname] = f"{prefix}.{p.credential_secret}.{skey}"
             creds.setdefault(ws.name, {})[p.name] = (
                 f"{prefix}.{p.credential_secret}.{p.credential_secret_key}")
-        for sb in ws.sandboxes:
-            if not sb.enabled:
-                continue
-            # Always set (a re-resolve after the profile changed must not
-            # keep an earlier value). env needs no resolving: literals only.
-            sb.inference_values = (resolve_sandbox_inference(ws, sb, secrets_dir)
-                                   if sb.inference else {})
     return creds
 
 
@@ -1985,12 +2080,14 @@ def input_problems(src, kinds=(str,)):
     return out
 
 
-def resolve_input(src, secrets_dir, what):
+def resolve_input(src, secrets_dir, what, forbidden=()):
     """A typed input's value: the literal, or the Secret key it refers to
     (secretKeyRef), else its default; "" when optional and absent."""
     if not isinstance(src, dict):
         return str(src)
     sname, skey = secret_ref(src)
+    if (sname, skey) in forbidden:
+        raise InstallerError(f"{what}: secretKeyRef names a provider credential or refresh material; refusing to expose it")
     value = read_secret_value(Path(secrets_dir) / sname, skey)
     if value:
         return value
@@ -2065,7 +2162,7 @@ def sandbox_inference_problems(sb, provider_types, declared_provider_types=None)
     return out
 
 
-def resolve_sandbox_inference(ws, sb, secrets_dir):
+def resolve_sandbox_inference(ws, sb, secrets_dir, mode="proxy", forbidden=()):
     """A sandbox's `inference:` resolved: providerRef, protocol, baseUrl
     (validated, "" = the protocol's native API), model, timeoutSeconds."""
     spec = sb.inference
@@ -2073,19 +2170,19 @@ def resolve_sandbox_inference(ws, sb, secrets_dir):
     provider = next((p for p in ws.providers if p.enabled and p.name == spec["providerRef"]), None)
     out = {"providerRef": spec["providerRef"],
            "protocol": inference_protocol(spec, provider.type if provider else "")}
-    out["model"] = resolve_input(spec["model"], secrets_dir, f"{where}: inference model")
+    out["model"] = resolve_input(spec["model"], secrets_dir, f"{where}: inference model", forbidden)
     if not out["model"]:
         raise InstallerError(f"{where}: inference model is empty")
-    url = resolve_input(spec["baseUrl"], secrets_dir, f"{where}: inference baseUrl") \
+    url = resolve_input(spec["baseUrl"], secrets_dir, f"{where}: inference baseUrl", forbidden) \
         if "baseUrl" in spec else ""
     if url:
         try:
             url = check_base_url(url)
         except ValueError as exc:
             raise InstallerError(f"{where}: inference baseUrl: {exc}") from None
-        if provider and not provider.credential_free:
+        if mode == "proxy" and provider and not provider.credential_free:
             check_proxy_endpoint(url, f"{where}: inference baseUrl")
-    if provider and not provider.credential_free:
+    if mode == "proxy" and provider and not provider.credential_free:
         installer = Path(__file__).resolve().parent
         profile_type = "nvidia" if provider.type == "build" else provider.type
         shipped = (profile_type in provider_profiles(installer) or
@@ -2097,7 +2194,7 @@ def resolve_sandbox_inference(ws, sb, secrets_dir):
                                  "can bind the credential to the Secret's url host")
     out["baseUrl"] = url
     timeout = resolve_input(spec["timeoutSeconds"], secrets_dir,
-                            f"{where}: inference timeoutSeconds") if "timeoutSeconds" in spec else ""
+                            f"{where}: inference timeoutSeconds", forbidden) if "timeoutSeconds" in spec else ""
     if timeout and (not str(timeout).isdigit() or int(timeout) < 0):
         raise InstallerError(f"{where}: inference timeoutSeconds must be a non-negative integer")
     out["timeoutSeconds"] = int(timeout) if timeout else 0
@@ -2110,7 +2207,7 @@ def resolve_sandbox_inference(ws, sb, secrets_dir):
                 continue
             if attached.base_url or attached.base_url_secret_key:
                 raise InstallerError(f"{where}: inference models '{name}' needs a native API")
-            model = resolve_input(src, secrets_dir, f"{where}: inference models '{name}'")
+            model = resolve_input(src, secrets_dir, f"{where}: inference models '{name}'", forbidden)
             if not model:
                 raise InstallerError(f"{where}: inference models '{name}' is empty")
             try:
@@ -2985,7 +3082,7 @@ def mount_upgrade_proxy_ca(inputs, shell, dry_run=False,
     does not refresh its helper on an existing root disk after an upgrade.
     """
     target = inputs.proxy_ca
-    if (target / "ca.crt").is_file() or os.path.ismount(target):
+    if (target / "ca.crt").is_file() or (target / "mode").is_file() or os.path.ismount(target):
         return
     device = Path(dev_dir) / "virtio-saw-proxy-ca"
     if device.exists():
@@ -3001,6 +3098,21 @@ def mount_upgrade_proxy_ca(inputs, shell, dry_run=False,
         shell.run(["mount", "-t", kind, "-o", "ro,nosuid,nodev,noexec", source, str(target)])
 
 
+def sync_proxy_ca(inputs, home, owner, etc_dir, dry_run=False):
+    proxy_ca = inputs.proxy_ca / "ca.crt"
+    if not proxy_ca.is_file():
+        raise InstallerError("required saw-proxy-ca disk is missing ca.crt")
+    pem = proxy_ca.read_text(encoding="utf-8")
+    if "PRIVATE KEY-----" in pem or not certificate_fingerprint(proxy_ca):
+        raise InstallerError("saw-proxy-ca contains an invalid public CA certificate")
+    if dry_run:
+        return False
+    changed = write_if_changed(Path(etc_dir) / "credential-proxy-ca.pem", pem, 0o644)
+    # Rootless Podman needs to relabel its own copy of this public CA.
+    return write_if_changed(Path(home) / ".config/openshell/credential-proxy-ca.pem",
+                            pem, 0o644, owner) or changed
+
+
 def ensure_gateway_pki(inputs, cfg, home, owner, shell, wrap, etc_dir, bin_dir,
                        dry_run=False):
     """Install the tmpfs-only CA generator and rotate legacy gateway PKI.
@@ -3012,15 +3124,11 @@ def ensure_gateway_pki(inputs, cfg, home, owner, shell, wrap, etc_dir, bin_dir,
     tls = home / ".local/state/openshell/tls"
     script = inputs.installer / "saw-gateway-pki"
     dropin_source = inputs.installer / "openshell-gateway-pki.conf"
-    proxy_ca = inputs.proxy_ca / "ca.crt"
     if not script.is_file() or not dropin_source.is_file():
         raise InstallerError("installer disk lacks the gateway PKI script or drop-in")
     mount_upgrade_proxy_ca(inputs, shell, dry_run=dry_run)
-    if not proxy_ca.is_file():
-        raise InstallerError("required saw-proxy-ca disk is missing ca.crt")
-    proxy_pem = proxy_ca.read_text(encoding="utf-8")
-    if "PRIVATE KEY-----" in proxy_pem or not certificate_fingerprint(proxy_ca):
-        raise InstallerError("saw-proxy-ca contains an invalid public CA certificate")
+    proxy_changed = (sync_proxy_ca(inputs, home, owner, etc_dir, dry_run)
+                     if cfg.get("credentialMode", "proxy") == "proxy" else False)
     route_host = cfg.get("routeHost") or ""
     if route_host and not HOST_RE.match(route_host):
         raise InstallerError("installer config: routeHost is not a DNS name")
@@ -3032,20 +3140,14 @@ def ensure_gateway_pki(inputs, cfg, home, owner, shell, wrap, etc_dir, bin_dir,
         dropin: (dropin_source.read_text(encoding="utf-8"), 0o644),
         etc_dir / "server-sans": (route_host + "\n", 0o644),
         etc_dir / "pki-generation": (generation + "\n", 0o644),
-        etc_dir / "credential-proxy-ca.pem": (proxy_pem, 0o644),
     }
     if dry_run:
         log("[dry-run] gateway PKI files and proxy CA would be synchronized")
         return False
-    changed = False
+    changed = proxy_changed
     for path, (content, mode) in files.items():
         if write_if_changed(path, content, mode):
             changed = True
-    # The Podman driver relabels this public CA for its read-only bind mount.
-    # Rootless Podman cannot relabel a root-owned file under /etc on Fedora.
-    if write_if_changed(home / ".config/openshell/credential-proxy-ca.pem",
-                        proxy_pem, 0o644, owner):
-        changed = True
     legacy_dropin = home / SAN_DROPIN
     if legacy_dropin.exists():
         legacy_dropin.unlink()
@@ -3469,6 +3571,8 @@ class ProfileApplier:
         self.gateway = cfg["mtlsGateway"]
         self.relay_gateway = cfg.get("relayGateway", "saw-relay")
         wiring = "|".join((cfg.get("credentialProxy") or {}).get(k, "") for k in ("url", "caFingerprint"))
+        if cfg.get("credentialMode", "proxy") == "direct":
+            wiring = "direct"
         self.wiring_label = hashlib.sha256(wiring.encode()).hexdigest()[:16]
         self.gateway_ca_label = (cfg.get("gatewayPki") or {}).get("caFingerprint", "")[:16]
         self.skipped = set()          # (workspace, provider) the gateway had no profile for
@@ -3484,6 +3588,8 @@ class ProfileApplier:
         # old /sandbox and its checksum, kept until the restore is verified.
         self.migrations_path = (Path(prune["ledgerPath"]).with_name("sandbox-migrations.json")
                                 if prune.get("ledgerPath") else None)
+        self.refresh_state = (Path(prune["ledgerPath"]).with_name("refresh.json")
+                              if prune.get("ledgerPath") else None)
         self.migrations = (read_json(self.migrations_path, {})
                            if self.migrations_path and not shell.dry_run else {})
         if not isinstance(self.migrations, dict):
@@ -3629,6 +3735,18 @@ class ProfileApplier:
         errors = []
         for profile, ws in enabled_workspaces(profiles):
             where = f"{profile.name}/{ws.name}"
+            if (self.cfg.get("credentialMode", "proxy") == "direct"
+                    and self.cfg.get("governanceEngine") == "apf"):
+                refreshed = [p for p in ws.providers if p.enabled and p.refresh_strategy]
+                if refreshed:
+                    self.governance_catalog(Workspace(name="default"))
+                for p in refreshed:
+                    record = self.catalog_details.get("default", {}).get(p.type, {})
+                    if not any((c.get("refresh") or {}).get("strategy") == p.refresh_strategy
+                               for c in record.get("credentials", []) if isinstance(c, dict)):
+                        errors.append(f"{where}: direct-mode refresh provider '{p.name}' requires "
+                                      "gateway refresh metadata that APF does not advertise; "
+                                      "use proxy mode or the interceptor engine")
             for prov in ws.providers:
                 if not prov.enabled or not prov.credentials_spec:
                     continue
@@ -3731,6 +3849,8 @@ class ProfileApplier:
             self.import_provider_profile(ws, provider.type)
             created = self.cli(*create, env=env, ok_if_exists=True, check=False)
         if not created.ok and NO_PROFILE_RE.search(created.out + " " + created.err):
+            if self.cfg.get("credentialMigration"):
+                raise InstallerError(f"credential migration: provider profile missing for '{provider.name}'")
             log(f"WARN: skipping provider '{provider.name}': the gateway has no '{provider.type}' "
                 "provider profile (governed profiles come from the governance interceptor; "
                 "is governance enabled?)")
@@ -3760,11 +3880,17 @@ class ProfileApplier:
             if not credential_keys or credential_keys[1].strip() != "<none>":
                 raise InstallerError(f"keyless provider '{provider.name}' already has credentials "
                                      "or their absence cannot be verified; remove them explicitly first")
-        if created.existed and not provider.credential_free:
+        refreshed = (self.cfg.get("credentialMode", "proxy") == "direct" and provider.refresh_strategy)
+        refresh_active = self.refresh_configured(ws, provider, env_name) if refreshed else False
+        if created.existed and not provider.credential_free and not refresh_active:
             updated = self.cli("provider", "update", provider.name, *ws_args(ws.name),
                                *credential_args, *config, env=env, check=False)
             if not updated.ok:
+                if self.cfg.get("credentialMigration"):
+                    raise InstallerError(f"credential migration: could not update provider '{provider.name}'")
                 log(f"WARN: could not refresh the credential of existing provider '{provider.name}'")
+        if refreshed:
+            self.configure_refresh(ws, provider, env_name, fresh=not refresh_active)
         self.remember("provider", ws.name, provider.name)
         if provider.type in self.provider_profiles:
             # Keep an imported profile remembered on every run that still
@@ -3775,6 +3901,81 @@ class ProfileApplier:
             # the provider still using it, and the run after that
             # re-imported it (PR #54 review, 6a).
             self.remember("profile", ws.name, provider.type)
+
+    def refresh_configured(self, ws, provider, credential_key):
+        result = self.cli("provider", "refresh", "status", provider.name, *ws_args(ws.name),
+                          "--credential-key", credential_key, check=False, quiet=True)
+        # An empty refresh status succeeds too. Require a record for this key.
+        return result.ok and credential_key in _strip_ansi(result.out)
+
+    def prepare_credential_migration(self, ws):
+        if not self.cfg.get("credentialMigration"):
+            return
+        for sb in ws.sandboxes:
+            if not sb.enabled or self.sh.dry_run:
+                continue
+            if self.sandbox_state(ws, sb) == "missing":
+                continue
+            labels = self.sandbox_labels(ws, sb)
+            if labels is None:
+                raise InstallerError(f"credential migration: cannot read sandbox '{sb.name}' labels")
+            if not self.sandbox_wiring_ok(ws, sb):
+                key = self.migration_key(ws, sb)
+                if key in self.migrations:
+                    self.recover_migration(ws, sb, "running", labels)
+                else:
+                    self.begin_migration(ws, sb, labels, reason="different proxy wiring",
+                                         via_volume=True)
+        if self.cfg["credentialMode"] == "proxy":
+            for p in ws.providers:
+                if p.enabled and p.refresh_strategy:
+                    key = credential_env_name(p.type, self.provider_profiles)
+                    if self.refresh_configured(ws, p, key):
+                        result = self.cli("provider", "refresh", "delete", p.name,
+                                          *ws_args(ws.name), "--credential-key", key, check=False)
+                        if not result.ok:
+                            raise InstallerError(f"credential migration: could not remove refresh for '{p.name}'")
+
+    def configure_refresh(self, ws, provider, credential_key, fresh):
+        """Hand the provider's refresh material to the gateway and mint the
+        first credential (`provider refresh configure`, then `rotate`).
+
+        The material goes through the environment (--secret-material-env),
+        never argv. It is configured on a new provider and when the Secret's
+        material changed, not on every run: the gateway stores a rotated
+        refresh token (Slack rotates them), which re-sending the Secret's
+        original one would undo."""
+        material = provider.refresh_material
+        for value in material.values():
+            self.sh.add_secret(value)
+        digest = hashlib.sha256(json.dumps(
+            {"strategy": provider.refresh_strategy, "key": credential_key, "material": material},
+            sort_keys=True).encode()).hexdigest()
+        state = read_json(self.refresh_state, {}) if self.refresh_state else {}
+        entry = f"{ws.name}/{provider.name}"
+        if not fresh and state.get(entry) == digest:
+            log(f"Provider '{provider.name}': refresh already configured")
+            return True
+        env = {f"SAW_REFRESH_{k.upper()}": v for k, v in material.items()}
+        flags = []
+        for key in sorted(material):
+            flags += ["--secret-material-env", f"{key}=SAW_REFRESH_{key.upper()}"]
+        configured = self.cli("provider", "refresh", "configure", provider.name, *ws_args(ws.name),
+                              "--credential-key", credential_key,
+                              "--strategy", provider.refresh_strategy.replace("_", "-"), *flags, env=env, check=False)
+        if not configured.ok:
+            raise InstallerError(f"could not configure credential refresh for provider '{provider.name}'")
+        rotated = self.cli("provider", "refresh", "rotate", provider.name, *ws_args(ws.name),
+                           "--credential-key", credential_key, check=False)
+        if not rotated.ok:
+            log(f"WARN: the first refresh of provider '{provider.name}' failed; see "
+                f"`openshell provider refresh status {provider.name}`")
+            return False
+        log(f"Provider '{provider.name}': credential refresh configured ({provider.refresh_strategy})")
+        if self.refresh_state and not self.sh.dry_run:
+            state[entry] = digest
+            write_json_atomic(self.refresh_state, state, mode=0o600)
+        return True
 
     def check_keyless_profile(self, ws, provider):
         """A keyless provider carries no key, so the governance profile is
@@ -4404,7 +4605,8 @@ class ProfileApplier:
                 self.begin_migration(ws, sb, labels)
                 state = "missing"
             elif not self.sandbox_wiring_ok(ws, sb):
-                self.begin_migration(ws, sb, labels, reason="different proxy wiring")
+                self.begin_migration(ws, sb, labels, reason="different proxy wiring",
+                                     via_volume=bool(self.cfg.get("credentialMigration")))
                 state = "missing"
         if state == "running" and not self.sh.dry_run and not self.sandbox_mounts_ok(ws, sb):
             self.begin_migration(ws, sb, labels, reason="stale or missing trusted mounts")
@@ -5122,6 +5324,10 @@ class ProfileApplier:
         default_ws = Workspace(name="default")
         for _, ws in enabled_workspaces(profiles):
             self.adopt_governed_profiles(ws, catalog_ws=default_ws)
+        for _, ws in enabled_workspaces(profiles):
+            for provider in ws.providers:
+                for value in (*provider.credential_values.values(), *provider.refresh_material.values()):
+                    self.sh.add_secret(value)
         self.preflight(profiles)
         self.reconcile_owner_memberships()
         for profile, ws in enabled_workspaces(profiles):
@@ -5129,6 +5335,7 @@ class ProfileApplier:
             banner(f"Profile {profile.name} / workspace {ws.name}")
             self.apply_workspace(ws)
             self.adopt_governed_profiles(ws)
+            self.prepare_credential_migration(ws)
             for provider in ws.providers:
                 if provider.enabled:
                     self.apply_provider(ws, provider)
@@ -6511,6 +6718,102 @@ def setup_dashboard(shell, cfg, script, home):
 # Commands
 # ---------------------------------------------------------------------------
 
+def check_credential_mode(inputs, cfg):
+    """Read the booted volume sources, never the live config's desired mode."""
+    if read_secret_value(inputs.proxy_ca, "mode") == "direct":
+        booted = "direct"
+    elif (inputs.proxy_ca / "ca.crt").is_file():
+        booted = "proxy"
+    else:
+        keys = {(b["name"], b["key"]) for b in cfg["credentialProxy"]["secrets"]}
+        try:
+            files, _, _ = read_profile_files(inputs.profiles)
+            keys |= provider_secret_keys(parse_profiles(files))
+        except InstallerError:
+            pass  # A profile mistake must not block software installation.
+        common = {"api_key", "bot_token", "access_token", "client_id", "client_secret", "refresh_token"}
+        booted = "direct" if any(
+            p.name in common or (directory.name, p.name) in keys
+            for directory in inputs.secrets.glob("*") if directory.is_dir()
+            for p in directory.iterdir() if not p.name.startswith(".")) else "proxy"
+    cfg["bootedCredentialMode"] = booted
+    if cfg["credentialMode"] != booted:
+        raise InstallerError(f"credential mode mismatch: configured {cfg['credentialMode']}, "
+                             f"booted {booted}; {RESTART_MODE_HINT}")
+
+
+def credential_mode_extra(cfg, state, proxy_ca=None):
+    extra = {"credentialMode": {"configured": cfg["credentialMode"],
+                               "booted": cfg.get("bootedCredentialMode"),
+                               "applied": state.get("applied")}}
+    if state.get("rotationRequired"):
+        extra["rotationRequired"] = state["rotationRequired"]
+    if cfg["credentialMode"] == "proxy":
+        extra["credentialProxy"] = {"url": cfg["credentialProxy"]["url"],
+                                    "caFingerprint": certificate_fingerprint(proxy_ca) if proxy_ca else ""}
+    return extra
+
+
+def prepare_credential_mode(state_dir, cfg, home, etc_dir, dry_run=False):
+    path = Path(state_dir) / "credential-mode.json"
+    state = read_json(path, {})
+    if not state:
+        status = read_json(Path(state_dir) / "status.json", {})
+        prior = "proxy" if (status.get("install", {}).get("credentialProxy", {}).get("url")
+                             or (Path(etc_dir) / "credential-proxy-ca.pem").exists()) else "direct"
+        # A pristine VM has no previous credentials to migrate.
+        if (not (status.get("install") or status.get("apply"))
+                and not (Path(state_dir) / "installed.json").exists()
+                and not (Path(etc_dir) / "credential-proxy-ca.pem").exists()):
+            prior = cfg["credentialMode"]
+        state = {"applied": prior, "transition": None, "exposed": [],
+                 "keyGeneration": cfg["credentialProxy"].get("keyGeneration", 1)}
+    pending = state.get("transition")
+    reversing = pending and pending["to"] != cfg["credentialMode"]
+    if cfg["credentialMode"] != state["applied"] or reversing:
+        transition = {"from": pending["to"] if reversing else state["applied"],
+                      "to": cfg["credentialMode"]}
+        if state.get("transition") != transition:
+            state["transition"] = transition
+            if not dry_run:
+                (Path(state_dir) / "user/refresh.json").unlink(missing_ok=True)
+            if transition["to"] == "proxy":
+                exposed = state["exposed"] or [f"{b['name']}/{key}"
+                    for b in cfg["credentialProxy"]["secrets"]
+                    for key in ([b["key"], *REFRESH_MATERIAL["oauth2_refresh_token"]]
+                                if b.get("refresh") else [b["key"]])]
+                state["rotationRequired"] = sorted(set(exposed))
+                state["keyGeneration"] = cfg["credentialProxy"].get("keyGeneration", 1)
+                if not dry_run:
+                    (Path(home) / ".nemoclaw/credentials.json").unlink(missing_ok=True)
+        cfg["credentialMigration"] = transition
+    if (state.get("rotationRequired") and not state.get("transition") and
+            cfg["credentialProxy"].get("keyGeneration", 1) > state["keyGeneration"]):
+        state.pop("rotationRequired")
+        state["exposed"] = []
+        state["keyGeneration"] = cfg["credentialProxy"].get("keyGeneration", 1)
+    if not dry_run:
+        write_json_atomic(path, state, mode=0o600)
+    log(f"Credential mode: {cfg['credentialMode']}")
+    if state.get("rotationRequired"):
+        log("WARN: provider-key rotation required: " + ", ".join(state["rotationRequired"]) +
+            "; revoke exposed keys, update Secrets, then increase credentialProxy.keyGeneration")
+    return state
+
+
+def finish_credential_mode(state_dir, cfg, state, profiles, home, etc_dir):
+    if read_json(Path(state_dir) / "user/sandbox-migrations.json", {}):
+        raise InstallerError("credential migration has pending sandbox restores")
+    if cfg["credentialMode"] == "direct":
+        for path in (Path(etc_dir) / "credential-proxy-ca.pem",
+                     Path(home) / ".config/openshell/credential-proxy-ca.pem"):
+            path.unlink(missing_ok=True)
+        state["exposed"] = sorted(set(state["exposed"]) |
+                                  {f"{s}/{k}" for s, k in provider_secret_keys(profiles)})
+    state["applied"], state["transition"] = cfg["credentialMode"], None
+    write_json_atomic(Path(state_dir) / "credential-mode.json", state, mode=0o600)
+
+
 class Inputs:
     def __init__(self, root, installer_dir=None):
         """installer_dir overrides where the BOM/config/apply_bom.py/dashboard
@@ -6535,6 +6838,7 @@ class Inputs:
         """Load and validate everything. Nothing is changed."""
         bom = load_bom(self.bom)
         cfg = load_config(self.config)
+        check_credential_mode(self, cfg)
         if cfg["ownerSubjectSource"] == "resolved":
             subject_file = self.owner / "subject"
             subject = subject_file.read_text(encoding="utf-8").strip() if subject_file.is_file() else ""
@@ -6546,7 +6850,7 @@ class Inputs:
         validate_profiles(profiles, set(provider_profiles(self.installer)),
                           governed=governance_enabled(self.installer / "gateway.toml"))
         check_profiles_against_bom(profiles, bom)
-        creds = resolve_credentials(profiles, self.secrets, cfg["credentialProxy"])
+        creds = resolve_credentials(profiles, self.secrets, cfg["credentialProxy"], cfg["credentialMode"])
         bundles = parse_harness_files(harness_files)
         check_harness_index(bundles, index)
         revisions = validate_harness(profiles, bundles)
@@ -6605,7 +6909,7 @@ def cmd_validate(args):
     log(f"BOM {bom['metadata']['name']}: " + ", ".join(
         f"{c} {e['version']}" for c, e in bom["spec"]["openshell"].items()))
     log(f"VM {cfg['vmName']}: {len(workspaces)} workspace(s) {workspaces}, "
-        f"{sum(len(v) for v in creds.values())} credential(s) resolved")
+        f"{sum(len(v) for v in creds.values())} credential(s) resolved (mode: {cfg['credentialMode']})")
     if harness["bundles"]:
         log(f"harness: {len(harness['bundles'])} bundle(s), revisions "
             f"{harness['revisions']}")
@@ -6764,11 +7068,13 @@ def cmd_install(args):
     shell = Shell(dry_run=args.dry_run)
     bom_name = None
     try:
-        status.set("Running")
-        bom = load_bom(inputs.bom)
         cfg = load_config(inputs.config)
+        check_credential_mode(inputs, cfg)
+        bom = load_bom(inputs.bom)
         bom_name = bom["metadata"]["name"]
         home, owner = runtime_home(cfg, args.as_current_user)
+        mode_state = prepare_credential_mode(state_dir, cfg, home, args.etc_dir, args.dry_run)
+        status.set("Running", extra=credential_mode_extra(cfg, mode_state))
         registry_changed = configure_registry_access(
             shell, cfg, inputs.secrets, home, owner, dry_run=args.dry_run)
         installer = ComponentInstaller(shell, args.bin_dir, state_dir / "installed.json",
@@ -6830,9 +7136,8 @@ def cmd_install(args):
         if state.pop("gatewayRestartPending", None) and not args.dry_run:
             write_json_atomic(state_file, state)
         status.set("Done", bom_name, signature=installer.signatures,
-                   extra={"credentialProxy": {"url": cfg["credentialProxy"]["url"],
-                                              "caFingerprint": certificate_fingerprint(
-                                                  Path(args.etc_dir) / "credential-proxy-ca.pem")},
+                   extra={**credential_mode_extra(cfg, mode_state,
+                                                  Path(args.etc_dir) / "credential-proxy-ca.pem"),
                           "pki": {"generation": cfg["gatewayPki"]["generation"],
                                   "caFingerprint": certificate_fingerprint(
                                       home / ".local/state/openshell/tls/ca.crt")}})
@@ -6840,7 +7145,8 @@ def cmd_install(args):
     except InstallerError as exc:
         log(f"ERROR: {exc}")
         signature = installer.signatures if "installer" in locals() else None
-        status.set("Failed", bom_name, str(exc).splitlines()[0], signature=signature)
+        status.set("Failed", bom_name, str(exc).splitlines()[0], signature=signature,
+                   extra=credential_mode_extra(cfg, locals().get("mode_state", {})) if "cfg" in locals() else None)
         return 1
 
 
@@ -6897,6 +7203,8 @@ def cmd_apply(args):
     status = Status(state_dir, "apply", dry_run=args.dry_run)
     bom_name = None
     try:
+        cfg = load_config(inputs.config)
+        check_credential_mode(inputs, cfg)
         status.set("Running")
         bom, cfg, profiles, creds, harness = inputs.load(check_agent_mounts=False)
         bom_name = bom["metadata"]["name"]
@@ -6915,12 +7223,22 @@ def cmd_apply(args):
         # root-owned (status.json); the ledger lives in a directory that user
         # can write, or the first apply dies with PermissionError.
         home, owner = runtime_home(cfg, args.as_current_user)
+        etc_dir = Path(getattr(args, "etc_dir", "/etc/openshell"))
+        mode_state = prepare_credential_mode(state_dir, cfg, home, etc_dir, args.dry_run)
+        if cfg["credentialMode"] == "direct" and not args.dry_run:
+            mode_state["exposed"] = sorted(set(mode_state["exposed"]) |
+                {f"{secret}/{key}" for secret, key in provider_secret_keys(profiles)})
+            write_json_atomic(state_dir / "credential-mode.json", mode_state, mode=0o600)
+        if (cfg.get("credentialMigration") and cfg["credentialMode"] == "proxy"
+                and not args.dry_run and not args.as_current_user):
+            check_proxy_health(cfg)
         cfg["credentialProxy"] = {**cfg["credentialProxy"],
                                   "caFingerprint": certificate_fingerprint(inputs.proxy_ca / "ca.crt")}
         cfg["gatewayPki"] = {**cfg["gatewayPki"],
                              "caFingerprint": certificate_fingerprint(
                                  home / ".local/state/openshell/tls/ca.crt")}
-        if not cfg["credentialProxy"]["caFingerprint"] or not cfg["gatewayPki"]["caFingerprint"]:
+        if ((cfg["credentialMode"] == "proxy" and not cfg["credentialProxy"]["caFingerprint"])
+                or not cfg["gatewayPki"]["caFingerprint"]):
             raise InstallerError("credential proxy or gateway CA certificate is missing")
         ledger_dir = state_dir / "user"
         if not args.dry_run:
@@ -6975,8 +7293,9 @@ def cmd_apply(args):
             raise InstallerError("gateway client-CA bundle retained an admin CA after apply")
         if (tls / "ca.key").exists():
             raise InstallerError("gateway CA private key is present after apply")
-        if not args.as_current_user:
+        if cfg["credentialMode"] == "proxy" and not args.as_current_user:
             check_proxy_health(cfg)
+        finish_credential_mode(state_dir, cfg, mode_state, profiles, home, etc_dir)
         report = {}
         ledger_path = state_dir / "user" / "managed.json"
         if ledger_path.is_file():
@@ -6984,15 +7303,14 @@ def cmd_apply(args):
         status.set("Done", bom_name, pruned=report.get("pruned"),
                    would_prune=report.get("wouldPrune"),
                    extra={"appliedRevision": harness["revisions"],
-                          "credentialProxy": {"url": cfg["credentialProxy"]["url"],
-                                              "caFingerprint": certificate_fingerprint(
-                                                  inputs.proxy_ca / "ca.crt")},
+                          **credential_mode_extra(cfg, mode_state, inputs.proxy_ca / "ca.crt"),
                           "pki": {"generation": cfg["gatewayPki"]["generation"],
                                   "caFingerprint": certificate_fingerprint(tls / "ca.crt")}})
         return 0
     except InstallerError as exc:
         log(f"ERROR: {exc}")
-        status.set("Failed", bom_name, str(exc).splitlines()[0])
+        status.set("Failed", bom_name, str(exc).splitlines()[0],
+                   extra=credential_mode_extra(cfg, locals().get("mode_state", {})) if "cfg" in locals() else None)
         return 1
 
 
@@ -7247,11 +7565,11 @@ def main(argv=None):
         p.add_argument("--dry-run", action="store_true")
         # Test hook: run the user part as the current user instead of runuser.
         p.add_argument("--as-current-user", action="store_true", help=argparse.SUPPRESS)
+        p.add_argument("--etc-dir", default="/etc/openshell")
         if name in ("install", "reconcile"):
             p.add_argument("--bin-dir", default="/usr/local/bin")
             p.add_argument("--opt-dir", default="/opt")
             p.add_argument("--podman", default="podman")
-            p.add_argument("--etc-dir", default="/etc/openshell")
             p.add_argument("--skip-gateway", action="store_true", help=argparse.SUPPRESS)
 
     p_apply = sub.add_parser("apply-profiles", help=argparse.SUPPRESS)

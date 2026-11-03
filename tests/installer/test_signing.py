@@ -8,6 +8,7 @@ import subprocess
 import sys
 
 import pytest
+from conftest import TEST_PROXY
 
 BUNDLE_FILES = ("installer-bom.yaml", "apply_bom.py", "setup-dashboard.sh",
                 "tool-actions.yaml", "tool-gate.mjs", "tool-gate-plugin.mjs",
@@ -189,7 +190,7 @@ def test_load_config_applies_the_floor(ab, tmp_path, monkeypatch):
     floor.write_text("enforce")
     monkeypatch.setattr(ab, "SIGNING_FLOOR_FILE", floor)
     path = tmp_path / "config.json"
-    path.write_text(json.dumps({"vmName": "x", "signing": {"mode": "off"}}))
+    path.write_text(json.dumps({"vmName": "x", "credentialProxy": TEST_PROXY, "signing": {"mode": "off"}}))
     cfg = ab.load_config(path)
     assert cfg["signing"]["mode"] == "enforce"
 

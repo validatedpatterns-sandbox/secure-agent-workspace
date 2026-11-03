@@ -43,8 +43,8 @@ spec:
           port: 443
         - protocol: TCP
           port: 80
-    {{- /* The cleanup and credential-proxy CA hooks call the API. Keep this
-           exception even when cleanupOnDelete or NetworkPolicy is disabled. */}}
+    {{- /* Argo applies this at wave -30 before the CA Sync hook. */}}
+    {{- if or .Values.cleanupOnDelete (include "openshell-sandbox.credentialProxyEnabled" .) }}
     {{- if $apiTargets }}
     {{- range $apiTargets }}
     - type: Allow
@@ -65,6 +65,7 @@ spec:
       ports:
         - protocol: TCP
           port: 6443
+    {{- end }}
     {{- end }}
     {{- range $hosts }}
     - type: Allow

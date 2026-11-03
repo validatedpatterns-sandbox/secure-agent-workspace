@@ -10,9 +10,9 @@ spec:
       model: nvidia/nemotron-3-super-120b-a12b
       credentialSecret: inference
       credentialSecretKey: api_key
-    # The credential proxy holds the static Slack bot token and the Gmail
-    # OAuth material. It mints Gmail access tokens outside the VM; sandboxes
-    # receive placeholders only. See docs/personal-assistant.md.
+    # Proxy mode mints Gmail tokens outside the VM; direct mode lets the
+    # gateway refresh them from mounted OAuth material. Slack stays a static
+    # bot token in both modes. See docs/personal-assistant.md.
     - name: slack
       type: slack
       credentialSecret: slack

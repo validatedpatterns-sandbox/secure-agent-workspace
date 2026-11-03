@@ -64,7 +64,7 @@ Secure Agent Workspace provisions dedicated KubeVirt virtual machines for each u
 
 Organizations adopting AI coding and knowledge agents need strong isolation guarantees: each user's agent must run in its own boundary, with auditable access to enterprise systems, controlled network egress, and centralized identity management. Traditional container-based isolation is insufficient when agents can execute arbitrary code and tool calls.
 
-This quickstart implements NVIDIA's [Secure Agent Workspace reference architecture](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html) on Red Hat OpenShift. Each user gets a dedicated Fedora 44 VM running the OpenShell gateway and an AI agent (OpenClaw, Hermes, or Deep Agents Code). The VM provides process-level and network-level isolation. OIDC authentication (via Red Hat Build of Keycloak) ensures only the sandbox owner can access their workspace. Provider keys flow through Vault and External Secrets into a per-namespace credential proxy; the VM receives nonsecret markers and metadata only. See [Credential isolation](docs/credential-isolation.md).
+This quickstart implements NVIDIA's [Secure Agent Workspace reference architecture](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html) on Red Hat OpenShift. Each user gets a dedicated Fedora 44 VM running the OpenShell gateway and an AI agent (OpenClaw, Hermes, or Deep Agents Code). The VM provides process-level and network-level isolation. OIDC authentication (via Red Hat Build of Keycloak) ensures only the sandbox owner can access their workspace. Provider keys flow through Vault and External Secrets into a per-namespace credential proxy; the VM receives nonsecret markers and metadata by default. Optional direct mode (`credentialProxy.enabled: false`) mounts full Secrets in the VM. See [Credential isolation](docs/credential-isolation.md).
 
 The system supports multiple inference providers (Gemini, Anthropic, OpenAI, NVIDIA Build, OpenRouter, Ollama, or custom endpoints) and optional web search integration (Tavily, Brave). A bootc-based golden image pipeline pre-bakes all packages into a container image that CDI imports directly, enabling fast VM provisioning without cloud-init package installation.
 
@@ -236,12 +236,16 @@ make images-mirror
 # oidc.caBundle snippet to add to overrides/saw-users.yaml.
 make check-oidc-ca
 
-# 5c. Pin the credential proxy image before rendering any user VM.
+# 5c. Pin the credential proxy image when using proxy mode (the default).
 # Set this in overrides/saw-users.yaml (alongside your users list):
 # defaults:
 #   openshellSaw:
 #     credentialProxy:
 #       image: <repo>/saw-credential-proxy@sha256:<multi-arch-index-digest>
+# To disable globally: defaults.openshellSaw.credentialProxy.enabled: false
+# To disable for one user: users[].values.credentialProxy.enabled: false
+# Direct mode needs no proxy image and exposes keys to VM root; see
+# docs/credential-isolation.md for migrations and required key rotation.
 # Build credential-proxy/Containerfile and publish it, or build in-cluster;
 # see docs/credential-isolation.md. This is required until a default is published.
 

@@ -165,7 +165,7 @@ def test_waves_release_names_and_value_overrides(tmp_path):
     assert secrets["spec"]["source"]["path"] == "charts/pattern-secrets"
     assert secrets["spec"]["source"]["helm"]["releaseName"] == "saw-alice-secrets"
     assert secrets["spec"]["destination"]["namespace"] == "saw-alice"
-    assert helm_values(secrets) == {"vaultPrefix": "secret/data/hub",
+    assert helm_values(secrets) == {"vaultPrefix": "secret/data/hub", "metadataSecrets": True,
                                     "sshVaultPrefix": "secret/data/hub",
                                     "secrets": ["inference", "web-search"],
                                     "metaKeys": {"inference": ["cuda_model", "model", "provider"],
@@ -173,7 +173,7 @@ def test_waves_release_names_and_value_overrides(tmp_path):
                                     "clusterCaSecret": "saw-ingress-ca"}
 
     bob_secrets = helm_values(app(docs, "saw-bob-secrets"))
-    assert bob_secrets == {"vaultPrefix": "secret/data/hub/saw-bob",
+    assert bob_secrets == {"vaultPrefix": "secret/data/hub/saw-bob", "metadataSecrets": True,
                            "sshVaultPrefix": "secret/data/hub",
                            "secrets": ["inference", "web-search"],
                            "metaKeys": {},
@@ -671,3 +671,31 @@ def test_the_personal_assistant_profile_turns_its_harness_on(tmp_path):
     assert next(b for b in bindings if b['name']=='gmail')['refresh'] is True
     metadata = helm_values(app(docs,'saw-carol-secrets'))['metaKeys']
     assert metadata['gmail'] == ['provider'] and metadata['slack'] == ['provider']
+
+
+@pytest.mark.ci_external
+@pytest.mark.parametrize("default,user,enabled", [
+    (True, False, False), (False, None, False), (False, True, True),
+    (True, "false", False), ("false", None, False), (True, None, True)])
+def test_credential_mode_overrides_and_metadata_projection(tmp_path, default, user, enabled):
+    entry = {"name": "alice"}
+    if user is not None:
+        entry["values"] = {"credentialProxy": {"enabled": user}}
+    docs = docs_from(render_file(tmp_path, [entry], {
+        "defaults": {"openshellSaw": {"credentialProxy": {"enabled": default}}}}))
+    values = helm_values(app(docs, "saw-alice"))
+    assert values["credentialProxy"]["enabled"] is enabled
+    secrets = helm_values(app(docs, "saw-alice-secrets"))
+    assert secrets["metadataSecrets"] is enabled
+    assert ("metaKeys" in secrets) is enabled
+
+
+def test_direct_rendered_values_validate_real_provider_keys(tmp_path):
+    docs = docs_from(render_file(tmp_path, [{"name": "alice", "values": {
+        "credentialProxy": {"enabled": False}}}]))
+    result, installer = validate_rendered_user(tmp_path, docs, {
+        "inference": {"provider": "build", "api_key": "direct-sentinel-key"},
+        "web-search": {"provider": "brave", "api_key": "direct-search-key"}})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "mode: direct" in result.stdout
+    assert "direct-sentinel-key" not in result.stdout + result.stderr

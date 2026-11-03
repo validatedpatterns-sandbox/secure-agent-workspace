@@ -84,7 +84,7 @@ if "--" in args:
 else:
     head = args
 op = " ".join(head[:2])
-if op in deny:
+if op in deny or " ".join(head[:3]) in deny:
     fail("Error: permission denied (requires platform admin)")
 if op == "workspace create" and (state_dir / "rbac").exists():
     # OIDC RBAC: platform-admin methods need the admin role; an mTLS caller's
@@ -239,6 +239,36 @@ elif op == "provider create":
     configs = [head[i + 1] for i, a in enumerate(head) if a == "--config"]
     if configs:
         state["providers"][key]["config"] = configs
+elif op == "provider refresh":
+    action, name = head[2:4]
+    key = opt("--credential-key")
+    provider = state["providers"].get(f"{ws}/{name}")
+    if provider is None:
+        fail("Error: provider not found")
+    refresh = provider.setdefault("refresh", {})
+    if action == "configure":
+        material = {}
+        for i, arg in enumerate(args):
+            if arg == "--secret-material-env":
+                field, _, variable = args[i + 1].partition("=")
+                variable = variable or field
+                if variable not in os.environ:
+                    fail(f"Error: material environment variable {variable} is not set")
+                material[field] = os.environ[variable]
+        refresh[key] = {"strategy": opt("--strategy"), "material": material}
+    elif action == "rotate":
+        if key not in refresh:
+            fail("Error: refresh not configured")
+        provider["credential"] = f"{key}=minted-{name}"
+    elif action == "status":
+        print("PROVIDER CREDENTIAL_KEY STRATEGY STATUS")
+        for credential_key, record in refresh.items():
+            if key is None or key == credential_key:
+                print(name, credential_key, record["strategy"], "refreshed")
+    elif action == "delete":
+        refresh.pop(key, None)
+    else:
+        fail("unsupported refresh subcommand")
 elif op == "provider update":
     key = f"{ws}/{head[2]}"
     if key not in state["providers"]:

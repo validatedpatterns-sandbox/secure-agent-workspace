@@ -50,7 +50,7 @@ def proxy_for(ab, profiles):
                 for key in keys:
                     seen.setdefault((p.credential_secret, key), set()).update(types)
     return {**TEST_PROXY, "secrets": [{"name": s, "key": k, "providers": sorted(t),
-                                        **({"refresh": True} if any(p.proxy_refresh and p.credential_secret == s and
+                                        **({"refresh": True} if any(p.refresh_strategy and p.credential_secret == s and
                                             p.credential_secret_key == k for profile in profiles
                                             for ws in profile.workspaces for p in ws.providers) else {})}
                                       for (s, k), t in sorted(seen.items())]}
@@ -340,7 +340,13 @@ class FakeWorld:
 
 
 @pytest.fixture
-def secrets_dir(tmp_path):
+def credential_mode(request):
+    """Opt selected lifecycle contracts into direct mode, not the whole suite."""
+    return getattr(request, "param", "proxy")
+
+
+@pytest.fixture
+def secrets_dir(tmp_path, credential_mode):
     """Only metadata reaches /run/saw/secrets/<secret> on the VM."""
     base = tmp_path / "secrets"
     for secret, data in {"inference": {"provider": "build"},
@@ -348,11 +354,14 @@ def secrets_dir(tmp_path):
         (base / secret).mkdir(parents=True)
         for key, value in data.items():
             (base / secret / key).write_text(value + "\n")
+    if credential_mode == "direct":
+        (base / "inference/api_key").write_text("test-direct-inference-key")
+        (base / "web-search/api_key").write_text("test-direct-search-key")
     return base
 
 
 @pytest.fixture
-def config(fake_env, admin_pki, tmp_path):
+def config(fake_env, admin_pki, tmp_path, credential_mode):
     """Copy a test admin identity; keep every writable path local to this test."""
     root = tmp_path / "admin-session"
     tls, config_home = root / "tls", root / "config"
@@ -373,7 +382,9 @@ def config(fake_env, admin_pki, tmp_path):
             "runtimeUser": "cloud-user", "mtlsGateway": "saw-installer",
             "relayGateway": "saw-relay", "adminTlsDir": str(tls),
             "adminConfigHome": str(config_home),
-            "credentialProxy": copy.deepcopy(TEST_PROXY),
+            "credentialMode": credential_mode,
+            "credentialProxy": (copy.deepcopy(TEST_PROXY) if credential_mode == "proxy" else
+                                {"url": "", "markerPrefix": "saw-cred", "secrets": []}),
             "gatewayPki": {"generation": 1, "caFingerprint": "test-gateway-ca"},
             "ownerSubject": "subject-alice", "oidcIssuer": "", "sandboxDashboardRoute": "",
             "dashboard": {"enabled": False, "owner": "alice"},
@@ -419,7 +430,7 @@ def fake_clock(monkeypatch, ab):
 
 
 @pytest.fixture
-def inputs_dir(tmp_path, bom, config, shipped_profile_files, secrets_dir, fake_env):
+def inputs_dir(tmp_path, bom, config, shipped_profile_files, secrets_dir, fake_env, credential_mode):
     """A complete /run/saw tree built from the real chart files."""
     root = tmp_path / "run-saw"
     installer = root / "installer"
@@ -442,7 +453,10 @@ def inputs_dir(tmp_path, bom, config, shipped_profile_files, secrets_dir, fake_e
         (CHART / "files" / "installer" / "setup-dashboard.sh").read_text())
     proxy_ca = root / "proxy-ca"
     proxy_ca.mkdir()
-    (proxy_ca / "ca.crt").write_bytes((fake_env.home / ".local/state/openshell/tls/ca.crt").read_bytes())
+    if credential_mode == "direct":
+        (proxy_ca / "mode").write_text("direct\n")
+    else:
+        (proxy_ca / "ca.crt").write_bytes((fake_env.home / ".local/state/openshell/tls/ca.crt").read_bytes())
     profiles = root / "profiles"
     profiles.mkdir()
     for key, text in shipped_profile_files.items():

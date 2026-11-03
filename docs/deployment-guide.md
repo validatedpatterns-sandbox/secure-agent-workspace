@@ -775,3 +775,19 @@ change. The self-service portal still requires a web-search key in its form.
 openshell sandbox exec -n notebook -- sh
 openshell sandbox exec -n cuda-sandbox --workspace cuda-dev -- sh
 ```
+
+## Credential mode
+
+Quickstart defaults to `CREDENTIAL_PROXY_ENABLED=true`. Set it to `false` to
+mount full provider Secrets into the VM without a proxy image. If the variable
+is unset, `SAW_VALUES_FILE`'s `credentialProxy.enabled` wins, then the default.
+Only literal `true` and `false` are accepted. GitOps and portal workspaces use
+`defaults.openshellSaw.credentialProxy.enabled`, overridden by a user's
+`values.credentialProxy.enabled`.
+
+After changing modes, run `make saw-restart-pending CONFIRM=yes` and wait for
+`apply: Done`. Switching preserves `/sandbox`. GitOps needs manual proxy-object
+cleanup after switching to direct; returning to proxy requires provider-key
+rotation and a `credentialProxy.keyGeneration` increase. Follow the exact
+[mode-switch instructions](credential-isolation.md#switching-modes), including
+the Helm-only `cleanupOnDelete=false` firewall caveat.

@@ -110,6 +110,19 @@ fi
 
 echo
 echo "== live cluster checks =="
+# Direct mode needs neither a proxy image nor either proxy NetworkPolicy.
+helm template saw-test "${ROOT}/charts/openshell-saw" -n "${SAW_NS}" \
+  -f "${ROOT}/tests/fixtures/saw-network-topology.yaml" \
+  --set sandboxName=saw-test --set credentialProxy.enabled=false > "${tmpdir}/direct.yaml"
+"${PYTHON}" - "${tmpdir}/direct.yaml" <<'PYCHECK'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+policies = [d for d in docs if d['kind'] == 'NetworkPolicy']
+assert not any('credential-proxy' in d['metadata']['name'] for d in policies)
+assert not any('credential-proxy' in str(d['spec']) for d in policies)
+PYCHECK
+pass "direct policies have no credential proxy peers"
+
 if [[ "${SKIP_LIVE:-}" == "1" ]]; then
   echo "  SKIP  live checks (SKIP_LIVE=1)"
   finish

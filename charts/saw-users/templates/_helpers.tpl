@@ -84,6 +84,17 @@ else on. Pattern extraParameters may supply the string "false". "true" or "".
 {{- if ne (toString $enabled) "false" -}}true{{- end -}}
 {{- end -}}
 
+{{- define "saw-users.credentialProxyEnabled" -}}
+{{- $base := .root.Values.defaults.openshellSaw | default dict -}}
+{{- $defaults := $base.credentialProxy | default dict -}}
+{{- $values := .user.values | default dict -}}
+{{- $user := $values.credentialProxy | default dict -}}
+{{- $enabled := true -}}
+{{- if hasKey $defaults "enabled" -}}{{- $enabled = $defaults.enabled -}}{{- end -}}
+{{- if hasKey $user "enabled" -}}{{- $enabled = $user.enabled -}}{{- end -}}
+{{- if ne (toString $enabled) "false" -}}true{{- end -}}
+{{- end -}}
+
 {{/*
 openshell-saw values: chart defaults, then this user's owner, then the
 user's `values` on top. Nested maps merge; the user's keys win.
@@ -141,7 +152,11 @@ user's `values` on top. Nested maps merge; the user's keys win.
 {{- if $root.Values.ownerResolution.enabled -}}
 {{- $_ := set $ac "ownerSubjectSource" "resolved" -}}
 {{- end -}}
-{{- mergeOverwrite $base $overlay | toYaml -}}
+{{- $base = mergeOverwrite $base $overlay -}}
+{{- $proxy := index $base "credentialProxy" | default dict -}}
+{{- $_ := set $proxy "enabled" (eq (include "saw-users.credentialProxyEnabled" .) "true") -}}
+{{- $_ := set $base "credentialProxy" $proxy -}}
+{{- toYaml $base -}}
 {{- end -}}
 
 {{/*
@@ -327,8 +342,11 @@ the shared prefix for the SSH key, and only the Secrets their profiles read.
 {{- $values := dict "vaultPrefix" ($user.vaultPrefix | default $root.Values.defaults.vaultPrefix)
       "sshVaultPrefix" $root.Values.defaults.sshVaultPrefix
       "secrets" (include "saw-users.secretNames" . | fromJsonArray)
-      "metaKeys" $metaKeys
+      "metadataSecrets" (eq (include "saw-users.credentialProxyEnabled" .) "true")
       "clusterCaSecret" ($root.Values.defaults.clusterCaSecret | default "") -}}
+{{- if include "saw-users.credentialProxyEnabled" . -}}
+{{- $_ := set $values "metaKeys" $metaKeys -}}
+{{- end -}}
 {{- if $registry.authSecret -}}
 {{- $_ := set $values "registryPullSecret" $registry.authSecret -}}
 {{- end -}}

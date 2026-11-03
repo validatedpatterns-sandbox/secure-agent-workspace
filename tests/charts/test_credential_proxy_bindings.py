@@ -188,11 +188,12 @@ def test_every_shipped_token_issuer_is_allowlisted():
 
 @pytest.mark.ci_external
 @pytest.mark.skipif(not HELM, reason="helm is not installed")
+@pytest.mark.parametrize('mode', ['proxy', 'direct'])
 @pytest.mark.parametrize('token_url', ['http://oauth2.googleapis.com/token',
     'https://oauth2.googleapis.com:8443/token', 'https://user@oauth2.googleapis.com/token',
     'https://oauth2.googleapis.com/token?tenant=1', 'https://oauth2.googleapis.com/token#fragment',
     'https://untrusted.example.test/token'])
-def test_shipped_refresh_url_is_validated_at_render(tmp_path, token_url):
+def test_shipped_refresh_url_is_validated_at_render(tmp_path, token_url, mode):
     chart = tmp_path / 'chart'
     shutil.copytree(SAW, chart)
     path = chart / 'files/provider-profiles/gmail.yaml'
@@ -201,6 +202,130 @@ def test_shipped_refresh_url_is_validated_at_render(tmp_path, token_url):
     path.write_text(yaml.safe_dump(profile))
     result = run_helm([HELM, 'template', 'saw-test', str(chart),
                        '-f', str(ROOT / 'tests/fixtures/saw-network-topology.yaml'),
-                       '-f', str(ROOT / 'tests/fixtures/credential-proxy-values.yaml')],
+                       '-f', str(ROOT / 'tests/fixtures/credential-proxy-values.yaml'),
+                       '--set', 'credentialProxy.enabled=' + str(mode == 'proxy').lower(),
+                       '--set-json', 'additionalProviderSecrets=["gmail"]',
+                       '--set-json', 'credentialProxy.secrets=[{"name":"gmail","key":"access_token","providers":["gmail"],"refresh":true}]'],
                       capture_output=True, text=True)
     assert result.returncode != 0 and 'refresh token_url' in result.stderr
+
+
+@pytest.mark.ci_external
+def test_direct_mode_needs_no_image_and_renders_no_proxy_objects():
+    docs = render(SAW, "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
+                  "--set", "credentialProxy.enabled=false")
+    assert not any("credential-proxy" in d["metadata"]["name"] for d in docs)
+    vm = next(d for d in docs if d["kind"] == "VirtualMachine")
+    vols = vm["spec"]["template"]["spec"]["volumes"]
+    sources = {v.get("secret", {}).get("secretName") for v in vols}
+    assert {"inference", "web-search"} <= sources
+    assert not any(name and name.endswith("-meta") for name in sources)
+    slot = next(v for v in vols if v["name"] == "saw-proxy-ca")
+    assert slot["configMap"]["name"] == "saw-test-credential-mode"
+    cm = next(d for d in docs if d["metadata"]["name"] == "saw-test-credential-mode")
+    assert cm["data"] == {"mode": "direct"}
+    installer = next(d for d in docs if d["metadata"]["name"] == "saw-test-installer")
+    cfg = json.loads(installer["data"]["config.json"])
+    assert cfg["credentialMode"] == "direct"
+    assert cfg["credentialProxy"] == {"url": "", "markerPrefix": "saw-cred", "secrets": [], "keyGeneration": 1}
+    toml = installer["data"]["gateway.toml"]
+    for key in ("https_proxy", "proxy_ca_bundle", "proxy_connect_by_hostname"):
+        assert key not in toml
+
+
+@pytest.mark.ci_external
+@pytest.mark.parametrize('mode', ['proxy', 'direct'])
+@pytest.mark.parametrize('selection', ['unmapped', 'unattached', 'static'])
+def test_refresh_egress_ignores_unselected_refresh_providers(mode, selection):
+    bindings = [{'name': 'inference', 'key': 'api_key', 'providers': ['nvidia']}]
+    if selection != 'unmapped':
+        bindings.append({'name': 'mail-credentials', 'key': 'access_token',
+                         'providers': ['gmail'], 'refresh': selection != 'static'})
+    docs = render(SAW, '-f', str(ROOT / 'tests/fixtures/saw-network-topology.yaml'),
+                  '-f', str(ROOT / 'tests/fixtures/credential-proxy-values.yaml'),
+                  '--set', 'credentialProxy.enabled=' + str(mode == 'proxy').lower(),
+                  '--set-json', 'additionalProviderSecrets=' + json.dumps(
+                      ['mail-credentials'] if selection == 'static' else []),
+                  '--set-json', 'credentialProxy.secrets=' + json.dumps(bindings),
+                  '--set-json', 'egress.allow=["integrate.api.nvidia.com"]')
+    firewall = next(d for d in docs if d['kind'] == 'EgressFirewall')
+    assert not any(r['to'].get('dnsName') == 'oauth2.googleapis.com'
+                   for r in firewall['spec']['egress'])
+
+
+@pytest.mark.ci_external
+@pytest.mark.parametrize('mode', ['proxy', 'direct'])
+def test_selected_slack_provider_does_not_require_google_egress(mode):
+    docs = render(SAW, '-f', str(ROOT / 'tests/fixtures/saw-network-topology.yaml'),
+                  '-f', str(ROOT / 'tests/fixtures/credential-proxy-values.yaml'),
+                  '--set', 'credentialProxy.enabled=' + str(mode == 'proxy').lower(),
+                  '--set-json', 'additionalProviderSecrets=["slack"]',
+                  '--set-json', 'credentialProxy.secrets=[{"name":"inference","key":"api_key","providers":["nvidia"]},{"name":"slack","key":"bot_token","providers":["slack"]}]',
+                  '--set-json', 'egress.allow=["integrate.api.nvidia.com","slack.com"]')
+    firewall = next(d for d in docs if d['kind'] == 'EgressFirewall')
+    assert not any(r['to'].get('dnsName') == 'oauth2.googleapis.com'
+                   for r in firewall['spec']['egress'])
+
+
+@pytest.mark.ci_external
+@pytest.mark.parametrize('mode', ['proxy', 'direct'])
+@pytest.mark.parametrize('egress_enabled,issuer_list', [
+    (True, 'allow'), (True, 'extraAllow'), (True, 'missing'),
+    (False, 'missing'), (False, 'empty')])
+def test_selected_refresh_egress_respects_egress_firewall(mode, egress_enabled, issuer_list):
+    allowed = [] if issuer_list == 'empty' else ['integrate.api.nvidia.com', 'gmail.googleapis.com']
+    extra = []
+    if issuer_list == 'allow':
+        allowed.append('oauth2.googleapis.com')
+    elif issuer_list == 'extraAllow':
+        extra.append('oauth2.googleapis.com')
+    # Selection follows the provider mapping, even when its Secret is renamed.
+    result = run_helm([HELM, 'template', 'saw-test', str(SAW),
+                       '-f', str(ROOT / 'tests/fixtures/saw-network-topology.yaml'),
+                       '-f', str(ROOT / 'tests/fixtures/credential-proxy-values.yaml'),
+                       '--set', 'credentialProxy.enabled=' + str(mode == 'proxy').lower(),
+                       '--set-json', 'additionalProviderSecrets=["mail-credentials"]',
+                       '--set-json', 'credentialProxy.secrets=[{"name":"mail-credentials","key":"access_token","providers":["gmail"],"refresh":true}]',
+                       '--set', 'egress.enabled=' + str(egress_enabled).lower(),
+                       '--set-json', 'egress.allow=' + json.dumps(allowed),
+                       '--set-json', 'egress.extraAllow=' + json.dumps(extra)],
+                      capture_output=True, text=True)
+    if egress_enabled and issuer_list == 'missing':
+        assert result.returncode != 0
+        assert 'refresh token_url host must be in egress.allow' in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        docs = [d for d in yaml.safe_load_all(result.stdout) if d]
+        firewalls = [d for d in docs if d['kind'] == 'EgressFirewall']
+        assert bool(firewalls) == egress_enabled
+        if firewalls:
+            assert any(r['to'].get('dnsName') == 'oauth2.googleapis.com'
+                       for r in firewalls[0]['spec']['egress'])
+
+
+@pytest.mark.ci_external
+@pytest.mark.parametrize('mode', ['proxy', 'direct'])
+@pytest.mark.parametrize('selected', [False, True])
+def test_refresh_url_safety_only_applies_to_selected_providers(tmp_path, mode, selected):
+    chart = tmp_path / 'chart'
+    shutil.copytree(SAW, chart)
+    path = chart / 'files/provider-profiles/gmail.yaml'
+    profile = yaml.safe_load(path.read_text())
+    profile['credentials'][0]['refresh']['token_url'] = 'http://oauth2.googleapis.com/token'
+    path.write_text(yaml.safe_dump(profile))
+    bindings = [{'name': 'inference', 'key': 'api_key', 'providers': ['nvidia']}]
+    if selected:
+        bindings.append({'name': 'gmail', 'key': 'access_token', 'providers': ['gmail'], 'refresh': True})
+    result = run_helm([HELM, 'template', 'saw-test', str(chart),
+                       '-f', str(ROOT / 'tests/fixtures/saw-network-topology.yaml'),
+                       '-f', str(ROOT / 'tests/fixtures/credential-proxy-values.yaml'),
+                       '--set', 'credentialProxy.enabled=' + str(mode == 'proxy').lower(),
+                       '--set-json', 'additionalProviderSecrets=' + json.dumps(['gmail'] if selected else []),
+                       '--set-json', 'credentialProxy.secrets=' + json.dumps(bindings),
+                       '--set', 'egress.enabled=false', '--set-json', 'egress.allow=[]'],
+                      capture_output=True, text=True)
+    if selected:
+        assert result.returncode != 0
+        assert 'refresh token_url must be HTTPS' in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr

@@ -132,3 +132,13 @@ def test_additional_provider_secrets_are_synced_from_the_users_prefix(tmp_path):
         "inference-anthropic": {"secret/data/hub/saw-alice/inference-anthropic"},
         "openshell-ssh-pubkey": {"secret/data/hub/ssh"},
         "openshell-aap-ssh": {"secret/data/hub/ssh"}}
+
+
+@pytest.mark.ci_external
+@pytest.mark.parametrize("value", ["false", '"false"'])
+def test_direct_mode_omits_metadata_but_keeps_full_secrets(tmp_path, value):
+    path = tmp_path / "direct.yaml"
+    path.write_text(f"metadataSecrets: {value}\n")
+    got = keys("-f", str(path))
+    assert {"inference", "web-search", "openshell-ssh-pubkey", "openshell-aap-ssh"} == set(got)
+    assert not any(name.endswith("-meta") for name in got)

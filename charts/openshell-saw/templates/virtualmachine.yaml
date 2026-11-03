@@ -184,7 +184,7 @@ spec:
             optional: true
         - name: saw-proxy-ca
           configMap:
-            name: saw-proxy-ca
+            name: {{ include "openshell-sandbox.credentialModeConfigMap" . }}
         {{- if eq .Values.accessControl.ownerSubjectSource "resolved" }}
         - name: saw-owner
           configMap:

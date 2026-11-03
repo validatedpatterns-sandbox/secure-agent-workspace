@@ -15,6 +15,7 @@ secrets:
   - web-search
 # Non-credential fields to project into each provider's -meta Secret.
 # saw-users derives these from the selected profiles' catalog fields.
+metadataSecrets: true
 metaKeys: {}
 # Secret to sync the cluster's ingress CA into (from the shared
 # <sshVaultPrefix>/cluster-ingress-ca, written by the saw-ingress-ca

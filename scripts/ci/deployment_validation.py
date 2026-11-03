@@ -69,9 +69,12 @@ def read_yaml(path: Path) -> dict[str, Any]:
     return value
 
 
-def chart_args(chart: Path) -> list[str]:
+def chart_args(chart: Path, mode="proxy") -> list[str]:
     name = chart.name
     if name == "openshell-saw":
+        if mode == "direct":
+            return ["-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
+                    "--set", "sandboxName=ciowner", "--set", "credentialProxy.enabled=false"]
         return ["-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
                 "-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml"),
                 "--set", "sandboxName=ciowner"]
@@ -95,10 +98,14 @@ def charts() -> list[Path]:
 
 
 def render_charts(result: Validation, output_dir: Path) -> None:
-    for chart_file in charts():
+    variants = [(path, mode) for path in charts()
+                for mode in (["proxy", "direct"] if path.parent.name == "openshell-saw" else ["proxy"])]
+    for chart_file, mode in variants:
         chart = chart_file.parent
         label = chart.relative_to(ROOT).as_posix()
-        args = chart_args(chart)
+        args = chart_args(chart, mode)
+        if mode == "direct":
+            label += "-direct"
         for command in (
             ["helm", "lint", str(chart), *args],
             ["helm", "template", chart.name, str(chart), "--debug", *args],

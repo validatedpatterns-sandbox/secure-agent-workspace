@@ -160,11 +160,15 @@ inference:
 additionalProviderSecrets:
   - web-search
 
-# A published image digest is required before rendering this chart. Build the
+# A published image digest is required in proxy mode only. Build the
 # source in credential-proxy/ and set this to repo@sha256:<digest>. Use the
 # multi-arch index digest, not a per-platform digest (skopeo inspect --raw
 # docker://<image>:sha-<commit> | sha256sum).
 credentialProxy:
+  # false mounts full provider Secrets into the VM; admin mTLS stays hardened.
+  enabled: true
+  # Increase only after rotating/revoking credentials exposed in direct mode.
+  keyGeneration: 1
   # secrets[].refresh: true mints the bound credential in this proxy from
   # the shipped provider profile. Material keys never get their own marker.
   image: ""

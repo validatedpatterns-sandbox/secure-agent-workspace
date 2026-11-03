@@ -17,8 +17,8 @@ def profiles(ab, shipped_profile_files):
 
 
 @pytest.fixture
-def creds(ab, profiles, secrets_dir):
-    return ab.resolve_credentials(profiles, secrets_dir, TEST_PROXY)
+def creds(ab, profiles, secrets_dir, config, credential_mode):
+    return ab.resolve_credentials(profiles, secrets_dir, config["credentialProxy"], credential_mode)
 
 
 def _shipped_harness(ab):
@@ -38,6 +38,7 @@ def cli_ops(fake_env):
     return [" ".join(c[:2]) for c in fake_env.openshell_calls()]
 
 
+@pytest.mark.parametrize("credential_mode", ["proxy", "direct"], indirect=True)
 def test_shipped_profile_lifecycle(ab, fake_env, config, profiles, creds, capsys):
     applier = applier_with_shipped_profiles(ab, config, creds)
     applier.apply(profiles)
@@ -52,8 +53,8 @@ def test_shipped_profile_lifecycle(ab, fake_env, config, profiles, creds, capsys
     assert state["workspaces"] == ["default", "cuda-dev"]
     assert set(state["providers"]) == {"default/nvidia", "default/brave", "cuda-dev/nvidia"}
     assert state["providers"]["default/nvidia"] == {
-        "type": "nvidia", "credential": "NVIDIA_API_KEY=saw-cred.inference.api_key"}
-    assert state["providers"]["default/brave"]["credential"] == "BRAVE_API_KEY=saw-cred.web-search.api_key"
+        "type": "nvidia", "credential": "NVIDIA_API_KEY=" + creds["default"]["nvidia"]}
+    assert state["providers"]["default/brave"]["credential"] == "BRAVE_API_KEY=" + creds["default"]["brave"]
     assert all(c["xdg"] == config["adminConfigHome"] for c in fake_env.openshell_env_calls()
                if c["args"][0] != "gateway")
 

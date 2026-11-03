@@ -41,11 +41,22 @@ if [[ -n "${SAW_VALUES_FILE}" && ! -f "${SAW_VALUES_FILE}" ]]; then
   echo "Error: SAW_VALUES_FILE does not exist: ${SAW_VALUES_FILE}" >&2
   exit 1
 fi
+CREDENTIAL_PROXY_ENABLED="${CREDENTIAL_PROXY_ENABLED:-}"
+if [[ -z "${CREDENTIAL_PROXY_ENABLED}" && -n "${SAW_VALUES_FILE}" ]]; then
+  CREDENTIAL_PROXY_ENABLED="$(python3 -c 'import sys,yaml; d=yaml.safe_load(open(sys.argv[1])) or {}; v=(d.get("credentialProxy") or {}).get("enabled", True); print(str(v).lower() if isinstance(v, bool) else str(v))' "${SAW_VALUES_FILE}")"
+fi
+CREDENTIAL_PROXY_ENABLED="${CREDENTIAL_PROXY_ENABLED:-true}"
+if [[ "${CREDENTIAL_PROXY_ENABLED}" != true && "${CREDENTIAL_PROXY_ENABLED}" != false ]]; then
+  echo "Error: CREDENTIAL_PROXY_ENABLED must be true or false." >&2
+  exit 1
+fi
+credential_mode=proxy
+[[ "${CREDENTIAL_PROXY_ENABLED}" == true ]] || credential_mode=direct
 CREDENTIAL_PROXY_IMAGE="${CREDENTIAL_PROXY_IMAGE:-}"
 if [[ -z "${CREDENTIAL_PROXY_IMAGE}" && -n "${SAW_VALUES_FILE}" ]]; then
   CREDENTIAL_PROXY_IMAGE="$(python3 -c 'import sys,yaml; d=yaml.safe_load(open(sys.argv[1])) or {}; print((d.get("credentialProxy") or {}).get("image") or "")' "${SAW_VALUES_FILE}")"
 fi
-if [[ ! "${CREDENTIAL_PROXY_IMAGE}" =~ @sha256:[0-9a-f]{64}$ ]]; then
+if [[ "${CREDENTIAL_PROXY_ENABLED}" == true && ! "${CREDENTIAL_PROXY_IMAGE}" =~ @sha256:[0-9a-f]{64}$ ]]; then
   echo "Error: set CREDENTIAL_PROXY_IMAGE or credentialProxy.image in SAW_VALUES_FILE to a published image digest." >&2
   exit 1
 fi
@@ -253,7 +264,7 @@ if [[ -n "${APPS_DOMAIN}" ]]; then
 fi
 
 # --- Provider credential Secret ---
-# Provider keys stay in cluster Secrets; the VM receives metadata-only copies.
+# Proxy mode mounts metadata copies; direct mode mounts these full Secrets.
 if [[ -n "${API_KEY}" || -n "${MODEL}" || -n "${PROVIDER}" || -n "${ENDPOINT_URL}" ||
       "${inference_exists}" == false ]]; then
   umask 077
@@ -327,6 +338,7 @@ sync_provider_metadata() {
       '{apiVersion:"v1",kind:"Secret",metadata:{name:$name,namespace:.metadata.namespace},type:"Opaque",data:((.data // {}) | with_entries(select(.key as $k | $allowed | index($k))))}' |
     oc apply -f - >/dev/null
 }
+if [[ "${CREDENTIAL_PROXY_ENABLED}" == true ]]; then
 if [[ -n "$(oc get secret inference -n "${DEPLOY_NS}" -o name --ignore-not-found)" ]]; then
   sync_provider_metadata inference
 fi
@@ -336,6 +348,8 @@ for name in "${additional_provider_secrets[@]}"; do
     sync_provider_metadata "${name}"
   fi
 done
+
+fi
 
 if [[ -n "${WEB_SEARCH_API_KEY}" ]]; then
   umask 077
@@ -348,7 +362,7 @@ if [[ -n "${WEB_SEARCH_API_KEY}" ]]; then
   web_search_key_file=""
   echo "Secret 'web-search' updated in ${DEPLOY_NS}."
 fi
-if [[ -n "$(oc get secret web-search -n "${DEPLOY_NS}" -o name --ignore-not-found)" ]]; then
+if [[ "${CREDENTIAL_PROXY_ENABLED}" == true && -n "$(oc get secret web-search -n "${DEPLOY_NS}" -o name --ignore-not-found)" ]]; then
   oc create secret generic web-search-meta -n "${DEPLOY_NS}" \
     --from-literal=provider=brave --dry-run=client -o yaml | oc apply -f - >/dev/null
 fi
@@ -380,6 +394,8 @@ if [[ "${web_search_enabled}" == false ]]; then
   BOM_OPTS+=(--set webSearch.enabled=false)
 fi
 # ${arr[@]+...}: an empty array is "unbound" under set -u in bash < 4.4 (macOS).
+previous_installer="$(oc get cm "${OPENSHELL_SAW_NAME}-installer" -n "${DEPLOY_NS}" --ignore-not-found -o json)"
+previous_mode="$(jq -r '.data["config.json"] // "{}" | fromjson | .credentialMode // "proxy"' <<<"${previous_installer}")"
 helm upgrade --install saw-bom "${SAW_BOM_CHART}" --namespace "${DEPLOY_NS}" ${BOM_OPTS[@]+"${BOM_OPTS[@]}"} >/dev/null
 echo "SAW-BOM profiles installed in ${DEPLOY_NS}${PROFILES:+ (${PROFILES})}."
 
@@ -434,6 +450,8 @@ if [[ "${dashboard_enabled}" == true ]]; then
 fi
 helm_opts+=(${OIDC_OPTS[@]+"${OIDC_OPTS[@]}"})
 helm_opts+=(${SECRET_SET[@]+"${SECRET_SET[@]}"})
+helm_opts+=(--set "credentialProxy.enabled=${CREDENTIAL_PROXY_ENABLED}")
+if [[ "${CREDENTIAL_PROXY_ENABLED}" == true ]]; then
 if grep -qx 'secret/inference' <<<"${secret_names}"; then
   proxy_bindings="$(jq -c --arg provider "${PROVIDER}" 'if any(.[]; .name == "inference" and .key == "api_key") then . else . + [{name:"inference",key:"api_key",providers:(["nvidia","build","openai","anthropic","custom-inference",$provider] | map(select(length > 0)) | unique)}] end' <<<"${proxy_bindings}")"
 fi
@@ -449,15 +467,34 @@ for name in "${additional_provider_secrets[@]}"; do
   fi
 done
 helm_opts+=(--set-json "credentialProxy.secrets=${proxy_bindings}")
+fi
 helm upgrade --install "${OPENSHELL_SAW_NAME}" "${SAW_CHART}" \
   --namespace "${DEPLOY_NS}" --create-namespace \
   "${helm_opts[@]}"
+
+if [[ "${CREDENTIAL_PROXY_ENABLED}" == false ]]; then
+  stale_meta=(inference-meta web-search-meta)
+  while IFS= read -r name; do
+    [[ -z "${name}" ]] || stale_meta+=("${name}-meta")
+  done < <(jq -r '.data["config.json"] // "{}" | fromjson | .credentialProxy.secrets[]?.name' <<<"${previous_installer}")
+  for name in "${additional_provider_secrets[@]}"; do
+    [[ -z "${name}" ]] || stale_meta+=("${name}-meta")
+  done
+  oc delete secret "${stale_meta[@]}" saw-credential-proxy-ca -n "${DEPLOY_NS}" --ignore-not-found
+  oc delete cm saw-proxy-ca -n "${DEPLOY_NS}" --ignore-not-found
+fi
+if [[ -n "${previous_mode}" && "${previous_mode}" != "${credential_mode}" ]]; then
+  echo "Credential mode changed: restart the VM with make saw-restart-pending CONFIRM=yes"
+fi
 
 echo ""
 echo "Sandbox '${OPENSHELL_SAW_NAME}' resources created. Wait for the VM installer before connecting."
 echo "  Owner:     ${OWNER}"
 echo "  Namespace: ${DEPLOY_NS}"
+echo "  Credential mode: ${credential_mode}"
+if [[ "${CREDENTIAL_PROXY_ENABLED}" == true ]]; then
 echo "  Credential proxy: $(oc get deploy "${OPENSHELL_SAW_NAME}-credential-proxy" -n "${DEPLOY_NS}" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)/1 ready (check again after the CA hook and Secrets sync)"
+fi
 
 GW_URL=$(oc get route "${OPENSHELL_SAW_NAME}-gateway" -n "${DEPLOY_NS}" -o jsonpath='https://{.spec.host}')
 if [[ -n "${GW_URL}" ]]; then

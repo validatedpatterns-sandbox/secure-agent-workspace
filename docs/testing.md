@@ -194,3 +194,22 @@ and after a runtime change; compare both the longest job and total runner time.
 - Isolate files, ports, processes, threads, and mutable state.
 - Explain any `ci_external` marker; otherwise use both Python jobs.
 - Include timing evidence for costly setup, subprocesses, and repeated applies.
+
+## Credential modes
+
+Helm lint, rendered-shell checks and credential isolation render both modes.
+The default proxy render uses the image fixture; direct renders need no image.
+`tests/installer/test_credential_modes.py` covers real/named keys, guarded typed
+inputs, boot mismatch, volume migrations, fatal provider-update failures,
+cleanup ordering and rotation acknowledgement. Lifecycle and PKI contracts
+exercise both modes without duplicating the whole suite. Direct Gmail refresh
+cases live alongside the proxy and daily-briefing tests.
+
+Use `SKIP_LIVE=1 tests/test-credential-isolation.sh` offline. On a VM, set
+`SAW_NS` and `VM_NAME`; the script discovers its mode. Proxy mode checks for key
+absence. Direct mode checks the full Secret sources, mode-only compatibility
+slot, absent proxy resources/config/CA, and shared gateway/admin hardening.
+Live acceptance uses fresh data-science and personal-assistant workspaces in
+each mode, then flips all four while checking planted `/sandbox` file hashes,
+inference, Slack/Gmail and the rotation warning. Keep the PA test-model override
+on a throwaway deployment branch only.

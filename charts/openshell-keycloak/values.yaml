@@ -14,6 +14,10 @@ keycloak:
   # `make keycloak-deploy` sets it when you choose to use an existing Keycloak.
   existing: ""
 
+  # Wait for the chart-managed PostgreSQL instance before Keycloak starts.
+  # This avoids a startup race while a new database PVC/image is initializing.
+  waitForDatabase: true
+
   hostname: ""
 
   realm: openshell

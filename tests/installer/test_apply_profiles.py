@@ -81,6 +81,7 @@ def test_shipped_profile_lifecycle(ab, fake_env, config, profiles, creds, capsys
     scripts = "\n".join(c[-1] for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "exec"])
     assert "base64 -d" not in scripts
     assert """openclaw config set plugins.load.paths '["/sandbox/harness", "/sandbox/harness/plugins", "/sandbox/.saw/trusted/plugin"]'""" in scripts
+    assert "openclaw config set tools.fs.workspaceOnly true --strict-json" in scripts
     # The bundle and its native plugin, each enabled (2026.9.x keeps them off).
     assert "openclaw plugins enable ds-default --accept-capabilities" in scripts
     assert "openclaw plugins enable saw-echo --accept-capabilities" in scripts

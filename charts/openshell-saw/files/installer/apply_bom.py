@@ -4882,6 +4882,12 @@ class ProfileApplier:
         self.cli(*exec_cmd, "sh", "-c",
                  f"{oc_env} openclaw config set agents.entries.main.model "
                  f"{shlex.quote(json.dumps(openclaw_agent_model(model_id, selected)))}")
+        # Tool actions permit workspace writes and edits. Keep OpenClaw's
+        # filesystem tool confined to that workspace even if image defaults
+        # or a prior onboarding changed its broader filesystem setting.
+        self.cli(*exec_cmd, "sh", "-c",
+                 f"{oc_env} openclaw config set tools.fs.workspaceOnly true --strict-json",
+                 check=False)
         # The request timeout: OpenClaw's per-provider HTTP timeout
         # (models.providers.<id>.timeoutSeconds; the custom provider's id is
         # the --custom-provider-id above, a native one's its type).

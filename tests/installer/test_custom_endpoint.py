@@ -209,10 +209,11 @@ def test_the_extra_profile_file_is_a_complete_openshell_profile():
     assert doc["id"] == "custom-inference" and doc["category"] == "inference"
     assert doc["credentials"][0]["env_vars"] == ["CUSTOM_INFERENCE_API_KEY"]
     assert doc["endpoints"] and all({"host", "port"} <= set(e) for e in doc["endpoints"])
-    # Shipped with the generator commented out: a deployment uncomments it.
-    text = (EXTRA_PROFILE.parent / "kustomization.yaml").read_text()
-    assert "# configMapGenerator:" in text and "#       - custom-inference.yaml" in text
-    assert doc["endpoints"][0]["host"] == "custom.inference.local", "a placeholder, not a real host"
+    # The default profile is published, but its placeholder alone grants no
+    # network access: an administrator must also set egress.extraAllow.
+    kustomization = yaml.safe_load((EXTRA_PROFILE.parent / "kustomization.yaml").read_text())
+    assert kustomization["configMapGenerator"][0]["files"] == ["custom-inference.yaml"]
+    assert doc["endpoints"][0]["host"] == "api.inference.example.com", "a placeholder, not a real host"
 
 
 REPLACED = ("error: Replacement credential saved but inactive. Your connection is unchanged. "

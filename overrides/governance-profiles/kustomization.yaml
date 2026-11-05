@@ -16,10 +16,10 @@ generatorOptions:
   disableNameSuffixHash: true
   labels:
     app.kubernetes.io/name: governance-policy
-# Uncomment and list your profile files. Without a generator this
-# application renders nothing and the interceptor serves the shipped
-# catalog only (its extra-profiles volume is optional).
-# configMapGenerator:
-#   - name: governance-interceptor-extra-profiles
-#     files:
-#       - custom-inference.yaml
+# Publish the custom-inference profile by default. This does not authorize
+# any VM egress or credential destination; a workspace needs both an approved
+# hostname in this profile and a matching egress.extraAllow entry to use it.
+configMapGenerator:
+  - name: governance-interceptor-extra-profiles
+    files:
+      - custom-inference.yaml

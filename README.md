@@ -544,12 +544,44 @@ providers apply only to `default/notebook`; `cuda-dev` continues to use NVIDIA.
 
 Use a model server of your own (vLLM, Ollama, or any OpenAI-compatible API) instead of a cloud provider. The key stays in the namespace credential proxy; the VM and sandbox use a nonsecret marker. A keyed endpoint must use HTTPS on port 443 with a publicly trusted certificate. The proxy binds the key to the host of `url` in the `inference` Secret. Add a governance profile under `overrides/governance-profiles/` for the same host, served by the `governance-extra-profiles` application. The `custom-inference` SAW-BOM profile reads the URL and model through the sandbox's typed `inference:` block and onboards OpenClaw against that URL (see [docs/custom-inference.md](docs/custom-inference.md)).
 
-**Option A (Validated Pattern)** — four files in your fork, one Secret:
+**Option A (Validated Pattern)** — configure an admin-approved endpoint in your fork, then provide the key through the Secret. Replace `api.inference.example.com` below with the hostname in the `inference.url` value; it must be identical in steps 2 and 3.
 
-1. **Profile** — copy `charts/governance-policy/profiles/examples/custom-inference.yaml` to `overrides/governance-profiles/custom-inference.yaml`, set `endpoints[0].host`/`port` to your server, and uncomment the `configMapGenerator` in `overrides/governance-profiles/kustomization.yaml` (it lists the file). (A second server with its own key is a second file with its own `id`; the SAW-BOM provider for it is named *and* typed after that id.)
-2. **Egress** — a host outside the cluster goes in `egress.extraAllow` under `defaults.openshellSaw` in `overrides/saw-users.yaml`; an in-cluster Service needs a `networkPolicy.extraEgress` rule instead.
-3. **User** — give the entry in `overrides/saw-users.yaml` `profiles: [custom-inference]`.
-4. **Secret** — in `~/values-secret-secure-agent-workspace.yaml` use the commented custom example of the `inference` secret (`url` ending in `/v1`, `model`, `api_key`; no `provider` if the Secret also serves data-science users).
+1. **Publish the profile** — `overrides/governance-profiles/kustomization.yaml` already publishes `custom-inference.yaml`. Publishing the profile alone does not grant any workspace egress or access to a credential destination:
+
+   ```yaml
+   configMapGenerator:
+     - name: governance-interceptor-extra-profiles
+       files:
+         - custom-inference.yaml
+   ```
+
+2. **Approve the credential destination** — in `overrides/governance-profiles/custom-inference.yaml`, set the endpoint the credential proxy may use:
+
+   ```yaml
+   endpoints:
+     - host: api.inference.example.com
+       port: 443
+       protocol: rest
+       enforcement: enforce
+       access: read-write
+   ```
+
+3. **Allow VM egress to that same host** — add it under `defaults.openshellSaw` in `overrides/saw-users.yaml`:
+
+   ```yaml
+   defaults:
+     openshellSaw:
+       egress:
+         extraAllow:
+           - api.inference.example.com
+   ```
+
+   An in-cluster Service needs a narrow `networkPolicy.extraEgress` rule instead.
+
+4. **Select the profile** — give the user entry in `overrides/saw-users.yaml` `profiles: [custom-inference]`.
+5. **Add the Secret** — in `~/values-secret-secure-agent-workspace.yaml`, configure the `inference` Secret with `provider: custom-inference`, a `url` ending in `/v1`, `model`, and `api_key`.
+
+A second endpoint with its own key needs its own profile `id` and a SAW-BOM provider named and typed after that id.
 
 Then `git push`, `./pattern.sh make load-secrets`, wait for Argo CD (`governance-extra-profiles`, `saw-<user>-bom`), and `make saw-restart OPENSHELL_SAW_NAME=<user>`. The installer log shows `Provider 'custom-inference': type 'custom-inference' is a governance-catalog profile` and OpenClaw onboarded with `--custom-base-url <your url>`.
 

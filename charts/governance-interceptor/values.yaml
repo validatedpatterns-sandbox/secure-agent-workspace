@@ -16,11 +16,11 @@ enabled: true
 # The pattern sets global.governance.engine (values-global.yaml), which wins.
 engine: interceptor
 
-# Built by .github/workflows/build-governance-interceptor.yml on main.  Use
-# the published latest tag until the release-tagged v0.1.6 artifact is
-# available. Replace this with its immutable digest or release tag when it is
-# published; the interceptor must match the SAW gateways' OpenShell release.
-image: "ghcr.io/validatedpatterns-sandbox/governance-interceptor:latest"
+# Built by .github/workflows/build-governance-interceptor.yml on main. This is
+# the immutable digest that `latest` resolved to while the release-tagged
+# v0.1.6 artifact is unavailable. Replace it with the v0.1.6 digest when that
+# artifact is published; the interceptor must match the SAW gateways' release.
+image: "ghcr.io/validatedpatterns-sandbox/governance-interceptor@sha256:253b58d070d3ed341287fcbab44684d84a437fcb9f26be5834ebf554a40ec22f"
 # gRPC listen port
 port: 18081
 # Provider profiles a deployment adds to the shipped catalog: a ConfigMap of

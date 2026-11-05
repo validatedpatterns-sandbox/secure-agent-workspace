@@ -49,6 +49,13 @@ rules:
     action: allow
     whenCommandMatches:
       - openclaw agents set-identity
+  # Automations are agent-managed scheduled work; this does not grant access
+  # to arbitrary shell commands.
+  - id: exec-openclaw-automations
+    tool: exec
+    action: allow
+    whenCommandMatches:
+      - openclaw automations
   # OpenClaw 2026.9.2 runs the hook again for each dispatched target.
   # These discovery rules never replace the target's own named rule.
   - id: tool-search

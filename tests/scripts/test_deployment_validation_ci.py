@@ -47,7 +47,7 @@ def test_dependency_discovery_reports_source_and_value_path():
     )
     assert dv.is_own_image("ghcr.io/validatedpatterns-sandbox/nemoclaw-sandbox:latest")
     assert dv.is_own_image("ghcr.io/validatedpatterns-sandbox/saw-credential-proxy:latest")
-    assert str(dv.ROOT / "tests/fixtures/credential-proxy-values.yaml") in dv.chart_args(
+    assert str(dv.ROOT / "tests/fixtures/credential-proxy-values.yaml") not in dv.chart_args(
         dv.ROOT / "charts/openshell-saw")
     assert not dv.is_own_image("quay.io/opendatahub/odh-openshell-gateway:v0.1.2")
     assert not any("ghcr.io/mkhaas/apf/" in item.value for item in refs)

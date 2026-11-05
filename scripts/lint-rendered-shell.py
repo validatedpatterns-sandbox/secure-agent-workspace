@@ -10,8 +10,8 @@ def check_mode(mode) -> int:
     command = ["helm", "template", "saw-lint", "charts/openshell-saw",
          "--namespace", "saw-lint", "-f", "tests/fixtures/saw-network-topology.yaml",
          "--set", "sandboxName=saw-lint"]
-    command += (["-f", "tests/fixtures/credential-proxy-values.yaml"] if mode == "proxy" else
-                ["--set", "credentialProxy.enabled=false"])
+    if mode == "direct":
+        command += ["--set", "credentialProxy.enabled=false"]
     rendered = subprocess.run(command, capture_output=True, text=True, check=False)
     if rendered.returncode:
         sys.stderr.write(rendered.stderr)

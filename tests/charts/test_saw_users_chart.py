@@ -70,6 +70,27 @@ def helm_values(application):
 
 
 @pytest.mark.ci_external
+@pytest.mark.parametrize("override", [None, "quay.io/example/proxy@sha256:" + "1" * 64])
+def test_user_inherits_published_proxy_image_or_default_override(tmp_path, override):
+    extra = {"defaults": {"openshellSaw": {"credentialProxy": {"image": override}}}} if override else {}
+    users = docs_from(render_file(tmp_path, [ALICE], extra))
+    values = helm_values(app(users, "saw-alice"))
+    if override is None:
+        assert "image" not in values["credentialProxy"]
+    path = tmp_path / "workspace.yaml"
+    path.write_text(yaml.safe_dump(values))
+    # Bypass helm(), which supplies the deterministic proxy image fixture.
+    result = run_helm([HELM, "template", "alice", str(SAW_CHART), "-f", str(path),
+                       "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml")],
+                      capture_output=True, text=True)
+    docs = docs_from(result)
+    expected = override or yaml.safe_load((SAW_CHART / "values.yaml").read_text())["credentialProxy"]["image"]
+    deployment = next(d for d in docs if d["kind"] == "Deployment" and
+                      d["metadata"]["name"] == "alice-credential-proxy")
+    assert deployment["spec"]["template"]["spec"]["containers"][0]["image"] == expected
+
+
+@pytest.mark.ci_external
 def test_catalog_metadata_projection_retains_each_sandbox_model(tmp_path):
     docs = docs_from(render_file(tmp_path, [{"name": "alice", "profiles": ["data-science"]}]))
     values = helm_values(app(docs, "saw-alice-secrets"))

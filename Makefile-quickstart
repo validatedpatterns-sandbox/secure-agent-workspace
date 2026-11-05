@@ -557,7 +557,7 @@ lint-static: ## Lint charts and shell syntax without running pytest
 	@for chart in charts/* image-builder-charts/helm/*; do \
 		test -f "$$chart/Chart.yaml" || continue; \
 		if [ "$$chart" = charts/openshell-saw ]; then \
-			helm lint "$$chart" --set sandboxName=lint -f tests/fixtures/saw-network-topology.yaml -f tests/fixtures/credential-proxy-values.yaml || exit; \
+			helm lint "$$chart" --set sandboxName=lint -f tests/fixtures/saw-network-topology.yaml || exit; \
 			helm lint "$$chart" --set sandboxName=lint -f tests/fixtures/saw-network-topology.yaml --set credentialProxy.enabled=false || exit; \
 		else \
 			helm lint "$$chart" --set sandboxName=lint || exit; \

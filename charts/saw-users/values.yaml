@@ -52,7 +52,7 @@ defaults:
   openshellSaw:
     credentialProxy:
       enabled: true
-      # Set image to a published digest when enabled; direct mode needs no image.
+      # The chart pins the published proxy image; set image only to override it (repo@sha256:...).
     signing:
       mode: warn
     prune:

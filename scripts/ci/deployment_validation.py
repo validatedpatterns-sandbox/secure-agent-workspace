@@ -76,7 +76,6 @@ def chart_args(chart: Path, mode="proxy") -> list[str]:
             return ["-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
                     "--set", "sandboxName=ciowner", "--set", "credentialProxy.enabled=false"]
         return ["-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"),
-                "-f", str(ROOT / "tests/fixtures/credential-proxy-values.yaml"),
                 "--set", "sandboxName=ciowner"]
     if name == "saw-users":
         return ["-f", str(ROOT / "tests/fixtures/deployment-validation-users.yaml")]

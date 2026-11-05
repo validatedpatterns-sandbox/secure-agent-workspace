@@ -385,11 +385,18 @@ def test_missing_provider_settings_fail_before_cluster_work(tmp_path):
     assert "PROVIDER and MODEL" in result.stderr
 
 
-def test_missing_proxy_image_fails_before_cluster_work(run, monkeypatch):
+def test_missing_proxy_image_uses_chart_default(run, monkeypatch):
     monkeypatch.delenv("CREDENTIAL_PROXY_IMAGE")
     result, commands, _ = run.invoke(PROVIDER="build", MODEL="m", API_KEY="k")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "credentialProxy.image=" not in _saw_helm(commands)
+
+
+def test_tag_only_proxy_image_fails_before_cluster_work(run):
+    result, commands, _ = run.invoke(CREDENTIAL_PROXY_IMAGE="quay.io/x/proxy:latest",
+                                     PROVIDER="build", MODEL="m", API_KEY="k")
     assert result.returncode != 0
-    assert "CREDENTIAL_PROXY_IMAGE" in result.stderr
+    assert "must be repo@sha256:<digest>" in result.stderr
     assert commands == ""
 
 

@@ -14,6 +14,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  proxy-image-pin:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Credential proxy image pin
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            python scripts/credential-proxy-pin.py check --base-ref "origin/$BASE_REF"
+          else
+            python scripts/credential-proxy-pin.py check
+          fi
+
   shared-checks:
     runs-on: ubuntu-24.04
     timeout-minutes: 30

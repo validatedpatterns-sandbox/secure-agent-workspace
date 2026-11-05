@@ -19,7 +19,7 @@ those deployment overrides local when preparing changes for upstream.
 | `nemoclaw-cli` | `latest`, `sha-<commit>` | Installer BOM `spec.nemoclaw.cliImage` |
 | `nemoclaw-sandbox` | `latest`, `sha-<commit>` | Data-science default and CUDA profiles |
 | `governance-interceptor` | `latest`, `sha-<commit>`, OpenShell ref (currently `v0.1.2`) | Interceptor deployment and image builder |
-| `saw-credential-proxy` | `latest`, `sha-<commit>` (multi-arch) | `credentialProxy.image`, digest-only; use the multi-arch index digest |
+| `saw-credential-proxy` | `latest`, `sha-<commit>` (multi-arch) | Chart default `credentialProxy.image` (digest pinned in `charts/openshell-saw/values.yaml`) |
 | `saw-harness-<bundle>` | Bundle version, `sha-<commit>` | Optional digest-pinned `harnessRef.image` |
 
 `openshell-gateway`, `nemoclaw-cli`, `nemoclaw-sandbox`, `saw-credential-proxy` and `governance-interceptor` tags are
@@ -126,6 +126,44 @@ create a Docker registry Secret named `ghcr-push-secret` in `BUILD_NS`, or overr
 `output.pushSecretName`. `governance-interceptor-build-local` remains available as a local-only build
 and needs no GHCR push credentials. A fork interceptor build also needs
 `charts/governance-interceptor`'s `image` override.
+
+## Releasing a credential proxy change
+
+The chart default is the published multi-arch index. Its adjacent source comment
+and image in `charts/openshell-saw/values.yaml` are the single source of truth.
+To release a change:
+
+1. Merge the `credential-proxy/` change.
+2. Wait for the green **Credential proxy** workflow on `main`.
+3. Fetch the remote tracking upstream `main`, run `make credential-proxy-pin`,
+   and open a PR with the `values.yaml` change. `COMMIT=<sha>` selects a
+   particular published build.
+
+The bump command reads `origin/main` by default. If upstream uses another
+remote, run `git fetch upstream main` and
+`uv run --locked scripts/credential-proxy-pin.py bump --ref upstream/main`
+instead. The selected commit must have a published `sha-<commit>` index with
+both linux/amd64 and linux/arm64.
+
+The **proxy-image-pin** job checks publication, both platforms, the digest,
+and source freshness. After a source merge, `main` warns; once the new build
+is published, later PRs that do not themselves change `credential-proxy/`
+fail until the pin is updated. A PR changing proxy source warns to make the
+follow-up pin PR after its main build. `make credential-proxy-pin-check`
+runs the same online check locally. Static lint stays offline.
+
+For disconnected clusters, mirror the selected source tag:
+
+```bash
+MIRROR_IMAGES=saw-credential-proxy IMAGE_TAG=sha-<commit> make images-mirror
+oc get istag saw-credential-proxy:sha-<commit> -n openshell-agents \
+  -o jsonpath='{.image.dockerImageReference}{"\n"}'
+```
+
+Set `defaults.openshellSaw.credentialProxy.image` (GitOps) or
+`CREDENTIAL_PROXY_IMAGE` (quickstart) to the returned mirrored digest.
+The chart refuses explicit empty and tag-only overrides. Quickstart omits the
+image override when its environment variable is unset or empty.
 
 ## Intentionally retained Quay dependencies
 

@@ -160,19 +160,23 @@ inference:
 additionalProviderSecrets:
   - web-search
 
-# A published image digest is required in proxy mode only. Build the
-# source in credential-proxy/ and set this to repo@sha256:<digest>. Use the
-# multi-arch index digest, not a per-platform digest (skopeo inspect --raw
-# docker://<image>:sha-<commit> | sha256sum).
+# Proxy mode runs this published multi-arch image (linux/amd64, linux/arm64),
+# built from credential-proxy/ by .github/workflows/credential-proxy.yml.
+# Override it only with another repo@sha256:<index digest>, e.g. a mirror for
+# a disconnected cluster (docs/container-images.md). After a credential-proxy/
+# change merges and its main build is published, `make credential-proxy-pin`
+# updates the source comment and image below; CI checks them.
 credentialProxy:
-  # false mounts full provider Secrets into the VM; admin mTLS stays hardened.
+  # false mounts full provider Secrets into the VM (agent-process isolation
+  # only; see docs/architecture-alignment.md); admin mTLS stays hardened.
   enabled: true
   # Increase only after rotating/revoking credentials exposed in direct mode.
   keyGeneration: 1
+  # credential-proxy source: de58f4c031a6256dc8e9ac54e857e5588bed6808
+  image: ghcr.io/validatedpatterns-sandbox/saw-credential-proxy@sha256:73f271de2eb6166315603fbb72c800b939a14770a69c86debaabbd29a46a0f93
+  replicas: 1
   # secrets[].refresh: true mints the bound credential in this proxy from
   # the shipped provider profile. Material keys never get their own marker.
-  image: ""
-  replicas: 1
   secrets:
     - {name: inference, key: api_key, providers: [nvidia, build, openai, anthropic, custom-inference]}
     - {name: web-search, key: api_key, providers: [brave]}

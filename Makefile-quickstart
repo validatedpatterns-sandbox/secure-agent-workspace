@@ -99,7 +99,8 @@ export EXTRA_HELM_OPTS := $(EXTRA_HELM_OPTS) $(foreach p,$(join $(addsuffix =,$(
 endif
 
 .PHONY: prereqs-check quickstart-prereqs-check storage-class-check check-oidc-ca ssh-key-generate sandbox-build cli-build \
-        gateway-build gateway-build-docker gateway-build-podman credential-proxy-build images-mirror \
+        gateway-build gateway-build-docker gateway-build-podman credential-proxy-build \
+        credential-proxy-pin credential-proxy-pin-check images-mirror \
         governance-interceptor-build governance-interceptor-build-local \
         keycloak-deploy keycloak-delete keycloak-check keycloak-issuer \
         keycloak-register keycloak-redirects keycloak-redirects-sync \
@@ -252,6 +253,14 @@ gateway-build-podman: .check-image-repo ## Build the Podman gateway image in-clu
 gateway-build: ## Build the gateway with CONTAINER_RUNTIME=podman or docker
 	@case "$$CONTAINER_RUNTIME" in podman|docker) ;; *) echo "Error: CONTAINER_RUNTIME must be podman or docker." >&2; exit 1;; esac
 	@$(MAKE) "gateway-build-$$CONTAINER_RUNTIME"
+
+credential-proxy-pin: ## Pin charts/openshell-saw to the published credential proxy image (COMMIT=<sha> optional)
+	@if [ "$${CI:-}" = true ]; then python scripts/credential-proxy-pin.py bump $(if $(COMMIT),--commit $(COMMIT)); \
+	else uv run --locked scripts/credential-proxy-pin.py bump $(if $(COMMIT),--commit $(COMMIT)); fi
+
+credential-proxy-pin-check: ## Check the pinned credential proxy image against GHCR and credential-proxy/
+	@if [ "$${CI:-}" = true ]; then python scripts/credential-proxy-pin.py check; \
+	else uv run --locked scripts/credential-proxy-pin.py check; fi
 
 credential-proxy-build: ## Build the credential proxy image in-cluster (BUILD_NS)
 	@oc create namespace "$(BUILD_NS)" --dry-run=client -o yaml | oc apply -f -
@@ -557,7 +566,7 @@ lint-static: ## Lint charts and shell syntax without running pytest
 	@for chart in charts/* image-builder-charts/helm/*; do \
 		test -f "$$chart/Chart.yaml" || continue; \
 		if [ "$$chart" = charts/openshell-saw ]; then \
-			helm lint "$$chart" --set sandboxName=lint -f tests/fixtures/saw-network-topology.yaml -f tests/fixtures/credential-proxy-values.yaml || exit; \
+			helm lint "$$chart" --set sandboxName=lint -f tests/fixtures/saw-network-topology.yaml || exit; \
 			helm lint "$$chart" --set sandboxName=lint -f tests/fixtures/saw-network-topology.yaml --set credentialProxy.enabled=false || exit; \
 		else \
 			helm lint "$$chart" --set sandboxName=lint || exit; \

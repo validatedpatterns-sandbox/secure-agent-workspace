@@ -64,7 +64,7 @@ Secure Agent Workspace provisions dedicated KubeVirt virtual machines for each u
 
 Organizations adopting AI coding and knowledge agents need strong isolation guarantees: each user's agent must run in its own boundary, with auditable access to enterprise systems, controlled network egress, and centralized identity management. Traditional container-based isolation is insufficient when agents can execute arbitrary code and tool calls.
 
-This quickstart implements NVIDIA's [Secure Agent Workspace reference architecture](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html) on Red Hat OpenShift. Each user gets a dedicated Fedora 44 VM running the OpenShell gateway and an AI agent (OpenClaw, Hermes, or Deep Agents Code). The VM provides process-level and network-level isolation. OIDC authentication (via Red Hat Build of Keycloak) ensures only the sandbox owner can access their workspace. Provider keys flow through Vault and External Secrets into a per-namespace credential proxy; the VM receives nonsecret markers and metadata by default. Optional direct mode (`credentialProxy.enabled: false`) mounts full Secrets in the VM. See [Credential isolation](docs/credential-isolation.md).
+This quickstart implements NVIDIA's [Secure Agent Workspace reference architecture](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html) on Red Hat OpenShift. Each user gets a dedicated Fedora 44 VM running the OpenShell gateway and an AI agent (OpenClaw, Hermes, or Deep Agents Code). The VM provides process-level and network-level isolation. OIDC authentication (via Red Hat Build of Keycloak) ensures only the sandbox owner can access their workspace. Provider keys flow through Vault and External Secrets into a per-namespace credential proxy (the reference design's external credential placement); the VM receives nonsecret markers and metadata by default. Optional direct mode (`credentialProxy.enabled: false`) mounts full Secrets in the VM. See [Credential isolation](docs/credential-isolation.md).
 
 The system supports multiple inference providers (Gemini, Anthropic, OpenAI, NVIDIA Build, OpenRouter, Ollama, or custom endpoints) and optional web search integration (Tavily, Brave). A bootc-based golden image pipeline pre-bakes all packages into a container image that CDI imports directly, enabling fast VM provisioning without cloud-init package installation.
 
@@ -236,8 +236,8 @@ make images-mirror
 # oidc.caBundle snippet to add to overrides/saw-users.yaml.
 make check-oidc-ca
 
-# 5c. Pin the credential proxy image when using proxy mode (the default).
-# Set this in overrides/saw-users.yaml (alongside your users list):
+# 5c. Proxy mode defaults to the published, digest-pinned multi-arch GHCR image.
+# Only for a mirror or custom build, override in overrides/saw-users.yaml:
 # defaults:
 #   openshellSaw:
 #     credentialProxy:
@@ -246,8 +246,7 @@ make check-oidc-ca
 # To disable for one user: users[].values.credentialProxy.enabled: false
 # Direct mode needs no proxy image and exposes keys to VM root; see
 # docs/credential-isolation.md for migrations and required key rotation.
-# Build credential-proxy/Containerfile and publish it, or build in-cluster;
-# see docs/credential-isolation.md. This is required until a default is published.
+# See docs/container-images.md for published images, releases and mirroring.
 
 # 6. Deploy the pattern (runs inside the VP utility container)
 # NOTE: The deploying branch must exist on your fork (origin): the Pattern
@@ -342,7 +341,7 @@ make login                    # Opens the browser for Keycloak sign-in
 make whoami                   # Verify identity
 
 # 11. Create the user VM (deploys into namespace saw-$OPENSHELL_SAW_NAME)
-#     Set CREDENTIAL_PROXY_IMAGE to a published saw-credential-proxy@sha256:...
+#     CREDENTIAL_PROXY_IMAGE is optional: a digest-pinned mirror/custom override.
 #     Keys come from files so they stay out of the shell history.
 #     WEB_SEARCH_API_KEY is optional. Without it (and without an existing
 #     web-search Secret), saw-create disables the Brave Search provider.
@@ -353,7 +352,6 @@ make whoami                   # Verify identity
 # export WEB_SEARCH_API_KEY
 read -r API_KEY < "$HOME/.nvidia-api-key"
 export API_KEY
-export CREDENTIAL_PROXY_IMAGE='<repo>/saw-credential-proxy@sha256:<digest>'
 make saw-create \
   PROVIDER=build \
   MODEL=nvidia/nemotron-3.5-lightning-30b-a3b
@@ -468,7 +466,7 @@ user access targets require `OPENSHELL_SAW_NAME`. `saw-list`, `status`, and
 `SAW_NS=saw-$OPENSHELL_SAW_NAME`. Manual builds stay in-cluster by default. To push, explicitly set
 `IMAGE_REPO` to your own namespace and `IMAGE_TAG` as needed; the upstream
 CI namespace is refused. For `saw-create`, set `PROVIDER`, `MODEL`, and
-`API_KEY` in the environment for keyed providers; `OWNER` and `OWNER_SUBJECT` select another owner. Set `CREDENTIAL_PROXY_IMAGE` to the published image digest, or provide it through `SAW_VALUES_FILE`. A new inference Secret needs `PROVIDER` and `MODEL`; `API_KEY` may be empty for a keyless provider. A repeat `saw-create` keeps an existing inference Secret when `API_KEY` is empty.
+`API_KEY` in the environment for keyed providers; `OWNER` and `OWNER_SUBJECT` select another owner. The chart defaults to the published proxy image. Optionally set `CREDENTIAL_PROXY_IMAGE`, or `credentialProxy.image` through `SAW_VALUES_FILE`, to a digest-pinned mirror or custom build. A new inference Secret needs `PROVIDER` and `MODEL`; `API_KEY` may be empty for a keyless provider. A repeat `saw-create` keeps an existing inference Secret when `API_KEY` is empty.
 
 `IMAGE_TAG=latest` selects the CI-built gateway disk used by `images-mirror`;
 `IMAGE_TAG=sha-<commit>` selects a particular CI build. The chart's in-VM BOM
@@ -487,10 +485,11 @@ will not stop the other process.
 The live acceptance test runs only on a dedicated OpenShift test cluster.
 After the tested commit is pushed, set `TEST_CLUSTER_CONTEXT`,
 `TEST_SAW_NAME`, `TEST_PATTERN_SAW_NAME`, `TEST_OWNER`, `TEST_OWNER_SUBJECT`,
-`TEST_SECOND_TOKEN_DIR`, `PROVIDER`, `MODEL`, `API_KEY`, `CREDENTIAL_PROXY_IMAGE`,
+`TEST_SECOND_TOKEN_DIR`, `PROVIDER`, `MODEL`, `API_KEY`,
 `TARGET_BRANCH`, `TARGET_ORIGIN`, and the inference
 and owner access checks described in the deployment guide. The repo supplies
-the second-user denial check by default. Set `WEB_SEARCH_API_KEY` to test
+the second-user denial check by default. `CREDENTIAL_PROXY_IMAGE` is optional,
+for a digest-pinned mirror or PR build override. Set `WEB_SEARCH_API_KEY` to test
 web search on; leave it unset to test off. Then run
 `make test-deployment`. It tests manual setup and
 the pattern install, uninstall, and reinstall cycle. It records timestamps,

@@ -7,7 +7,8 @@
 # Optional: OWNER, OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_TOKEN_DIR, NS, SAW_NS,
 #           KEYCLOAK_NS, ENDPOINT_URL, WEB_SEARCH, SCRIPTS_DIR,
 #           PROFILES (comma-separated SAW-BOM profiles, default: the chart's),
-#           SAW_VALUES_FILE (other Helm settings; topology is discovered)
+#           SAW_VALUES_FILE (other Helm settings; topology is discovered),
+#           CREDENTIAL_PROXY_IMAGE (digest-pinned override of the published image)
 #
 # Custom OpenAI-compatible endpoint (vLLM, Ollama, ...):
 #   PROVIDER=custom-inference MODEL=<served model> ENDPOINT_URL=https://<host>/v1 \
@@ -56,8 +57,8 @@ CREDENTIAL_PROXY_IMAGE="${CREDENTIAL_PROXY_IMAGE:-}"
 if [[ -z "${CREDENTIAL_PROXY_IMAGE}" && -n "${SAW_VALUES_FILE}" ]]; then
   CREDENTIAL_PROXY_IMAGE="$(python3 -c 'import sys,yaml; d=yaml.safe_load(open(sys.argv[1])) or {}; print((d.get("credentialProxy") or {}).get("image") or "")' "${SAW_VALUES_FILE}")"
 fi
-if [[ "${CREDENTIAL_PROXY_ENABLED}" == true && ! "${CREDENTIAL_PROXY_IMAGE}" =~ @sha256:[0-9a-f]{64}$ ]]; then
-  echo "Error: set CREDENTIAL_PROXY_IMAGE or credentialProxy.image in SAW_VALUES_FILE to a published image digest." >&2
+if [[ "${CREDENTIAL_PROXY_ENABLED}" == true && -n "${CREDENTIAL_PROXY_IMAGE}" && ! "${CREDENTIAL_PROXY_IMAGE}" =~ ^.+@sha256:[0-9a-f]{64}$ ]]; then
+  echo "Error: CREDENTIAL_PROXY_IMAGE (or credentialProxy.image in SAW_VALUES_FILE) must be repo@sha256:<digest>; leave it unset to use the chart's published image." >&2
   exit 1
 fi
 PROVIDER="${PROVIDER:-}"
@@ -404,7 +405,6 @@ echo "Provisioning sandbox '${OPENSHELL_SAW_NAME}' for owner '${OWNER}' in names
 
 helm_opts=(
   --set-string "sandboxName=${OPENSHELL_SAW_NAME}"
-  --set-string "credentialProxy.image=${CREDENTIAL_PROXY_IMAGE}"
   --set "oidc.enabled=${oidc_enabled}"
   --set-string "accessControl.owner=${OWNER}"
   --set-string "oidc.keycloakNamespace=${KEYCLOAK_NS}"
@@ -415,6 +415,9 @@ helm_opts=(
   --set-string "governance.engine=${GOVERNANCE_ENGINE}"
   --set route.enabled=true --set route.dashboard=true
 )
+if [[ -n "${CREDENTIAL_PROXY_IMAGE}" ]]; then
+  helm_opts+=(--set-string "credentialProxy.image=${CREDENTIAL_PROXY_IMAGE}")
+fi
 if [[ -n "${SAW_VALUES_FILE}" ]]; then
   helm_opts=(-f "${SAW_VALUES_FILE}" -f "${NETWORK_TOPOLOGY_VALUES}" "${helm_opts[@]}")
 else

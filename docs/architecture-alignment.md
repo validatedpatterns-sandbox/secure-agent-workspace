@@ -2,7 +2,7 @@
 
 ## NVIDIA Secure Agent Workspace Reference Design vs. This Implementation
 
-This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization Reference Implementation](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html) to this repository's actual implementation. It identifies what is implemented, what is partially implemented, and what gaps remain.
+This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization Reference Implementation](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html) and its [Security and Governance Model](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/security-and-governance-model.html) to this repository's actual implementation. It identifies what is implemented, what is partially implemented, and what gaps remain.
 
 ## Summary
 
@@ -13,7 +13,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 | GitOps control plane | ArgoCD for policy and config | Red Hat Validated Patterns with ArgoCD | Implemented |
 | Network boundary controls | NetworkPolicy, EgressFirewall, EgressIP | Namespaced default-deny NetworkPolicy for pod ingress and egress, plus EgressFirewall with an explicit hostname allowlist in Git. No EgressIP | Partial |
 | Agent runtime | OpenShell or equivalent runtime sandbox | OpenShell Gateway + OpenClaw/NemoClaw agents | Implemented |
-| Secret management | Credential proxy / external secret boundary | HashiCorp Vault + External Secrets Operator; a per-namespace credential proxy injects provider keys; the VM holds markers and metadata only | Implemented |
+| Secret management | Credential mediation outside the agent process; external placement for guest-compromise threats | HashiCorp Vault + External Secrets Operator; default proxy mode keeps provider keys outside the VM; optional direct mode mounts full Secrets in the guest | Proxy mode: Implemented. Direct mode: Partial (agent-process isolation only) |
 | Policy distribution | Signed policy bundles via NFS | Signed APF bundle (Ed25519, monotonic `policy_revision`), served in-cluster as the optional `apf` governance engine; no NFS transport | Partial |
 | OCSF-compatible audit | Lifecycle events, broker sessions, tool events | Governance decisions are logged (interceptor audit log; APF JSONL audit trail); no unified OCSF pipeline | Partial |
 | Operator kill switch | Stop VM, remove route, revoke SSO, rotate policy | VM lifecycle via OpenShift API; SSO revocation via Keycloak | Implemented |
@@ -64,7 +64,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 - TLS passthrough on the gateway route preserves gRPC/HTTP2
 - Auth proxy restricts dashboard access to the sandbox owner
 - Each sandbox namespace gets an OpenShift `EgressFirewall` named `default`. The VM uses masquerade, so traffic leaving the guest is traffic leaving that pod. Undeclared internet hosts are denied. The allowlist is `egress.allow` plus `egress.extraAllow` in [`charts/openshell-saw/values.yaml`](../charts/openshell-saw/values.yaml), and the Keycloak route host from the OIDC issuer. See [Deployment guide](deployment-guide.md#egress-from-the-vm).
-- An enabled sandbox namespace keeps five `NetworkPolicy` objects: default-deny, a narrow VM allow policy, CDI importer access, `saw-credential-proxy`, and (when cleanup is enabled) exact API egress for the pre-delete cleanup hook. A separate PreSync CA-hook policy allows API access while initializing the proxy CA and is removed after the hook succeeds. The VM may reach DNS, the selected governance engine, the internal registry, the Keycloak issuer Route through ingress, and outside TCP ports permitted by the EgressFirewall. Pod and Service CIDRs, exact API endpoint IPs, and link-local CIDRs are excluded from the outside rule. GitOps stages the policy off per user until an administrator checks live topology and in-cluster destinations. CI checks profile host and port parity with rendered firewall and policy rules.
+- With NetworkPolicy enabled, a sandbox namespace keeps default-deny, a narrow VM allow policy, CDI importer access, and (when cleanup is enabled) exact API egress for the pre-delete cleanup hook. Proxy mode also adds `saw-credential-proxy`. Its temporary CA-hook policy allows API access while initializing the proxy CA and is removed after success. The CA hook runs as an Argo Sync / Helm `pre-install,pre-upgrade` hook; Argo applies the firewall first to avoid an upgrade deadlock. The VM may reach DNS, the selected governance engine, the internal registry, the Keycloak issuer Route through ingress, and outside TCP ports permitted by the EgressFirewall. Pod and Service CIDRs, exact API endpoint IPs, and link-local CIDRs are excluded from the outside rule. GitOps stages the policy off per user until an administrator checks live topology and in-cluster destinations. CI checks profile host and port parity with rendered firewall and policy rules.
 
 **Residual risk:** NetworkPolicy and EgressFirewall cannot filter by Route host. Cluster Routes on TCP 443 remain reachable behind their own authentication. A fixed source address still needs EgressIP; an optional AdminNetworkPolicy could add a cluster-level guardrail.
 
@@ -78,21 +78,60 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 - Agents run inside container sandboxes managed by the OpenShell gateway
 - Inference routed through user-configured provider endpoints
 
-**Alignment:** Largely implemented. Phase II runtime enforcement is configured through the governance layer. A governance service — the OpenShell interceptor by default (policy served unsigned from ConfigMaps), or NVIDIA APF (policy served from an Ed25519-signed bundle) — injects a per-sandbox policy with filesystem (landlock), process and network rules. Per-tool approval is the OpenClaw `saw-tool-gate` hook fed by `charts/governance-policy/tool-actions.yaml`: a consequential tool does not run until the configured approval path allows it, and each call is audited with the signed-in user and the current task. Provider credentials are injected at request time by the per-namespace credential proxy; the sandbox and the VM hold only nonsecret markers, so the real keys never enter the VM ([Credential isolation](credential-isolation.md)). A unified, cluster-wide OCSF audit pipeline is still absent. See [Governance interceptor](governance-interceptor.md) and [APF governance](apf.md).
+**Alignment:** Largely implemented. Phase II runtime enforcement is configured through the governance layer. A governance service — the OpenShell interceptor by default (policy served unsigned from ConfigMaps), or NVIDIA APF (policy served from an Ed25519-signed bundle) — injects a per-sandbox policy with filesystem (landlock), process and network rules. Per-tool approval is the OpenClaw `saw-tool-gate` hook fed by `charts/governance-policy/tool-actions.yaml`: a consequential tool does not run until the configured approval path allows it, and each call is audited with the signed-in user and the current task. In proxy mode (the default), provider credentials are injected at request time by the per-namespace credential proxy; the VM holds nonsecret markers and the sandbox uses placeholders, so the real keys never enter the VM ([Credential isolation](credential-isolation.md)). A unified, cluster-wide OCSF audit pipeline is still absent. See [Governance interceptor](governance-interceptor.md) and [APF governance](apf.md).
 
 ### 6. Secret Management
 
-**Reference:** "Secrets should live behind a credential proxy or external secret boundary."
+The [Security and Governance Model](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/security-and-governance-model.html#phase-ii-agent-runtime-controls)
+states the Phase II requirement as attributes, independent of product:
 
-**Implementation:**
-- HashiCorp Vault as the backing store
-- External Secrets Operator syncs secrets from Vault into k8s Secrets
-- ExternalSecret resources for configured inference and search providers, plus `-meta` companions that expose only nonsecret provider metadata to the VM
-- SSH private/public keys managed through Vault
-- `values-secret.yaml.template` defines the secret schema
-- The proxy pod alone mounts the full provider Secrets. The VM mounts only their `-meta` companions; the installer passes nonsecret markers to OpenShell and NemoClaw. The proxy binds markers to profile hosts and injects keys into allowed HTTPS requests.
+> They form a stacked model: in-sandbox containment (reference implementation NVIDIA OpenShell — open-source) and a separate credential / authorization proxy. The requirement is the attributes below, not a specific product.
 
-**Alignment:** Full for VM-root key isolation. API keys stay outside the VM, as described in [Credential isolation](credential-isolation.md). VM root can still use a bound key through the proxy while it controls the VM.
+> Credential proxy and isolation. A trusted mediator outside the agent process authorizes requests and injects provider credentials. Record whether raw credentials enter a supervisor, guest or external service; agent-process isolation does not imply guest-root isolation. Validate provider scope, token lifetime, audit and revocation. Where controls must survive guest compromise, place them outside that guest with an independently enforced request path.
+
+The control-surface table describes credential mediation as:
+
+> Credential mediation and provider authorization; external placement where required by the guest-compromise threat model
+
+Table 7 distinguishes an unprivileged exploit inside the agent process:
+
+> Sandbox process and syscall scoping; credential proxy still holds secrets
+
+from root inside the workspace:
+
+> Only additional controls whose enforcement and administration remain outside the compromised guest.
+> Policy signatures authenticate artifacts but do not prevent bypass of a compromised in-guest enforcer; treat exposed credentials accordingly.
+
+The application-session and token-revocation guidance adds:
+
+> Treat credentials accessible during guest compromise as exposed; external proxy placement reduces that exposure only when its trust and request paths remain intact.
+
+**Implementation:** HashiCorp Vault backs the provider Secrets, synced by
+External Secrets Operator. SSH access is managed through Vault too, and
+`values-secret.yaml.template` defines the schema. Credential custody depends
+on `credentialProxy.enabled`:
+
+| Reference attribute | Proxy mode (default) | Direct mode (`credentialProxy.enabled: false`) |
+|---|---|---|
+| Mediator outside the agent process injects credentials | The OpenShell supervisor swaps the sandbox placeholder for a marker; the namespace proxy swaps that marker for the key at its bound HTTPS host | The OpenShell supervisor injects the real key |
+| Where raw credentials enter ("supervisor, guest or external service") | External service: the namespace proxy pod. The VM, gateway and supervisor hold markers; provider keys and Gmail OAuth material stay outside the guest | Guest: VM input disk, gateway store, supervisor and NemoClaw credentials file; Gmail refresh material is handled by the gateway |
+| Agent-process compromise (Table 7) | Provider keys stay outside the agent process and VM | Provider keys stay outside the agent process |
+| Root in the guest (Table 7) | Provider keys cannot be read from VM storage. VM root can still use bound keys through markers while it controls the VM; protection depends on the external proxy and request path remaining trusted | Keys are exposed. Revoke/rotate them; moving to proxy mode requires rotation plus a `credentialProxy.keyGeneration` bump |
+| Provider scope | Bindings restrict each marker to its profile hosts (or custom HTTPS URL host) on port 443 | OpenShell provider policy endpoints |
+| Token lifetime | Gmail access tokens minted and cached in the proxy, capped at 1 hour and refreshed 5 minutes early | Gmail access tokens minted through the gateway's provider refresh |
+| Audit | Proxy log per request: method, host, redacted path, binding and status; no unified OCSF pipeline (§8) | Gateway logs; no unified OCSF pipeline |
+| Revocation and rotation | Rotate in Vault; the proxy rereads projected keys per request and invalidates cached Gmail tokens when material changes. No VM restart; allow for ESO and volume projection delay | Rotate in Vault; restart the VM and apply, or apply after projected inputs update when `vm.liveInputs` is enabled |
+
+**Alignment:** Proxy mode implements external provider-key custody for the
+guest-compromise threat model. This does not prevent VM root from making
+requests with a bound marker or make a compromised gateway trustworthy.
+Direct mode provides agent-process isolation only: guest root can read the
+keys, so it is partial alignment and unsuitable when credential controls
+must survive guest compromise. Both modes retain hardened admin mTLS.
+Scope, token lifetime, audit and revocation must be evaluated separately;
+a unified OCSF audit pipeline remains a gap. See
+[Credential isolation](credential-isolation.md) for the request path,
+migration and rotation procedures.
 
 ### 7. Policy Distribution
 
@@ -141,7 +180,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 | Reference Design Phase | This Implementation |
 |---|---|
 | **Phase I: Perimeter-based enforcement** | Largely implemented — VM isolation, OIDC, image governance, secret management, GitOps, operator controls |
-| **Phase II: Runtime-based enforcement** | Largely implemented — signed APF policy bundles, per-tool approval with user/task audit (`tool-actions.yaml`, `saw-tool-gate`), per-namespace credential proxying (provider keys never enter the VM), and per-tool/endpoint, filesystem and process enforcement through the governance layer; remaining: a unified OCSF audit pipeline, NFS policy transport, and a durable anti-rollback counter |
+| **Phase II: Runtime-based enforcement** | Largely implemented — signed APF policy bundles, per-tool approval with user/task audit (`tool-actions.yaml`, `saw-tool-gate`), per-namespace credential proxying (default proxy mode; direct mode provides agent-process isolation only), and per-tool/endpoint, filesystem and process enforcement through the governance layer; remaining: a unified OCSF audit pipeline, NFS policy transport, and a durable anti-rollback counter |
 
 ## Recommendations for Closing Gaps
 

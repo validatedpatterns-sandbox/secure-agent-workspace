@@ -1,6 +1,7 @@
 """The proxy's bindings must follow the shipped profile catalog and metadata split."""
 
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -55,7 +56,22 @@ def test_proxy_image_requires_digest():
                                  "--set-string", "credentialProxy.image=" + image],
                                 capture_output=True, text=True)
         assert result.returncode != 0
-        assert "credentialProxy.image must be a published repo@sha256" in result.stderr
+        assert "credentialProxy.image must be a repo@sha256" in result.stderr
+
+
+@pytest.mark.ci_external
+@pytest.mark.skipif(not HELM, reason="helm is not installed")
+def test_default_proxy_image_is_the_published_digest():
+    image = yaml.safe_load((SAW / "values.yaml").read_text())["credentialProxy"]["image"]
+    assert re.fullmatch(
+        r"ghcr\.io/validatedpatterns-sandbox/saw-credential-proxy@sha256:[0-9a-f]{64}", image)
+    docs = render(SAW, "-f", str(ROOT / "tests/fixtures/saw-network-topology.yaml"))
+    deployment = next(d for d in docs if d["kind"] == "Deployment" and
+                      d["metadata"]["name"] == "saw-test-credential-proxy")
+    hook = next(d for d in docs if d["kind"] == "Pod" and
+                d["metadata"]["name"] == "saw-credential-proxy-ca-hook")
+    assert deployment["spec"]["template"]["spec"]["containers"][0]["image"] == image
+    assert hook["spec"]["containers"][0]["image"] == image
 
 
 @pytest.mark.ci_external

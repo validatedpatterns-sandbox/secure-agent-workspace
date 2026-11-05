@@ -86,3 +86,9 @@ rules:
   - id: saw-denied-tool
     tool: saw-denied-tool
     action: deny
+  - id: workspace-write
+    tool: write
+    action: allow
+  - id: workspace-edit
+    tool: edit
+    action: allow

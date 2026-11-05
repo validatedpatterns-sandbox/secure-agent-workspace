@@ -54,6 +54,7 @@ test("the consequential set is the policy file, not the gate source", () => {
   assert.deepEqual(policy.rules.map((rule) => rule.id), [
     "exec-consequential", "exec-git-status", "exec-git-diff", "exec-git-log", "exec-git-show",
     "exec-briefing-cron-list", "exec-briefing-cron-change", "exec-openclaw-set-identity",
+    "exec-openclaw-automations",
     "tool-search", "tool-call",
     "slack-new-messages", "slack-channels", "gmail-new-messages", "briefing-save",
     "read", "memory-search", "memory-get", "session-status", "sessions-list", "sessions-history",
@@ -135,6 +136,18 @@ test("identity configuration is allowed without granting general shell access", 
   for (const unsafe of [
     "openclaw agents set-identity --agent main; rm -rf /",
     "sh -c 'openclaw agents set-identity --agent main'",
+  ]) {
+    assert.equal(call({ params: { command: unsafe } }).effect.kind, "deny", unsafe);
+  }
+});
+
+test("OpenClaw automations are allowed without granting general shell access", () => {
+  const result = call({ params: { command: "openclaw automations list --all" } });
+  assert.equal(result.effect.kind, "allow");
+  assert.equal(result.record.rule, "exec-openclaw-automations");
+  for (const unsafe of [
+    "openclaw automations list --all; rm -rf /",
+    "sh -c 'openclaw automations list --all'",
   ]) {
     assert.equal(call({ params: { command: unsafe } }).effect.kind, "deny", unsafe);
   }

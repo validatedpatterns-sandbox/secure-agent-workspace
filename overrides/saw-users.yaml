@@ -1,3 +1,12 @@
 # Add real account names here after creating them with keycloak-add-users.
 # Each entry creates saw-<name>. Demo entries are in saw-users-demo.yaml.
 users: []
+
+# For a custom inference endpoint outside the cluster, uncomment this block
+# and replace the hostname with the one in
+# overrides/governance-profiles/custom-inference.yaml and inference.url.
+# defaults:
+#   openshellSaw:
+#     egress:
+#       extraAllow:
+#         - api.inference.example.com

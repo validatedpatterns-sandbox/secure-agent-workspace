@@ -138,9 +138,7 @@ INTERCEPTOR_DEPLOYMENT = ROOT / "charts/governance-interceptor/templates/deploym
 
 
 def extra_profiles():
-    """The profiles a deployment lists in its kustomization; upstream ships
-    the generator commented out (no profile is served until a deployment
-    names its host), so the shipped example file is checked on its own."""
+    """The profiles a deployment publishes through its kustomization."""
     kustomization = yaml.safe_load((EXTRA_DIR / "kustomization.yaml").read_text()) or {}
     gens = kustomization.get("configMapGenerator") or []
     files = []
@@ -152,10 +150,12 @@ def extra_profiles():
 
 
 @pytest.mark.ci_external
-def test_the_shipped_kustomization_serves_nothing_until_a_deployment_lists_a_profile():
-    text = (EXTRA_DIR / "kustomization.yaml").read_text()
-    assert (yaml.safe_load(text) or {}).get("configMapGenerator") is None
-    assert "# configMapGenerator:" in text and "custom-inference.yaml" in text
+def test_the_shipped_kustomization_publishes_the_custom_inference_profile():
+    kustomization = yaml.safe_load((EXTRA_DIR / "kustomization.yaml").read_text()) or {}
+    assert kustomization["configMapGenerator"] == [{
+        "name": "governance-interceptor-extra-profiles",
+        "files": ["custom-inference.yaml"],
+    }]
 
 
 @pytest.mark.ci_external

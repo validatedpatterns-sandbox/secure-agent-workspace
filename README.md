@@ -546,7 +546,7 @@ Use a model server of your own (vLLM, Ollama, or any OpenAI-compatible API) inst
 
 **Option A (Validated Pattern)** — configure an admin-approved endpoint in your fork, then provide the key through the Secret. Replace `api.inference.example.com` below with the hostname in the `inference.url` value; it must be identical in steps 2 and 3.
 
-1. **Publish the profile** — uncomment the generator in `overrides/governance-profiles/kustomization.yaml`. This is a one-time setup per deployment, not something each user should do:
+1. **Publish the profile** — `overrides/governance-profiles/kustomization.yaml` already publishes `custom-inference.yaml`. Publishing the profile alone does not grant any workspace egress or access to a credential destination:
 
    ```yaml
    configMapGenerator:

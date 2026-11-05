@@ -18,7 +18,8 @@ credentials:
 discovery:
   credentials: [api_key]
 endpoints:
-  - host: custom.inference.local     # the host of the `url` in the inference Secret
+  # Replace with the hostname in inference.url and egress.extraAllow.
+  - host: api.inference.example.com
     port: 443                        # its port (443 for https without one, 8000 for a vLLM Service)
     protocol: rest
     enforcement: enforce

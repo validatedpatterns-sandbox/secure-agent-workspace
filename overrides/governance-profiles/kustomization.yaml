@@ -19,7 +19,7 @@ generatorOptions:
 # Uncomment and list your profile files. Without a generator this
 # application renders nothing and the interceptor serves the shipped
 # catalog only (its extra-profiles volume is optional).
-# configMapGenerator:
-#   - name: governance-interceptor-extra-profiles
-#     files:
-#       - custom-inference.yaml
+configMapGenerator:
+  - name: governance-interceptor-extra-profiles
+    files:
+      - custom-inference.yaml

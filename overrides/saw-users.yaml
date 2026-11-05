@@ -1,3 +1,9 @@
 # Add real account names here after creating them with keycloak-add-users.
 # Each entry creates saw-<name>. Demo entries are in saw-users-demo.yaml.
 users: []
+
+defaults:
+  openshellSaw:
+    egress:
+      extraAllow:
+        - api.enmaas.devshift.net

@@ -547,9 +547,9 @@ profile and put `provider: openai`, `model`, `url` and `api_key` in the
 ## Providers, inference and sandbox environment
 
 OpenShell splits the concerns, and the BOM follows it
-([providers](https://docs.nvidia.com/openshell/v0.1.2/how-it-works/providers/overview),
-[inference](https://docs.nvidia.com/openshell/v0.1.2/how-it-works/inference),
-[sandboxes](https://docs.nvidia.com/openshell/v0.1.2/how-it-works/sandboxes/overview)):
+([providers](https://docs.nvidia.com/openshell/v0.1.6/how-it-works/providers/overview),
+ [inference](https://docs.nvidia.com/openshell/v0.1.6/how-it-works/inference),
+ [sandboxes](https://docs.nvidia.com/openshell/v0.1.6/how-it-works/sandboxes/overview)):
 
 | Concept | Where | Owns |
 |---|---|---|

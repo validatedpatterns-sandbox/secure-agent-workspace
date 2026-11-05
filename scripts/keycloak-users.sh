@@ -189,7 +189,7 @@ copy_to_clipboard() {  # $1 text
   elif command -v xsel >/dev/null 2>&1; then tool=(xsel --clipboard --input)
   elif command -v clip.exe >/dev/null 2>&1; then tool=(clip.exe)
   else return 1; fi
-  printf '%s' "$1" | "${tool[@]}" >/dev/null 2>&1
+  printf '%s' "$1" | timeout 2 "${tool[@]}" >/dev/null 2>&1
 }
 
 password() {

@@ -181,7 +181,7 @@ interceptor is the default. The two diagrams that follow also illustrate the
 3. `helm` 3.x installed
 4. An API key for at least one inference provider (Gemini, Anthropic, OpenAI, NVIDIA, OpenRouter)
 5. The `openshell` CLI installed at the API version pinned by the gateway BOM
-   (`0.1.2` for the current `0.1.2-rhaiv.6` image;
+   (`0.1.6` for the current `0.1.6-rhaiv.4` image;
    [releases](https://github.com/NVIDIA/OpenShell/releases))
 
 Verify prerequisites:
@@ -485,7 +485,7 @@ CI namespace is refused. For `saw-create`, set `PROVIDER`, `MODEL`, and
 
 `IMAGE_TAG=latest` selects the CI-built gateway disk used by `images-mirror`;
 `IMAGE_TAG=sha-<commit>` selects a particular CI build. The chart's in-VM BOM
-separately pins OpenShell `0.1.2-rhaiv.6` by digest. See
+separately pins OpenShell `0.1.6-rhaiv.4` by digest. See
 [the deployment guide](docs/deployment-guide.md#golden-image-tag).
 
 If a prerequisite fails, inspect the reported CLI or operator and run

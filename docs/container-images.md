@@ -18,7 +18,7 @@ those deployment overrides local when preparing changes for upstream.
 | `openshell-gateway-docker` | `latest`, `sha-<commit>` | x86_64-only Docker VM disk, `make gateway-build-docker` |
 | `nemoclaw-cli` | `latest`, `sha-<commit>` | Installer BOM `spec.nemoclaw.cliImage` |
 | `nemoclaw-sandbox` | `latest`, `sha-<commit>` | Data-science default and CUDA profiles |
-| `governance-interceptor` | `latest`, `sha-<commit>`, OpenShell ref (currently `v0.1.2`) | Interceptor deployment and image builder |
+| `governance-interceptor` | `latest`, `sha-<commit>`, OpenShell ref (currently `v0.1.6`) | Interceptor deployment and image builder |
 | `saw-credential-proxy` | `latest`, `sha-<commit>` (multi-arch) | Chart default `credentialProxy.image` (digest pinned in `charts/openshell-saw/values.yaml`) |
 | `saw-harness-<bundle>` | Bundle version, `sha-<commit>` | Optional digest-pinned `harnessRef.image` |
 

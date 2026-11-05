@@ -504,7 +504,7 @@ esac
             assert "push " not in calls
             assert "output.externalImage=ghcr.io" not in calls
         elif target == "governance-interceptor-build":
-            assert "output.externalImage=ghcr.io/example/governance-interceptor:v0.1.2" in calls
+            assert "output.externalImage=ghcr.io/example/governance-interceptor:v0.1.6" in calls
         else:
             assert "push " in calls and "ghcr.io/example" in calls
 

@@ -29,9 +29,18 @@ defaults:
 ```
 
 A user's `values.credentialProxy.enabled` overrides that default. The portal
-inherits the same defaults. The proxy image is required only when enabled.
+inherits the same defaults. The chart pins the published proxy image; an image
+override is optional.
 Quickstart accepts `CREDENTIAL_PROXY_ENABLED=false` or the same setting in
 `SAW_VALUES_FILE`; the environment variable takes precedence.
+
+The NVIDIA [Security and Governance Model](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/security-and-governance-model.html)
+requires credential mediation outside the agent process, and outside the guest
+where controls must survive guest compromise. Proxy mode provides that external
+placement. Direct mode provides agent-process isolation only; use proxy mode
+where the guest-compromise threat model applies. See the
+[per-mode reference mapping](architecture-alignment.md#6-secret-management)
+for provider scope, lifetime, audit, revocation and residual guest-root access.
 
 ## Switching modes
 
@@ -174,15 +183,18 @@ while it exists in tmpfs.
 
 ## Deployment and migration
 
-Build and publish `credential-proxy/Containerfile`, then set
-`credentialProxy.image` to the resulting **digest reference** (`...@sha256:...`).
-Use the multi-architecture index digest for published multi-arch images.
-For GitOps, set `defaults.openshellSaw.credentialProxy.image` in
-`overrides/saw-users.yaml` before deploying Option A. The chart refuses an
-empty or tag-only image. `make saw-create` accepts
-`CREDENTIAL_PROXY_IMAGE` or `SAW_VALUES_FILE` with that value. The proxy CA
-hook creates a namespace CA Secret and its public ConfigMap before the VM and
-proxy Deployment. The CA ConfigMap is a required VM disk.
+The chart ships the published multi-architecture image digest built by
+`.github/workflows/credential-proxy.yml` from `credential-proxy/`. Proxy mode
+needs no image override. For a mirror or custom build, set
+`defaults.openshellSaw.credentialProxy.image` in `overrides/saw-users.yaml`;
+the override must be `repo@sha256:<index digest>` for a multi-arch image.
+Explicit empty and tag-only chart values are refused. `make saw-create`
+optionally accepts `CREDENTIAL_PROXY_IMAGE` or `credentialProxy.image` in
+`SAW_VALUES_FILE`; with neither override supplied, quickstart uses the
+chart default. An explicit empty image in the values file still fails Helm. See [Container images](container-images.md#releasing-a-credential-proxy-change)
+for the release and mirror commands. The proxy CA hook creates a namespace
+CA Secret and its public ConfigMap before the VM and proxy Deployment. The
+CA ConfigMap is a required VM disk in proxy mode.
 
 Before a production rollout, verify the deployed OpenShell gateway accepts
 `https_proxy`, `proxy_ca_bundle`, and `proxy_connect_by_hostname`; that the

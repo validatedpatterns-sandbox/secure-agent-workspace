@@ -493,8 +493,8 @@ make governance-deploy           # Deploy governance policy and interceptor
 ### Sandbox Lifecycle
 
 ```bash
-# Create (required digest; GitOps uses defaults.openshellSaw.credentialProxy.image)
-export CREDENTIAL_PROXY_IMAGE='<repo>/saw-credential-proxy@sha256:<digest>'
+# Create using the published chart default. Optional override for a mirror or PR build:
+# export CREDENTIAL_PROXY_IMAGE='<repo>/saw-credential-proxy@sha256:<digest>'
 make saw-create OPENSHELL_SAW_NAME=my-saw
 
 # Access — NemoClaw sandbox
@@ -581,7 +581,8 @@ export PROVIDER=build
 export MODEL=nvidia/nemotron-3.5-lightning-30b-a3b
 read -r API_KEY < "$HOME/.nvidia-api-key"
 export API_KEY
-export CREDENTIAL_PROXY_IMAGE='<repo>/saw-credential-proxy@sha256:<digest>'
+# Optional: test a PR image from make credential-proxy-build instead of the chart default.
+# export CREDENTIAL_PROXY_IMAGE='<repo>/saw-credential-proxy@sha256:<digest>'
 # Off-mode run:
 unset WEB_SEARCH_API_KEY
 # For a separate on-mode run, restore the secrets-file entry and use:

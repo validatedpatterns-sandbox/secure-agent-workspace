@@ -59,6 +59,9 @@ uv run --python 3.14 --locked make test PYTHON=python PYTEST_ARGS='-m ci_externa
 uv run --python 3.12 --locked make test PYTHON=python PYTEST_ARGS='-m "not ci_external" -n 2 --dist=load'
 uv run --python 3.14 --locked make test PYTHON=python PYTEST_ARGS='-m "not ci_external" -n 2 --dist=load'
 
+# Online proxy publication, multi-arch digest and source freshness check.
+make credential-proxy-pin-check
+
 # Static lint plus the Make interface tests. CI runs the latter through pytest.
 make lint
 make lint-interface
@@ -68,6 +71,14 @@ make lint-interface
 selection, timing, report, and worker options. `PYTHON` remains an optional
 interpreter override. Without it, Make runs `uv run --locked pytest`.
 Use `--collect-only` with either marker selection to inspect membership.
+
+The separate `proxy-image-pin` CI job checks the published credential proxy
+index against the chart pin with a full-history checkout. PRs pass their base
+ref so a published source change blocks unrelated PRs until the follow-up pin
+lands; a source-changing PR and the main push warn. See the
+[release flow](container-images.md#releasing-a-credential-proxy-change).
+`uv run --locked scripts/credential-proxy-pin.py check --offline` checks local
+pin syntax and history without contacting GHCR; it cannot verify publication.
 
 ## Choose the test level
 

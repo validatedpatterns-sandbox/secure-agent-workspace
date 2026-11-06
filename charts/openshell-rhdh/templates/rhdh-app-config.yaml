@@ -71,6 +71,12 @@ data:
           target: /opt/app-root/src/saw/delete-workspace.yaml
           rules:
             - allow: [Template]
+        {{- if has "container" (include "openshell-rhdh.deploymentModes" . | fromJsonArray) }}
+        - type: file
+          target: /opt/app-root/src/saw/set-workspace-state.yaml
+          rules:
+            - allow: [Template]
+        {{- end }}
         {{- if .Values.portal.admins }}
         {{- range list "create-workspace-for-user.yaml" "delete-workspace-for-user.yaml" }}
         - type: file

@@ -1,6 +1,7 @@
 {{- if .Values.ownerResolution.enabled -}}
 {{- include "saw-users.validate" . -}}
 {{- range $user := .Values.users | default list }}
+{{- if ne (dig "deployment" "mode" "vm" ($user.values | default dict)) "container" }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -34,5 +35,6 @@ subjects:
   - kind: ServiceAccount
     name: {{ $.Values.ownerResolution.resolverServiceAccount }}
     namespace: {{ $.Values.ownerResolution.resolverNamespace }}
+{{- end }}
 {{- end }}
 {{- end }}

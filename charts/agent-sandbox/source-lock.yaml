@@ -1,0 +1,26 @@
+lockVersion: 1
+upstream:
+  repository: https://github.com/kubernetes-sigs/agent-sandbox
+  release: v1.0.9
+  commit: b1277676f8bf0e82ea299928997ecf5d696a92f1
+  manifestURL: https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.9/sandbox.yaml
+  manifestPath: files/sandbox.yaml
+  manifestSHA256: 3eeb27fa821659593ba92c5454571f08c84abb07096bb9d372c1c6c750f6d7d2
+  licensePath: files/LICENSE
+controller:
+  repository: registry.k8s.io/agent-sandbox/agent-sandbox-controller
+  tag: v1.0.9
+  digest: sha256:ef1a1a3076afc996e711c44b388fbb7ffb7cd6858953d7e685166b299d77bd38
+  mediaType: application/vnd.oci.image.index.v1+json
+api:
+  group: agents.x-k8s.io
+  kind: Sandbox
+  servedVersions: [v1beta1]
+  storageVersion: v1beta1
+consumer:
+  repository: https://github.com/opendatahub-io/openshell
+  release: v0.1.2-rhaiv.6
+  commit: 305c8b3d7bbdb97a6f2f7264c3ad43b0087c307f
+  reviewedFields: [podTemplate, volumeClaimTemplates, operatingMode]
+  qualification: source-reviewed-only
+verifiedOn: "2026-11-04"

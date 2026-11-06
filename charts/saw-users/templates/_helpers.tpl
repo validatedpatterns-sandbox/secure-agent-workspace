@@ -14,10 +14,17 @@ watches, not in whatever namespace this chart happens to be released into.
 {{- if not .Values.global.targetRevision -}}
 {{- fail "global.targetRevision is required" -}}
 {{- end -}}
+{{- $revisions := .Values.workspaceRevisions -}}
+{{- if not (kindIs "map" $revisions) -}}{{- fail "workspaceRevisions requires owner names and full Git commit SHAs" -}}{{- end -}}
+{{- range $name, $revision := $revisions -}}
+{{- if or (not (regexMatch "^[a-z0-9]([-a-z0-9]{0,17}[a-z0-9])?$" $name)) (not (kindIs "string" $revision)) (not (regexMatch "^[a-f0-9]{40}$" (toString $revision))) -}}
+{{- fail "workspaceRevisions requires owner names and full Git commit SHAs" -}}
+{{- end -}}{{- end -}}
 {{- $seen := dict -}}
 {{- range .Values.users | default list -}}
 {{- $name := .name | default "" | toString -}}
-{{- if $.Values.ownerResolution.enabled -}}
+{{- include "saw-users.validateDeploymentMode" (dict "root" $ "user" .) -}}
+{{- if and $.Values.ownerResolution.enabled (ne (dig "deployment" "mode" "vm" (.values | default dict)) "container") -}}
 {{- $entryValues := .values | default dict -}}
 {{- $entryAccess := index $entryValues "accessControl" | default dict -}}
 {{- if or (hasKey . "ownerSubject") (hasKey $entryAccess "ownerSubject") (hasKey $entryAccess "owner") -}}
@@ -403,7 +410,7 @@ spec:
     namespace: {{ printf "saw-%s" $user.name }}
   source:
     repoURL: {{ $root.Values.global.repoURL | quote }}
-    targetRevision: {{ $root.Values.global.targetRevision | quote }}
+    targetRevision: {{ index $root.Values.workspaceRevisions $user.name | default $root.Values.global.targetRevision | quote }}
     path: {{ .path }}
     helm:
       releaseName: {{ .release }}
@@ -414,6 +421,10 @@ spec:
     # hand (e.g. while cleaning up an older install) are restored.
     automated:
       selfHeal: true
+      {{- if and (eq .path "charts/saw-portal-container") (eq (int ($user.lifecycleVersion | default 0)) 1) }}
+      # Retire superseded publication Jobs. Audit archives opt out of prune and delete.
+      prune: true
+      {{- end }}
     retry:
       limit: {{ $root.Values.argo.retryLimit }}
     # Server-side apply: client-side apply copies every object into its
@@ -423,4 +434,43 @@ spec:
     # hold 1 MiB.
     syncOptions:
       - ServerSideApply=true
+{{- end -}}
+
+{{/* Check effective backend before emitting any per-user Argo applications.
+Validate both layers' shape, then apply the same defaults/user precedence as
+openshellValues. Keep omission as vm without changing existing rendered values. */}}
+{{- define "saw-users.validateDeploymentMode" -}}
+{{- $mode := "vm" -}}
+{{- range $values := list (.root.Values.defaults.openshellSaw | default dict) (.user.values | default dict) -}}
+{{- if hasKey $values "deployment" -}}
+{{- $deployment := get $values "deployment" -}}
+{{- if not (kindIs "map" $deployment) -}}
+{{- fail "deployment must be an object with a mode" -}}
+{{- end -}}
+{{- range $key, $_ := $deployment -}}
+{{- if ne $key "mode" -}}{{- fail (printf "unknown deployment field %q" $key) -}}{{- end -}}
+{{- end -}}
+{{- if hasKey $deployment "mode" -}}
+{{- $mode = get $deployment "mode" -}}
+{{- if not (kindIs "string" $mode) -}}{{- fail "deployment.mode must be a string" -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if not (has $mode (list "vm" "container")) -}}
+{{- fail "deployment.mode must be one of vm, container" -}}
+{{- end -}}
+{{- if and (eq $mode "container") (hasKey (.root.Values.containerSites | default dict) .user.name) -}}
+{{- $u := .user -}}
+{{- $site := index .root.Values.containerSites $u.name -}}
+{{- if ne (dig "deployment" "mode" "vm" ($u.values | default dict)) "container" -}}{{- fail "deployment.mode=container must be explicit on each user" -}}{{- end -}}
+{{- $foundation := eq (dig "automaticEnrollment" "enabled" true $site | toString) "false" -}}
+{{- $catalog := (.root.Files.Get "files/profile-catalog.json" | fromJson).profiles -}}
+{{- $profile := first ($u.profiles | default list) | default "" -}}
+{{- $approved := or $foundation (hasKey (dig "automaticEnrollment" "approvedProfiles" dict $site) $profile) -}}
+{{- if or (not $u.ownerSubject) (ne $u.ownerSubject $site.subject) (not (regexMatch "^[0-9a-f]{16}$" (default "" $u.registration))) (ne (len ($u.profiles | default list)) 1) (not (hasKey $catalog $profile)) (not $approved) (not $u.pruneOnRemove) -}}
+{{- fail "container requires verified owner subject, scoped registration, approved BOM profile and foreground cleanup" -}}
+{{- end -}}
+{{- else if ne $mode "vm" -}}
+{{- fail (printf "deployment.mode=%s is not implemented in this revision; no VM fallback (see docs/container-workspaces.md)" $mode) -}}
+{{- end -}}
 {{- end -}}

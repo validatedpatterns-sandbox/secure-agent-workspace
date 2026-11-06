@@ -3,12 +3,28 @@
 import json
 import io
 import sys
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.ci import deployment_validation as dv
 from scripts.ci.vendor_crd_schemas import validation_only
+
+
+@pytest.mark.skipif(not shutil.which("helm"), reason="Helm is required")
+def test_enabled_chart_graph_renders_every_component(tmp_path):
+    result = dv.Validation()
+    dv.render_charts(result, tmp_path)
+    assert result.errors == []
+    for chart in dv.charts():
+        name = chart.parent.relative_to(dv.ROOT).as_posix().replace("/", "_")
+        documents = list(dv.yaml.safe_load_all((tmp_path / (name + ".yaml")).read_text()))
+        assert any(isinstance(item, dict) and item.get("kind") for item in documents)
+    controller = dv.yaml.safe_load((tmp_path / "saw-c-a8cb6cbd0eb62f31-gateway-inputs.json").read_text())
+    assert controller["kubernetes"]["experimental"] is True
+    assert controller["kubernetes"]["identity"]["clientCaSecret"] == "alice-client-ca"
 
 
 def test_vendored_schemas_have_no_upstream_sample_data():
@@ -26,6 +42,7 @@ def test_vendored_crd_schema_names_match_kubeconform_lookup():
         ("hco.kubevirt.io", "hyperconverged_v1beta1.json"),
         ("tekton.dev", "pipeline_v1.json"),
         ("tekton.dev", "task_v1.json"),
+        ("apiextensions.k8s.io", "customresourcedefinition_v1.json"),
     )
     for group, filename in expected:
         assert (dv.ROOT / "scripts/ci/schemas" / group / filename).is_file()

@@ -1,0 +1,36 @@
+{
+  "description": "OpenClaw chat with native tool approval and retained audit history",
+  "harnessRequired": false,
+  "secrets": {
+    "inference": {
+      "fields": [
+        {
+          "key": "api_key",
+          "kind": "secret",
+          "required": true,
+          "title": "API key"
+        }
+      ],
+      "provider": "openai",
+      "providers": [
+        "openai"
+      ]
+    }
+  },
+  "workspaces": [
+    {
+      "description": "OpenClaw chat with native tool approval and retained audit history",
+      "enabled": true,
+      "name": "agent",
+      "sandboxes": [
+        {
+          "enabled": true,
+          "harnessRequired": false,
+          "name": "audited",
+          "type": "openclaw",
+          "uiRoute": true
+        }
+      ]
+    }
+  ]
+}

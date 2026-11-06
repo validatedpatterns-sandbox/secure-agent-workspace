@@ -13,6 +13,8 @@ metadata:
 data:
   ca-bundle.py: |
 {{ $.Files.Get "files/ca-bundle.py" | indent 4 }}
+  wait-oidc.py: |
+{{ $.Files.Get "files/wait-oidc.py" | indent 4 }}
   extra-ca.crt: |
 {{ $.Values.tls.extraCaBundle | default "" | indent 4 }}
 ---

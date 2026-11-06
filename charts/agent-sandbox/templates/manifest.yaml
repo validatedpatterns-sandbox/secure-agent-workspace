@@ -1,0 +1,47 @@
+{{- if .Values.enabled }}
+{{- if ne .Release.Namespace "agent-sandbox-system" }}
+{{- fail "Agent Sandbox is a cluster-wide dependency: install once in namespace agent-sandbox-system" }}
+{{- end }}
+{{- $lock := .Files.Get "source-lock.yaml" | fromYaml }}
+{{- $manifest := .Files.Get $lock.upstream.manifestPath }}
+{{- if ne (sha256sum $manifest) $lock.upstream.manifestSHA256 }}
+{{- fail "vendored Agent Sandbox manifest differs from source-lock.yaml" }}
+{{- end }}
+{{- range $part := splitList "\n---" $manifest }}
+{{- $object := fromYaml $part }}
+{{- if $object.kind }}
+{{- $meta := $object.metadata }}
+{{- $labels := default dict $meta.labels }}
+{{- $_ := set $labels "app.kubernetes.io/name" "agent-sandbox" }}
+{{- $_ := set $labels "app.kubernetes.io/version" $.Chart.AppVersion }}
+{{- $_ := set $meta "labels" $labels }}
+{{- $annotations := default dict $meta.annotations }}
+{{- $wave := "-1" }}
+{{- if eq $object.kind "Namespace" }}
+{{- $wave = "-3" }}
+{{- else if eq $object.kind "CustomResourceDefinition" }}
+{{- $wave = "-2" }}
+{{- else if eq $object.kind "Deployment" }}
+{{- $wave = "0" }}
+{{- end }}
+{{- $_ := set $annotations "argocd.argoproj.io/sync-wave" $wave }}
+{{- if or (eq $object.kind "Namespace") (eq $object.kind "CustomResourceDefinition") }}
+{{- $_ := set $annotations "helm.sh/resource-policy" "keep" }}
+{{- $_ := set $annotations "argocd.argoproj.io/sync-options" "Prune=false,Delete=false" }}
+{{- end }}
+{{- $_ := set $meta "annotations" $annotations }}
+{{- if eq $object.kind "Deployment" }}
+{{- $pod := $object.spec.template.spec }}
+{{- $container := index $pod.containers 0 }}
+{{- $_ := set $container "image" (printf "%s@%s" $.Values.controller.imageRepository $lock.controller.digest) }}
+{{- $_ := set $container "resources" $.Values.controller.resources }}
+{{- $_ := set $pod "securityContext" (dict "runAsNonRoot" true "seccompProfile" (dict "type" "RuntimeDefault")) }}
+{{- $_ := set $container "securityContext" (dict "allowPrivilegeEscalation" false "capabilities" (dict "drop" (list "ALL"))) }}
+{{- $_ := set $container "readinessProbe" (dict "httpGet" (dict "path" "/readyz" "port" "healthz") "initialDelaySeconds" 5 "periodSeconds" 10) }}
+{{- $_ := set $container "livenessProbe" (dict "httpGet" (dict "path" "/healthz" "port" "healthz") "initialDelaySeconds" 15 "periodSeconds" 20) }}
+{{- end }}
+---
+{{ toYaml $object }}
+{{- end }}
+{{- end }}
+{{- end }}

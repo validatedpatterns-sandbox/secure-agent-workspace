@@ -19,6 +19,10 @@ IMAGE_TAG      ?= latest
 # OpenShell release the governance interceptor is built from (must match the
 # SAW gateways; image-builder-charts/helm/governance-interceptor-image).
 OPENSHELL_INTERCEPTOR_REF ?= v0.1.2
+DEPLOYMENT_MODE ?= vm
+SAW_USERS_VALUES_FILE ?=
+SAW_INSTALL_NAMESPACE ?= saw-workspaces
+export DEPLOYMENT_MODE SAW_USERS_VALUES_FILE SAW_INSTALL_NAMESPACE
 OPENSHELL_SAW_NAME ?=
 SANDBOX_IMAGE  ?=
 CONTAINER_RUNTIME ?= podman
@@ -327,8 +331,8 @@ pattern-uninstall: uninstall ## Uninstall the Validated Pattern
 
 # Clean up one sandbox's VM and DataVolume before saw-delete. This target
 # handles only OPENSHELL_SAW_NAME; pattern uninstall has its own cleanup.
-sandbox-pre-delete: .check-saw-name ## Schedule deletion of a sandbox's VM and disk
-	@$(SCRIPTS_DIR)/sandbox-pre-delete.sh
+sandbox-pre-delete: .check-saw-name .check-deployment-mode ## Schedule deletion of a sandbox's VM and disk
+	@if [ "$(DEPLOYMENT_MODE)" = vm ]; then $(SCRIPTS_DIR)/sandbox-pre-delete.sh; fi
 
 # --- Keycloak / OIDC ---
 
@@ -412,8 +416,10 @@ keycloak-delete: ## Uninstall Keycloak and its database
 
 ##@ Sandbox Operations
 
-saw-create: .check-saw-name ## Provision one SAW (OPENSHELL_SAW_NAME is required)
-	@$(SCRIPTS_DIR)/openshell-saw-create.sh
+saw-create: .check-saw-name .check-deployment-mode ## Provision one SAW using DEPLOYMENT_MODE=vm or container
+	@if [ "$(DEPLOYMENT_MODE)" = container ]; then \
+		$(or $(PYTHON),uv run --locked python) $(SCRIPTS_DIR)/container-workspace.py apply; \
+	else $(SCRIPTS_DIR)/openshell-saw-create.sh; fi
 
 saw-configure: .check-saw-name ## Configure the OpenShell CLI for one gateway
 	@$(SCRIPTS_DIR)/saw-configure.sh
@@ -423,15 +429,19 @@ saw-configure: .check-saw-name ## Configure the OpenShell CLI for one gateway
 saw-list: ## List SAW virtual machines across namespaces
 	@$(SCRIPTS_DIR)/saw-list.sh
 
-saw-logs: .check-saw-name ## Follow the VM installer log
+saw-logs: .check-saw-name .check-vm-deployment ## Follow the VM installer log
 	oc -n "$(SAW_NS)" logs $(if $(filter false,$(FOLLOW)),,-f) \
 		-l "vm.kubevirt.io/name=$(OPENSHELL_SAW_NAME)" -c guest-console-log --tail=-1
 
-saw-status: .check-saw-name .check-ssh-key ## Show both installer phases from the VM
-	@VM_NAME="$(OPENSHELL_SAW_NAME)" \
-	$(SCRIPTS_DIR)/openshell-saw-vm-ssh.sh 'sudo cat /var/lib/saw/status.json'
+saw-status: .check-saw-name .check-deployment-mode ## Show the selected workspace's installation status
+	@if [ "$(DEPLOYMENT_MODE)" = container ]; then \
+		$(or $(PYTHON),uv run --locked python) $(SCRIPTS_DIR)/container-workspace.py status; \
+	else \
+		$(MAKE) .check-ssh-key && VM_NAME="$(OPENSHELL_SAW_NAME)" \
+		$(SCRIPTS_DIR)/openshell-saw-vm-ssh.sh 'sudo cat /var/lib/saw/status.json'; \
+	fi
 
-saw-vm-ssh: .check-saw-name .check-ssh-key ## Open a VM shell (CMD= runs one command)
+saw-vm-ssh: .check-saw-name .check-vm-deployment .check-ssh-key ## Open a VM shell (CMD= runs one command)
 	@VM_NAME="$(OPENSHELL_SAW_NAME)" \
 	$(SCRIPTS_DIR)/openshell-saw-vm-ssh.sh
 
@@ -449,10 +459,10 @@ harness-bundle-push: ## Push harness-bundles/$(HARNESS_BUNDLE) to $(HARNESS_REPO
 	@test -n "$(HARNESS_REPO)" || { echo "set HARNESS_REPO, e.g. ghcr.io/<owner>/saw-harness-$(HARNESS_BUNDLE)"; exit 1; }
 	@$(SCRIPTS_DIR)/harness-bundle.sh push $(HARNESS_BUNDLE) $(HARNESS_REPO)
 
-saw-restart: .check-saw-name ## Restart the VM to apply a changed BOM or profile
+saw-restart: .check-saw-name .check-vm-deployment ## Restart the VM to apply a changed BOM or profile
 	virtctl -n $(SAW_NS) restart $(OPENSHELL_SAW_NAME)
 
-saw-restart-pending: ## Restart every SAW VM waiting for a restart (CONFIRM=yes; lists them otherwise)
+saw-restart-pending: .check-vm-deployment ## Restart every SAW VM waiting for a restart (CONFIRM=yes; lists them otherwise)
 	@CONFIRM=$(CONFIRM) $(SCRIPTS_DIR)/saw-restart-pending.sh
 
 saw-ssh: .check-saw-name .check-gateway-ca ## Open a shell in a sandbox
@@ -574,14 +584,37 @@ test-pattern-e2e-cleanup: ## Clean an E2E run when ready (set CI_RECOVERY_RUN_ID
 .PHONY: lint-static lint-interface
 lint: lint-static lint-interface ## Lint charts, shell syntax, and the Make interface
 
+# Helm lint softens template fail() guards and has no --api-versions flag.
+# Runtime charts also need enabled template renders with synthetic discovery;
+# these check renderability only, never API availability on a real cluster.
 lint-static: ## Lint charts and shell syntax without running pytest
 	@for chart in charts/* image-builder-charts/helm/*; do \
 		test -f "$$chart/Chart.yaml" || continue; \
 		if [ "$$chart" = charts/openshell-saw ]; then \
 			helm lint "$$chart" --set sandboxName=lint -f tests/fixtures/saw-network-topology.yaml || exit; \
 			helm lint "$$chart" --set sandboxName=lint -f tests/fixtures/saw-network-topology.yaml --set credentialProxy.enabled=false || exit; \
+		elif [ "$$chart" = charts/openshell-saw-kubernetes ]; then \
+			helm lint "$$chart" --namespace saw-lint -f tests/fixtures/saw-kubernetes-values.yaml || exit; \
+			helm template saw-lint "$$chart" --namespace saw-lint \
+				-f tests/fixtures/saw-kubernetes-values.yaml \
+				--api-versions agents.x-k8s.io/v1beta1/Sandbox \
+				--api-versions policy.networking.k8s.io/v1alpha1/AdminNetworkPolicy >/dev/null || exit; \
+		elif [ "$$chart" = charts/saw-kubernetes-identity ]; then \
+			helm lint "$$chart" || exit; \
+			helm lint "$$chart" --namespace saw-lint-trusted -f tests/fixtures/saw-kubernetes-identity-values.yaml || exit; \
+			helm template identity-lint "$$chart" --namespace saw-lint-trusted -f tests/fixtures/saw-kubernetes-identity-values.yaml >/dev/null || exit; \
+		elif [ "$$chart" = charts/agent-sandbox ]; then \
+			helm lint "$$chart" || exit; \
+			helm lint "$$chart" --namespace agent-sandbox-system --set enabled=true || exit; \
+			helm template agent-sandbox "$$chart" --namespace agent-sandbox-system --set enabled=true >/dev/null || exit; \
+		elif [ "$$chart" = charts/saw-runtime-policies ]; then \
+			helm lint "$$chart" || exit; \
+			helm lint "$$chart" -f "$$chart/tests/container-values.yaml" || exit; \
+			helm template runtime-lint "$$chart" -f "$$chart/tests/container-values.yaml" \
+				--api-versions policy.networking.k8s.io/v1alpha1/AdminNetworkPolicy \
+				--api-versions admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy >/dev/null || exit; \
 		else \
-			helm lint "$$chart" --set sandboxName=lint || exit; \
+			helm lint "$$chart" || exit; \
 		fi; \
 		done
 	@for script in scripts/*.sh tests/*.sh charts/openshell-saw/files/*.sh \
@@ -590,7 +623,7 @@ lint-static: ## Lint charts and shell syntax without running pytest
 		bash -n "$$script" || exit; \
 		done
 	@if [ "$${CI:-}" = true ]; then \
-		python scripts/lint-rendered-shell.py || exit; \
+		$(or $(PYTHON),python) scripts/lint-rendered-shell.py || exit; \
 	else \
 		uv run --locked scripts/lint-rendered-shell.py || exit; \
 	fi
@@ -610,7 +643,17 @@ test-harness-e2e: .check-saw-name ## Verify one SAW's harness bundle on the clus
 # --- Teardown ---
 
 saw-delete: sandbox-pre-delete ## Uninstall one sandbox and its owned namespace
-	@$(SCRIPTS_DIR)/saw-delete.sh
+	@if [ "$(DEPLOYMENT_MODE)" = container ]; then \
+		$(or $(PYTHON),uv run --locked python) $(SCRIPTS_DIR)/container-workspace.py delete; \
+	else $(SCRIPTS_DIR)/saw-delete.sh; fi
+
+.PHONY: .check-deployment-mode
+.check-deployment-mode:
+	@case "$(DEPLOYMENT_MODE)" in vm|container) ;; *) echo "DEPLOYMENT_MODE must be vm or container" >&2; exit 1 ;; esac
+
+.PHONY: .check-vm-deployment
+.check-vm-deployment: .check-deployment-mode
+	@test "$(DEPLOYMENT_MODE)" = vm || { echo "This command operates on VMs. For container lifecycle and logs, see docs/container-installation.md." >&2; exit 1; }
 
 quickstart-delete: ## Remove quickstart Keycloak and image releases
 	@$(SCRIPTS_DIR)/quickstart-delete.sh
@@ -623,7 +666,7 @@ status: ## Show status of all OpenShell resources (every SAW namespace + $(NS))
 	@$(SCRIPTS_DIR)/saw-cluster-status.sh
 
 # --- Local Python tests (no cluster needed) ---
-TEST_PATHS ?= tests/installer tests/charts tests/scripts tests/portal tests/credential_proxy cli/tests
+TEST_PATHS ?= tests/installer tests/charts tests/scripts tests/portal tests/credential_proxy tests/kubernetes_runtime cli/tests
 PYTEST_ARGS ?=
 .PHONY: test-installer test-tool-gate test-credential-proxy credential-proxy-image test-credential-isolation
 GO ?= go

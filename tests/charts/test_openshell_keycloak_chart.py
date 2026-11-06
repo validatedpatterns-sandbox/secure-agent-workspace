@@ -321,3 +321,30 @@ def test_registrar_http_override_is_rejected():
     result = helm("--set", "redirectRegistrar.keycloakUrl=http://sso.example.com")
     assert result.returncode != 0
     assert "must use HTTPS" in result.stderr
+
+
+@pytest.mark.ci_external
+def test_shared_admin_scope_helper_is_mounted_and_rolls_bootstraps(tmp_path):
+    docs = render("--set", "ownerResolver.enabled=true")
+    names = ("saw-owner-resolver", "saw-redirect-registrar")
+    source = (CHART / "files/saw_keycloak_admin.py").read_text()
+    checksums = {}
+    for name in names:
+        cm = next(d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == name)
+        assert cm["data"]["saw_keycloak_admin.py"] == source
+        dep = next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == name)
+        checksums[name] = dep["spec"]["template"]["metadata"]["annotations"]["checksum/script"]
+        pod = dep["spec"]["template"]["spec"]
+        assert any("bootstrap" in c.get("command", []) + c.get("args", []) for c in pod["initContainers"])
+        assert any(v.get("configMap", {}).get("name") == name for v in pod["volumes"])
+    # A helper-only change must rerun existing bootstrap init containers.
+    chart_copy = tmp_path / "chart"
+    shutil.copytree(CHART, chart_copy)
+    (chart_copy / "files/saw_keycloak_admin.py").write_text(source + "\n# changed helper\n")
+    result = run_helm([HELM, "template", "openshell-keycloak", str(chart_copy), "-n", "keycloak",
+                       "--set", "ownerResolver.enabled=true"], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    changed = [d for d in yaml.safe_load_all(result.stdout) if d]
+    for name in names:
+        dep = next(d for d in changed if d["kind"] == "Deployment" and d["metadata"]["name"] == name)
+        assert dep["spec"]["template"]["metadata"]["annotations"]["checksum/script"] != checksums[name]

@@ -8,6 +8,7 @@ import subprocess
 import click
 
 from . import config, helm, kube, oidc
+from .workspace import workspace
 
 
 @click.group()
@@ -28,6 +29,9 @@ def main(ctx, namespace, shared_namespace, ssh_key):
 
     ctx.ensure_object(dict)
     ctx.obj["cfg"] = cfg
+
+
+main.add_command(workspace)
 
 
 # --- OIDC commands (for provisioning — users authenticate via 'openshell login') ---

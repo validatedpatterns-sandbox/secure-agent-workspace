@@ -44,6 +44,8 @@ metadata:
   labels:
     {{- include "openshell-rhdh.labels" . | nindent 4 }}
 data:
+  saw_keycloak_admin.py: |
+{{ .Files.Get "files/saw_keycloak_admin.py" | indent 4 }}
   keycloak-client.py: |
 {{ .Files.Get "files/keycloak-client.py" | indent 4 }}
 ---
@@ -55,7 +57,10 @@ metadata:
   labels:
     {{- include "openshell-rhdh.labels" . | nindent 4 }}
   annotations:
-    argocd.argoproj.io/hook: PostSync
+    # Identity consumers can remain unhealthy until this bootstrap succeeds.
+    # Run with its normal wave-0 Secret/RBAC/ConfigMap prerequisites instead
+    # of waiting for consumer health at PostSync.
+    argocd.argoproj.io/hook: Sync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
 spec:
   backoffLimit: 10

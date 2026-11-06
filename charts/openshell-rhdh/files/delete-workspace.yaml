@@ -4,8 +4,8 @@ kind: Template
 metadata:
   name: delete-saw-workspace
   title: Delete my agent workspace
-  description: 'Removes your Secure Agent Workspace: its VM, its sandboxes and everything in them, and
-    your keys in Vault. This cannot be undone.'
+  description: 'Removes your Secure Agent Workspace: its runtime, its sandboxes and the data in them,
+    and your keys in Vault. Retained audit history is separate. This cannot be undone.'
   tags: [openshell, secure-agent-workspace]
   labels: {saw.redhat.com/owners: 'true'}
 spec:
@@ -25,8 +25,8 @@ spec:
           catalogFilter: {kind: Component, spec.type: agent-workspace}
           defaultKind: Component
           allowArbitraryValues: false
-      confirm: {title: 'I understand that this workspace, its VM and its data are deleted', type: boolean,
-        const: true}
+      confirm: {title: 'I understand that the workspace runtime, sandbox data and workspace keys will
+          be deleted', type: boolean, const: true}
   steps:
   - id: request
     name: Submit the request
@@ -75,7 +75,7 @@ spec:
       continueOnBadResponse: true
     each: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
   - id: task-argo-cd-removes
-    name: Argo CD removes the namespace and the VM
+    name: Wait for Argo CD to remove the workspace runtime
     action: http:backstage:request
     input:
       method: GET
@@ -119,5 +119,5 @@ spec:
   output:
     text:
     - {title: Workspace deleted, content: 'Pipeline run **${{ steps.run.output.body.metadata.name }}**
-        deleted workspace ${{ parameters.workspace | parseEntityRef | pick(''name'') }}: its VM, namespace
-        and keys are gone.'}
+        deleted workspace ${{ parameters.workspace | parseEntityRef | pick(''name'') }}: its workspace
+        compute and access have been removed.'}

@@ -1,0 +1,5 @@
+apiVersion: v2
+name: saw-kubernetes-proxy
+description: Existing SAW credential proxy in a separate trusted namespace
+type: application
+version: 0.1.0

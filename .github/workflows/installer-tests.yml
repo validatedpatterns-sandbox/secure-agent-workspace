@@ -59,6 +59,27 @@ jobs:
           mkdir -p test-results
           set -o pipefail
           make lint-static 2>&1 | tee test-results/lint.log
+      - name: Compiler and governance admission contract
+        env:
+          SAW_REQUIRE_RUST_TESTS: "1"
+        run: |
+          set -euo pipefail
+          cargo --version
+          scratch=$(mktemp -d)
+          trap 'rm -rf "$scratch"' EXIT
+          mkdir "$scratch/src"
+          touch "$scratch/src/lib.rs"
+          cat > "$scratch/Cargo.toml" <<'EOF'
+          [package]
+          name = "saw-guard-test-dependencies"
+          version = "0.1.0"
+          edition = "2021"
+          [dependencies]
+          serde_json = "1"
+          EOF
+          cargo fetch --manifest-path "$scratch/Cargo.toml"
+          python -m pytest -q tests/kubernetes_runtime/test_governance_contract.py \
+            tests/charts/test_governance_interceptor_image.py::test_exact_embedded_guard_behavior
       - name: External tool and static asset tests
         run: |
           mkdir -p test-results

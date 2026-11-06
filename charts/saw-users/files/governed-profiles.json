@@ -1,0 +1,550 @@
+{
+  "anthropic": {
+    "binaries": [
+      "/usr/bin/curl",
+      "/usr/local/bin/curl",
+      "/usr/bin/node",
+      "/usr/bin/node-*",
+      "/usr/local/bin/node"
+    ],
+    "category": "inference",
+    "credentials": [
+      {
+        "auth_style": "header",
+        "description": "Anthropic API key",
+        "env_vars": [
+          "ANTHROPIC_API_KEY"
+        ],
+        "header_name": "x-api-key",
+        "name": "api_key",
+        "required": true
+      }
+    ],
+    "description": "Anthropic inference API",
+    "discovery": {
+      "credentials": [
+        "api_key"
+      ]
+    },
+    "display_name": "Anthropic",
+    "endpoints": [
+      {
+        "access": "read-write",
+        "enforcement": "enforce",
+        "host": "api.anthropic.com",
+        "port": 443,
+        "protocol": "rest"
+      }
+    ],
+    "id": "anthropic",
+    "inference_capable": true
+  },
+  "brave": {
+    "binaries": [
+      "/usr/bin/curl",
+      "/usr/local/bin/curl",
+      "/usr/bin/node",
+      "/usr/bin/node-*",
+      "/usr/local/bin/node"
+    ],
+    "category": "other",
+    "credentials": [
+      {
+        "auth_style": "header",
+        "description": "Brave Search API key",
+        "env_vars": [
+          "BRAVE_API_KEY"
+        ],
+        "header_name": "X-Subscription-Token",
+        "name": "api_key",
+        "required": true
+      }
+    ],
+    "description": "Brave Search API access for governed sandbox agents",
+    "discovery": {
+      "credentials": [
+        "api_key"
+      ]
+    },
+    "display_name": "Brave Search",
+    "endpoints": [
+      {
+        "access": "read-only",
+        "enforcement": "enforce",
+        "host": "api.search.brave.com",
+        "port": 443,
+        "protocol": "rest"
+      }
+    ],
+    "id": "brave"
+  },
+  "gemini": {
+    "binaries": [
+      "/usr/bin/gemini",
+      "/usr/lib/node_modules/@google/gemini-cli/dist/index.js",
+      "/usr/bin/node",
+      "/usr/bin/node-*",
+      "/usr/local/bin/node"
+    ],
+    "category": "other",
+    "credentials": [
+      {
+        "auth_style": "query",
+        "description": "Google Gemini API key",
+        "env_vars": [
+          "GEMINI_API_KEY"
+        ],
+        "name": "api_key",
+        "query_param": "key",
+        "required": true
+      }
+    ],
+    "description": "Google Gemini AI and Vertex AI API access",
+    "discovery": {
+      "credentials": [
+        "api_key"
+      ]
+    },
+    "display_name": "Google Gemini",
+    "endpoints": [
+      {
+        "access": "read-write",
+        "enforcement": "enforce",
+        "host": "generativelanguage.googleapis.com",
+        "port": 443,
+        "protocol": "rest"
+      },
+      {
+        "access": "read-write",
+        "enforcement": "enforce",
+        "host": "*-aiplatform.googleapis.com",
+        "port": 443,
+        "protocol": "rest"
+      },
+      {
+        "access": "read-write",
+        "enforcement": "enforce",
+        "host": "cloudcode-pa.googleapis.com",
+        "port": 443,
+        "protocol": "rest"
+      },
+      {
+        "access": "read-only",
+        "enforcement": "enforce",
+        "host": "accounts.google.com",
+        "port": 443,
+        "protocol": "rest"
+      },
+      {
+        "access": "read-only",
+        "enforcement": "enforce",
+        "host": "oauth2.googleapis.com",
+        "port": 443,
+        "protocol": "rest"
+      },
+      {
+        "access": "read-only",
+        "enforcement": "enforce",
+        "host": "www.googleapis.com",
+        "port": 443,
+        "protocol": "rest"
+      },
+      {
+        "access": "read-only",
+        "enforcement": "enforce",
+        "host": "iamcredentials.googleapis.com",
+        "port": 443,
+        "protocol": "rest"
+      }
+    ],
+    "id": "gemini"
+  },
+  "github": {
+    "binaries": [
+      "/usr/bin/gh",
+      "/usr/local/bin/gh",
+      "/usr/bin/git",
+      "/usr/local/bin/git",
+      "/usr/bin/curl",
+      "/usr/local/bin/curl"
+    ],
+    "category": "source_control",
+    "credentials": [
+      {
+        "auth_style": "bearer",
+        "description": "GitHub token",
+        "env_vars": [
+          "GITHUB_TOKEN",
+          "GH_TOKEN"
+        ],
+        "header_name": "authorization",
+        "name": "api_token",
+        "required": true
+      }
+    ],
+    "description": "GitHub API and Git operations",
+    "discovery": {
+      "credentials": [
+        "api_token"
+      ]
+    },
+    "display_name": "GitHub",
+    "endpoints": [
+      {
+        "access": "read-only",
+        "enforcement": "enforce",
+        "host": "api-1.github.com",
+        "port": 443,
+        "protocol": "rest"
+      },
+      {
+        "access": "read-only",
+        "enforcement": "enforce",
+        "host": "api.github.com",
+        "port": 443,
+        "protocol": "rest"
+      },
+      {
+        "access": "read-only",
+        "enforcement": "enforce",
+        "host": "api.github.com",
+        "path": "/graphql",
+        "port": 443,
+        "protocol": "graphql"
+      },
+      {
+        "access": "read-only",
+        "enforcement": "enforce",
+        "host": "github.com",
+        "port": 443,
+        "protocol": "rest"
+      }
+    ],
+    "id": "github"
+  },
+  "gmail": {
+    "binaries": [
+      "/usr/bin/curl",
+      "/usr/local/bin/curl",
+      "/usr/bin/node",
+      "/usr/bin/node-*",
+      "/usr/local/bin/node"
+    ],
+    "category": "messaging",
+    "credentials": [
+      {
+        "auth_style": "bearer",
+        "description": "Gmail OAuth access token (gmail.readonly)",
+        "env_vars": [
+          "GMAIL_ACCESS_TOKEN"
+        ],
+        "header_name": "authorization",
+        "name": "access_token",
+        "refresh": {
+          "material": [
+            {
+              "description": "Google OAuth client ID",
+              "name": "client_id",
+              "required": true
+            },
+            {
+              "description": "Google OAuth client secret",
+              "name": "client_secret",
+              "required": true,
+              "secret": true
+            },
+            {
+              "description": "Google OAuth refresh token (scope gmail.readonly)",
+              "name": "refresh_token",
+              "required": true,
+              "secret": true
+            }
+          ],
+          "max_lifetime_seconds": 3600,
+          "refresh_before_seconds": 300,
+          "strategy": "oauth2_refresh_token",
+          "token_url": "https://oauth2.googleapis.com/token"
+        },
+        "required": true
+      }
+    ],
+    "description": "Read-only Gmail API access for governed sandbox agents",
+    "discovery": {
+      "credentials": [
+        "access_token"
+      ]
+    },
+    "display_name": "Gmail",
+    "endpoints": [
+      {
+        "enforcement": "enforce",
+        "host": "gmail.googleapis.com",
+        "port": 443,
+        "protocol": "rest",
+        "rules": [
+          {
+            "allow": {
+              "method": "GET",
+              "path": "/gmail/v1/users/me/profile"
+            }
+          },
+          {
+            "allow": {
+              "method": "GET",
+              "path": "/gmail/v1/users/me/labels"
+            }
+          },
+          {
+            "allow": {
+              "method": "GET",
+              "path": "/gmail/v1/users/me/messages"
+            }
+          },
+          {
+            "allow": {
+              "method": "GET",
+              "path": "/gmail/v1/users/me/messages/*"
+            }
+          },
+          {
+            "allow": {
+              "method": "GET",
+              "path": "/gmail/v1/users/me/threads"
+            }
+          },
+          {
+            "allow": {
+              "method": "GET",
+              "path": "/gmail/v1/users/me/threads/*"
+            }
+          }
+        ]
+      }
+    ],
+    "id": "gmail"
+  },
+  "nvidia": {
+    "binaries": [
+      "/usr/bin/curl",
+      "/usr/local/bin/curl",
+      "/usr/bin/node",
+      "/usr/bin/node-*",
+      "/usr/local/bin/node"
+    ],
+    "category": "inference",
+    "credentials": [
+      {
+        "auth_style": "bearer",
+        "description": "NVIDIA API key",
+        "env_vars": [
+          "NVIDIA_API_KEY"
+        ],
+        "header_name": "authorization",
+        "name": "api_key",
+        "required": true
+      }
+    ],
+    "description": "NVIDIA API inference endpoints",
+    "discovery": {
+      "credentials": [
+        "api_key"
+      ]
+    },
+    "display_name": "NVIDIA Endpoints",
+    "endpoints": [
+      {
+        "access": "read-write",
+        "enforcement": "enforce",
+        "host": "integrate.api.nvidia.com",
+        "port": 443,
+        "protocol": "rest"
+      }
+    ],
+    "id": "nvidia",
+    "inference_capable": true
+  },
+  "openai": {
+    "binaries": [
+      "/usr/bin/curl",
+      "/usr/local/bin/curl",
+      "/usr/bin/node",
+      "/usr/bin/node-*",
+      "/usr/local/bin/node"
+    ],
+    "category": "inference",
+    "credentials": [
+      {
+        "auth_style": "bearer",
+        "description": "OpenAI API key",
+        "env_vars": [
+          "OPENAI_API_KEY"
+        ],
+        "header_name": "authorization",
+        "name": "api_key",
+        "required": true
+      }
+    ],
+    "description": "OpenAI inference API",
+    "discovery": {
+      "credentials": [
+        "api_key"
+      ]
+    },
+    "display_name": "OpenAI",
+    "endpoints": [
+      {
+        "access": "read-write",
+        "enforcement": "enforce",
+        "host": "api.openai.com",
+        "port": 443,
+        "protocol": "rest"
+      }
+    ],
+    "id": "openai",
+    "inference_capable": true
+  },
+  "slack": {
+    "binaries": [
+      "/usr/bin/curl",
+      "/usr/local/bin/curl",
+      "/usr/bin/node",
+      "/usr/bin/node-*",
+      "/usr/local/bin/node"
+    ],
+    "category": "messaging",
+    "credentials": [
+      {
+        "auth_style": "bearer",
+        "description": "Slack bot or user token",
+        "env_vars": [
+          "SLACK_BOT_TOKEN",
+          "SLACK_TOKEN"
+        ],
+        "header_name": "authorization",
+        "name": "api_token",
+        "refresh": {
+          "material": [
+            {
+              "description": "Slack app client ID",
+              "name": "client_id",
+              "required": true
+            },
+            {
+              "description": "Slack app client secret",
+              "name": "client_secret",
+              "required": true,
+              "secret": true
+            },
+            {
+              "description": "Slack refresh token (xoxe-...)",
+              "name": "refresh_token",
+              "required": true,
+              "secret": true
+            }
+          ],
+          "max_lifetime_seconds": 43200,
+          "refresh_before_seconds": 600,
+          "strategy": "oauth2_refresh_token",
+          "token_url": "https://slack.com/api/oauth.v2.access"
+        },
+        "required": true
+      }
+    ],
+    "description": "Read-only Slack Web API access for governed sandbox agents",
+    "discovery": {
+      "credentials": [
+        "api_token"
+      ]
+    },
+    "display_name": "Slack",
+    "endpoints": [
+      {
+        "enforcement": "enforce",
+        "host": "slack.com",
+        "port": 443,
+        "protocol": "rest",
+        "rules": [
+          {
+            "allow": {
+              "method": "GET",
+              "path": "/api/auth.test"
+            }
+          },
+          {
+            "allow": {
+              "method": "GET",
+              "path": "/api/team.info"
+            }
+          },
+          {
+            "allow": {
+              "method": "GET",
+              "path": "/api/users.info"
+            }
+          },
+          {
+            "allow": {
+              "method": "GET",
+              "path": "/api/conversations.list"
+            }
+          },
+          {
+            "allow": {
+              "method": "GET",
+              "path": "/api/conversations.info"
+            }
+          },
+          {
+            "allow": {
+              "method": "GET",
+              "path": "/api/conversations.history"
+            }
+          },
+          {
+            "allow": {
+              "method": "GET",
+              "path": "/api/conversations.replies"
+            }
+          }
+        ]
+      }
+    ],
+    "id": "slack"
+  },
+  "web-search": {
+    "binaries": [
+      "/usr/bin/curl",
+      "/usr/local/bin/curl",
+      "/usr/bin/node",
+      "/usr/bin/node-*",
+      "/usr/local/bin/node"
+    ],
+    "category": "other",
+    "description": "Tavily and Brave Search API endpoints and plugin registry",
+    "display_name": "Web Search",
+    "endpoints": [
+      {
+        "access": "read-only",
+        "enforcement": "enforce",
+        "host": "api.tavily.com",
+        "port": 443,
+        "protocol": "rest"
+      },
+      {
+        "access": "read-only",
+        "enforcement": "enforce",
+        "host": "api.search.brave.com",
+        "port": 443,
+        "protocol": "rest"
+      },
+      {
+        "access": "read-only",
+        "enforcement": "enforce",
+        "host": "registry.npmjs.org",
+        "port": 443,
+        "protocol": "rest"
+      }
+    ],
+    "id": "web-search"
+  }
+}

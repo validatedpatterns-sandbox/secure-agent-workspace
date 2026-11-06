@@ -1,0 +1,77 @@
+{{- $site := .Values.site | default dict }}
+{{- $e := $site.enrollment | default dict }}
+{{- if and $e (eq $e.registration .Values.registration) $e.relay }}
+{{- $r := $e.relay }}
+{{- $u := .Values.owner }}
+{{- $reg := .Values.registration }}
+{{- $ctl := printf "saw-ctl-%s" $reg }}
+{{- $targets := include "portal.targets" . | fromJson }}
+{{- range $target := $targets }}{{- if $target.ui }}
+{{- $rid := $target.relayID }}
+{{- $ui := printf "saw-ui-%s" $rid }}
+{{- $ns := $.Release.Namespace }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: saw-c-{{ $reg }}-{{ ternary "relay" (printf "relay-%s" $rid) (eq (len $targets) 1) }}
+  namespace: {{ $.Values.global.vpArgoNamespace }}
+  labels: {openshell.pattern/owner: {{ $u }}, saw.redhat.com/registration: {{ $reg | quote }}}
+  finalizers: [resources-finalizer.argocd.argoproj.io/foreground]
+spec:
+  project: {{ $site.project | default "default" }}
+  destination: {server: 'https://kubernetes.default.svc', namespace: {{ $ui }}}
+  source:
+    repoURL: {{ $.Values.global.repoURL | quote }}
+    targetRevision: {{ required "pinned relay revision required" $r.revision | quote }}
+    path: charts/saw-workspace-relay
+    helm:
+      releaseName: {{ printf "ui-%s" $rid }}
+      valuesObject:
+        enabled: true
+        {{- if $site.lifecycleVersion }}
+        paused: {{ eq $site.desiredState "Stopped" }}
+        {{- end }}
+        publishSubject: {{ $site.automaticEnrollment | empty | not }}
+        publicSubjectMap: {{ $target.subjectMap }}
+        cleanupRegistration: {{ $rid | quote }}
+        clientID: saw-portal-{{ $rid }}
+        keycloakNamespace: {{ $r.keycloakNamespace | quote }}
+        keycloakAdminSecret: {{ $r.keycloakAdminSecret | quote }}
+        subject: {{ (index ($site.subjects | default dict) $target.subjectMap | default $r.subject | default "") | quote }}
+        workspaceID: {{ default "" $r.workspaceID | quote }}
+        workspace: {{ $target.workspace }}
+        sandbox: {{ $target.sandbox }}
+        trustedNamespace: {{ $ctl }}
+        gatewayNamespace: {{ $ns }}
+        gateway: {{ $u }}
+        gatewayEndpoint: https://{{ $u }}-gateway.{{ $ns }}.svc:17670
+        gatewayCA: {{ $r.gatewayCA | quote }}
+        issuer: {{ $r.issuer | quote }}
+        ownerLogin: {{ $u }}
+        ownerSubject: {{ $.Values.ownerSubject }}
+        installationID: {{ $.Values.installationID }}
+        host: {{ $u }}-{{ $target.workspace }}-{{ $target.sandbox }}-ui.apps.{{ $.Values.global.clusterDomain }}
+        sdkImage: {{ $e.image }}
+        imageBuildNamespace: {{ $e.buildNamespace }}
+        egress: {{ $r.egress | toJson }}
+  ignoreDifferences:
+    - {group: "", kind: Secret, name: relay-credentials, namespace: {{ $ui }}, jsonPointers: [/data]}
+  syncPolicy:
+    automated: {prune: true, selfHeal: true}
+    retry: {limit: 6, refresh: true}
+    syncOptions: [RespectIgnoreDifferences=true]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: {{ ternary "relay-bind-dns" (printf "dns-%s" $rid) (eq (len $targets) 1) }}, namespace: {{ $ctl }}}
+spec:
+  podSelector: {matchLabels: {app: ui-{{ $rid }}, role: bind}}
+  policyTypes: [Egress]
+  egress:
+    - to:
+      - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openshift-dns}}
+        podSelector: {matchLabels: {dns.operator.openshift.io/daemonset-dns: default}}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}, {protocol: UDP, port: 5353}, {protocol: TCP, port: 5353}]
+{{- end }}
+{{- end }}{{- end }}

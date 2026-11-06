@@ -1,0 +1,255 @@
+{
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "deployment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "container"
+          ]
+        }
+      },
+      "required": [
+        "mode"
+      ]
+    },
+    "kubernetes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "experimental": {
+          "type": "boolean"
+        },
+        "gateway": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": {
+              "type": "string"
+            },
+            "resources": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "image",
+            "resources"
+          ]
+        },
+        "supervisor": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "image"
+          ]
+        },
+        "workload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": {
+              "type": "string"
+            },
+            "runtimeImage": {
+              "type": "string"
+            },
+            "runtimeClassName": {
+              "type": "string",
+              "pattern": "^$|^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$"
+            }
+          },
+          "required": [
+            "image",
+            "runtimeImage",
+            "runtimeClassName"
+          ]
+        },
+        "identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "serverTlsSecret": {
+              "type": "string"
+            },
+            "clientCaSecret": {
+              "type": "string"
+            },
+            "jwtSecret": {
+              "type": "string"
+            },
+            "credentialKeySecret": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "serverTlsSecret",
+            "clientCaSecret",
+            "jwtSecret",
+            "credentialKeySecret"
+          ]
+        },
+        "storage": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "className": {
+              "type": "string"
+            },
+            "gatewaySize": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*(Mi|Gi|Ti)$"
+            },
+            "workspaceSize": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*(Mi|Gi|Ti)$"
+            },
+            "existingGatewayClaim": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "className",
+            "gatewaySize",
+            "workspaceSize",
+            "existingGatewayClaim"
+          ]
+        },
+        "imagePullSecrets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "proxy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "url": {
+              "type": "string"
+            },
+            "caConfigMap": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "url",
+            "caConfigMap"
+          ]
+        },
+        "governance": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "endpoint": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "endpoint"
+          ]
+        },
+        "network": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "gatewayEgress": {
+              "type": "array"
+            },
+            "reconcilerNamespace": {
+              "type": "string"
+            },
+            "reconcilerLabels": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "gatewayEgress",
+            "reconcilerNamespace",
+            "reconcilerLabels"
+          ]
+        }
+      },
+      "required": [
+        "experimental",
+        "gateway",
+        "supervisor",
+        "workload",
+        "identity",
+        "storage",
+        "imagePullSecrets",
+        "proxy",
+        "governance",
+        "network"
+      ]
+    },
+    "oidc": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "issuerUrl": {
+          "type": "string"
+        },
+        "clientId": {
+          "type": "string"
+        },
+        "rolesClaim": {
+          "type": "string"
+        },
+        "adminRole": {
+          "type": "string"
+        },
+        "userRole": {
+          "type": "string"
+        },
+        "caConfigMap": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "issuerUrl",
+        "clientId",
+        "rolesClaim",
+        "adminRole",
+        "userRole",
+        "caConfigMap"
+      ]
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "host": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "enabled",
+        "host"
+      ]
+    }
+  },
+  "required": [
+    "deployment",
+    "kubernetes",
+    "oidc",
+    "route"
+  ],
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

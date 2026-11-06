@@ -182,3 +182,35 @@ def test_kubernetes_requests_use_rotated_service_account_token(monkeypatch, tmp_
     kube.call("/api/v1/namespaces")
 
     assert used_tokens == ["first-token", "second-token"]
+
+
+def test_existing_resolver_migrates_admin_scope_with_view_users_only(monkeypatch, tmp_path):
+    for name, value in {"username": "bootstrap-admin", "password": "test-password"}.items():
+        (tmp_path / name).write_text(value)
+    for key, value in {"REALM": "openshell", "CLIENT_ID": "resolver", "ADMIN_DIR": str(tmp_path),
+                       "OUT": str(tmp_path / "client-secret")}.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(resolver, "keycloak_endpoint", lambda: ("https://keycloak.test", None))
+    monkeypatch.setattr(resolver, "keycloak_token", lambda *_: "bootstrap-token")
+    client = {"id": "resolver-id", "clientId": "resolver", "protocol": "openid-connect", "publicClient": False,
+              "clientAuthenticatorType": "client-secret", "serviceAccountsEnabled": True,
+              "standardFlowEnabled": False, "directAccessGrantsEnabled": False, "implicitFlowEnabled": False}
+    monkeypatch.setattr(resolver, "exact_client", lambda _u, _r, _t, name, _c:
+                        client if name == "resolver" else {"id": "management-id"})
+    writes = []
+
+    def kc_call(_url, _realm, _token, path, method="GET", body=None, ctx=None):
+        assert _token == "bootstrap-token"
+        if method != "GET":
+            writes.append((method, path, body))
+            return None
+        return {"": {}, "/client-scopes": [{"id": "admin-api", "name": "kc-admin-api", "protocol": "openid-connect"}],
+                "/clients/resolver-id/default-client-scopes": [{"id": "profile", "name": "profile"}],
+                "/clients/resolver-id/service-account-user": {"id": "service-account"},
+                "/users/service-account/role-mappings/clients/management-id": [{"name": "view-users"}],
+                "/clients/resolver-id/client-secret": {"value": "retained-client-secret"}}[path]
+
+    monkeypatch.setattr(resolver, "kc_call", kc_call)
+    resolver.bootstrap()
+    assert writes == [("PUT", "/clients/resolver-id/default-client-scopes/admin-api", None)]
+    assert (tmp_path / "client-secret").read_text() == "retained-client-secret"

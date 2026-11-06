@@ -15,16 +15,11 @@ CHART = ROOT / "image-builder-charts" / "helm" / "governance-interceptor-image"
 DOCKERFILE = CHART / "files/Dockerfile"
 HELM = shutil.which("helm")
 
-# Source patches must remain in both build paths.
+EXTENSION = CHART / "files/saw-extension"
 PATCH_LINES = [
-    # Existing workaround for NVIDIA/OpenShell#3929.
-    "! grep -q 'insert(PROFILE_HASH_ANNOTATION' src/main.rs",
-    # Agent driver-config guard: admin-only exact mount combinations.
-    "&& grep -q 'let gate = validate_sandbox_driver_config(' src/main.rs",
-    "'fn validate_driver_config('",
-    "'const SAW_ADMIN_ROLE: &str = \"openshell-admin\";'",
-    "'        return deny(\"driver config may only be submitted by a platform admin mTLS identity\");'",
-    "'        return deny(\"driver config must contain gate and audit volumes, with an optional read-only harness\");'",
+    'COPY saw-extension/driver_config.rs src/saw_driver_config.rs',
+    'COPY saw-extension/integration.patch /tmp/saw-integration.patch',
+    'git -C /build apply --check --directory="${CONTEXT_DIR}"',
 ]
 
 
@@ -33,6 +28,16 @@ def inline_dockerfile():
                          capture_output=True, text=True, check=True).stdout
     bc = next(d for d in yaml.safe_load_all(out) if d and d["kind"] == "BuildConfig")
     return bc["spec"]["source"]["dockerfile"]
+
+
+@pytest.mark.skipif(not HELM, reason="helm is not installed")
+@pytest.mark.parametrize("enabled", [False, True])
+def test_gitops_build_trigger_is_explicit_opt_in(enabled):
+    out = run_helm([HELM, "template", "img", str(CHART), "--set",
+                    f"build.configChangeTrigger={str(enabled).lower()}"],
+                   capture_output=True, text=True, check=True).stdout
+    bc = next(d for d in yaml.safe_load_all(out) if d and d["kind"] == "BuildConfig")
+    assert bc["spec"]["triggers"] == ([{"type": "ConfigChange"}] if enabled else [])
 
 
 @pytest.mark.ci_external
@@ -52,7 +57,7 @@ def test_buildconfig_carries_every_source_patch(line):
 def test_the_guard_runs_before_the_build():
     """A patch appended after `cargo build` would never reach the binary."""
     text = DOCKERFILE.read_text()
-    assert text.index("validate_driver_config") < text.index("RUN cargo test")
+    assert text.index("COPY saw-extension/driver_config.rs") < text.index("RUN cargo test")
 
 
 @pytest.mark.ci_external
@@ -62,7 +67,7 @@ def test_the_guard_admin_role_is_the_role_the_saw_gateways_grant():
     must not drift, or the installer loses the right to mount a harness."""
     values = yaml.safe_load((ROOT / "charts" / "openshell-saw" / "values.yaml").read_text())
     role = values["oidc"]["adminRole"]
-    assert f"'const SAW_ADMIN_ROLE: &str = \"{role}\";'" in DOCKERFILE.read_text()
+    assert f'const SAW_ADMIN_ROLE: &str = "{role}";' in (EXTENSION / "driver_config.rs").read_text()
     installer = (ROOT / "charts" / "openshell-saw" / "files" / "installer" / "apply_bom.py").read_text()
     assert f'ADMIN_CERT_SUBJECT = "/O=openshell/OU={role}/CN=saw-installer"' in installer
 
@@ -97,8 +102,21 @@ def test_gateway_allows_driver_guard_without_noninterceptable_template_rpc():
 
 
 def appended_rust(text):
-    block = text.split("RUN printf '%s\\n'", 1)[1].split(">> src/main.rs", 1)[0]
-    return "\n".join(re.findall(r"^\s*'(.*)'(?: \\)?$", block, re.MULTILINE)) + "\n"
+    # Dockerfile references the module; OpenShift mounts the same files as context.
+    assert "COPY saw-extension/driver_config.rs src/saw_driver_config.rs" in text
+    return "mod saw_driver_config {\n" + (EXTENSION / "driver_config.rs").read_text() + "\n}\n"
+
+
+def test_openshift_build_context_contains_exact_extension_sources():
+    rendered = run_helm([HELM, "template", "img", str(CHART)],
+                        capture_output=True, text=True, check=True).stdout
+    docs = [d for d in yaml.safe_load_all(rendered) if d]
+    config, = [d for d in docs if d["kind"] == "ConfigMap"]
+    build, = [d for d in docs if d["kind"] == "BuildConfig"]
+    assert config["data"] == {p.name: p.read_text() for p in EXTENSION.iterdir()}
+    assert build["spec"]["source"]["configMaps"] == [
+        {"configMap": {"name": config["metadata"]["name"]}, "destinationDir": "saw-extension"}]
+    assert "saw_driver_config::validate_sandbox_driver_config" in config["data"]["integration.patch"]
 
 
 @pytest.mark.parametrize("builder", ["dockerfile", "buildconfig"])

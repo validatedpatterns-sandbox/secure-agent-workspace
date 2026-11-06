@@ -200,6 +200,7 @@ def test_existing_custom_settings_are_cleared_only_for_native_apis(
     pytest.param("legacy", "nvidia", "", "custom-api-key", "nvidia/m", "openai", id="legacy-nvidia"),
     pytest.param("typed", "nvidia", "", "custom-api-key", "nvidia/m", "openai", id="typed-nvidia"),
     pytest.param("typed", "openai", "", "openai-api-key", "gpt-4o", "openai", id="typed-openai-native"),
+    pytest.param("typed", "openai", "https://api.openai.com/v1", "custom-api-key", "gpt-4.1-mini", "openai", id="typed-openai-explicit-official-model"),
     pytest.param("typed", "anthropic", "https://gateway.example/anthropic", "custom-api-key", "claude-sonnet-4-6", "anthropic", id="typed-anthropic-custom"),
 ])
 def test_onboarding_uses_the_provider_protocol(

@@ -2,6 +2,7 @@
 OIDC client in the realm (the PostSync job), against a small fake Keycloak."""
 import importlib.util
 import json
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -10,16 +11,20 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[2] / "charts" / "openshell-rhdh" / "files" / "keycloak-client.py"
+sys.path.insert(0, str(SCRIPT.parent))
 
 
 class FakeKeycloak:
-    def __init__(self, clients=None, users=(), groups=()):
+    def __init__(self, clients=None, users=(), groups=(), admin_scope=False):
         self.clients = list(clients or [])
         self.logins = []
         self.puts = []
         self.users = [{"id": f"u-{n}", "username": n} for n in users]
         self.groups = [{"id": f"g-{n}", "name": n} for n in groups]
         self.default_groups, self.members, self.role_mappings = [], set(), []
+        self.scopes = ([{"id": "admin-api", "name": "kc-admin-api", "protocol": "openid-connect"}]
+                       if admin_scope else [])
+        self.client_defaults, self.scope_puts = {}, []
 
     def serve(self):
         kc = self
@@ -65,6 +70,10 @@ class FakeKeycloak:
                 base = "/admin/realms/openshell"
                 if not self._admin():
                     return self._reply(403)
+                if url.path == f"{base}/client-scopes":
+                    return self._reply(200, kc.scopes)
+                if url.path.endswith("/default-client-scopes"):
+                    return self._reply(200, kc.client_defaults.get(url.path.split("/")[5], []))
                 if url.path == f"{base}/clients":
                     if q.get("clientId") == "realm-management":
                         return self._reply(200, [{"id": "rm", "clientId": "realm-management"}])
@@ -83,6 +92,12 @@ class FakeKeycloak:
 
             def do_PUT(self):
                 url = urlsplit(self.path)
+                if "/default-client-scopes/" in url.path and self._admin():
+                    parts = url.path.split("/")
+                    kc.client_defaults.setdefault(parts[5], []).append(
+                        next(scope for scope in kc.scopes if scope["id"] == parts[7]))
+                    kc.scope_puts.append(url.path)
+                    return self._reply(204)
                 if url.path.startswith("/admin/realms/openshell/default-groups/") and self._admin():
                     kc.default_groups.append(url.path.rsplit("/", 1)[1])
                     return self._reply(204)
@@ -209,3 +224,21 @@ def test_administrators_are_kept_out_of_the_users_group(client, monkeypatch):
     kc.members.add(("u-admin", "g-saw-users"))        # joined as a default-group member
     assert client(kc) == 0
     assert kc.members == {("u-alice", "g-saw-users")}
+
+
+def test_admin_api_scope_migrates_existing_catalog_client_without_extra_roles(client, monkeypatch):
+    monkeypatch.setenv("USERS_GROUP", "saw-users")
+    kc = FakeKeycloak(clients=[{"id": "existing-rhdh", "clientId": "rhdh"}], admin_scope=True)
+    kc.client_defaults["existing-rhdh"] = [{"id": "profile", "name": "profile"}]
+    assert client(kc) == 0
+    assert client(kc) == 0
+    assert kc.scope_puts == ["/admin/realms/openshell/clients/existing-rhdh/default-client-scopes/admin-api"]
+    assert [scope["name"] for scope in kc.client_defaults["existing-rhdh"]] == ["profile", "kc-admin-api"]
+    assert all([r["name"] for r in roles] == ["view-users", "query-users", "query-groups"]
+               for _, roles in kc.role_mappings)
+
+
+def test_login_only_rhdh_client_does_not_receive_admin_api_scope(client):
+    kc = FakeKeycloak(admin_scope=True)
+    assert client(kc) == 0
+    assert kc.scope_puts == [] and kc.role_mappings == []

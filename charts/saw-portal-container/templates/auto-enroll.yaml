@@ -1,0 +1,131 @@
+{{- $s := .Values.site | default dict }}{{- $a := $s.automaticEnrollment | default dict }}
+{{- if and $a (ne (get $a "enabled" | toString) "false") }}
+{{- if or (not (regexMatch "^.+@sha256:[a-f0-9]{64}$" $a.image)) (not (regexMatch "^[a-f0-9]{40}$" $a.revision)) (ne (len $a.reference) 16) }}{{ fail "automatic enrollment requires pinned code and a reviewed boundary" }}{{- end }}
+{{- $observer := $s.observer | default dict }}
+{{- $r := .Values.registration }}{{- $g := .Values.owner }}{{- $n := .Release.Namespace }}
+{{- $t := printf "saw-ctl-%s" $r }}{{- $archive := printf "saw-history-%s" $r }}
+{{- $targets := include "portal.targets" . | fromJson }}
+{{- $bases := list }}{{- range $slot := $targets }}{{- $bases = append $bases $slot.base }}{{- end }}
+{{- $gov := $s.governanceNamespace }}{{- $name := printf "enroll-%s" $r }}{{- $policy := printf "saw-%s-runtime" $n }}
+{{- $bootstrap := dict "registration" $r "installation" .Values.installationID "user" $g "subject" .Values.ownerSubject "governance" $gov "reference" $a.reference "profileSHA256" ($s.selectedDigest | default $a.profileSHA256) "targets" $targets "customInferenceURL" ($s.customInferenceURL | default "") "providerPolicy" ($s.providerPolicy | default dict) "lifecycleVersion" ($s.lifecycleVersion | default 0) "modelInputs" ($s.modelInputs | default dict) "resources" $a.resources "domain" .Values.global.clusterDomain -}}
+{{- $scripts := (.Files.Glob "files/*.py").AsConfig -}}
+{{- $revision := dict "image" $a.image "config" $bootstrap "scripts" $scripts | toJson | sha256sum | trunc 12 -}}
+{{- $scriptName := printf "bootstrap-%s" $revision -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: {{ $name }}, namespace: {{ $t }}}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: {{ $t }}-{{ $name }}}
+rules:
+  - {apiGroups: [""], resources: [namespaces], resourceNames: [{{ $n }}], verbs: [get]}
+  - {apiGroups: [""], resources: [nodes], verbs: [list]}
+  - {apiGroups: [policy.networking.k8s.io], resources: [adminnetworkpolicies], verbs: [list]}
+  - {apiGroups: [policy.networking.k8s.io], resources: [adminnetworkpolicies], resourceNames: [{{ $policy }}-egress], verbs: [get]}
+  - {apiGroups: [admissionregistration.k8s.io], resources: [validatingadmissionpolicies, validatingadmissionpolicybindings], resourceNames: [{{ $policy }}], verbs: [get]}
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: {{ $t }}-{{ $name }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ $t }}-{{ $name }}}
+subjects: [{kind: ServiceAccount, name: {{ $name }}, namespace: {{ $t }}}]
+{{- range $ns := list $n $t $gov }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: {{ $name }}, namespace: {{ $ns }}}
+rules:
+{{- if eq $ns $n }}
+  - {apiGroups: [""], resources: [configmaps], resourceNames: [saw-bom-profiles, {{ $g }}-gateway-config, {{ $g }}-proxy-ca], verbs: [get]}
+  - {apiGroups: [""], resources: [persistentvolumeclaims], resourceNames: {{ include "portal.claims" $ }}, verbs: [get]}
+  - {apiGroups: [apps], resources: [statefulsets], resourceNames: [{{ $g }}-gateway], verbs: [get]}
+  - {apiGroups: [""], resources: [services], resourceNames: [{{ $g }}-gateway], verbs: [get]}
+  - {apiGroups: [networking.k8s.io], resources: [networkpolicies], resourceNames: [{{ $g }}-gateway, {{ $g }}-default-deny], verbs: [get]}
+{{- else if eq $ns $t }}
+  - {apiGroups: [apps], resources: [deployments], resourceNames: [{{ $g }}-credential-proxy], verbs: [get]}
+  - {apiGroups: [networking.k8s.io], resources: [networkpolicies], resourceNames: [{{ $g }}-credential-proxy], verbs: [get]}
+  - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $g }}-proxy-policy, {{ $g }}-proxy-ca], verbs: [get]}
+  - {apiGroups: [""], resources: [configmaps], resourceNames: [saw-portal-enrollment], verbs: [get, patch]}
+{{- else }}
+  - {apiGroups: [apps], resources: [deployments], resourceNames: [governance-interceptor], verbs: [get]}
+  - {apiGroups: [""], resources: [services], resourceNames: [governance-interceptor], verbs: [get]}
+  - {apiGroups: [""], resources: [configmaps], resourceNames: [governance-interceptor-policy, governance-interceptor-profiles], verbs: [get]}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ $name }}, namespace: {{ $ns }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $name }}}
+subjects: [{kind: ServiceAccount, name: {{ $name }}, namespace: {{ $t }}}]
+{{- end }}
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: {{ $name }}-pull, namespace: {{ $a.buildNamespace }}}
+rules: [{apiGroups: [image.openshift.io], resources: [imagestreams/layers], resourceNames: [{{ base (index (splitList "@" $a.image) 0) | quote }}], verbs: [get]}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ $name }}-pull, namespace: {{ $a.buildNamespace }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $name }}-pull}
+subjects: [{kind: ServiceAccount, name: {{ $name }}, namespace: {{ $t }}}]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: {{ $scriptName }}, namespace: {{ $t }}}
+immutable: true
+data:
+  config.json: {{ $bootstrap | toJson | quote }}
+{{ $scripts | indent 2 }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: bootstrap-writer, namespace: {{ $archive }}}
+spec:
+  podSelector: {matchExpressions: [{key: saw-audit-writer, operator: In, values: {{ $bases | toJson }}}]}
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ $t }}}}
+      podSelector: {matchLabels: {app: {{ $name }}}}
+    ports: [{port: 8443, protocol: TCP}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: bootstrap-egress, namespace: {{ $t }}}
+spec:
+  podSelector: {matchLabels: {app: {{ $name }}}}
+  policyTypes: [Egress]
+  egress:
+{{ toYaml $s.stack.proxy.values.network.bootstrapEgress | indent 4 }}
+    - to:
+      - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ $archive }}}}
+        podSelector: {matchExpressions: [{key: saw-audit-writer, operator: In, values: {{ $bases | toJson }}}]}
+      ports: [{port: 8443, protocol: TCP}]
+---
+apiVersion: batch/v1
+kind: Job
+metadata: {name: {{ $name }}-{{ $revision }}, namespace: {{ $t }}}
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 1200
+  template:
+    metadata: {labels: {app: {{ $name }}}}
+    spec:
+      serviceAccountName: {{ $name }}
+      restartPolicy: Never
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+      - name: enroll
+        image: {{ $a.image | quote }}
+        command: [python3, /bootstrap/enroll.py]
+        securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+        volumeMounts: [{name: scripts, mountPath: /bootstrap, readOnly: true},{name: ca, mountPath: /writer-ca, readOnly: true},{name: gateway-ca, mountPath: /gateway-ca, readOnly: true}]
+      volumes:
+      - {name: scripts, configMap: {name: {{ $scriptName }}}}
+      - {name: ca, configMap: {name: openshift-service-ca.crt}}
+      - {name: gateway-ca, configMap: {name: {{ $g }}-gateway-ca, items: [{key: ca.crt, path: ca.crt}]}}
+{{- end }}

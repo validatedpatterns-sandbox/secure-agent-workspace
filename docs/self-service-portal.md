@@ -1,10 +1,19 @@
 # Self-service agent workspaces (RHDH)
 
 Users create their own Secure Agent Workspace from Red Hat Developer Hub
-(RHDH). They pick a SAW-BOM profile, enter the keys that profile needs, and
-get namespace `saw-<user>` with a VM, the profile's OpenShell sandboxes, and
+(RHDH). They pick an enabled deployment backend and a SAW-BOM profile, enter the keys that profile needs, and
+get namespace `saw-<user>` with the profile's OpenShell sandboxes and
 routes to the sandbox web UIs. Nothing goes into Git: the keys go to Vault,
 and the workspace is an entry in an in-cluster registry that Argo CD builds.
+
+VM remains the default. Container mode uses the same forms, registration,
+provider inputs and lifecycle pipelines, with a Kubernetes runtime adapter.
+An operator enables `portal.deploymentModes: [vm, container]` and supplies an
+approved `portal.containerSites.<owner>` entry. Backend selection is recorded
+in the registration and cannot silently migrate an existing workspace.
+See [container installation](container-installation.md#pattern-and-rhdh-enablement)
+and [architecture](container-workspaces.md). The VM-specific flow below describes
+the default backend; container component ownership and data paths are in those guides.
 
 The step-by-step walkthrough and manual test is in [rhdh-user-guide.md](rhdh-user-guide.md).
 
@@ -472,9 +481,28 @@ Before the first sync:
    `oc get argocd -n vp-gitops -o jsonpath='{.items[0].spec.applicationSet}'`
    must not be empty.
 
-A PostSync Job creates or updates the Keycloak client `rhdh` (confidential,
+A Sync-hook Job creates or updates the Keycloak client `rhdh` (confidential,
 redirect `https://<rhdh>/api/auth/oidc/handler/frame`) with the secret from
 Vault, also in a realm that existed before.
+
+Keycloak 26.6.8+ requires `kc-admin-api` scope and the realm Admin REST URL
+in administrative access-token audiences. The shared bootstrap helper assigns
+that built-in scope as a default to the `rhdh` catalog/portal client, VM owner
+resolver and redirect registrar. Their existing realm-management roles stay
+unchanged; browser relay clients keep only their OpenShell audience. Earlier
+Keycloak versions without the built-in scope are left unchanged. API failures
+stop bootstrap instead of bypassing audience verification.
+
+The RHDH Sync-hook Job performs this migration; changes to the shared helper
+also roll the resolver and registrar through their normal bootstrap init
+containers. No credentials, token-request changes or custom Keycloak image
+are required. When upgrading a previously installed Keycloak, include these
+bootstrap reconciliations in the platform rollout; a server-only upgrade does
+not rerun existing init containers. The Job shares the ordinary sync wave with
+its Secret, RBAC and ConfigMaps; it can repair identity access while dependent
+controllers are unhealthy. Waiting for PostSync would create a health dependency
+cycle. See the
+[Keycloak 26.6.8 migration requirement](https://github.com/keycloak/keycloak/blob/26.6.8/docs/documentation/upgrading/topics/changes/changes-26_6_8.adoc#admin-rest-api-now-enforces-an-audience-check).
 
 RHDH is at `https://backstage-developer-hub-rhdh.apps.<cluster domain>`. Sign in
 with a realm user; user names must be lowercase DNS labels of at most 19

@@ -1,0 +1,119 @@
+{{- /* The site supplies reviewed values for the stock charts. No tpl: owner input
+       must never become a Helm program or choose a source, namespace or chart. */ -}}
+{{- $site := .Values.site | default dict }}
+{{- $stack := $site.stack | default dict }}
+{{- if $stack }}
+{{- $u := .Values.owner }}
+{{- $reg := .Values.registration }}
+{{- $runtime := .Release.Namespace }}
+{{- $trusted := printf "saw-ctl-%s" $reg }}
+{{- $archive := printf "saw-history-%s" $reg }}
+{{- $g := .Values.global }}
+{{- $ownerID := required "installationID required" .Values.installationID }}
+{{- $ui := printf "saw-ui-%s" $reg }}
+{{- $map := dict "RUNTIME" $runtime "TRUSTED" $trusted "ARCHIVE" $archive "UI" $ui "OWNER" $u "SUBJECT" .Values.ownerSubject "INSTALLATION" $ownerID "DOMAIN" $g.clusterDomain }}
+{{- $targets := include "portal.targets" . | fromJson }}
+{{- $namespaces := dict $archive "retained" }}
+{{- range $slot := $targets }}{{- if $slot.ui }}{{- $_ := set $namespaces (printf "saw-ui-%s" $slot.relayID) "ephemeral" }}{{- end }}{{- end }}
+{{- range $name, $dest := $namespaces }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- if eq $dest "ephemeral" }}
+    openshell.pattern/saw: "true"
+    {{- end }}
+    saw.redhat.com/runtime-owner: {{ $ownerID | quote }}
+    saw.redhat.com/registration: {{ $reg | quote }}
+    saw.redhat.com/portal-owner: {{ $u | quote }}
+    pod-security.kubernetes.io/enforce: restricted
+  {{- if eq $dest "retained" }}
+  annotations: {argocd.argoproj.io/compare-options: IgnoreExtraneous, argocd.argoproj.io/sync-options: 'Prune=false,Delete=false', argocd.argoproj.io/sync-wave: "-2"}
+  {{- else }}
+  annotations: {argocd.argoproj.io/sync-wave: "-2"}
+  {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny, namespace: {{ $name }}, annotations: {argocd.argoproj.io/sync-wave: "-1"}}
+spec: {podSelector: {}, policyTypes: [Ingress, Egress], ingress: [], egress: []}
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: identity-api, namespace: {{ $trusted }}}
+spec:
+  podSelector: {matchLabels: {openshell.pattern/role: identity-bootstrap}}
+  policyTypes: [Egress]
+  egress: {{ $stack.proxy.values.network.bootstrapEgress | toJson }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: {{ printf "saw-%s-governance" $reg }}, namespace: {{ required "governance namespace required" $site.governanceNamespace }}}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: governance-interceptor}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ $runtime }}}}
+          podSelector: {matchLabels: {app.kubernetes.io/instance: {{ $u }}, openshell.pattern/role: gateway}}
+      ports: [{port: 18081, protocol: TCP}]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: {{ $u }}-proxy-policy, namespace: {{ $trusted }}}
+data:
+  config.json: |
+    {{ required "explicit governed provider policy required" $site.providerPolicy | toJson }}
+{{- $charts := dict "identity" (list "saw-kubernetes-identity" $trusted) "policy" (list "saw-runtime-policies" $runtime) "proxy" (list "saw-kubernetes-proxy" $trusted) "gateway" (list "openshell-saw-kubernetes" $runtime) }}
+{{- range $slot := $targets }}{{- $key := ternary "audit" (printf "audit-%s" $slot.relayID) (eq (len $targets) 1) }}{{- $_ := set $charts $key (list "saw-audit-writer" $archive $slot) }}{{- end }}
+{{- range $key, $c := $charts }}
+{{- $item := required (printf "missing site.stack.%s" $key) (get $stack (ternary "audit" $key (eq (len $c) 3))) }}
+{{- if not (regexMatch "^[a-f0-9]{40}$" ($item.revision | default "")) }}{{ fail "each infrastructure chart must be pinned to a Git commit" }}{{ end }}
+{{- $values := $item.values | toJson }}
+{{- range $k, $v := $map }}
+{{- $values = replace (printf "@%s@" $k) $v $values }}
+{{- end }}
+{{- if and (eq $key "proxy") $site.providerPolicy }}
+{{- $proxy := fromJson $values }}
+{{- $secrets := list }}
+{{- range $site.providerPolicy.bindings }}{{- $secrets = append $secrets .secret }}{{- end }}
+{{- $_ := set $proxy "credentialSecretNames" ($secrets | uniq | sortAlpha) }}
+{{- $_ := set $proxy "policyDigest" ($site.providerPolicy | toJson | sha256sum) }}
+{{- $values = toJson $proxy }}
+{{- end }}
+{{- $release := $u }}
+{{- if eq (len $c) 3 }}
+{{- $slot := index $c 2 }}
+{{- $release = $slot.base }}
+{{- $v := $values | fromJson }}
+{{- if and $site.lifecycleVersion $slot.modelInput }}{{- $_ := set $v "shareGateForModelSelection" true }}{{- end }}
+{{- $_ := set $v.identity "workspace" $slot.workspace }}{{- $_ := set $v.identity "sandbox" $slot.sandbox }}
+{{- $values = toJson $v }}
+{{- end }}
+{{- if regexMatch "@[A-Z_]+@" $values }}{{ fail "unknown site value placeholder" }}{{ end }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {{ printf "saw-c-%s-%s" $reg $key }}
+  namespace: {{ $g.vpArgoNamespace }}
+  labels: {saw.redhat.com/registration: {{ $reg | quote }}, openshell.pattern/owner: {{ $u | quote }}}
+  finalizers: [resources-finalizer.argocd.argoproj.io/foreground]
+spec:
+  project: {{ $site.project | default "default" }}
+  destination: {server: 'https://kubernetes.default.svc', namespace: {{ index $c 1 }}}
+  source:
+    repoURL: {{ $g.repoURL | quote }}
+    targetRevision: {{ $item.revision | quote }}
+    path: charts/{{ index $c 0 }}
+    helm:
+      releaseName: {{ $release }}
+      valuesObject: {{ $values }}
+  syncPolicy:
+    automated: {prune: true, selfHeal: true}
+    retry: {limit: 8}
+{{- end }}
+{{- end }}

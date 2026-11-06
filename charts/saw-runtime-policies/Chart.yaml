@@ -1,0 +1,6 @@
+apiVersion: v2
+name: saw-runtime-policies
+description: Admission and OVN administrative network policies for stock OpenShell runtimes
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

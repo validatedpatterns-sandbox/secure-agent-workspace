@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-gateway
+spec:
+  selector: {app.kubernetes.io/instance: {{ .Release.Name }}, openshell.pattern/role: gateway}
+  ports: [{name: gateway, port: 17670, targetPort: gateway}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-gateway-peer
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: {app.kubernetes.io/instance: {{ .Release.Name }}, openshell.pattern/role: gateway}
+  ports: [{name: gateway, port: 17670, targetPort: gateway}]
+{{- if .Values.route.enabled }}
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ .Release.Name }}-gateway
+spec:
+  {{- if .Values.route.host }}
+  host: {{ .Values.route.host | quote }}
+  {{- end }}
+  to: {kind: Service, name: {{ .Release.Name }}-gateway}
+  port: {targetPort: gateway}
+  tls: {termination: passthrough}
+{{- end }}

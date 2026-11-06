@@ -1,0 +1,130 @@
+{{- if .Values.enabled }}
+{{- $tn := required "trustedNamespace required" .Values.trustedNamespace }}
+{{- $rn := required "runtimeNamespace required" .Values.runtimeNamespace }}
+{{- if eq $tn $rn }}{{ fail "writer history requires a separate trusted namespace" }}{{ end }}
+{{- $image := required "pinned Node 24 image required" .Values.image }}
+{{- if not (regexMatch "@sha256:[0-9a-f]{64}$" $image) }}{{ fail "image must be digest pinned" }}{{ end }}
+{{- $id := .Values.identity }}
+{{- range $f := list "subject" "username" "workspace" "sandbox" }}{{- $_ := required $f (get $id $f) }}{{- end }}
+{{- $base := .Release.Name }}
+{{- range $name, $ns := dict "history" $tn "exchange" $rn "gate" $rn "workspace" $rn }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  namespace: {{ $ns }}
+  name: {{ if eq $name "exchange" }}saw-audit-{{ $base }}{{ else if eq $name "gate" }}saw-gate-{{ $base }}{{ else if eq $name "workspace" }}workspace-{{ $base }}{{ else }}{{ $base }}-{{ $name }}{{ end }}
+  annotations: {argocd.argoproj.io/sync-options: 'Prune=false,Delete=false'}
+  {{- if ne $name "history" }}
+  labels:
+    openshell.ai/sandbox-attachable: 'true'
+    openshell.ai/sandbox-attachable-workspace: {{ $id.workspace }}
+    saw.redhat.com/runtime-owner: {{ $.Values.ownerID }}
+  {{- end }}
+spec:
+  storageClassName: {{ if or (eq $name "exchange") (and (eq $name "gate") $.Values.shareGateForModelSelection) }}{{ required "exchangeStorageClass required" $.Values.exchangeStorageClass }}{{ else }}{{ required "storageClass required" $.Values.storageClass }}{{ end }}
+  accessModes: [{{ if or (eq $name "exchange") (and (eq $name "gate") $.Values.shareGateForModelSelection) }}ReadWriteMany{{ else }}ReadWriteOnce{{ end }}]
+  resources: {requests: {storage: 1Gi}}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $base }}
+  namespace: {{ $tn }}
+  annotations: {service.beta.openshift.io/serving-cert-secret-name: {{ $base }}-tls}
+spec:
+  selector: {saw-audit-writer: {{ $base }}}
+  ports: [{port: 8443, targetPort: 8443}]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $base }}-ca
+  namespace: {{ $rn }}
+  annotations: {service.beta.openshift.io/inject-cabundle: 'true', argocd.argoproj.io/compare-options: IgnoreExtraneous}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: {{ $base }}, namespace: {{ $tn }}}
+spec:
+  podSelector: {matchLabels: {saw-audit-writer: {{ $base }}}}
+  policyTypes: [Ingress,Egress]
+  ingress:
+  - from:
+    - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ $rn }}}}
+      podSelector: {matchLabels: {saw-audit-forward: {{ $base }}}}
+    ports: [{port: 8443, protocol: TCP}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: {{ $base }}, namespace: {{ $rn }}}
+spec:
+  podSelector: {matchLabels: {saw-audit-forward: {{ $base }}}}
+  policyTypes: [Ingress,Egress]
+  egress:
+  - to:
+    - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ $tn }}}}
+      podSelector: {matchLabels: {saw-audit-writer: {{ $base }}}}
+    ports: [{port: 8443, protocol: TCP}]
+  - to:
+    - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openshift-dns}}
+      podSelector: {matchLabels: {dns.operator.openshift.io/daemonset-dns: default}}
+    ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}, {port: 5353, protocol: UDP}, {port: 5353, protocol: TCP}]
+{{- range $role, $ns := dict "writer" $tn "forward" $rn }}
+{{- $script := $.Files.Get (printf "files/%s.mjs" $role) }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: {{ $base }}-{{ $role }}, namespace: {{ $ns }}}
+data:
+  main.mjs: |
+{{ $script | indent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: {{ $base }}-{{ $role }}, namespace: {{ $ns }}}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {saw-audit-{{ $role }}: {{ $base }}}}
+  template:
+    metadata:
+      labels: {saw-audit-{{ $role }}: {{ $base }}}
+      annotations: {saw-audit/source: {{ $script | sha256sum }}}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+      - name: {{ $role }}
+        image: {{ $image }}
+        command: [node, /code/main.mjs]
+        resources: {requests: {cpu: 20m, memory: 64Mi}, limits: {cpu: 500m, memory: 256Mi}}
+        securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+        env:
+        {{- if eq $role "writer" }}
+        - {name: IDENTITY, value: {{ $id | toJson | quote }}}
+        readinessProbe: {tcpSocket: {port: 8443}}
+        {{- else }}
+        - {name: WRITER_URL, value: {{ printf "https://%s.%s.svc:8443" $base $tn | quote }}}
+        {{- end }}
+        volumeMounts:
+        - {name: code, mountPath: /code, readOnly: true}
+        {{- if eq $role "writer" }}
+        - {name: data, mountPath: /history}
+        - {name: trust, mountPath: /tls, readOnly: true}
+        {{- else }}
+        - {name: data, mountPath: /exchange}
+        - {name: trust, mountPath: /trust, readOnly: true}
+        {{- end }}
+      volumes:
+      - {name: code, configMap: {name: {{ $base }}-{{ $role }}}}
+      {{- if eq $role "writer" }}
+      - {name: data, persistentVolumeClaim: {claimName: {{ $base }}-history}}
+      - {name: trust, secret: {secretName: {{ $base }}-tls}}
+      {{- else }}
+      - {name: data, persistentVolumeClaim: {claimName: saw-audit-{{ $base }}}}
+      - {name: trust, configMap: {name: {{ $base }}-ca}}
+      {{- end }}
+{{- end }}
+{{- end }}

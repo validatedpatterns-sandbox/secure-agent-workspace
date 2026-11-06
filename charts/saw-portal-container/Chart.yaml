@@ -1,0 +1,4 @@
+apiVersion: v2
+name: saw-portal-container
+description: Registration-scoped foundation for a portal-managed audited OpenShell workspace
+version: 0.1.0

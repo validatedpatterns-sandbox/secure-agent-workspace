@@ -47,6 +47,7 @@ class FakeKeycloak:
         self.mappings = {}       # user id -> [role names]
         self.realm_ready = True
         self.puts, self.role_posts, self.tokens = [], [], []
+        self.scopes, self.client_defaults, self.scope_puts = [], {}, []
 
     def serve(self, tls_context):
         kc = self
@@ -100,6 +101,10 @@ class FakeKeycloak:
                 if not self.authorized():
                     return self.reply(401)
                 p = url.path[len("/admin/realms/openshell"):]
+                if p == "/client-scopes":
+                    return self.reply(200, kc.scopes)
+                if p.endswith("/default-client-scopes"):
+                    return self.reply(200, kc.client_defaults.get(p.split("/")[2], []))
                 if url.path == "/admin/realms/openshell":
                     return self.reply(200, {"realm": "openshell"}) if kc.realm_ready else self.reply(404)
                 if p == "/clients":
@@ -124,6 +129,12 @@ class FakeKeycloak:
                 url = urlsplit(self.path)
                 if not self.authorized():
                     return self.reply(401)
+                if "/default-client-scopes/" in url.path:
+                    parts = url.path.split("/")
+                    kc.client_defaults.setdefault(parts[5], []).append(
+                        next(scope for scope in kc.scopes if scope["id"] == parts[7]))
+                    kc.scope_puts.append(url.path)
+                    return self.reply(204)
                 cid = url.path.rsplit("/", 1)[1]
                 body = json.loads(self.body())
                 kc.puts.append((self.headers["Authorization"], cid, body))
@@ -469,3 +480,18 @@ def test_an_entry_removed_by_hand_is_not_put_back(world):
     dashboard(kc)["redirectUris"] = []
     reg.run(once=True)
     assert dashboard(kc)["redirectUris"] == []
+
+
+def test_existing_registrar_gains_admin_scope_without_new_roles(world):
+    reg, kc, _, _ = world
+    # Initial bootstrap before a server upgrade; second run adds only the
+    # newly introduced built-in scope, retaining the credential and roles.
+    reg.bootstrap()
+    initial_roles = dict(kc.mappings)
+    initial_secrets = dict(kc.secrets)
+    kc.scopes = [{"id": "admin-api", "name": "kc-admin-api", "protocol": "openid-connect"}]
+    reg.bootstrap()
+    reg.bootstrap()
+    assert len(kc.scope_puts) == 1
+    assert kc.scope_puts[0].endswith("/default-client-scopes/admin-api")
+    assert kc.mappings == initial_roles and kc.secrets == initial_secrets

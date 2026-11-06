@@ -1,0 +1,37 @@
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,5 +1,7 @@
+ // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ // SPDX-License-Identifier: Apache-2.0
++
++mod saw_driver_config;
+
+ mod policy_hash;
+ mod proto_json;
+@@ -373,6 +375,12 @@
+                 Self::patch_create_sandbox(&operation, &policy_state)
+             }
+             ("CreateSandbox", interceptor_evaluation::Phase::Validate(_)) => {
++                let gate = saw_driver_config::validate_sandbox_driver_config(
++                    &operation, &evaluation.principal,
++                );
++                if !gate.allowed {
++                    return Ok(gate);
++                }
+                 Ok(validate_create_sandbox(
+                     &operation,
+                     &profile_state.ids,
+@@ -969,13 +977,6 @@
+
+     let profile_hash = deterministic_profile_hash(&profile)?;
+     let profile_signature = policy_signer.sign_profile(&profile.id, &profile_hash)?;
+-    profile
+-        .annotations
+-        .insert(PROFILE_HASH_ANNOTATION.to_string(), profile_hash);
+-    profile.annotations.insert(
+-        PROFILE_SIGNATURE_KID_ANNOTATION.to_string(),
+-        policy_signer.kid().to_string(),
+-    );
+     profile
+         .annotations
+         .insert(PROFILE_SIGNATURE_ANNOTATION.to_string(), profile_signature);

@@ -16,6 +16,7 @@ import urllib.parse
 import urllib.request
 
 import saw_tls
+from saw_keycloak_admin import ensure_admin_api_scope
 
 SA = "/var/run/secrets/kubernetes.io/serviceaccount"
 USER_RE = re.compile(r"[a-z0-9]([-a-z0-9]{0,17}[a-z0-9])?")
@@ -118,6 +119,9 @@ def bootstrap():
         client = exact_client(url, realm, token, client_id, ctx)
     elif any(client.get(key) != value for key, value in spec.items()):
         raise RuntimeError("resolver client has unexpected settings")
+    ensure_admin_api_scope(
+        lambda method, path, body=None: kc_call(url, realm, token, path, method, body, ctx),
+        client["id"])
     account = kc_call(url, realm, token, f"/clients/{client['id']}/service-account-user", ctx=ctx)
     management = exact_client(url, realm, token, "realm-management", ctx)
     management_id = management["id"]

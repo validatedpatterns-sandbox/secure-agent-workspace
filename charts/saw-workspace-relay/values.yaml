@@ -1,0 +1,26 @@
+enabled: false
+clientID: ""
+keycloakNamespace: ""
+keycloakAdminSecret: ""
+issuer: ""
+audience: openshell-cli
+gatewayEndpoint: ""
+gatewayCA: ""
+workspace: ""
+workspaceID: ""
+sandbox: ""
+ownerSubject: ""
+ownerLogin: ""
+installationID: ""
+trustedNamespace: ""
+subject: ""
+host: ""
+# Explicit DNS, OIDC issuer and Kubernetes API Service/backend destinations and
+# ports. The membership Job needs API access for temporary public trust and Pod
+# identity checks; reuse the controller's approved bootstrap API egress rules.
+# These rules also apply to the browser relay, which has no Kubernetes API token.
+egress: []
+sdkImage: ""
+pythonImage: registry.access.redhat.com/ubi9/python-311@sha256:a0bdb55576fc5b8d6704279307817828ef027e1065533ceba133fe9516003a6c
+cliImage: quay.io/opendatahub/odh-openshell-cli@sha256:2b6d420543ce93825092704a52127318fa90fd00df4a07d739efcd6c9f20ea57
+proxyImage: quay.io/oauth2-proxy/oauth2-proxy@sha256:37c1570c0427e02fc7c947ef2c04e8995b8347b7abc9fcf1dbb4e376a4b221a7

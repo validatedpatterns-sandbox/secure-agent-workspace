@@ -2,6 +2,16 @@
 first task of each verifies the request and hands the user to the others as
 the result `user`; each later task is one stage the workspace goes through,
 so RHDH's Tekton tab draws a workspace's create and delete as a pipeline. */ -}}
+{{- $readyMinutes := .Values.portal.sandboxReadyTimeoutMinutes -}}
+{{- if or (not (regexMatch "^[0-9]+$" (toString $readyMinutes))) (lt (int $readyMinutes) 1) (gt (int $readyMinutes) 60) -}}
+{{- fail "portal.sandboxReadyTimeoutMinutes must be an integer from 1 to 60" -}}
+{{- end -}}
+{{- /* Match Tekton's Go duration serialization to avoid perpetual GitOps drift. */ -}}
+{{- $taskMinutes := add (int $readyMinutes) 2 -}}
+{{- $taskTimeout := printf "%dm0s" $taskMinutes -}}
+{{- if ge $taskMinutes 60 -}}
+{{- $taskTimeout = printf "%dh%dm0s" (div $taskMinutes 60) (mod $taskMinutes 60) -}}
+{{- end -}}
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -66,10 +76,16 @@ spec:
           value: $(results.user.path)
         - name: CLUSTER_DOMAIN
           value: {{ .Values.global.clusterDomain | quote }}
+        - name: SAW_CONTAINER_SITES
+          value: {{ .Values.portal.containerSites | default dict | toJson | quote }}
+        - name: SAW_DEPLOYMENT_MODES
+          value: {{ include "openshell-rhdh.deploymentModes" . | quote }}
         - name: CATALOG_PATH
           value: /opt/saw/profile-catalog.json
         - name: RHDH_INTERNAL_URL
           value: {{ include "openshell-rhdh.internalUrl" . }}
+        - name: KEYCLOAK_URL
+          value: https://{{ include "openshell-rhdh.keycloakHost" . }}
         - name: ARGO_NAMESPACE
           value: {{ include "openshell-rhdh.argoNamespace" . }}
         - name: PORTAL_ADMINS
@@ -106,7 +122,7 @@ spec:
     (dict "name" "argo-cd-apps" "action" "wait-apps" "seconds" "600" "timeout" "12m0s")
     (dict "name" "vm" "action" "wait-vm" "seconds" "600" "timeout" "12m0s")
     (dict "name" "vm-running" "action" "wait-running" "seconds" "900" "timeout" "17m0s")
-    (dict "name" "sandboxes" "action" "wait-ready" "seconds" "1800" "timeout" "32m0s"))
+    (dict "name" "sandboxes" "action" "wait-ready" "seconds" (printf "%d" (mul (int $readyMinutes) 60)) "timeout" $taskTimeout))
   "delete" (list
     (dict "name" "unregister" "action" "delete" "timeout" "5m0s")
     (dict "name" "argo-cd-removes" "action" "wait-gone" "seconds" "1200" "timeout" "22m0s")

@@ -23,6 +23,9 @@ It also mirrors the governance provider profiles into the installer:
                                                    gets when governance is off;
                                                    a file no longer shipped is removed)
 
+Canonical workspace projection and Keycloak bootstrap helpers are mirrored
+into the independently installable RHDH chart by the same generation/check.
+
     scripts/saw-profile-catalog.py            write both files
     scripts/saw-profile-catalog.py --check    fail when they are stale (CI)
     scripts/saw-profile-catalog.py --list     print the files it owns (writes, or removes)
@@ -185,6 +188,12 @@ def catalog():
                                   "enabled": sb.get("enabled", True),
                                   "uiRoute": bool(ui.get("route", False)),
                                   "harnessRequired": bool(sb.get("harnessRef") and sb.get("harnessRequired"))})
+                model_ref = secret_ref((sb.get("inference") or {}).get("model"))
+                endpoint_ref = secret_ref((sb.get("inference") or {}).get("baseUrl"))
+                if endpoint_ref and sb["inference"].get("providerRef") == "custom-inference":
+                    sandboxes[-1]["endpointInput"] = ".".join(endpoint_ref)
+                if model_ref:
+                    sandboxes[-1]["modelInput"] = ".".join(model_ref)
             workspaces.append({"name": name, "description": description, "enabled": enabled,
                                "sandboxes": sandboxes})
             if not enabled:
@@ -286,13 +295,13 @@ def log_step(step_id, name, source):
 CREATE_TASKS = [
     ("register", "Verify the request, store the keys, register the workspace", 5),
     ("argo-cd-apps", "Argo CD creates the workspace's applications", 12),
-    ("vm", "Argo CD creates the VM", 12),
-    ("vm-running", "Start the VM", 17),
-    ("sandboxes", "Install OpenShell and the sandboxes (about 10 minutes)", 32),
+    ("vm", "Provision the workspace runtime", 12),
+    ("vm-running", "Start the workspace runtime", 17),
+    ("sandboxes", "Wait for OpenShell sandboxes and workspace access", 32),
 ]
 DELETE_TASKS = [
     ("unregister", "Verify the request, delete the Argo CD application", 5),
-    ("argo-cd-removes", "Argo CD removes the namespace and the VM", 22),
+    ("argo-cd-removes", "Wait for Argo CD to remove the workspace runtime", 22),
     ("finish", "Remove the registry entry and the keys", 5),
 ]
 
@@ -346,7 +355,8 @@ def render_template(cat, for_user=False):
     the workspace, until its sandbox UIs answer), then the pipeline's log."""
     profiles = cat["profiles"]
     one_of, string_data = [], {"action": "create", "token": "${{ secrets.backstageToken }}",
-                               "profile": "${{ parameters.profile }}"}
+                               "profile": "${{ parameters.profile }}",
+                               "deploymentMode": "${{ parameters.deploymentMode }}"}
     if for_user:
         string_data["forUser"] = FOR_USER
     who = FOR_USER if for_user else USER_NAME
@@ -377,7 +387,17 @@ def render_template(cat, for_user=False):
                 props[name] = prop
                 if field.get("required"):
                     required.append(name)
-        one_of.append({"properties": props, "required": required})
+        case = {"properties": props, "required": required}
+        if any(sb.get("endpointInput") for ws in prof["workspaces"] for sb in ws["sandboxes"]):
+            # The keyed custom-endpoint container has one credential destination.
+            # Keep web-search fields on the existing VM form only.
+            search = {form_name("web-search", f["key"]) for f in prof["secrets"].get("web-search", {}).get("fields", [])}
+            if search:
+                vm_fields = {k: props.pop(k) for k in sorted(search)}
+                case["required"] = [k for k in required if k not in search]
+                case["allOf"] = [{"if": {"properties":{"deploymentMode":{"const":"vm"}}},
+                                  "then": {"properties":vm_fields, "required":[k for k in required if k in search]}}]
+        one_of.append(case)
     names = sorted(profiles)
     template = {
         "apiVersion": "scaffolder.backstage.io/v1beta3",
@@ -389,7 +409,7 @@ def render_template(cat, for_user=False):
             "description": ("Administrators: a Secure Agent Workspace for a user, yourself included, with "
                             "the keys you enter for them; for a user who has one, it changes its profile "
                             "or keys. Keys go to Vault, not to Git." if for_user else
-                            "Your own Secure Agent Workspace: a VM with OpenShell and the OpenClaw / "
+                            "Your own Secure Agent Workspace with OpenShell and the OpenClaw / "
                             "NemoClaw sandboxes of a SAW-BOM profile. If you have one, this changes its "
                             "profile or keys. Keys go to Vault, not to Git."),
             "tags": ["openshell", "openclaw", "nemoclaw", "secure-agent-workspace"]
@@ -406,8 +426,13 @@ def render_template(cat, for_user=False):
                 "title": "Workspace profile",
                 "description": ("The workspace is named after the user (namespace saw-<user>)." if for_user
                                 else "The workspace is named after you (namespace saw-<your user name>)."),
-                "required": ["profile"],
-                "properties": {"profile": {
+                "required": ["profile", "deploymentMode"],
+                "properties": {"deploymentMode": {
+                    "title": "Deployment", "type": "string", "enum": ["vm"],
+                    "enumNames": ["Virtual machine"], "default": "vm",
+                    "description": "Available deployment options are set by your administrator. "
+                                   "An existing workspace keeps its deployment type."},
+                    "profile": {
                     "title": "Profile", "type": "string", "enum": names,
                     "enumNames": [f"{n}: {profiles[n]['description']}" if profiles[n]["description"]
                                   else n for n in names],
@@ -441,6 +466,23 @@ def render_template(cat, for_user=False):
             + yaml.safe_dump(template, sort_keys=False, width=100, default_flow_style=None))
 
 
+def render_lifecycle_template(catalog):
+    """Use the owner create pipeline for authentication, admission, progress and logs."""
+    template = yaml.safe_load(render_template(catalog))
+    template["metadata"].update(labels={"saw.redhat.com/owners": "true"}, name="set-saw-workspace-state", title="Stop or start my container workspace",
+                                description="Pause or resume all sandboxes while retaining workspace files and audit history.")
+    spec = template["spec"]
+    spec["parameters"] = [{"title": "Workspace state", "required": ["operation"],
+                           "properties": {"operation": {"type": "string", "enum": ["stop", "start"]}}}]
+    request = spec["steps"][0]["input"]["body"]["stringData"]
+    spec["steps"][0]["input"]["body"]["stringData"] = {
+        "action": "create", "token": request["token"], "runtimeAction": "${{ parameters.operation }}",
+        "registration": "${{ steps.current.output.body.registration }}",
+        "expectedGeneration": "g-${{ steps.current.output.body.generation }}"}
+    spec["steps"].insert(0, status_get("current", "Read my current registration", "workspace"))
+    return "# Generated by scripts/saw-profile-catalog.py; do not edit.\n" + yaml.safe_dump(template, sort_keys=False, width=100, default_flow_style=None)
+
+
 def render_delete_template(for_user=False):
     """The RHDH scaffolder template that deletes the user's workspace (an
     administrator's: any user's)."""
@@ -451,11 +493,11 @@ def render_delete_template(for_user=False):
         "metadata": {
             "name": "delete-saw-workspace-for-user" if for_user else "delete-saw-workspace",
             "title": "Delete a user's agent workspace" if for_user else "Delete my agent workspace",
-            "description": ("Administrators: removes a user's Secure Agent Workspace, its VM, its sandboxes "
-                            "and everything in them, and the user's keys in Vault. This cannot be undone."
+            "description": ("Administrators: removes a user's Secure Agent Workspace, its runtime, its sandboxes "
+                            "and the user's keys in Vault. Retained audit history is separate. This cannot be undone."
                             if for_user else
-                            "Removes your Secure Agent Workspace: its VM, its sandboxes and everything in "
-                            "them, and your keys in Vault. This cannot be undone."),
+                            "Removes your Secure Agent Workspace: its runtime, its sandboxes and the data in "
+                            "them, and your keys in Vault. Retained audit history is separate. This cannot be undone."),
             "tags": ["openshell", "secure-agent-workspace"] + (["admin"] if for_user else []),
             # Administrators only; the user's: users with a workspace.
             "labels": {"saw.redhat.com/admin" if for_user else "saw.redhat.com/owners": "true"},
@@ -478,7 +520,7 @@ def render_delete_template(for_user=False):
                                                                    "spec.type": "agent-workspace"},
                                                  "defaultKind": "Component",
                                                  "allowArbitraryValues": False}},
-                    "confirm": {"title": "I understand that this workspace, its VM and its data are deleted",
+                    "confirm": {"title": "I understand that the workspace runtime, sandbox data and workspace keys will be deleted",
                                 "type": "boolean", "const": True}},
             }],
             "steps": [
@@ -500,7 +542,7 @@ def render_delete_template(for_user=False):
             ],
             "output": {"text": [{"title": "Workspace deleted", "content":
                                  "Pipeline run **" + RUN_NAME + "** deleted workspace " + picked
-                                 + ": its VM, namespace and keys are gone."}]},
+                                 + ": its workspace compute and access have been removed."}]},
         },
     }
     return ("# Generated by scripts/saw-profile-catalog.py; do not edit.\n"
@@ -518,12 +560,25 @@ def main(argv=None):
     mirror = {INSTALLER_PROFILES / src.name: src.read_text(encoding="utf-8")
               for src in sorted(GOVERNANCE_PROFILES.glob("*.yaml"))}
     extra = [p for p in sorted(INSTALLER_PROFILES.glob("*.yaml")) if p not in mirror]
+    lifecycle = TEMPLATE_OUTPUT.with_name("set-workspace-state.yaml")
+    # Independent Helm charts package the same reviewed broker renderer.
+    policy_template = ROOT / "charts/openshell-saw/templates/_governed-proxy-policy.tpl"
+    policy_outputs = [
+        (ROOT / "charts/openshell-rhdh/files/saw_keycloak_admin.py",
+         (ROOT / "charts/openshell-keycloak/files/saw_keycloak_admin.py").read_text()),
+        (ROOT / "charts/saw-workspace-relay/files/saw_ui_limit.py",
+         (ROOT / "charts/openshell-saw/files/installer/saw_ui_limit.py").read_text()),
+        (ROOT / "charts/openshell-rhdh/files/workspace.py",
+         (ROOT / "charts/saw-users/files/workspace.py").read_text()),
+        (ROOT / "charts/saw-users/templates/_governed-proxy-policy.tpl", policy_template.read_text()),
+        (ROOT / "charts/saw-users/files/governed-profiles.json", json.dumps(
+            {p.stem: load(p) for p in sorted(GOVERNANCE_PROFILES.glob("*.yaml"))}, sort_keys=True, indent=2) + "\n")]
     if args.list:
         # Every path this script owns: the generated files, each mirror, and
         # the mirror directory itself, so `git add -A -- <list>` (the hook,
         # the workflow) also stages a mirror this run removed.
-        for path in (*CATALOG_OUTPUTS, TEMPLATE_OUTPUT, DELETE_TEMPLATE,
-                     ADMIN_TEMPLATE_OUTPUT, ADMIN_DELETE_TEMPLATE, *mirror, INSTALLER_PROFILES):
+        for path in (*CATALOG_OUTPUTS, TEMPLATE_OUTPUT, lifecycle, DELETE_TEMPLATE,
+                     ADMIN_TEMPLATE_OUTPUT, ADMIN_DELETE_TEMPLATE, *(p for p, _ in policy_outputs), *mirror, INSTALLER_PROFILES):
             print(path.relative_to(ROOT))
         return 0
     try:
@@ -533,9 +588,11 @@ def main(argv=None):
         return 1
     outputs = [(path, text) for path in CATALOG_OUTPUTS]
     outputs.append((TEMPLATE_OUTPUT, render_template(json.loads(text))))
+    outputs.append((lifecycle, render_lifecycle_template(json.loads(text))))
     outputs.append((DELETE_TEMPLATE, render_delete_template()))
     outputs.append((ADMIN_TEMPLATE_OUTPUT, render_template(json.loads(text), for_user=True)))
     outputs.append((ADMIN_DELETE_TEMPLATE, render_delete_template(for_user=True)))
+    outputs += policy_outputs
     outputs += sorted(mirror.items())
     stale = []
     for path in extra:

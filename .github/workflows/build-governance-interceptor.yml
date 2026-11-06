@@ -53,7 +53,9 @@ jobs:
           REF=$(yq '.source.git.ref' "$VALUES")
           DEFAULT_REF=$(sed -n 's/^ARG OPENSHELL_REF=//p' image-builder-charts/helm/governance-interceptor-image/files/Dockerfile)
           test "$REF" = "$DEFAULT_REF"
-          test "$REF" = "v0.1.2"
+          # Keep the build input a release tag.  The exact tag is pinned in
+          # values.yaml and changes with the OpenShell BOM.
+          case "$REF" in v[0-9]*.[0-9]*.[0-9]*) ;; *) exit 1 ;; esac
           echo "openshell_ref=$REF" >> "$GITHUB_OUTPUT"
           echo "openshell_uri=$(yq '.source.git.uri' "$VALUES")" >> "$GITHUB_OUTPUT"
           echo "builder_image=$(yq '.build.builderImage' "$VALUES")" >> "$GITHUB_OUTPUT"

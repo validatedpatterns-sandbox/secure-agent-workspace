@@ -42,7 +42,7 @@ def test_invalid_mirror_inputs_stop_before_cluster_work(tmp_path, variable, valu
 
 
 @pytest.mark.parametrize("script", ["images-mirror.sh", "mirror-images-incluster.sh"])
-@pytest.mark.parametrize("version", ["v0.1.2", ""])
+@pytest.mark.parametrize("version", ["v0.1.6", ""])
 def test_old_version_input_stops_mirror_before_cluster_work(tmp_path, script, version):
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -68,9 +68,9 @@ def test_copy_images_rejects_old_version_input(tmp_path, from_command_line):
     env.pop("OPENSHELL_VERSION", None)
     args = ["make", "-s", "copy-images"]
     if from_command_line:
-        args.append("OPENSHELL_VERSION=v0.1.2")
+        args.append("OPENSHELL_VERSION=v0.1.6")
     else:
-        env["OPENSHELL_VERSION"] = "v0.1.2"
+        env["OPENSHELL_VERSION"] = "v0.1.6"
     result = subprocess.run(args, cwd=ROOT, env=env,
                             capture_output=True, text=True)
     assert result.returncode != 0

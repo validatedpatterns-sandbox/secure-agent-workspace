@@ -18,7 +18,7 @@ MIRROR_IMAGES  ?= openshell-gateway
 IMAGE_TAG      ?= latest
 # OpenShell release the governance interceptor is built from (must match the
 # SAW gateways; image-builder-charts/helm/governance-interceptor-image).
-OPENSHELL_INTERCEPTOR_REF ?= v0.1.2
+OPENSHELL_INTERCEPTOR_REF ?= v0.1.6
 OPENSHELL_SAW_NAME ?=
 SANDBOX_IMAGE  ?=
 CONTAINER_RUNTIME ?= podman

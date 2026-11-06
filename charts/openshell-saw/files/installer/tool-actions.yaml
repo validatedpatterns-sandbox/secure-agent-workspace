@@ -42,6 +42,20 @@ rules:
     whenCommandMatches:
       - openclaw cron add
       - openclaw cron rm
+  # Lets an agent persist the identity it has written to its own workspace
+  # without granting general shell access.
+  - id: exec-openclaw-set-identity
+    tool: exec
+    action: allow
+    whenCommandMatches:
+      - openclaw agents set-identity
+  # Automations are agent-managed scheduled work; this does not grant access
+  # to arbitrary shell commands.
+  - id: exec-openclaw-automations
+    tool: exec
+    action: allow
+    whenCommandMatches:
+      - openclaw automations
   # OpenClaw 2026.9.2 runs the hook again for each dispatched target.
   # These discovery rules never replace the target's own named rule.
   - id: tool-search
@@ -86,3 +100,9 @@ rules:
   - id: saw-denied-tool
     tool: saw-denied-tool
     action: deny
+  - id: workspace-write
+    tool: write
+    action: allow
+  - id: workspace-edit
+    tool: edit
+    action: allow

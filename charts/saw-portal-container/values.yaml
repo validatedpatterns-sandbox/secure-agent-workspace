@@ -1,0 +1,5 @@
+owner: ""
+ownerSubject: ""
+registration: ""
+vaultPrefix: ""
+secretStore: vault-backend

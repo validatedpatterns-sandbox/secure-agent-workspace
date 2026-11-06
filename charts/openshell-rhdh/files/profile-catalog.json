@@ -103,7 +103,9 @@
           "sandboxes": [
             {
               "enabled": true,
+              "endpointInput": "inference.url",
               "harnessRequired": false,
+              "modelInput": "inference.model",
               "name": "notebook",
               "type": "openclaw",
               "uiRoute": false
@@ -168,6 +170,7 @@
             {
               "enabled": true,
               "harnessRequired": false,
+              "modelInput": "inference.model",
               "name": "notebook",
               "type": "openclaw",
               "uiRoute": true
@@ -196,6 +199,7 @@
             {
               "enabled": true,
               "harnessRequired": false,
+              "modelInput": "inference.cuda_model",
               "name": "cuda-sandbox",
               "type": "nemoclaw",
               "uiRoute": true

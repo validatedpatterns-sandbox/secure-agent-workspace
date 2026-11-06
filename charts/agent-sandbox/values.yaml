@@ -1,0 +1,13 @@
+# Install once per cluster, only when no other platform owner provides Agent Sandbox.
+# This dependency alone does not qualify SAW's container runtime.
+enabled: false
+
+controller:
+  # A mirror may change the repository, but the digest remains source-locked.
+  imageRepository: registry.k8s.io/agent-sandbox/agent-sandbox-controller
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi

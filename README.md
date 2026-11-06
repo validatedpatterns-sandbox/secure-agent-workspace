@@ -1,6 +1,11 @@
 # Secure Agent Workspace
 
-Deploy isolated, per-user AI agent sandboxes on OpenShift Virtualization with OIDC authentication and policy-controlled access.
+Deploy isolated, per-user AI agent sandboxes on OpenShift with OIDC authentication and policy-controlled access. VM is the default backend; container workspaces use the stock OpenShell Kubernetes driver.
+
+For container mode, see [architecture and data flows](docs/container-workspaces.md)
+and [installation, inputs and enablement](docs/container-installation.md).
+The VM procedures below remain the default. Container Make installations use
+the shared GitOps services described in their installation guide.
 
 ## Upgrade: stage network isolation per user
 

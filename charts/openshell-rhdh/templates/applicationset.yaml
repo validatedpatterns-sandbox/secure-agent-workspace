@@ -67,12 +67,20 @@ spec:
         namespace: {{ .Values.portal.namespace }}
       source:
         repoURL: {{ .Values.global.repoURL | quote }}
-        targetRevision: {{ .Values.global.targetRevision | quote }}
+        targetRevision: '{{ "{{" }} .revision {{ "}}" }}'
         path: charts/saw-users
         helm:
           releaseName: 'portal-ws-{{ "{{" }} .name {{ "}}" }}'
           values: '{{ "{{" }} .values {{ "}}" }}'
+      # Argo owns these two hook-state finalizers. Preserve them during sync;
+      # keep detecting changes to the resource-deletion finalizer and app spec.
+      ignoreDifferences:
+        - group: argoproj.io
+          kind: Application
+          jqPathExpressions:
+            - '.metadata.finalizers[]? | select(. == "pre-delete-finalizer.argocd.argoproj.io" or . == "pre-delete-finalizer.argocd.argoproj.io/cleanup")'
       syncPolicy:
+        syncOptions: [RespectIgnoreDifferences=true]
         automated:
           prune: true
           selfHeal: true

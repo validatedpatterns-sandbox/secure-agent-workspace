@@ -36,6 +36,7 @@ import urllib.parse
 import urllib.request
 
 import saw_tls
+from saw_keycloak_admin import ensure_admin_api_scope
 
 SA = "/var/run/secrets/kubernetes.io/serviceaccount"
 # The URIs and origins this registrar set, so it removes only its own.
@@ -160,6 +161,7 @@ def bootstrap():
     elif any(client.get(k) != v for k, v in REGISTRAR_CLIENT.items() if k != "description"):
         kc("PUT", f"/clients/{client['id']}", {**client, **REGISTRAR_CLIENT})
         log(f"client {client_id} settings restored")
+    ensure_admin_api_scope(kc, client["id"])
     account = kc("GET", f"/clients/{client['id']}/service-account-user")
     management = kc.client("realm-management")
     role = kc("GET", f"/clients/{management['id']}/roles/manage-clients")

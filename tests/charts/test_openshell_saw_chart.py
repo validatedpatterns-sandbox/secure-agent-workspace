@@ -799,7 +799,15 @@ def test_rendered_proxies_verify_issuer_tls_by_default(settings, skip):
 
 def test_installer_configmap_ships_the_real_files(default_docs, ab):
     data = installer_data(default_docs)
-    assert data["apply_bom.py"] == (CHART / "files" / "installer" / "apply_bom.py").read_text()
+    source = (CHART / "files" / "installer" / "apply_bom.py").read_text()
+    for name in ("core", "admin", "ui_limit"):
+        shared = (CHART / "files/installer" / ("saw_"+name+".py")).read_bytes()
+        field = "_SAW_"+name.upper()+"_EMBEDDED_B64"
+        marker = field+' = "__SAW_'+name.upper()+'_SOURCE_BASE64__"'
+        assert source.count(marker) == 1
+        source = source.replace(marker, field+' = "'+base64.b64encode(shared).decode("ascii")+'"')
+        assert "saw_"+name+".py" not in data
+    assert data["apply_bom.py"] == source
     assert data["setup-dashboard.sh"] == (CHART / "files" / "installer" / "setup-dashboard.sh").read_text()
     bom = yaml.safe_load(data["installer-bom.yaml"])
     assert ab.validate_bom(bom)
@@ -1529,3 +1537,42 @@ def test_the_vm_runs_on_arm64_too(default_docs):
     domain = default_docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]["domain"]
     assert domain["firmware"]["bootloader"]["efi"]["secureBoot"] is False
     assert "smm" not in domain["features"]
+
+
+# -- deployment backend contract ----------------------------------------------
+
+@pytest.mark.ci_external
+def test_explicit_vm_mode_preserves_default_resources():
+    assert render() == render("--set", "deployment.mode=vm")
+
+
+@pytest.mark.ci_external
+@pytest.mark.parametrize("mode", ["container", "kata", "confidential"])
+def test_unimplemented_backend_never_falls_back_to_vm(mode):
+    result = helm_template(CHART, "--set", "sandboxName=saw-test",
+                           "--set", f"deployment.mode={mode}")
+    assert result.returncode != 0
+    if mode == "container":
+        assert "deployment.mode=container" in result.stderr and "no VM fallback" in result.stderr
+    else:
+        assert "deployment.mode" in result.stderr or "/deployment/mode" in result.stderr
+    assert not result.stdout.strip()
+
+
+@pytest.mark.ci_external
+@pytest.mark.parametrize("skip_schema", [False, True])
+@pytest.mark.parametrize("deployment", [
+    {"mode": "typo"}, {"mode": ""}, {"mode": False}, {"mode": 1},
+    {"mode": None}, {"mode": []}, {"mod": "container"}, "container", [], None,
+])
+def test_invalid_deployment_contract_rejected(deployment, skip_schema):
+    flags = ["--skip-schema-validation"] if skip_schema else []
+    assert "deployment" in render_error(
+        *flags, "--set-json", f"deployment={json.dumps(deployment)}")
+
+
+@pytest.mark.ci_external
+@pytest.mark.parametrize("mode", ["container", "kata", "confidential", "typo"])
+def test_mode_guard_also_applies_when_schema_validation_is_disabled(mode):
+    assert "deployment.mode" in render_error(
+        "--skip-schema-validation", "--set", f"deployment.mode={mode}")

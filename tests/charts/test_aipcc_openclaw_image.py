@@ -33,7 +33,10 @@ def test_openclaw_sandboxes_use_the_aipcc_image():
     found = list(openclaw_sandboxes())
     assert found
     for path, sb in found:
-        assert sb["image"].startswith(AIPCC), f"{path}: {sb['image']}"
+        if path.relative_to(ROOT / "charts/saw-bom/profiles").parts[0] == "audited-openclaw":
+            assert sb["image"] == "ghcr.io/openclaw/openclaw@sha256:0a5ff5e682e62afa19149df126aa50063bf65ef885b5c94713ce32dc0eb12e15"
+        else:
+            assert sb["image"].startswith(AIPCC), f"{path}: {sb['image']}"
 
 
 @pytest.mark.ci_external

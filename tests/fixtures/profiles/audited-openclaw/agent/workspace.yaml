@@ -1,0 +1,5 @@
+apiVersion: saw.redhat.com/v1alpha1
+kind: Workspace
+metadata:
+  name: agent
+  description: OpenClaw chat with native tool approval and retained audit history

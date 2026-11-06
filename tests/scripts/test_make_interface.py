@@ -23,6 +23,29 @@ def executable(path, body):
     path.chmod(0o755)
 
 
+@pytest.mark.parametrize("target,action", [("saw-create", "apply"), ("saw-status", "status"), ("saw-delete", "delete")])
+def test_container_make_dispatch_never_calls_vm_operations(tmp_path, target, action):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "check-saw-name.sh").symlink_to(ROOT / "scripts/check-saw-name.sh")
+    marker = tmp_path / "called"
+    (scripts / "container-workspace.py").write_text(
+        'import os,sys\nfrom pathlib import Path\nPath(os.environ["MARKER"]).write_text(sys.argv[1])\n')
+    for filename in ("sandbox-pre-delete.sh", "openshell-saw-create.sh", "saw-delete.sh"):
+        executable(scripts / filename, "exit 99\n")
+    result = run_make(target, "OPENSHELL_SAW_NAME=alice", "DEPLOYMENT_MODE=container",
+                      "PYTHON=python3", f"SCRIPTS_DIR={scripts}", env=dict(os.environ, MARKER=str(marker)))
+    assert result.returncode == 0, result.stderr
+    assert marker.read_text() == action
+
+
+@pytest.mark.parametrize("target", ["saw-logs", "saw-vm-ssh", "saw-restart", "saw-restart-pending"])
+def test_vm_specific_commands_fail_before_acting_on_container_workspace(target):
+    result = run_make(target, "OPENSHELL_SAW_NAME=alice", "DEPLOYMENT_MODE=container")
+    assert result.returncode != 0
+    assert "This command operates on VMs" in result.stderr
+
+
 def test_help_lists_public_targets_once_without_make_warnings():
     result = run_make("help")
     assert result.returncode == 0, result.stderr
@@ -136,7 +159,7 @@ def test_lint_checks_each_shell_file_and_uses_ci_python(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     marker = tmp_path / "lint-calls"
-    executable(bindir / "helm", 'exit 0\n')
+    executable(bindir / "helm", 'printf "helm %s\\n" "$*" >> "$MARKER"\n')
     executable(bindir / "python", 'printf "python %s\\n" "$*" >> "$MARKER"\n')
     executable(bindir / "uv", 'printf "unexpected uv\\n" >&2\nexit 19\n')
     bash_stub = bindir / "bash"
@@ -152,7 +175,7 @@ exec /bin/bash "$@"
         ("lint", True, True), ("lint-static", True, False), ("lint-interface", False, True),
     ):
         marker.write_text("")
-        result = run_make(target, env=env)
+        result = run_make(target, "PYTHON=python", env=env)
         assert result.returncode == 0, result.stderr
         calls = marker.read_text().splitlines()
         shell_files = [call.removeprefix("bash ") for call in calls if call.startswith("bash ")]
@@ -162,6 +185,40 @@ exec /bin/bash "$@"
         assert ("scripts/test-deployment.sh" in shell_files) == static
         assert ("python scripts/lint-rendered-shell.py" in calls) == static
         assert sum(call.startswith("python -m pytest") for call in calls) == int(interface)
+        helm_calls = [call for call in calls if call.startswith("helm ")]
+        if static:
+            # Helm lint deliberately softens template fail() guards and cannot
+            # accept --api-versions. Real template renders must therefore check
+            # enabled runtime paths with synthetic discovery as well.
+            gateway = next(call for call in helm_calls if call.startswith(
+                "helm template saw-lint charts/openshell-saw-kubernetes"))
+            assert "-f tests/fixtures/saw-kubernetes-values.yaml" in gateway
+            assert "--api-versions agents.x-k8s.io/v1beta1/Sandbox" in gateway
+            assert "--api-versions policy.networking.k8s.io/v1alpha1/AdminNetworkPolicy" in gateway
+            policy = next(call for call in helm_calls if call.startswith(
+                "helm template runtime-lint charts/saw-runtime-policies"))
+            assert "/container-values.yaml" in policy
+            assert "--api-versions admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy" in policy
+            assert "helm lint charts/agent-sandbox" in helm_calls
+            assert "helm lint charts/saw-runtime-policies" in helm_calls
+            assert "helm lint charts/saw-kubernetes-identity" in helm_calls
+            identity = next(call for call in helm_calls if call.startswith(
+                "helm template identity-lint charts/saw-kubernetes-identity"))
+            assert "--namespace saw-lint-trusted" in identity
+            assert "-f tests/fixtures/saw-kubernetes-identity-values.yaml" in identity
+            assert "sandboxName" not in identity
+            assert "helm template agent-sandbox charts/agent-sandbox --namespace agent-sandbox-system --set enabled=true" in helm_calls
+
+
+def test_default_python_suite_includes_offline_kubernetes_runtime():
+    # A suite launched by make may inherit its explicit TEST_PATHS through both
+    # the environment and recursive MAKEFLAGS. Inspect the fresh default here.
+    env = {key: value for key, value in os.environ.items()
+           if key not in {"MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES", "TEST_PATHS", "PYTEST_ARGS"}}
+    result = run_make("--dry-run", "test-installer", "PYTHON=python3", env=env)
+    assert result.returncode == 0, result.stderr
+    assert "tests/kubernetes_runtime" in result.stdout
+    assert "test-stock-protobuf.py" not in result.stdout  # optional explicit SDK environment
 
 
 def test_saw_create_preserves_special_characters_in_environment(tmp_path):

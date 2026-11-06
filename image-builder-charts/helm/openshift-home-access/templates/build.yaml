@@ -1,0 +1,22 @@
+{{- range $i := .Values.images }}
+{{- if or (not (regexMatch "^[a-z0-9][a-z0-9./:_-]+@sha256:[0-9a-f]{64}$" $i.from)) (not (regexMatch "^[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$" $i.imageUser)) }}{{ fail "a digest-pinned source and original image user are required" }}{{- end }}
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata: {name: {{ $i.name }}, namespace: {{ $.Release.Namespace }}}
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata: {name: {{ $i.name }}, namespace: {{ $.Release.Namespace }}}
+spec:
+  source:
+    type: Dockerfile
+    dockerfile: |
+      FROM {{ $i.from }}
+      USER 0
+      RUN test -d /sandbox && chmod o+x /sandbox
+      USER {{ $i.imageUser }}
+  strategy: {type: Docker, dockerStrategy: {}}
+  output: {to: {kind: ImageStreamTag, name: "{{ $i.name }}:traverse"}}
+  triggers: [{type: ConfigChange}]
+{{- end }}

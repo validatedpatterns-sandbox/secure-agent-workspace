@@ -1,0 +1,28 @@
+{{- range .Values.portal.linkedWorkspaces }}
+{{- if .runtime }}
+{{- $r := .runtime }}
+{{- if ne $r.mode "container" }}{{ fail "linked runtime must be container" }}{{ end }}
+{{- range $key := list "namespace" "intent" "status" }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" (required $key (index $r $key))) }}{{ fail "invalid linked runtime reference" }}{{ end }}
+{{- end }}
+{{- $_ := required "installationID required" $r.installationID }}
+{{- $_ := required "ownerSubject required" $r.ownerSubject }}
+{{- $name := printf "saw-portal-status-%s" (printf "%s/%s/%s" $.Values.portal.namespace .owner .routeLabel | sha256sum | trunc 16) }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: {{ $name }}, namespace: {{ $r.namespace }}}
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [{{ $r.intent | quote }}, {{ $r.status | quote }}]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ $name }}, namespace: {{ $r.namespace }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $name }}}
+subjects:
+  - {kind: ServiceAccount, name: saw-workspaces-generator, namespace: {{ $.Values.portal.namespace }}}
+{{- end }}
+{{- end }}

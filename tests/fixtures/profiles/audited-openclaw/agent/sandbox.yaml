@@ -1,0 +1,14 @@
+apiVersion: saw.redhat.com/v1alpha1
+kind: Sandboxes
+spec:
+  sandboxes:
+    - name: audited
+      type: openclaw
+      image: ghcr.io/openclaw/openclaw@sha256:0a5ff5e682e62afa19149df126aa50063bf65ef885b5c94713ce32dc0eb12e15
+      providers: [openai]
+      inference:
+        providerRef: openai
+        protocol: openai
+        baseUrl: https://api.openai.com/v1
+        model: gpt-4.1-mini-2025-04-14
+      ui: {route: true}

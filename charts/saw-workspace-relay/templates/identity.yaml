@@ -1,0 +1,102 @@
+{{- if .Values.enabled }}
+{{- $v := .Values }}{{- $n := .Release.Name }}{{- $ui := .Release.Namespace }}
+{{- $revision := dict "values" $v "script" (.Files.Get "files/identity.py") | toJson | sha256sum | trunc 10 }}
+{{- $script := printf "%s-identity-%s" $n $revision }}
+{{- if or (eq $ui $v.keycloakNamespace) (eq $ui $v.trustedNamespace) (not (hasPrefix "https://" $v.issuer)) (not $v.clientID) (not $v.workspace) (not $v.installationID) }}{{ fail "dedicated UI namespace, HTTPS issuer and explicit client/workspace scope required" }}{{ end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: relay-credentials
+  labels: {saw.redhat.com/runtime-owner: {{ $v.installationID | quote }}}
+  annotations: {argocd.argoproj.io/sync-options: 'Prune=false,Delete=false'}
+type: Opaque
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: {{ $n }}-identity, namespace: {{ $v.keycloakNamespace }}}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: {{ $n }}-identity}
+rules:
+- {apiGroups: [""], resources: [secrets], resourceNames: [relay-credentials], verbs: [get, patch]}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ $n }}-identity}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $n }}-identity}
+subjects: [{kind: ServiceAccount, name: {{ $n }}-identity, namespace: {{ $v.keycloakNamespace }}}]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: {{ $script }}, namespace: {{ $v.keycloakNamespace }}}
+immutable: true
+data:
+  identity.py: |
+{{ .Files.Get "files/identity.py" | indent 4 }}
+{{- if $v.publishSubject }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: {{ $n }}-public-subject, namespace: {{ $v.trustedNamespace }}}
+rules: [{apiGroups: [""], resources: [configmaps], resourceNames: [{{ $v.publicSubjectMap | default "saw-portal-relay-subject" }}], verbs: [get, patch]}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ $n }}-public-subject, namespace: {{ $v.trustedNamespace }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $n }}-public-subject}
+subjects: [{kind: ServiceAccount, name: {{ $n }}-identity, namespace: {{ $v.keycloakNamespace }}}]
+{{- end }}
+{{- $actions := list "create" }}
+{{- if $v.cleanupRegistration }}
+{{- if or (not (regexMatch "^[0-9a-f]{16}$" $v.cleanupRegistration)) (ne $v.clientID (printf "saw-portal-%s" $v.cleanupRegistration)) }}{{ fail "cleanup requires a registration-specific client ID" }}{{ end }}
+{{- $actions = append $actions "delete" }}
+{{- end }}
+{{- range $action := $actions }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $n }}-{{ $action }}-identity-{{ $revision }}
+  namespace: {{ $v.keycloakNamespace }}
+  {{- if eq $action "delete" }}
+  annotations: {helm.sh/hook: pre-delete, helm.sh/hook-delete-policy: before-hook-creation, helm.sh/hook-weight: '0'}
+  {{- else }}
+  annotations: {argocd.argoproj.io/sync-wave: '1'}
+  {{- end }}
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 300
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ $n }}-identity
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+      - name: provision
+        image: {{ $v.pythonImage }}
+        command: [python3, /scripts/identity.py]
+        securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+        env:
+        {{- if eq $action "delete" }}
+        - {name: DELETE_BOUND_CLIENT, value: "true"}
+        - {name: REGISTRATION, value: {{ $v.cleanupRegistration | quote }}}
+        {{- end }}
+        {{- if and $v.publishSubject (eq $action "create") }}
+        - {name: PUBLIC_SUBJECT_MAP, value: {{ $v.publicSubjectMap | default "saw-portal-relay-subject" }}}
+        - {name: PUBLIC_SUBJECT_NAMESPACE, value: {{ $v.trustedNamespace }}}
+        {{- end }}
+        - {name: UI_NAMESPACE, value: {{ $ui }}}
+        - {name: INSTALLATION, value: {{ $v.installationID | quote }}}
+        - {name: WORKSPACE, value: {{ $v.workspace | quote }}}
+        - {name: ISSUER, value: {{ $v.issuer | quote }}}
+        - {name: CLIENT_ID, value: {{ $v.clientID | quote }}}
+        - {name: AUDIENCE, value: {{ $v.audience | quote }}}
+        volumeMounts:
+        - {name: script, mountPath: /scripts, readOnly: true}
+        - {name: kc, mountPath: /kc-admin, readOnly: true}
+      volumes:
+      - {name: script, configMap: {name: {{ $script }}}}
+      - {name: kc, secret: {secretName: {{ required "Keycloak bootstrap Secret required" $v.keycloakAdminSecret }}, defaultMode: 0440}}
+{{- end }}
+{{- end }}

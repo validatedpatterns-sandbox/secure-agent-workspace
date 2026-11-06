@@ -28,6 +28,30 @@ def one(docs, kind, name):
     return found[0]
 
 
+@pytest.mark.parametrize("minutes,wait,task", [(30, "1800", "32m0s"), (60, "3600", "1h2m0s"),
+                                            (58, "3480", "1h0m0s"), (1, "60", "3m0s")])
+def test_bounded_site_guest_readiness_timeout(minutes, wait, task):
+    docs = render("--set", f"portal.sandboxReadyTimeoutMinutes={minutes}")
+    pipeline = one(docs, "Pipeline", "saw-workspace-create")
+    stage = next(t for t in pipeline["spec"]["tasks"] if t["name"] == "sandboxes")
+    assert stage["timeout"] == task
+    assert {p["name"]: p["value"] for p in stage["params"]}["timeout"] == wait
+    assert {p["name"]: p["value"] for p in stage["params"]}["action"] == "wait-ready"
+    cm = one(docs, "ConfigMap", "saw-rhdh-templates")
+    for key in ("create-workspace.yaml", "create-workspace-for-user.yaml"):
+        if key in cm["data"]:
+            form = yaml.safe_load(cm["data"][key])
+            step = next(s for s in form["spec"]["steps"] if s["id"] == "task-sandboxes")
+            assert step["each"] == list(range(1, (minutes + 2) * 3 + 1))
+
+
+@pytest.mark.parametrize("minutes", ["0", "61", "false", "1.5", "unlimited"])
+def test_invalid_guest_readiness_timeout_fails_render(minutes):
+    result = run_helm([HELM, "template", "openshell-rhdh", str(CHART), "-n", "rhdh",
+                      "--set", f"portal.sandboxReadyTimeoutMinutes={minutes}"], capture_output=True, text=True)
+    assert result.returncode != 0 and not result.stdout.strip()
+
+
 @pytest.fixture(scope="module")
 def docs():
     return render()
@@ -49,12 +73,20 @@ def test_templates_are_the_generated_form_with_the_provisioner(docs):
 
 
 @pytest.mark.ci_external
-def test_every_form_field_reaches_the_request(docs):
+@pytest.mark.parametrize("container", [False, True])
+def test_every_form_field_reaches_the_request(docs, container):
     """The form asks for what the catalog says each profile needs, and the
     request Secret carries each field under <secret>.<field>."""
     catalog = json.loads((CHART / "files" / "profile-catalog.json").read_text())["profiles"]
     create = yaml.safe_load(one(docs, "ConfigMap", "saw-rhdh-templates")["data"]["create-workspace.yaml"])
     string_data = create["spec"]["steps"][0]["input"]["body"]["stringData"]
+    if container:
+        site = ROOT/"tests/fixtures/container-site.yaml"
+        with_containers = render("-f",str(site))
+        create=yaml.safe_load(one(with_containers,"ConfigMap","saw-rhdh-templates")["data"]["create-workspace.yaml"])
+        string_data=create["spec"]["steps"][0]["input"]["body"]["stringData"]
+    else:
+        catalog={k:v for k,v in catalog.items() if k!="audited-openclaw"}
     one_of = create["spec"]["parameters"][0]["dependencies"]["profile"]["oneOf"]
     assert sorted(o["properties"]["profile"]["const"] for o in one_of) == sorted(catalog)
     for profile, spec in catalog.items():
@@ -117,6 +149,7 @@ def test_the_applicationset_renders_saw_users_per_workspace(docs):
     assert aset["spec"]["syncPolicy"] == {"applicationsSync": "create-update",
                                           "preserveResourcesOnDeletion": True}
     assert template["spec"]["source"]["path"] == "charts/saw-users"
+    assert template["spec"]["source"]["targetRevision"] == "{{ .revision }}"
     assert template["spec"]["source"]["helm"]["values"] == "{{ .values }}"
     plugin = one(docs, "ConfigMap", "saw-portal-generator")
     token = one(docs, "Secret", "saw-portal-generator")
@@ -520,7 +553,13 @@ def test_tls_is_verified_everywhere_by_default(docs):
     assert "NODE_TLS_REJECT_UNAUTHORIZED" not in s["node"]
     assert s["node"]["NODE_EXTRA_CA_CERTS"] == "/opt/saw-ca/ca-bundle.crt"
     pod = s["patch"]["spec"]["template"]["spec"]
-    assert [c["name"] for c in pod["initContainers"]] == ["saw-ca-bundle"]
+    assert [c["name"] for c in pod["initContainers"]] == ["saw-ca-bundle", "saw-oidc-discovery"]
+    gate = pod["initContainers"][1]
+    assert gate["command"][2] == "https://openshell-keycloak-ingress-saw-keycloak.apps.example.com/realms/openshell"
+    assert gate["command"][3] == "/opt/saw-ca/ca-bundle.crt"
+    assert {v["name"] for v in gate["volumeMounts"]} == {"saw-ca", "saw-ca-sources"}
+    assert all(v["readOnly"] for v in gate["volumeMounts"])
+    assert gate["securityContext"]["allowPrivilegeEscalation"] is False
     assert pod["containers"][0]["name"] == "backstage-backend"
     assert {"name": "saw-ca", "mountPath": "/opt/saw-ca", "readOnly": True} in pod["containers"][0]["volumeMounts"]
     assert s["proxy"] == [True, True]
@@ -539,7 +578,9 @@ def test_tls_is_verified_everywhere_by_default(docs):
 @pytest.mark.ci_external
 def test_one_switch_turns_verification_off(docs):
     s = tls_settings(render("--set", "tls.insecureSkipVerify=true"))
-    assert s["node"]["NODE_TLS_REJECT_UNAUTHORIZED"] == "0" and s["patch"] is None
+    assert s["node"]["NODE_TLS_REJECT_UNAUTHORIZED"] == "0"
+    tpl = s["patch"]["spec"]["template"]
+    assert "spec" not in tpl and len(tpl["metadata"]["annotations"]["saw.redhat.com/portal-templates"]) == 64
     assert s["proxy"] == [False, False]
     assert s["kubernetes"]["skipTLSVerify"] is True and "caFile" not in s["kubernetes"]
     assert _envs(s["generator"]["containers"][0])["KEYCLOAK_SKIP_VERIFY"] == "true"
@@ -635,3 +676,119 @@ def test_portal_workspaces_inherit_shared_credential_mode(tmp_path, enabled):
         "credentialProxy": {"enabled": enabled}}}}))
     result = generator_defaults(render("-f", str(path)))
     assert result["defaults"]["openshellSaw"]["credentialProxy"]["enabled"] == enabled
+
+
+@pytest.mark.ci_external
+@pytest.mark.parametrize("modes", [["vm"], ["vm", "container"]])
+def test_operator_mode_policy_reaches_both_forms_and_server(modes):
+    docs = render("--set-json", f"portal.deploymentModes={json.dumps(modes)}",
+                  "--set-json", 'portal.admins=["admin"]')
+    templates = one(docs, "ConfigMap", "saw-rhdh-templates")["data"]
+    for name in ("create-workspace.yaml", "create-workspace-for-user.yaml"):
+        form = yaml.safe_load(templates[name])
+        field = form["spec"]["parameters"][-1]["properties"]["deploymentMode"]
+        # An operator allowlist alone does not make a container profile usable.
+        assert field["enum"] == [m for m in modes if m != "container"] and field["default"] == "vm"
+        request = form["spec"]["steps"][0]["input"]["body"]["stringData"]
+        assert request["deploymentMode"] == "${{ parameters.deploymentMode }}"
+        assert "runtimeClassName" not in str(form)
+    task = one(docs, "Task", "saw-workspace")
+    step = next(s for s in task["spec"]["steps"] if s["name"] == "run")
+    dep = one(docs, "Deployment", "saw-workspaces-generator")
+    for container in [step, dep["spec"]["template"]["spec"]["containers"][0]]:
+        env = {e["name"]: e.get("value") for e in container["env"]}
+        assert json.loads(env["SAW_DEPLOYMENT_MODES"]) == modes
+
+
+@pytest.mark.ci_external
+@pytest.mark.parametrize("modes", [[], ["container"], ["vm", "vm"], ["vm", "confidential"], ["vm", "kata"],
+                                  ["vm", "bogus"], ["vm", {}], "vm"])
+def test_invalid_operator_mode_policy_rejects_chart(modes):
+    result = run_helm([HELM, "template", "openshell-rhdh", str(CHART), "-n", "rhdh",
+                       "--set-json", f"portal.deploymentModes={json.dumps(modes)}"],
+                      capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "portal.deploymentModes" in result.stderr
+    assert not result.stdout.strip()
+
+
+def _deployment_profiles(form):
+    step = form["spec"]["parameters"][-1]
+    assert "profile" not in step["properties"], "a broad base enum would undo UI filtering"
+    return step, {branch["properties"]["deploymentMode"]["enum"][0]:
+                  branch["properties"]["profile"]
+                  for branch in step["dependencies"]["deploymentMode"]["oneOf"]}
+
+
+@pytest.mark.ci_external
+def test_container_choices_are_approved_catalog_profiles_in_both_forms():
+    sites = {
+        "alice": {"subject": "11111111-1111-1111-1111-111111111111",
+                  "automaticEnrollment": {"approvedProfiles": {"custom-inference": "a" * 64,
+                                                               "not-in-catalog": "b" * 64}}},
+        "bob": {"subject": "22222222-2222-2222-2222-222222222222",
+                "automaticEnrollment": {"approvedProfiles": {"data-science": "c" * 64}}},
+        "unregistered": {"automaticEnrollment": {"approvedProfiles": {"ci-nvidia": "d" * 64}}},
+    }
+    docs = render("--set-json", 'portal.deploymentModes=["vm","container"]',
+                  "--set-json", 'portal.admins=["admin"]',
+                  "--set-json", "portal.containerSites=" + json.dumps(sites))
+    templates = one(docs, "ConfigMap", "saw-rhdh-templates")["data"]
+    generated = yaml.safe_load((CHART / "files/create-workspace.yaml").read_text())
+    original = generated["spec"]["parameters"][-1]
+    for name in ("create-workspace.yaml", "create-workspace-for-user.yaml"):
+        step, fields = _deployment_profiles(yaml.safe_load(templates[name]))
+        assert fields["container"]["enum"] == ["custom-inference", "data-science"]
+        assert fields["container"]["default"] == "custom-inference"
+        assert "your account" in fields["container"]["description"]
+        assert fields["vm"]["enum"] == [p for p in original["properties"]["profile"]["enum"]
+                                         if p != "audited-openclaw"]
+        assert fields["vm"]["default"] == original["properties"]["profile"]["default"]
+        # Credential widgets still come from the single generated BOM form.
+        assert step["dependencies"]["profile"] == original["dependencies"]["profile"]
+        for field in fields.values():
+            assert len(field["enum"]) == len(field["enumNames"])
+            assert all(label.startswith(profile + ":")
+                       for profile, label in zip(field["enum"], field["enumNames"]))
+
+
+@pytest.mark.ci_external
+@pytest.mark.parametrize("automatic,expected", [
+    ({"profileSHA256": "a" * 64}, []),
+    ({"profileSHA256": "a" * 64, "approvedProfiles": {}}, []),
+    ({"approvedProfiles": {"custom-inference": ""}}, []),
+    ({"approvedProfiles": {"not-in-catalog": "a" * 64}}, []),
+])
+def test_container_choice_requires_known_reviewed_profile(automatic, expected):
+    sites = {"alice": {"subject": "11111111-1111-1111-1111-111111111111",
+                       "automaticEnrollment": automatic}}
+    docs = render("--set-json", 'portal.deploymentModes=["vm","container"]',
+                  "--set-json", "portal.containerSites=" + json.dumps(sites))
+    form = yaml.safe_load(one(docs, "ConfigMap", "saw-rhdh-templates")["data"]["create-workspace.yaml"])
+    step, fields = _deployment_profiles(form)
+    if expected:
+        assert fields["container"]["enum"] == expected
+        assert "container" in step["properties"]["deploymentMode"]["enum"]
+    else:
+        assert "container" not in fields
+        assert "container" not in step["properties"]["deploymentMode"]["enum"]
+
+
+@pytest.mark.ci_external
+def test_rhdh_identity_bootstrap_can_repair_unhealthy_consumers(docs):
+    cm = one(docs, "ConfigMap", "saw-rhdh-keycloak-client")
+    assert cm["data"]["saw_keycloak_admin.py"] == (CHART / "files/saw_keycloak_admin.py").read_text()
+    job = one(docs, "Job", "saw-rhdh-keycloak-client")
+    # A 401 makes the AppSet unhealthy; PostSync would prevent the bootstrap
+    # that repairs it from running. PreSync would miss first-install inputs.
+    assert job["metadata"]["annotations"]["argocd.argoproj.io/hook"] == "Sync"
+    assert job["metadata"]["annotations"].get("argocd.argoproj.io/sync-wave", "0") == "0"
+    for resource in (cm, one(docs, "ServiceAccount", "saw-rhdh-keycloak"),
+                     one(docs, "ExternalSecret", "rhdh-oidc"),
+                     one(docs, "Role", "saw-rhdh-keycloak-admin"),
+                     one(docs, "RoleBinding", "saw-rhdh-keycloak-admin")):
+        annotations = resource["metadata"].get("annotations", {})
+        assert not annotations.get("argocd.argoproj.io/hook")
+        assert annotations.get("argocd.argoproj.io/sync-wave", "0") == "0"
+    assert any(v.get("configMap", {}).get("name") == cm["metadata"]["name"]
+               for v in job["spec"]["template"]["spec"]["volumes"])

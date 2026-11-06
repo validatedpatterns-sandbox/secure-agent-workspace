@@ -21,8 +21,16 @@ spec:
           Administrators only; your own name for your workspace. The user signs in with their own password.}
   - title: Workspace profile
     description: The workspace is named after the user (namespace saw-<user>).
-    required: [profile]
+    required: [profile, deploymentMode]
     properties:
+      deploymentMode:
+        title: Deployment
+        type: string
+        enum: [vm]
+        enumNames: [Virtual machine]
+        default: vm
+        description: Available deployment options are set by your administrator. An existing workspace
+          keeps its deployment type.
       profile:
         title: Profile
         type: string
@@ -50,9 +58,16 @@ spec:
             inference__url: {title: 'inference: Endpoint base URL (OpenAI-compatible, ending in /v1)',
               type: string, pattern: '^https?://'}
             inference__model: {title: 'inference: Model', type: string}
-            web_search__api_key: {title: 'web-search: API key', type: string, 'ui:field': Secret, description: Stored
-                in Vault for your workspace only (provider brave)}
-          required: [inference__api_key, inference__url, inference__model, web_search__api_key]
+          required: [inference__api_key, inference__url, inference__model]
+          allOf:
+          - if:
+              properties:
+                deploymentMode: {const: vm}
+            then:
+              properties:
+                web_search__api_key: {title: 'web-search: API key', type: string, 'ui:field': Secret,
+                  description: Stored in Vault for your workspace only (provider brave)}
+              required: [web_search__api_key]
         - properties:
             profile: {const: data-science}
             uiRoutes: {title: Sandbox web UIs, type: 'null', description: 'Published on their own route,
@@ -97,12 +112,13 @@ spec:
           labels: {saw.redhat.com/request: 'true'}
         type: Opaque
         stringData: {action: create, token: '${{ secrets.backstageToken }}', profile: '${{ parameters.profile
-            }}', forUser: '${{ parameters.forUser }}', inference.api_key: '${{ secrets.inference__api_key
-            }}', inference.url: '${{ parameters.inference__url }}', inference.model: '${{ parameters.inference__model
-            }}', web-search.api_key: '${{ secrets.web_search__api_key }}', inference.cuda_model: '${{
-            parameters.inference__cuda_model }}', gmail.client_id: '${{ secrets.gmail__client_id }}',
-          gmail.client_secret: '${{ secrets.gmail__client_secret }}', gmail.refresh_token: '${{ secrets.gmail__refresh_token
-            }}', slack.bot_token: '${{ secrets.slack__bot_token }}'}
+            }}', deploymentMode: '${{ parameters.deploymentMode }}', forUser: '${{ parameters.forUser
+            }}', inference.api_key: '${{ secrets.inference__api_key }}', inference.url: '${{ parameters.inference__url
+            }}', inference.model: '${{ parameters.inference__model }}', web-search.api_key: '${{ secrets.web_search__api_key
+            }}', inference.cuda_model: '${{ parameters.inference__cuda_model }}', gmail.client_id: '${{
+            secrets.gmail__client_id }}', gmail.client_secret: '${{ secrets.gmail__client_secret }}',
+          gmail.refresh_token: '${{ secrets.gmail__refresh_token }}', slack.bot_token: '${{ secrets.slack__bot_token
+            }}'}
   - id: run
     name: Start the pipeline
     action: http:backstage:request
@@ -145,7 +161,7 @@ spec:
     each: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
       26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]
   - id: task-vm
-    name: Argo CD creates the VM
+    name: Provision the workspace runtime
     action: http:backstage:request
     input:
       method: GET
@@ -156,7 +172,7 @@ spec:
     each: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
       26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]
   - id: task-vm-running
-    name: Start the VM
+    name: Start the workspace runtime
     action: http:backstage:request
     input:
       method: GET
@@ -168,7 +184,7 @@ spec:
       26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
       50, 51]
   - id: task-sandboxes
-    name: Install OpenShell and the sandboxes (about 10 minutes)
+    name: Wait for OpenShell sandboxes and workspace access
     action: http:backstage:request
     input:
       method: GET

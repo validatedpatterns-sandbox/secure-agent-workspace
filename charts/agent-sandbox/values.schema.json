@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "enabled": {"type": "boolean"},
+    "controller": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "imageRepository": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9.-]+(:[0-9]+)?/[a-zA-Z0-9_./-]+$"
+        },
+        "resources": {"type": "object"}
+      },
+      "required": ["imageRepository", "resources"]
+    }
+  },
+  "required": ["enabled", "controller"]
+}

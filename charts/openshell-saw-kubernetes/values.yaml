@@ -1,0 +1,59 @@
+deployment:
+  mode: container
+
+# Explicit opt-in: chart readiness is gateway readiness, not SAW feature parity.
+kubernetes:
+  experimental: false
+  gateway:
+    image: quay.io/opendatahub/odh-openshell-gateway@sha256:7bd1357f8b4c293ea6527dee2035e26dcca02fb9a87fb1521a0cd9255ec7d9fc
+    resources:
+      requests: {cpu: 100m, memory: 256Mi}
+      limits: {memory: 1Gi}
+  supervisor:
+    image: quay.io/opendatahub/odh-openshell-supervisor@sha256:f2178e5ef0948c145b7cc3a7ab3b3238aaf36d2c13a2826aae39b601e987bd7b
+  workload:
+    # Application image; set to an approved immutable sandbox image.
+    image: ""
+    runtimeImage: quay.io/opendatahub/odh-openshell-sandbox@sha256:acc2e36f4b05d494714aaa0a10392d2148bda3c26bbf75078f6b3c3cdf7c67ea
+    runtimeClassName: ""
+  identity:
+    # Existing, retained identity; generated once outside Helm by its owner.
+    # server TLS: tls.crt,tls.key,ca.crt; client CA: ca.crt only mounted.
+    serverTlsSecret: ""
+    clientCaSecret: ""
+    # signing.pem, public.pem, kid
+    jwtSecret: ""
+    # key: key-encryption-key (stock gateway format)
+    credentialKeySecret: ""
+  storage:
+    className: ""
+    gatewaySize: 5Gi
+    workspaceSize: 20Gi
+    # Prefer an independently owned retained claim for existing state.
+    existingGatewayClaim: ""
+  imagePullSecrets: []
+  # Only CA certificates are published into the runtime namespace.
+  proxy:
+    url: ""
+    caConfigMap: ""
+  # Reviewed stock governance endpoint, reached through declared egress.
+  governance:
+    endpoint: ""
+  network:
+    # All gateway egress is explicit; no namespace-wide internet allowance.
+    # Include API Service + real backend IPs, DNS, OIDC, governance and proxy.
+    gatewayEgress: []
+    # Trusted API reconciler Pods are selected by exact namespace AND label.
+    reconcilerNamespace: ""
+    reconcilerLabels: {}
+
+oidc:
+  issuerUrl: ""
+  clientId: openshell-cli
+  rolesClaim: realm_access.roles
+  adminRole: openshell-admin
+  userRole: openshell-user
+  caConfigMap: ""
+route:
+  enabled: true
+  host: ""

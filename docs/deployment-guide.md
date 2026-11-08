@@ -100,6 +100,12 @@ Service; set `ownerResolver.keycloakUrl` for a custom HTTPS Route and
 mismatched account gets no membership. The resolver records its state in the
 ConfigMap annotation `saw.redhat.com/owner-resolution`.
 
+##### Custom web UI route hosts
+
+Set `route.hostTemplate` to give every workspace's web UI and dashboard routes a common hostname pattern. `{app}` is replaced with `<release>-webui` or `<release>-dashboard`, for example `tenant-{app}.apps.example.com`. The chart uses the resulting hostname in each Route's `spec.host` and in the VM's OAuth callback and allowed origin, so they stay aligned. Each DNS label must be at most 63 characters. `route.webuiHost` and `route.dashboardHost` override the template for their respective routes. The gateway passthrough route and sandbox UI routes keep their own hosts.
+
+For a validated pattern, put the template in `defaults.openshellSaw.route.hostTemplate` via a Pattern `extraParameter` or the saw-users values. For quickstart, set `ROUTE_HOST_TEMPLATE` on `make saw-create`, or put `route.hostTemplate` in `SAW_VALUES_FILE`. Quickstart validates the template before changing the cluster and does not overwrite it with its computed web UI hosts.
+
 With `redirectRegistrar.enabled: false`, nothing in the cluster holds Keycloak admin access for this: an administrator runs `make -f Makefile-quickstart keycloak-register KC_USER=<user>` once the workspace exists (it also creates the Keycloak account if it is new) and `keycloak-redirects-sync` after deleting workspaces (`scripts/keycloak-redirects.py`, with the administrator's `oc` session and Keycloak's admin Secret, like `scripts/keycloak-users.sh`). The script applies the registrar's rules. See the README's [Web UI sign-in](../README.md#web-ui-sign-in-redirect-uris).
 
 #### The issuer's certificate
@@ -144,6 +150,8 @@ No workspace needs RBAC on `openshift-config-managed`, and nothing reads a priva
 - **First install.** The VM waits for the Secret, as it does for the provider metadata Secrets, so a VM created before the job's first run starts within about 10 minutes. To skip the wait, run the job once: `oc create job -n imperative --from=cronjob/<the saw-ingress-ca cronjob> saw-ingress-ca-now`.
 - **Rotation.** A rotated CA reaches Vault and the Secret on its own, and each VM on its next restart.
 - **Turning it off.** Set saw-users `defaults.clusterCaSecret: ""`, for example when the issuer is external or the cluster has a public certificate.
+
+If `oidc.issuerUrl` explicitly names a route served by this same cluster and the route's certificate is signed by the cluster ingress CA, set `oidc.trustClusterCaForExplicitIssuer: true`. The default is `false` because an external issuer should not inherit this CA. `oidc.caBundle` still takes precedence. Verify the intended host against `default-ingress-cert` first; a DNS name alone does not establish which CA signs it.
 
 ##### Setting oidc.caBundle
 

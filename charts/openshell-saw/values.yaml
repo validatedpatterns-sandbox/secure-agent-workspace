@@ -220,6 +220,9 @@ oidc:
   # saw-ingress-ca; the saw-ingress-ca imperative job and pattern-secrets).
   # The VM waits for the Secret to exist, like the provider Secrets.
   clusterCaSecret: ""
+  # Opt in only when issuerUrl names this cluster's ingress route and that
+  # route is signed by the cluster ingress CA. caBundle still wins.
+  trustClusterCaForExplicitIssuer: false
 
 # Private registry access for images pulled inside the VM. The CA is trusted
 # only for this registry by Podman. The Secret must contain a "token" key and
@@ -249,6 +252,10 @@ accessControl:
 route:
   enabled: true
   host: ""
+  # Optional hostname pattern for the webui and dashboard routes. {app}
+  # expands to <release>-webui or <release>-dashboard; each DNS label must
+  # be 63 characters or fewer. Explicit webuiHost/dashboardHost win.
+  hostTemplate: ""
   dashboard: true
   webui: true
   # Hostname of the webui route, used for the dashboard's OAuth redirect.

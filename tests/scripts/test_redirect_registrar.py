@@ -43,6 +43,7 @@ class FakeKeycloak:
                        "attributes": {"pkce.code.challenge.method": "S256"}},
             "c-rm": {"id": "c-rm", "clientId": "realm-management"},
         }
+        self.scopes, self.default_scopes, self.scope_puts = [], {}, []
         self.secrets = {}
         self.mappings = {}       # user id -> [role names]
         self.realm_ready = True
@@ -102,6 +103,10 @@ class FakeKeycloak:
                 p = url.path[len("/admin/realms/openshell"):]
                 if url.path == "/admin/realms/openshell":
                     return self.reply(200, {"realm": "openshell"}) if kc.realm_ready else self.reply(404)
+                if p == "/client-scopes":
+                    return self.reply(200, kc.scopes)
+                if p.endswith("/default-client-scopes"):
+                    return self.reply(200, kc.default_scopes.get(p.split("/")[2], []))
                 if p == "/clients":
                     want = parse_qs(url.query).get("clientId", [None])[0]
                     return self.reply(200, [c for c in kc.clients.values() if c["clientId"] == want])
@@ -124,6 +129,11 @@ class FakeKeycloak:
                 url = urlsplit(self.path)
                 if not self.authorized():
                     return self.reply(401)
+                if "/default-client-scopes/" in url.path:
+                    cid, scope_id = url.path.split("/")[5], url.path.rsplit("/", 1)[1]
+                    kc.default_scopes.setdefault(cid, []).append(next(s for s in kc.scopes if s["id"] == scope_id))
+                    kc.scope_puts.append((cid, scope_id))
+                    return self.reply(204)
                 cid = url.path.rsplit("/", 1)[1]
                 body = json.loads(self.body())
                 kc.puts.append((self.headers["Authorization"], cid, body))
@@ -469,3 +479,24 @@ def test_an_entry_removed_by_hand_is_not_put_back(world):
     dashboard(kc)["redirectUris"] = []
     reg.run(once=True)
     assert dashboard(kc)["redirectUris"] == []
+
+
+@pytest.mark.parametrize("existing_client", [False, True])
+@pytest.mark.parametrize("scope_state", ["absent", "unassigned", "assigned"])
+def test_bootstrap_admin_scope(world, existing_client, scope_state):
+    reg, kc, _, _ = world
+    if existing_client:
+        reg.bootstrap()
+    cid = "c-2"
+    scope = {"id": "admin-scope", "name": "kc-admin-api"}
+    other = {"id": "profile-scope", "name": "profile"}
+    kc.scopes = [other] if scope_state == "absent" else [other, scope]
+    kc.default_scopes[cid] = [other] + ([scope] if scope_state == "assigned" else [])
+
+    reg.bootstrap()
+    reg.bootstrap()
+
+    assert kc.default_scopes[cid] == ([other] if scope_state == "absent" else [other, scope])
+    assert kc.scope_puts == ([(cid, "admin-scope")] if scope_state == "unassigned" else [])
+    assert kc.mappings == {f"sa-{cid}": ["manage-clients"]}
+    assert len(kc.clients) == 3

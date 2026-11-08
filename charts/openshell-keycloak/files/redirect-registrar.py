@@ -167,6 +167,13 @@ def bootstrap():
     if not any(r.get("name") == "manage-clients" for r in have):
         kc("POST", f"/users/{account['id']}/role-mappings/clients/{management['id']}", [role])
         log(f"{client_id} may manage the clients of realm {realm}")
+    # Updated Keycloak versions require this scope as well as the role.
+    scopes = kc("GET", "/client-scopes") or []
+    admin_scope = next((s for s in scopes if s.get("name") == "kc-admin-api"), None)
+    if admin_scope is not None:
+        defaults = kc("GET", f"/clients/{client['id']}/default-client-scopes") or []
+        if not any(s.get("name") == "kc-admin-api" for s in defaults):
+            kc("PUT", f"/clients/{client['id']}/default-client-scopes/{admin_scope['id']}")
     secret = kc("GET", f"/clients/{client['id']}/client-secret")["value"]
     out = env("OUT")
     fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

@@ -33,7 +33,9 @@ echo "${0##*/} $*" >> "$CALLS"
 case "${0##*/}" in
   getsebool) echo 'container_use_devices --> on' ;;
   mknod) ln -s /dev/null "$3" ;;
-  nvidia-ctk) [[ -c "$DEV/nvidia-uvm" && -c "$DEV/nvidia-uvm-tools" ]] || exit 7 ;;
+  nvidia-ctk)
+    [[ -c "$DEV/nvidia-uvm" && -c "$DEV/nvidia-uvm-tools" ]] || exit 7
+    [[ "$*" == *"--feature-flag=no-additional-gids-for-device-nodes"* ]] || exit 8 ;;
 esac
 ''')
         stub.chmod(0o755)

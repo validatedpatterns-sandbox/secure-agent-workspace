@@ -110,6 +110,16 @@ checks `nvidia-smi -L`, sets SELinux `device_t` labels, and regenerates
 `/etc/cdi/nvidia.yaml`. Where capability nodes exist, it grants rootless
 Podman access and inserts their live major/minor numbers. Capability nodes
 are optional on non-MIG GPUs. Failure blocks the installer on a GPU enabled VM.
+The image masks the toolkit's automatic CDI refresh units so they cannot race
+this helper or publish a second specification. CDI generation uses the toolkit's
+`no-additional-gids-for-device-nodes` feature (toolkit 1.19 or newer), retaining
+OpenShell's resolved workload identity instead of injecting the video group.
+After a manual driver update, restart `saw-gpu-devices.service` to regenerate CDI.
+The governance filesystem policy permits the NVIDIA control, UVM, capability,
+and first GPU device paths. These rules allow access after CDI attachment;
+they do not attach a GPU to a CPU-only sandbox. For multiple GPUs, add each
+additional `/dev/nvidia<N>` path to your deployment's policy. Missing paths
+are tolerated by the existing `best_effort` Landlock setting.
 
 Check the rendered BuildConfig and the package installation logs. The image
 build may be long; finish it before a maintenance freeze.

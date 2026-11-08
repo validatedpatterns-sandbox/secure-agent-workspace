@@ -352,6 +352,9 @@ spec:
             --copy-in /build/saw-patch-cdi-caps.py:/usr/local/sbin/ \
             --copy-in /build/saw-gpu-devices.service:/etc/systemd/system/ \
             --run-command 'chmod 755 /usr/local/sbin/nvidia-driver-setup.sh /usr/local/sbin/saw-gpu-devices.sh /usr/local/sbin/saw-patch-cdi-caps.py' \
+            # The SAW boot helper owns CDI generation and capability-node access;
+            # a concurrent vendor refresh would restore different device settings.
+            --run-command 'systemctl mask nvidia-cdi-refresh.service nvidia-cdi-refresh.path' \
             --run-command 'systemctl enable nvidia-driver-setup.service saw-gpu-devices.service' \
             {{- end }}
             --copy-in /build/saw/verify-bundle:/usr/libexec/saw/ \

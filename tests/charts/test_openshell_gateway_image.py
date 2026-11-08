@@ -161,6 +161,7 @@ def test_gpu_enabled_bakes_podman_cdi_not_a_docker_runtime():
     assert "cuda-fedora44.repo" in text and "cuda-rhel10.repo" in text
     assert "systemctl enable nvidia-driver-setup.service" in text
     assert "saw-gpu-devices.service" in text
+    assert "systemctl mask nvidia-cdi-refresh.service nvidia-cdi-refresh.path" in text
     assert "nvidia-ctk runtime configure" not in text
 
 

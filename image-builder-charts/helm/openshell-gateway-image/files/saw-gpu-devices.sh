@@ -23,7 +23,9 @@ if (( ${#nodes[@]} == 0 )); then
 fi
 chcon -t device_t "${nodes[@]}"
 mkdir -p /etc/cdi
-nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+# Keep OpenShell's resolved workload identity: toolkit >=1.19 otherwise adds
+# the video group for DRI nodes, which its supplementary-group check rejects.
+nvidia-ctk cdi generate --feature-flag=no-additional-gids-for-device-nodes --output=/etc/cdi/nvidia.yaml
 # Non-MIG GPUs may expose no capability nodes.
 caps=(/dev/nvidia-caps/nvidia-cap*)
 if (( ${#caps[@]} )); then

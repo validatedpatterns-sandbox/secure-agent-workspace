@@ -118,6 +118,13 @@ def bootstrap():
         client = exact_client(url, realm, token, client_id, ctx)
     elif any(client.get(key) != value for key, value in spec.items()):
         raise RuntimeError("resolver client has unexpected settings")
+    admin_api_scopes = kc_call(url, realm, token, "/client-scopes", ctx=ctx) or []
+    admin_api_scope = next((s for s in admin_api_scopes if s.get("name") == "kc-admin-api"), None)
+    if admin_api_scope is not None:
+        default_scopes = kc_call(url, realm, token, f"/clients/{client['id']}/default-client-scopes", ctx=ctx) or []
+        if not any(s.get("name") == "kc-admin-api" for s in default_scopes):
+            kc_call(url, realm, token,
+                    f"/clients/{client['id']}/default-client-scopes/{admin_api_scope['id']}", "PUT", ctx=ctx)
     account = kc_call(url, realm, token, f"/clients/{client['id']}/service-account-user", ctx=ctx)
     management = exact_client(url, realm, token, "realm-management", ctx)
     management_id = management["id"]

@@ -13,20 +13,25 @@ OpenShell 0.1.x removed managed inference routing (`openshell inference`,
   Keyed endpoints require HTTPS on port 443 with a publicly trusted
   certificate. The gateway's governance profile separately permits the
   sandbox binary to reach that host.
-- The pattern ships no profile for a host it cannot know. **You add one**,
-  as a plain OpenShell profile file under `overrides/governance-profiles/`,
-  and the `governance-extra-profiles` application serves it next to the
-  shipped profiles. OpenShell recommends exactly this (one profile per
-  credential) over reusing the `openai` profile for another host.
+- The pattern publishes an example profile under
+  `overrides/governance-profiles/custom-inference.yaml`. Set its endpoint
+  to your approved host; `governance-extra-profiles` serves it next to the
+  shipped profiles. Publishing it alone grants no VM egress or credential
+  destination. Use one profile per credential rather than reusing the
+  `openai` profile for another host.
+
+This configures an agent to call an existing server; it does not deploy a
+model on the cluster. A tested hosted-API example uses `https://integrate.api.nvidia.com/v1` with model
+`nvidia/nemotron-3.5-lightning-30b-a3b` and an API key referenced from
+`~/.nvidia-api-key`; inference runs on NVIDIA's servers.
 
 ## Configure
 
-1. **The profile.** Copy the chart's example,
-   `charts/governance-policy/profiles/examples/custom-inference.yaml`, to
-   `overrides/governance-profiles/custom-inference.yaml` (shipped as that
-   same example), set `endpoints` to your server, and uncomment the
-   `configMapGenerator` in `overrides/governance-profiles/kustomization.yaml`
-   listing the file:
+1. **The profile.** Edit the existing
+   `overrides/governance-profiles/custom-inference.yaml` and set `endpoints`
+   to your server. Its file is already listed in the active
+   `configMapGenerator` in `overrides/governance-profiles/kustomization.yaml`;
+   no copy or uncomment step is needed:
 
    ```yaml
    id: custom-inference
@@ -75,8 +80,35 @@ OpenShell 0.1.x removed managed inference routing (`openshell inference`,
    `inference.baseUrl` must reference `{secretKeyRef: {name: inference, key: url}}`
    so the installer and proxy use the same host.
 
-5. Commit and push steps 1-3, wait for Argo CD, then restart the VM
-   (`make saw-restart`) so the installer applies the Secret.
+5. **Deploy and wait.** Run `./pattern.sh make load-secrets`, then
+   `make keycloak-add-users` to create any missing accounts from the local
+   user file. Commit and push steps 1-3 to the branch Argo CD watches.
+   Wait for `governance-extra-profiles`, `saw-<user>`, `saw-<user>-bom`, and
+   `saw-<user>-secrets` to be Synced/Healthy. A new VM applies its inputs on
+   boot; restart only an existing VM with
+   `make saw-restart OPENSHELL_SAW_NAME=<user>`. Follow
+   `make saw-logs OPENSHELL_SAW_NAME=<user>` until `apply: Done`.
+   Argo CD health is not proof that the in-VM installer finished.
+
+   The [README walkthrough](../README.md#custom-inference-provider) shows
+   the full command sequence and shared Secret example.
+
+### Open the notebook chat
+
+A GitOps entry does not automatically appear in the RHDH workspace catalog
+or create a Tekton run. The shipped custom-inference notebook also has no
+UI Route enabled. Use the documented CLI tunnel after `apply: Done`:
+
+```bash
+make saw-configure OPENSHELL_SAW_NAME=erin SAW_NS=saw-erin
+make openclaw-gui OPENSHELL_SAW_NAME=erin SAW_NS=saw-erin \
+  WORKSPACE=default SANDBOX_NAME=notebook GUI_PORT=28789
+```
+
+Replace `erin` and `saw-erin` with your user and namespace. Sign in as the
+workspace owner when prompted; `make keycloak-password KC_USER=erin`
+copies Erin's password using an available clipboard tool. Keep the GUI
+command running while using the browser.
 
 ### Changing the endpoint
 
@@ -114,6 +146,21 @@ stated (`openai`): the installer cannot infer it for a profile of your own.
   Custom keyed ports and in-cluster service-CA trust are follow-up work.
 - `inferenceTimeout` on a provider is no longer used: there is no gateway
   router to time out. Use the sandbox's `inference.timeoutSeconds`.
+
+### Keycloak compatibility
+
+Keycloak releases enforcing [Admin REST audience checks](https://www.keycloak.org/docs/26.8.2/upgrading/#admin-rest-api-now-enforces-an-audience-check)
+require both the Admin API audience and the built-in `kc-admin-api` scope
+on service-account tokens. SAW's updated bootstrap assigns it as a default
+scope to the owner resolver, redirect registrar, and the RHDH client when
+its catalog-reader service account is enabled. Older realms without that
+scope retain their existing behavior.
+
+Deploy that bootstrap update before creating new workspaces on these
+Keycloak releases. Roles alone are insufficient: HTTP 401 with
+`Expected audience not available in the token` indicates this compatibility
+issue, rather than missing custom-inference settings or a user login.
+The fix was tested with Red Hat build of Keycloak `26.6.9.redhat-00002`.
 
 ## Limitations
 

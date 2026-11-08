@@ -196,7 +196,7 @@ Two deployment paths are available:
 
 #### Option A: Validated Pattern (automated, GitOps)
 
-Deploys everything — operators, Vault, ESO, Keycloak, secrets, and a default sandbox — via ArgoCD.
+Deploys the platform — operators, Vault, ESO, Keycloak, and secrets — via Argo CD. No workspace VM is created until you add a user in step 7 or request a workspace through the portal.
 
 ```bash
 # 1. Fork, then clone your fork. Argo CD deploys from the branch you push
@@ -346,7 +346,10 @@ make whoami                   # Verify identity
 #     WEB_SEARCH_API_KEY is optional. Without it (and without an existing
 #     web-search Secret), saw-create disables the Brave Search provider.
 #     The target asks "Press Enter to set owner to '<you>', ..."; press Enter.
-#     To create a VM for someone else, pass OWNER=<name> OWNER_SUBJECT=<keycloak-user-id>.
+#     For another local Keycloak user, first run make keycloak-add-user KC_USER=<name>,
+#     then pass OWNER=<name>; the target resolves and verifies their user ID.
+#     For another owner with an external issuer, also pass a verified
+#     OWNER_SUBJECT=<keycloak-user-id>.
 # Optional, to enable web search:
 # read -r WEB_SEARCH_API_KEY < "$HOME/.brave-api-key"
 # export WEB_SEARCH_API_KEY
@@ -578,12 +581,62 @@ Use a model server of your own (vLLM, Ollama, or any OpenAI-compatible API) inst
 
    An in-cluster Service needs a narrow `networkPolicy.extraEgress` rule instead.
 
-4. **Select the profile** — give the user entry in `overrides/saw-users.yaml` `profiles: [custom-inference]`.
-5. **Add the Secret** — in `~/values-secret-secure-agent-workspace.yaml`, configure the `inference` Secret with `provider: custom-inference`, a `url` ending in `/v1`, `model`, and `api_key`.
+4. **Select the profile** — give the user entry in `overrides/saw-users.yaml` `profiles: [custom-inference]`. For example, add Erin alongside any existing users:
 
-A second endpoint with its own key needs its own profile `id` and a SAW-BOM provider named and typed after that id.
+   ```yaml
+   users:
+     # Keep existing user entries here.
+     - name: erin
+       profiles: [custom-inference]
+   ```
 
-Then `git push`, `./pattern.sh make load-secrets`, wait for Argo CD (`governance-extra-profiles`, `saw-<user>-bom`), and `make saw-restart OPENSHELL_SAW_NAME=<user>`. The installer log shows `Provider 'custom-inference': type 'custom-inference' is a governance-catalog profile` and OpenClaw onboarded with `--custom-base-url <your url>`.
+5. **Add the Secret** — update the existing `inference` entry under `secrets:` in `~/values-secret-secure-agent-workspace.yaml`. Set a `url` ending in `/v1`, the served `model`, and an `api_key` file reference:
+
+   ```yaml
+   - name: inference
+     fields:
+       - name: url
+         value: https://api.inference.example.com/v1
+       - name: model
+         value: <served-model>
+       - name: api_key
+         path: ~/.custom-inference-api-key
+   ```
+
+   `provider: custom-inference` is an optional check for a Secret dedicated to this profile. Omit the `provider` field when the same Secret also serves data-science workspaces. Keep this file and the key outside Git.
+
+A second endpoint with its own key needs its own profile `id` and a SAW-BOM provider named and typed after that id. This configures the agent to call an existing endpoint; it does not deploy a model server.
+
+Load the Secret, create any missing Keycloak accounts from the local user file, and push the configuration to the branch Argo CD watches:
+
+```bash
+./pattern.sh make load-secrets
+make keycloak-add-users
+git add overrides
+git commit -m "Configure custom inference for erin"
+git push
+oc -n vp-gitops get applications | grep -E 'governance-extra-profiles|saw-erin'
+```
+
+Wait for `governance-extra-profiles`, `saw-erin`, `saw-erin-bom`, and `saw-erin-secrets` to be Synced/Healthy. A **new VM** runs the installer on boot and needs no restart. For an **existing VM**, run `make saw-restart OPENSHELL_SAW_NAME=erin` after the updated profiles and Secret have synced. In either case, follow the installer until `apply: Done`:
+
+```bash
+make saw-logs OPENSHELL_SAW_NAME=erin
+```
+
+Argo CD health alone does not confirm the in-VM installer finished. The log shows `Provider 'custom-inference': type 'custom-inference' is a governance-catalog profile` and OpenClaw onboarded with `--custom-base-url <your url>`.
+
+To open the chat, configure the CLI and sign in as Erin, then open the notebook through a local tunnel:
+
+```bash
+make saw-configure OPENSHELL_SAW_NAME=erin SAW_NS=saw-erin
+make openclaw-gui OPENSHELL_SAW_NAME=erin SAW_NS=saw-erin \
+  WORKSPACE=default SANDBOX_NAME=notebook GUI_PORT=28789
+```
+
+`make keycloak-password KC_USER=erin` copies Erin's password using an available clipboard tool. Keep the GUI command running while using the browser. GitOps user entries do not automatically create RHDH catalog entries or Tekton runs; the shipped custom-inference profile also has no notebook UI Route enabled. The tunnel works without either.
+
+For Keycloak releases that enforce Admin REST audience checks, deploy the updated service-client bootstrap before creating workspaces; see [Keycloak compatibility](docs/custom-inference.md#keycloak-compatibility).
 
 **Option B (Quickstart)** — one command:
 

@@ -127,8 +127,12 @@ class KubernetesResourceVerifier:
             raise ContractError("runtime namespace belongs to another installation")
 
     def __call__(self, plan):
-        self.verify_shutdown(plan)
         self.verify_boundary(plan)
+        self.verify_attachments(plan)
+
+    def verify_attachments(self, plan):
+        """Frontend-owned Running passes already verified the boundary before opening the gateway."""
+        self.verify_shutdown(plan)
         for reference in plan["claims"]:
             obj = self.read("persistentvolumeclaim", reference["name"], plan["namespace"])
             meta = self._identity(obj, reference["uid"])

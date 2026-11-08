@@ -37,6 +37,9 @@ class Publications:
     def __call__(self, path):
         if not re.fullmatch(r"/api/v1/namespaces/saw-ctl-[a-f0-9]{16}/configmaps/[a-z0-9-]+", path):
             raise ProjectionError("publication is outside the workspace scope")
+        return self.get(path, publication=True)
+
+    def get(self, path, *, publication=False):
         token = (self.root / "token").read_text().strip()
         request = Request("https://kubernetes.default.svc" + path,
                           headers={"Authorization": "Bearer " + token})
@@ -44,28 +47,21 @@ class Publications:
             with self.opener.open(request, timeout=20) as response:
                 body = response.read(LIMIT + 1)
             if len(body) > LIMIT:
-                raise ProjectionError("publication exceeds the size limit")
+                raise ProjectionError("workspace API response exceeds the size limit")
             return json.loads(body)
         except HTTPError as exc:
-            code = exc.code
             exc.close()
-            # The foundation grants a named reader after creating its namespace.
-            if code in (403, 404):
-                namespace = path.split("/")[4]
-                probe = Request("https://kubernetes.default.svc/api/v1/namespaces/"+namespace,
-                                headers={"Authorization": "Bearer "+token})
-                try:
-                    with self.opener.open(probe, timeout=20):
-                        pass
-                except HTTPError as missing:
-                    status = missing.code
-                    missing.close()
-                    if status == 404:
-                        return {}  # first projection, before foundation creation
-                raise ProjectionError("existing foundation publication is unavailable")
-            raise ProjectionError("publication API request failed") from None
+            if exc.code == 404 or publication and exc.code == 403:
+                return {}
+            raise ProjectionError("workspace API request failed") from None
         except (URLError, OSError, ValueError):
-            raise ProjectionError("publication API is unavailable or invalid") from None
+            raise ProjectionError("workspace API is unavailable or invalid") from None
+
+    def previous(self, owner):
+        ns = os.environ["ARGO_NAMESPACE"]
+        appset = os.environ["PROJECTOR_NAME"]
+        app = self.get(f"/apis/argoproj.io/v1alpha1/namespaces/{ns}/applications/{appset}-{owner['name']}")
+        return workspace.previous_child(app, appset, owner)
 
 
 def parameters(config, catalog, read):
@@ -90,11 +86,11 @@ def parameters(config, catalog, read):
         if owner.get("values", {}).get("deployment", {}).get("mode", "vm") != "container":
             raise ProjectionError("standalone container projection received another backend")
         site = sites.get(name)
-        if not site:
-            raise ProjectionError("container site is missing")
         try:
-            values = workspace.project_workspace(owner, defaults, site, catalog, read)
-        except (workspace.WorkspaceError, KeyError, TypeError, ValueError):
+            values = workspace.project_workspace(owner, defaults, site, catalog, read, getattr(read, "previous", None))
+        except workspace.WorkspaceError as exc:
+            raise ProjectionError(str(exc)) from None
+        except (KeyError, TypeError, ValueError):
             raise ProjectionError("workspace configuration or enrollment is invalid") from None
         # `values` is reserved by the ApplicationSet plugin protocol.
         result.append({"name": name, "revision": values.get("global", {}).get("targetRevision", ""),
@@ -128,7 +124,9 @@ def server(config_file, catalog_file, token_file, read, address):
                 config = json.loads(Path(config_file).read_text())
                 catalog = json.loads(Path(catalog_file).read_text())["profiles"]
                 output = parameters(config, catalog, read)
-            except (ProjectionError, OSError, ValueError, KeyError, TypeError):
+            except ProjectionError as exc:
+                return self.send(503, {"error": str(exc)})
+            except (OSError, ValueError, KeyError, TypeError):
                 # Returning an empty list on error would prune live workspaces.
                 return self.send(503, {"error": "workspace projection is not ready"})
             self.send(200, {"output": {"parameters": output}})

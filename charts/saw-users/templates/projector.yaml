@@ -15,6 +15,7 @@
 {{- $_ := set $config "users" $users }}
 {{- range $user := $users }}
 {{- $site := index $config.containerSites $user.name }}
+{{- if not $site }}{{ fail (printf "user %q: deployment.mode=container requires a containerSites entry" $user.name) }}{{ end }}
 {{- $_ := set $site "observer" (dict "namespace" $.Release.Namespace "serviceAccount" $name) }}
 {{- end }}
 {{- $identity := dict "namespace" .Release.Namespace "argoNamespace" $argo "name" $name "owner" $owner }}
@@ -58,21 +59,21 @@ data:
 {{ $identityCode | indent 4 }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata: {name: {{ $name }}}
+kind: Role
+metadata: {name: {{ $name }}, namespace: {{ $argo }}}
 rules:
-- apiGroups: [""]
-  resources: [namespaces]
+- apiGroups: [argoproj.io]
+  resources: [applications]
   verbs: [get]
   resourceNames:
 {{- range $user := $users }}
-  - saw-ctl-{{ $user.registration }}
+  - {{ $name }}-{{ $user.name }}
 {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata: {name: {{ $name }}}
-roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ $name }}}
+kind: RoleBinding
+metadata: {name: {{ $name }}, namespace: {{ $argo }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $name }}}
 subjects: [{kind: ServiceAccount, name: {{ $name }}, namespace: {{ .Release.Namespace }}}]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -191,7 +192,10 @@ spec:
       - name: projector
         image: {{ .Values.projection.image }}
         command: [python3, /source/projector.py]
-        env: [{name: PYTHONDONTWRITEBYTECODE, value: '1'}]
+        env:
+        - {name: PROJECTOR_NAME, value: {{ $name }}}
+        - {name: ARGO_NAMESPACE, value: {{ $argo }}}
+        - {name: PYTHONDONTWRITEBYTECODE, value: '1'}
         ports: [{name: http, containerPort: 4355}]
         readinessProbe: {httpGet: {path: /healthz, port: http}}
         resources: {requests: {cpu: 10m, memory: 64Mi}, limits: {memory: 128Mi}}

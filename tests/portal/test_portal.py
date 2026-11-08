@@ -1615,6 +1615,10 @@ def test_concurrent_create_cannot_replace_a_different_mode(portal, world):
 @pytest.mark.parametrize("mode", ["vm", "container"])
 def test_mode_serializes_through_registry_to_gitops(portal, mode):
     entry = portal.registry_entry("alice", "data-science", GEN[0], mode)
+    if mode == "container":
+        with pytest.raises(portal.PortalError, match="container site is missing"):
+            portal.generator_params([entry], {})
+        return
     [params] = portal.generator_params([entry], {"defaults": {"openshellSaw": {
         "deployment": {"mode": "container"}}}})
     values = json.loads(params["values"])
@@ -1894,8 +1898,63 @@ def test_failed_vault_write_retains_reserved_generation(portal, world, monkeypat
     assert portal.entry_generation("alice", entry) == GEN[0]
     assert not fake.vault
     assert portal.list_workspaces(portal.kube(), "saw-portal") == []
+    assert portal.list_workspaces(portal.kube(), "saw-portal", deleting=True) == [entry]
     monkeypatch.setattr(portal, "vault_client", real)
     fake.request("saw-req-resume", data)
     assert portal.main(["create","saw-req-resume"]) == 0
     assert portal.entry_generation("alice", portal.read_entry(fake.objects[REGISTRY])) == GEN[0]
     assert list(fake.vault) == [f"{KEYS}/inference"]
+
+
+def test_incomplete_update_holds_last_committed_projection_and_exposes_retry(portal, world, monkeypatch):
+    fake, signer = world
+    fake.request("saw-req-initial", ds_request(signer))
+    assert portal.main(["create", "saw-req-initial"]) == 0
+    previous = portal.read_entry(fake.objects[REGISTRY])
+    update = {**previous, "profiles": ["different"]}  # only public registration data
+    pending = portal.reserve_credentials(portal.kube(), "saw-portal", "saw-ws-alice", fake.objects[REGISTRY], update, "alice")
+    assert portal.list_workspaces(portal.kube(), "saw-portal") == [previous]
+    assert portal.list_workspaces(portal.kube(), "saw-portal", deleting=True) == [update]
+    holder = pending["metadata"]["annotations"][portal.CREDENTIAL_WRITER]
+    run_path = "/apis/tekton.dev/v1/namespaces/saw-portal/pipelineruns/" + holder
+    for run, phase in [({}, "failed"), ({"metadata":{"name":holder}}, "publishing"),
+                       ({"status":{"conditions":[{"type":"Succeeded","status":"False"}]}}, "failed")]:
+        if run:
+            fake.objects[run_path] = run
+        assert portal.workspace_status(portal.kube(), "alice", {}, "saw-portal", "argo", "")["phase"] == phase
+    retry = portal.reserve_credentials(portal.kube(), "saw-portal", "saw-ws-alice", pending, update, "alice")
+    assert portal.committed_entry(retry) == previous
+
+
+def test_catalog_probe_is_async_bounded_and_scoped_to_registration(portal):
+    cache = portal.CatalogRouteCache(workers=2, capacity=4, ttl=30)
+    release = threading.Event()
+    calls = []
+    def slow(url):
+        calls.append(url)
+        return release.wait(5)
+    try:
+        for n in range(40):
+            assert not cache.probe(("owner","registration"), f"https://route-{n}", slow)
+        assert len(cache.entries) == 4
+        release.set()
+        for future in cache.entries.values():
+            assert future.result(timeout=5)[1]
+        assert cache.probe(("owner","registration"), "https://route-0", slow)
+        assert not cache.probe(("owner","new-registration"), "https://route-0", slow)
+    finally:
+        release.set()
+        cache.pool.shutdown()
+
+
+def test_dedicated_endpoint_excludes_renamed_and_additional_tool_secrets(portal, monkeypatch):
+    monkeypatch.setenv("SAW_DEPLOYMENT_MODES", '["vm","container"]')
+    profile = {"workspaces": [], "dedicatedEndpointSecrets":["model"],
+               "secrets":{key:{"provider":"test","providers":["test"],"fields":[
+                   {"key":"api_key","kind":"secret","required":True}]}
+                   for key in ("model","search-renamed","another-tool")}}
+    data = {"profile":"p","deploymentMode":"container","model.api_key":"fixture"}
+    _, values = portal.parse_request(data, {"p":profile})
+    assert set(values) == {"model"}
+    with pytest.raises(portal.PortalError, match="search-renamed"):
+        portal.parse_request({**data,"deploymentMode":"vm"}, {"p":profile})

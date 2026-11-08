@@ -179,3 +179,69 @@ def test_cli_previous_intent_update_validation(inputs, cli, tmp_path):
     result = subprocess.run(command + ["--previous-intent", str(previous)], env=env, capture_output=True, text=True)
     assert result.returncode == 1 and result.stdout == ""
     assert "generation" in result.stderr
+
+
+def test_restart_generation_round_trip_and_rollback(inputs):
+    first = build(inputs, generation=2, restart_generation=2)
+    retry = build(inputs, generation=2, previous=first)
+    assert retry == first
+    update = build(inputs, generation=3, previous=first, desired_state="Stopped")
+    assert json.loads(update["data"]["intent.json"])["restartGeneration"] == 2
+    for value in [True, -1, 1, 4]:
+        with pytest.raises(IntentError, match="restart generation"):
+            build(inputs, generation=3, restart_generation=value, previous=first)
+    legacy = build(inputs)
+    assert "restartGeneration" not in json.loads(build(inputs, generation=2, previous=legacy)["data"]["intent.json"])
+
+
+def test_helm_lifecycle_intent_round_trips_through_cli_and_controller(source, inputs, tmp_path, capsys):
+    import base64
+    from types import SimpleNamespace
+    from saw_kubernetes.compiler import compile_profile_files
+    from saw_kubernetes.controller import Controller, Scope
+    from saw_kubernetes.intent import main
+    from .test_openclaw import agent
+
+    root = Path(__file__).resolve().parents[2]
+    profile, bindings = inputs
+    agent(source)
+    profile["metadata"]["name"] = "saw-bom-profiles"
+    profile["data"] = flat_profile(source)
+    site = yaml.safe_load((root / "tests/fixtures/container-site.yaml").read_text())["portal"]["containerSites"]["alice"]
+    bindings["ownerSubject"] = site["subject"]
+    slot = bindings["bindings"]["default/toolbox"]
+    slot["workspace"]["claimName"] = "workspace-alice"
+    slot["toolGate"] = {
+        "ownerLogin": "alice", "receiptKey": base64.b64encode(bytes.fromhex("302a300506032b6570032100") + bytes(32)).decode(),
+        "trusted": {"claimName": "saw-gate-alice", "uid": "gate-uid", "readOnly": True},
+        "audit": {"claimName": "saw-audit-alice", "uid": "audit-uid", "readOnly": False}}
+    original = build(inputs, generation=2, restart_generation=1, pin_plan=True)
+    reg = "a8cb6cbd0eb62f31"
+    auto = site["automaticEnrollment"]
+    site.update(lifecycleVersion=1, restartGeneration=1,
+                targets={"default/toolbox": dict(workspace="default", sandbox="toolbox", ui=False, base="alice",
+                                                 relayID=reg, subjectMap="saw-portal-relay-subject")},
+                enrollment=dict(registration=reg, revision=auto["revision"], image=auto["image"],
+                                buildNamespace=auto["buildNamespace"], approved={},
+                                intent=json.loads(original["data"]["intent.json"])))
+    values = {"site": site, "owner": "alice", "ownerSubject": site["subject"], "installationID": bindings["ownerID"],
+              "registration": reg, "intentGeneration": 2, "vaultPrefix": "secret/data/hub/saw-alice/"+reg,
+              "global": {"repoURL":"https://example.test/repo", "targetRevision":"test",
+                         "clusterDomain":"cluster.example.test", "vpArgoNamespace":"vp-gitops"}}
+    rendered = subprocess.run(["helm","template","alice",str(root/"charts/saw-portal-container"),
+                               "--namespace","saw-alice","-f","-"], input=json.dumps(values),
+                              capture_output=True, text=True, check=True)
+    previous, = [obj for obj in yaml.safe_load_all(rendered.stdout) if obj and obj["kind"] == "ConfigMap"
+                 and obj["metadata"]["name"] == "saw-runtime-intent"]
+    for name, data in (("profile",profile), ("bindings",bindings), ("previous",previous)):
+        (tmp_path/(name+".json")).write_text(json.dumps(data))
+    assert main(["--profile-configmap",str(tmp_path/"profile.json"),"--bindings",str(tmp_path/"bindings.json"),
+                 "--previous-intent",str(tmp_path/"previous.json"),"--name","saw-runtime-intent",
+                 "--generation","2","--pin-plan"]) == 0
+    replay = json.loads(capsys.readouterr().out)
+    assert json.loads(replay["data"]["intent.json"]) == json.loads(previous["data"]["intent.json"])
+    replay["metadata"].update(uid="intent-uid", resourceVersion="2")
+    api = SimpleNamespace(get={"saw-bom-profiles":profile,"saw-runtime-intent":replay}.get)
+    scope = Scope("saw-alice","saw-bom-profiles","saw-runtime-intent","saw-runtime-status", bindings["ownerID"])
+    ctl = Controller(api, scope, tmp_path, compile_profile_files, lambda *args: None, lambda plan: None)
+    assert ctl._snapshot()[0]["restartGeneration"] == 1

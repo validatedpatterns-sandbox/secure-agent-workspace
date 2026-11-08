@@ -189,6 +189,7 @@ class FakeGateway:
                                        "status": {"phase": "WORKSPACE_PHASE_ACTIVE"}}}
         self.members, self.providers, self.sandboxes = {}, {}, {}
         self.fail_after_create = False
+        self.sandbox_receipts = {}
 
     def call(self, method, request):
         self.calls.append((method, copy.deepcopy(request)))
@@ -225,10 +226,14 @@ class FakeGateway:
                 raise RpcError("NOT_FOUND")
             return {"sandbox": copy.deepcopy(self.sandboxes[key])}
         if method == "CreateSandbox":
+            rid = request["request_id"]
+            if rid in self.sandbox_receipts:
+                return {"sandbox": copy.deepcopy(self.sandbox_receipts[rid])}
             obj = {"metadata": {"name": request["name"], "workspace": ws, "id": str(uuid.uuid4()),
                                 "labels": request["labels"], "annotations": request["annotations"]},
                    "spec": copy.deepcopy(request["spec"]), "status": {"phase": "SANDBOX_PHASE_PROVISIONING"}}
             self.sandboxes[key] = obj
+            self.sandbox_receipts[rid] = copy.deepcopy(obj)
             if self.fail_after_create:
                 self.fail_after_create = False
                 raise RpcError("DEADLINE_EXCEEDED")
@@ -277,7 +282,19 @@ def test_ambiguous_create_and_process_restart_do_not_duplicate(runtime):
     assert reconciler.reconcile(plan, generation=1)["phase"] == "Retry"
     restarted = Reconciler(gateway, reconciler.store.directory, lambda p: None)
     assert restarted.reconcile(plan, generation=1)["phase"] == "Pending"
-    assert len([c for c in gateway.calls if c[0] == "CreateSandbox"]) == 1
+    calls = [r["request_id"] for method, r in gateway.calls if method == "CreateSandbox"]
+    assert len(calls) == 2 and len(set(calls)) == 1 and len(gateway.sandboxes) == 1
+
+
+def test_stop_immediately_after_create_uses_durable_receipt(runtime):
+    plan, gateway, reconciler, _ = runtime
+    while not gateway.sandboxes:
+        assert reconciler.reconcile(plan, generation=1)["phase"] == "Pending"
+    sb = gateway.sandboxes[("default", "toolbox")]
+    assert reconciler.store.load()["objectIDs"]["sandbox/default/toolbox"] == sb["metadata"]["id"]
+    sb["status"]["phase"] = "SANDBOX_PHASE_READY"
+    assert reconciler.reconcile(plan, generation=2, desired_state="Stopped")["phase"] == "Pending"
+    assert gateway.calls[-1][0] == "StopSandbox"
 
 
 def test_intent_generations_make_repeated_stop_start_unambiguous(runtime):
@@ -569,3 +586,32 @@ def test_transient_retries_have_bounded_backoff(runtime):
 def test_invalid_or_insecure_grpc_endpoint_fails_before_identity_read(endpoint):
     with pytest.raises(ContractError, match="gateway endpoint"):
         GrpcGateway(endpoint, "/does-not-exist", "/does-not-exist", "/does-not-exist")
+
+
+def test_lost_sandbox_reply_cannot_create_on_stop_or_adopt_a_replacement(runtime):
+    from saw_kubernetes.reconcile import MissingSandboxReceipt
+    plan, gateway, core, _ = runtime
+    core.reconcile(plan, generation=1)
+    gateway.fail_after_create = True
+    assert core.reconcile(plan, generation=1)["phase"] == "Retry"
+    with pytest.raises(MissingSandboxReceipt):
+        core.reconcile(plan, generation=2, desired_state="Stopped")
+    assert sum(m == "CreateSandbox" for m, _ in gateway.calls) == 1
+    gateway.sandboxes[("default", "toolbox")]["metadata"]["id"] = "replacement"
+    with pytest.raises(ContractError, match="replacement"):
+        core.reconcile(plan, generation=3)
+    assert "sandbox/default/toolbox" not in core.store.load()["objectIDs"]
+
+
+def test_frontend_attachment_check_preserves_standalone_boundary_requirement():
+    reads = []
+    boundary_calls = []
+    plan = {"namespace":"saw-one", "namespaceUID":"uid", "ownerID":"owner", "claims":[], "runtimeClass":{"name":""}}
+    def read(kind, name, namespace=None):
+        reads.append((kind, name))
+        return {"metadata":{"uid":"uid","labels":{OWNER:"owner"}}}
+    verifier = KubernetesResourceVerifier(read, lambda p: boundary_calls.append(p))
+    verifier.verify_attachments(plan)
+    assert reads == [("namespace","saw-one")] and not boundary_calls
+    verifier(plan)
+    assert len(reads) == 2 and boundary_calls == [plan]

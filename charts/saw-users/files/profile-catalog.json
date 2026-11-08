@@ -54,6 +54,9 @@
       ]
     },
     "custom-inference": {
+      "dedicatedEndpointSecrets": [
+        "inference"
+      ],
       "description": "Agent workspace backed by a custom OpenAI-compatible endpoint (vLLM, Ollama, ...)",
       "harnessRequired": false,
       "secrets": {

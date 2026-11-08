@@ -31,6 +31,10 @@ class RpcError(Exception):
         super().__init__(self.code)
 
 
+class MissingSandboxReceipt(ContractError):
+    """Stopping an ambiguous create requires a verified receipt from a Running pass."""
+
+
 class Busy(Exception):
     pass
 
@@ -282,6 +286,8 @@ class Reconciler:
                 continue  # No resource is created to satisfy Stopped intent.
             workspace_obj = self._get("GetWorkspace", {"name": workspace}, "workspace")
             workspace_ref = f"workspace//{workspace}"
+            if ref not in ids and ref in state.get("pendingSandboxCreates", {}):
+                raise MissingSandboxReceipt("start to recover the sandbox creation receipt before stopping")
             if (ref not in ids or workspace_ref not in ids or workspace_obj is None
                     or sandbox.get("metadata", {}).get("id") != ids[ref]
                     or workspace_obj.get("metadata", {}).get("id") != ids[workspace_ref]):
@@ -387,21 +393,37 @@ class Reconciler:
         sname = sandbox["name"]
         ref = f"sandbox/{ws['name']}/{sname}"
         existing = self._get("GetSandbox", {**scope, "name": sname}, "sandbox")
-        if existing is None:
-            if ref in state.get("objectIDs", {}):
+        creates = state.setdefault("pendingSandboxCreates", {})
+        pending_create = creates.get(ref)
+        if existing is None or pending_create is not None:
+            if existing is None and ref in state.get("objectIDs", {}):
                 raise ContractError("managed sandbox disappeared; refuse implicit recreation")
             if desired_state == "Stopped":
-                # A stopped new intent never starts a workload to stop it again.
                 pending.append(ref)
                 return False
-            self._mutate("CreateSandbox", {**scope, **sandbox}, plan, generation)
+            body = {**scope, **sandbox}
+            signature = digest(body)
+            if pending_create is None:
+                pending_create = {"generation": generation, "digest": signature}
+                creates[ref] = pending_create
+                self.store.save(state)
+            if (not isinstance(pending_create, dict) or pending_create.get("digest") != signature
+                    or type(pending_create.get("generation")) is not int or pending_create["generation"] < 1):
+                raise ContractError("unacknowledged sandbox create changed; explicit recovery required")
+            reply = self._mutate("CreateSandbox", body, plan, pending_create["generation"])
+            created = (reply or {}).get("sandbox")
+            if not isinstance(created, dict):
+                raise ContractError("sandbox creation receipt unavailable; explicit recovery required")
+            if existing and existing["metadata"]["id"] != created.get("metadata", {}).get("id"):
+                raise ContractError("same-name replacement detected during create replay")
+            self._verify_sandbox(created, sandbox)
+            self._identity("sandbox", ws["name"], sname, created, plan, state)
+            del creates[ref]
+            self.store.save(state)
             pending.append(ref)
             return False
+        self._verify_sandbox(existing, sandbox)
         self._identity("sandbox", ws["name"], sname, existing, plan, state)
-        if not self._sandbox_spec_matches(existing.get("spec", {}), sandbox["spec"]):
-            raise ContractError("sandbox configuration drift; migration is not implemented")
-        if existing.get("metadata", {}).get("annotations", {}).get(REVISION) != sandbox["annotations"][REVISION]:
-            raise ContractError("sandbox desired revision mismatch")
         phase = existing.get("status", {}).get("phase")
         if phase == "SANDBOX_PHASE_ERROR":
             raise ContractError("sandbox reports an error; inspect through authorized diagnostics")
@@ -414,3 +436,9 @@ class Reconciler:
             self._mutate("StopSandbox", {**scope, "name": sname}, plan, generation)
         pending.append(ref)
         return False
+
+    def _verify_sandbox(self, observed, desired):
+        if not self._sandbox_spec_matches(observed.get("spec", {}), desired["spec"]):
+            raise ContractError("sandbox configuration drift; migration is not implemented")
+        if observed.get("metadata", {}).get("annotations", {}).get(REVISION) != desired["annotations"][REVISION]:
+            raise ContractError("sandbox desired revision mismatch")

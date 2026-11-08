@@ -367,8 +367,15 @@ The projector reads the immutable enrollment and relay publications; no one
 copies generated intent or resource UIDs back into Git. Argo then enables the
 reconciler, prepared mounts and owner-only browser relay. `make saw-create`
 waits for the same current-generation, BOM and browser-readiness conditions as
-RHDH. A failed API read or malformed publication returns a projection error,
-not an empty workspace list that could prune working applications.
+RHDH. During bootstrap a missing enrollment or relay subject is expected. Both
+projectors can read their existing generated Application to distinguish bootstrap
+from a lost publication. For the same owner, registration and installation, they
+retain the exact prior child parameters if an enrolled binding or published relay
+subject disappears. Other declared owners continue to update. An unreadable
+child, malformed enrollment or ownership mismatch fails projection. Removal of
+a declared static owner remains an intentional prune. Static sites must sync the
+new namespaced Role granting GET on their named children before using the updated
+projector. No migration of ApplicationSets or child ownership is required.
 If the required Keycloak owner lookup fails, the shared VM/container projection
 also stops until lookup recovers. An unavailable identity service must not be
 interpreted as a missing owner or an empty membership list.
@@ -491,3 +498,25 @@ The Task reads the Tekton-owned `tekton.dev/pipelineRun` Pod label through the
 downward API to identify its credential reservation. If a pending writer disappears, inspect its PipelineRun and the owned
 Vault generation before clearing the writer annotation. A missing holder fails
 closed. A terminated failed run can be retried for the same registration.
+
+
+### Interrupted creates and updates
+
+RHDH reserves the registration before writing credentials. The catalog keeps
+the owner component visible during publication. A terminal writer with an
+incomplete reservation displays retry/delete instructions. A missing writer
+requires operator diagnosis. On an interrupted update, GitOps continues to
+project the last committed public configuration. Retry the create form with
+all required inputs to finish the same registration. Vault writes to multiple
+secrets are independent; an earlier write may already be visible to ESO.
+
+The reconciler records the ID from a successful sandbox create before waiting
+for readiness. It replays an interrupted create with the original request ID
+on a Running pass. If shutdown encounters an outstanding create with no proven
+receipt, its reason is `StartToRecoverSandboxReceipt`. Request start to recover
+the receipt, then stop. Shutdown will never create a missing sandbox.
+
+The intent CLI accepts `--restart-generation`. When updating with
+`--previous-intent`, omitting the option preserves the previous value,
+including absence on legacy intents. The value ranges from zero through the
+intent generation and cannot decrease.

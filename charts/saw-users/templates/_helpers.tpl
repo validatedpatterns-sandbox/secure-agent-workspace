@@ -470,7 +470,7 @@ openshellValues. Keep omission as vm without changing existing rendered values. 
 {{- if or (not $u.ownerSubject) (ne $u.ownerSubject $site.subject) (not (regexMatch "^[0-9a-f]{16}$" (default "" $u.registration))) (ne (len ($u.profiles | default list)) 1) (not (hasKey $catalog $profile)) (not $approved) (not $u.pruneOnRemove) -}}
 {{- fail "container requires verified owner subject, scoped registration, approved BOM profile and foreground cleanup" -}}
 {{- end -}}
-{{- else if ne $mode "vm" -}}
-{{- fail (printf "deployment.mode=%s is not implemented in this revision; no VM fallback (see docs/container-workspaces.md)" $mode) -}}
+{{- else if eq $mode "container" -}}
+{{- fail (printf "user %q: deployment.mode=container requires a containerSites entry" .user.name) -}}
 {{- end -}}
 {{- end -}}

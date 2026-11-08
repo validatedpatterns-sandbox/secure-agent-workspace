@@ -100,6 +100,10 @@ def enrolled_site(site, ws, read):
         if data:
             raise WorkspaceError("cannot disable enrollment of a bound workspace; use desiredState")
         return fresh
+    for key, kind in (("reference", dict), ("relay", dict), ("revision", str),
+                      ("image", str), ("buildNamespace", str)):
+        if not isinstance(a.get(key), kind) or not a[key]:
+            raise WorkspaceError(f"container site for {ws['name']} requires automaticEnrollment.{key}")
     if not data:
         return fresh
     bound=json.loads(data["binding.json"])
@@ -119,7 +123,58 @@ def enrolled_site(site, ws, read):
     return fresh
 
 
-def project_workspace(workspace, defaults, site, catalog, read=None):
+def previous_child(application, appset, owner):
+    """Read only the public values of the child controlled by this ApplicationSet."""
+    if not application:
+        return None
+    meta = application["metadata"]
+    if (meta.get("deletionTimestamp") or meta.get("labels", {}).get("openshell.pattern/owner") != owner["name"]
+            or not any(ref.get("apiVersion") == "argoproj.io/v1alpha1" and ref.get("kind") == "ApplicationSet"
+                       and ref.get("name") == appset and ref.get("controller") is True for ref in meta.get("ownerReferences", []))):
+        raise WorkspaceError("cannot verify existing workspace Application ownership")
+    source = application["spec"]["source"]
+    if source.get("path") != "charts/saw-users":
+        raise WorkspaceError("unexpected workspace Application source")
+    values = json.loads(source["helm"]["values"])
+    users = values["users"]
+    if len(users) != 1 or any(users[0].get(k) != owner.get(k) for k in ("name", "installationID", "registration", "ownerSubject")):
+        raise WorkspaceError("existing Application belongs to a different registration")
+    if not isinstance(values, dict) or values["global"]["targetRevision"] != source["targetRevision"]:
+        raise WorkspaceError("existing Application revision does not match its values")
+    return values
+
+
+def project_workspace(workspace, defaults, site, catalog, read=None, previous=None):
+    try:
+        values = _project_workspace(workspace, defaults, site, catalog, read)
+        name = workspace["name"]
+        projected = values.get("containerSites", {}).get(name, {})
+        if previous and projected and site.get("automaticEnrollment"):
+            subjects = projected.get("subjects", {})
+            incomplete = not projected.get("enrollment") or any(
+                target.get("ui") and not subjects.get(target["subjectMap"]) for target in projected["targets"].values())
+            if incomplete:
+                retained = previous(workspace)
+                if retained:
+                    old = retained["containerSites"][name]
+                    if (old.get("enrollment") and not projected.get("enrollment") or
+                            any(sub and not subjects.get(key) for key, sub in old.get("subjects", {}).items())):
+                        # Returning the exact existing parameters holds only this child;
+                        # omitting it could tell the static ApplicationSet to prune it.
+                        return retained
+        return values
+    except WorkspaceError:
+        raise
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        # Inputs include operator configuration and immutable API publications.
+        # Do not include arbitrary values (especially JSON bodies) in diagnostics.
+        detail = f"missing {exc.args[0]}" if isinstance(exc, KeyError) and exc.args[0] in {
+            "subject", "registration", "installationID", "reference", "allowHosts", "bindings",
+            "binding.json", "profileRef", "sha256", "initialModelInputs"} else "invalid site or publication"
+        raise WorkspaceError(f"workspace {workspace.get('name', '?')}: {detail}") from None
+
+
+def _project_workspace(workspace, defaults, site, catalog, read=None):
     """Project an authenticated registration into common saw-users chart values.
 
     Entry points resolve the owner, choose a registration and load any public
@@ -142,9 +197,11 @@ def project_workspace(workspace, defaults, site, catalog, read=None):
     values = {**{k:v for k,v in defaults.items() if k != "workspaceRevisions"}, "users": [ws]}
     if ws.get("name") in revisions:
         values["global"] = {**defaults.get("global", {}), "targetRevision": revisions[ws["name"]]}
-    if mode != "container" or not site:
+    if mode != "container":
         return values
-    if not site or ws.get("ownerSubject") != site.get("subject"):
+    if not isinstance(site, dict) or not site:
+        raise WorkspaceError(f"container site is missing for {ws['name']}")
+    if ws.get("ownerSubject") != site.get("subject"):
         raise WorkspaceError("container site must bind the resolved owner subject")
     automatic = site.get("automaticEnrollment", {})
     selected, *extra = ws.get("profiles", []) or [None]

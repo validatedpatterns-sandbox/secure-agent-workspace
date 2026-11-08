@@ -170,6 +170,7 @@ def catalog():
     out = {}
     for pdir in sorted(p for p in PROFILES.iterdir() if p.is_dir()):
         workspaces, secrets, descriptions = [], {}, []
+        endpoint_secrets = set()
         # The default workspace first: its description is the profile's.
         for wdir in sorted((w for w in pdir.iterdir() if w.is_dir()),
                            key=lambda w: (w.name != "default", w.name)):
@@ -228,6 +229,13 @@ def catalog():
                     fields = list(sandbox_fields(sb, {p["name"]: p for p in providers}))
                 except ValueError as exc:
                     raise ValueError(f"{(wdir / 'sandbox.yaml').relative_to(ROOT)}: {exc}") from None
+                if secret_ref(inference.get("baseUrl")) and inference.get("providerRef") == "custom-inference":
+                    provider = next((p for p in providers if p["name"] == inference["providerRef"]
+                                     and p.get("enabled", True)), None)
+                    if not provider or not provider.get("credentialSecret"):
+                        raise ValueError("dedicated endpoint requires a configured inference credential")
+                    endpoint_secrets.add(provider["credentialSecret"])
+                    endpoint_secrets.update(secret for secret, _ in fields)
                 for secret, f in fields:
                     entry = secrets.setdefault(secret, {"providers": [], "fields": []})
                     if f["key"] not in {x["key"] for x in entry["fields"]}:
@@ -241,6 +249,8 @@ def catalog():
                           "harnessRequired": any(sb["enabled"] and sb["harnessRequired"]
                                                  for ws in workspaces if ws["enabled"]
                                                  for sb in ws["sandboxes"])}
+        if endpoint_secrets:
+            out[pdir.name]["dedicatedEndpointSecrets"] = sorted(endpoint_secrets)
     return {"profiles": out}
 
 
@@ -388,15 +398,14 @@ def render_template(cat, for_user=False):
                 if field.get("required"):
                     required.append(name)
         case = {"properties": props, "required": required}
-        if any(sb.get("endpointInput") for ws in prof["workspaces"] for sb in ws["sandboxes"]):
-            # The keyed custom-endpoint container has one credential destination.
-            # Keep web-search fields on the existing VM form only.
-            search = {form_name("web-search", f["key"]) for f in prof["secrets"].get("web-search", {}).get("fields", [])}
-            if search:
-                vm_fields = {k: props.pop(k) for k in sorted(search)}
-                case["required"] = [k for k in required if k not in search]
+        if "dedicatedEndpointSecrets" in prof:
+            excluded = {form_name(sname, field["key"]) for sname, item in prof["secrets"].items()
+                        if sname not in prof["dedicatedEndpointSecrets"] for field in item["fields"]}
+            if excluded:
+                vm_fields = {key: props.pop(key) for key in sorted(excluded)}
+                case["required"] = [key for key in required if key not in excluded]
                 case["allOf"] = [{"if": {"properties":{"deploymentMode":{"const":"vm"}}},
-                                  "then": {"properties":vm_fields, "required":[k for k in required if k in search]}}]
+                                  "then": {"properties":vm_fields, "required":[key for key in required if key in excluded]}}]
         one_of.append(case)
     names = sorted(profiles)
     template = {

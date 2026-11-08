@@ -43,7 +43,7 @@ flowchart TD
 | VM `apply_bom.py` | Retains VM installation, Podman, guest files and VM-specific lifecycle operations. The signed installer embeds the shared engine bytes. |
 | Common `workspace.py` | Projects a registration and catalog into `saw-users` values: sandbox topology, image overrides, approved profile digest, model inputs and public enrollment. Also implements shared readiness: matching BOM/intent generation, healthy Argo application and owner login challenge. It performs no credential storage or resource mutation. |
 | RHDH adapter | Authenticates requests, resolves owners, stores provider inputs, maintains registration and drives the existing Tekton/ApplicationSet flow. Its forms come from the shared catalog. |
-| Standalone projector | An ApplicationSet plugin installed by `saw-users` when `projection.enabled`. Uses the same `workspace.py` as RHDH, with operator-owned YAML instead of portal registrations. Reads named public enrollment ConfigMaps; has no Kubernetes write or Secret-read permission. |
+| Standalone projector | An ApplicationSet plugin installed by `saw-users` when `projection.enabled`. Uses the same `workspace.py` as RHDH, with operator-owned YAML instead of portal registrations. Reads named public enrollment ConfigMaps and its own named child Applications. It has no Kubernetes write or Secret-read permission. |
 | Container composition | Creates per-registration identity, network policy, credential proxy, gateway, PVCs, audit services, preparation Jobs, reconciler and browser relay through Argo CD. |
 | Enrollment Job | Compares deployed resources against an administrator-approved boundary; records actual resource UIDs and hashes, PVC identities and public trust material in an immutable publication. It cannot approve an arbitrary observed configuration. |
 | Kubernetes reconciler | Reads BOM + intent, checks the approved boundary and attachment identities, compiles stock OpenShell RPCs, and reconciles owned objects using a retained ledger. It does not create application Pods directly. |
@@ -348,3 +348,12 @@ alone do not install the component stack.
 - An application-level tool hook and signed audit receipts are not kernel-level
   confinement. Retained history is isolated from the workload; cluster and
   storage administrators remain trusted.
+
+
+Catalog refreshes use a bounded pool for route probes. The catalog can show a
+route as pending while its first probe runs. Results expire after 30 seconds
+and are scoped to the owner, registration, intent generation, issuer and URL.
+Owner readiness checks still probe the live route. For dedicated inference
+endpoints, `dedicatedEndpointSecrets` in the generated profile catalog lists
+the BOM inputs accepted by the container form and Vault writer. VM forms retain
+their profile’s full credential set.

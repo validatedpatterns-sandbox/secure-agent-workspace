@@ -20,7 +20,7 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_ope
 import uuid
 
 from .compiler import ContractError, OWNER, canonical, digest
-from .reconcile import RpcError, StateStore
+from .reconcile import MissingSandboxReceipt, RpcError, StateStore
 
 MAX_BODY = 2 * 1024 * 1024
 MAX_DATA = 900 * 1024
@@ -45,6 +45,18 @@ class InputError(Exception):
     def __init__(self, reason):
         self.reason = reason
         super().__init__(reason)
+
+
+def valid_lifecycle_intent(intent):
+    """Envelope shared by the controller and the local intent generator."""
+    fields = {"schemaVersion", "generation", "desiredState", "profileRef", "bindings"}
+    if not isinstance(intent, dict) or set(intent) - {"restartGeneration"} != fields:
+        return False
+    generation = intent["generation"]
+    restart = intent.get("restartGeneration", 0)
+    return (type(intent["schemaVersion"]) is int and intent["schemaVersion"] == 1
+            and type(generation) is int and generation >= 1 and type(restart) is int
+            and 0 <= restart <= generation and intent["desiredState"] in ("Running", "Stopped"))
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -266,17 +278,10 @@ class Controller:
             intent = json.loads(data["intent.json"])
         except ValueError:
             raise InputError("InvalidInputs") from None
-        if (not isinstance(intent, dict) or set(intent) - {"restartGeneration"} != {
-                "schemaVersion", "generation", "desiredState", "profileRef", "bindings"}
-                or type(intent["schemaVersion"]) is not int or intent["schemaVersion"] != 1
-                or type(intent["generation"]) is not int
-                or intent["generation"] < 1 or intent["desiredState"] not in {"Running", "Stopped"}
+        if (not valid_lifecycle_intent(intent)
                 or not isinstance(intent["bindings"], dict)
                 or intent["bindings"].get("ownerID") != self.scope.owner_id
                 or intent["bindings"].get("namespace") != self.scope.namespace):
-            raise InputError("InvalidInputs")
-        restart = intent.get("restartGeneration",0)
-        if type(restart) is not int or not 0 <= restart <= intent["generation"]:
             raise InputError("InvalidInputs")
         reference = intent["profileRef"]
         if (not isinstance(reference, dict) or set(reference) not in ({"name", "uid", "sha256"}, {"name", "uid", "sha256", "planSHA256"})
@@ -387,6 +392,8 @@ class Controller:
             self.store.save(state)
         except InputError as exc:
             status["reason"] = exc.reason
+        except MissingSandboxReceipt:
+            status["reason"] = "StartToRecoverSandboxReceipt"
         except ContractError:
             status["reason"] = "CoreRejected"
         except RpcError as exc:

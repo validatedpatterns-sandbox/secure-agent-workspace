@@ -42,6 +42,8 @@ workspace, which the create template waits on. create and delete always
 delete the request Secret.
 """
 import base64
+from concurrent.futures import ThreadPoolExecutor
+import threading
 import calendar
 import hashlib
 import http.server
@@ -453,10 +455,9 @@ def parse_request(data, catalog):
     if profile not in catalog:
         raise PortalError(f"unknown profile {profile!r}; available: {', '.join(sorted(catalog))}")
     secrets, missing = {}, []
-    dedicated_endpoint = (request_deployment_mode(data) == "container" and
-                          any(sb.get("endpointInput") for _, sb in enabled_catalog_sandboxes(catalog[profile])))
+    allowed = catalog[profile].get("dedicatedEndpointSecrets") if request_deployment_mode(data) == "container" else None
     for name, spec in sorted(catalog[profile].get("secrets", {}).items()):
-        if dedicated_endpoint and name == "web-search":
+        if allowed is not None and name not in allowed:
             continue
         values = {}
         for field in spec.get("fields", []):
@@ -618,19 +619,40 @@ CREDENTIAL_WRITER = "saw.redhat.com/credential-writer"
 WRITER_NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 
 
+def credential_writer_state(k8s, namespace, holder):
+    if not WRITER_NAME.fullmatch(holder):
+        raise PortalError("invalid registration credential writer")
+    run = k8s.call("GET", f"/apis/tekton.dev/v1/namespaces/{namespace}/pipelineruns/{holder}", ok404=True)
+    if not run:
+        return "missing"
+    terminal = any(c.get("type") == "Succeeded" and c.get("status") in ("True", "False")
+                       for c in run.get("status", {}).get("conditions", []))
+    return "incomplete" if terminal else "running"
+
+
 def check_credential_writer(k8s, namespace, cm):
     """Serialize Vault changes with registration publication and deletion."""
     holder = (cm or {}).get("metadata", {}).get("annotations", {}).get(CREDENTIAL_WRITER)
     if not holder or holder == os.environ.get("PIPELINE_RUN"):
         return
-    if not WRITER_NAME.fullmatch(holder):
-        raise PortalError("invalid registration credential writer")
-    run = k8s.call("GET", f"/apis/tekton.dev/v1/namespaces/{namespace}/pipelineruns/{holder}", ok404=True)
-    if not run:
+    state = credential_writer_state(k8s, namespace, holder)
+    if state == "missing":
         raise PortalError("credential writer PipelineRun is missing; operator recovery required")
-    if not any(c.get("type") == "Succeeded" and c.get("status") in ("True", "False")
-                       for c in run.get("status", {}).get("conditions", [])):
+    if state == "running":
         raise PortalError("another pipeline is publishing this registration's credentials")
+
+
+def committed_entry(cm):
+    """Legacy interrupted writers have no proven previous publication."""
+    if (cm or {}).get("metadata", {}).get("annotations", {}).get(CREDENTIAL_WRITER):
+        try:
+            data = json.loads(cm.get("data", {}).get("committed.json", "{}"))
+        except (TypeError, ValueError):
+            raise PortalError("invalid committed registration") from None
+        if not isinstance(data, dict):
+            raise PortalError("invalid committed registration")
+        return data
+    return read_entry(cm)
 
 
 def reserve_credentials(k8s, ns, name, previous, entry, user):
@@ -645,6 +667,9 @@ def reserve_credentials(k8s, ns, name, previous, entry, user):
                          "annotations": {CREDENTIAL_WRITER: writer}},
             "data": {"user.json": json.dumps(entry, sort_keys=True)}}
     if previous:
+        committed = committed_entry(previous)
+        if committed:
+            body["data"]["committed.json"] = json.dumps(committed, sort_keys=True)
         meta = body["metadata"] = dict(previous["metadata"])
         meta["annotations"] = {**meta.get("annotations", {}), CREDENTIAL_WRITER: writer}
     try:
@@ -705,8 +730,17 @@ def list_workspaces(k8s, ns, deleting=False):
             log(f"ERROR: registry entry {name} is malformed (no valid user.json); skipped")
             bad.append(name)
             continue
-        if cm["metadata"].get("annotations", {}).get(CREDENTIAL_WRITER):
-            continue
+        if cm["metadata"].get("annotations", {}).get(CREDENTIAL_WRITER) and not deleting:
+            try:
+                entry = committed_entry(cm)
+                if entry and name != f"saw-ws-{entry.get('name')}":
+                    raise PortalError("committed registration has a different owner")
+            except PortalError:
+                log(f"ERROR: registry entry {name} has an invalid committed registration; skipped")
+                bad.append(name)
+                continue
+            if not entry:
+                continue
         if (cm["metadata"].get("labels") or {}).get(DELETING_LABEL) == "true" and not deleting:
             continue
         try:
@@ -1076,6 +1110,15 @@ def workspace_status(k8s, user, catalog, ns, argo_ns, domain, ping=None):
         return {"user": user, "phase": "deleting", "title": PHASE_TITLES["deleting"],
                 "message": detail, "ready": False, "failed": False, "steps": [], "links": [],
                 "text": f"Deleting: {detail}"}
+    holder = (cm or {}).get("metadata", {}).get("annotations", {}).get(CREDENTIAL_WRITER)
+    if holder:
+        state = credential_writer_state(k8s, ns, holder)
+        message = {"running": "Publishing credentials",
+                   "incomplete": "Credential publication incomplete. Retry the create form or delete the workspace.",
+                   "missing": "Credential writer is missing. Ask the operator to recover the registration."}[state]
+        return {"user": user, "deploymentMode": entry_deployment_mode(entry), "phase": "publishing" if state == "running" else "failed",
+                "title": message, "text": message, "message": message, "ready": False,
+                "failed": state != "running", "steps": [], "links": []}
     mode = entry_deployment_mode(entry)
     if mode == "container" and container_site(user):
         return container_status(k8s, user, entry, argo_ns, domain, ping or owner_route_available, catalog)
@@ -1379,6 +1422,8 @@ def handle(action, request_name):
                 check_container_identity(caller, {"subject": pins.get(caller)})
         check_credential_writer(k8s, ns, cm)
         if action == "create" and "runtimeAction" in data:
+            if (cm or {}).get("metadata", {}).get("annotations", {}).get(CREDENTIAL_WRITER):
+                raise PortalError("finish credential publication before changing the runtime state")
             entry = read_entry(cm)
             operation = data["runtimeAction"]
             if (operation not in ("start", "stop") or caller != user or deleting or not cm
@@ -1420,9 +1465,9 @@ def handle(action, request_name):
                 if cm and endpoint != read_entry(cm).get("customInferenceURL"):
                     raise PortalError("changing the endpoint requires a new registration")
                 models = public_model_inputs(catalog[profile], secrets)
-                previous = read_entry(cm) if cm else {}
-                lifecycle = previous.get("lifecycleVersion") == 1 if cm else container_site(user).get("modelLifecycle") is True
-                if cm and not lifecycle and previous.get("modelInputs", {}) != models:
+                previous = committed_entry(cm)
+                lifecycle = previous.get("lifecycleVersion") == 1 if previous else container_site(user).get("modelLifecycle") is True
+                if previous and not lifecycle and previous.get("modelInputs", {}) != models:
                     raise PortalError("changing model selection requires a new container registration")
             check_namespace_is_ours(k8s, user)
             check_applications_are_ours(k8s, user)
@@ -1436,18 +1481,19 @@ def handle(action, request_name):
                     entry["lifecycleVersion"] = 1
                     entry["initialModelInputs"] = previous.get("initialModelInputs", models)
                     entry["desiredState"] = previous.get("desiredState", "Running")
-                    changed = bool(cm and previous.get("modelInputs", {}) != models)
+                    changed = bool(previous and previous.get("modelInputs", {}) != models)
                     entry["restartGeneration"] = (previous["intentGeneration"] + 1 if changed
                                                   else previous.get("restartGeneration", 0))
                 if endpoint:
                     entry["customInferenceURL"] = endpoint
+                if "dedicatedEndpointSecrets" in catalog[profile]:
                     entry["webSearch"] = {"enabled": False}
                 if models:
                     entry["modelInputs"] = models
                 if "approvedProfiles" in container_site(user).get("automaticEnrollment",{}):
                     slots=sandbox_targets(user,generation,catalog[profile])
                     entry["uiNamespaces"]=sorted({"saw-ui-"+slot["relayID"] for slot in slots.values() if slot["ui"]})
-                entry["intentGeneration"] = read_entry(cm).get("intentGeneration", 0) + 1
+                entry["intentGeneration"] = previous.get("intentGeneration", 0) + 1
             cm = reserve_credentials(k8s, ns, name, cm, entry, user)
             vault = vault_client()
             for secret, values in secrets.items():
@@ -1611,7 +1657,7 @@ def cleanup(max_age=REQUEST_MAX_AGE):
 # -- ApplicationSet plugin generator --------------------------------------------
 
 
-def generator_params(workspaces, defaults, read=None, catalog=None):
+def generator_params(workspaces, defaults, read=None, catalog=None, previous=None):
     """Adapt authenticated registry entries to the common workspace projector."""
     out = []
     for entry in workspaces:
@@ -1632,12 +1678,48 @@ def generator_params(workspaces, defaults, read=None, catalog=None):
                 raise
         try:
             values = _workspace.project_workspace(ws, defaults, site, catalog or {},
-                                                  observed if read else None)
+                                                  observed if read else None, previous)
         except _workspace.WorkspaceError as exc:
             raise PortalError(str(exc)) from exc
         out.append({"name": ws["name"], "revision": values.get("global", {}).get("targetRevision", ""),
                     "values": json.dumps(values, sort_keys=True)})
     return out
+
+
+class CatalogRouteCache:
+    """A catalog read never waits for an endpoint. Explicit owner checks bypass this cache."""
+    def __init__(self, workers=4, capacity=512, ttl=30):
+        self.pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="catalog-route")
+        self.capacity, self.ttl = capacity, ttl
+        self.lock = threading.Lock()
+        self.entries = {}
+
+    def probe(self, scope, url, check):
+        key = (*scope, url)
+        now = time.monotonic()
+        with self.lock:
+            current = self.entries.get(key)
+            if current:
+                if not current.done():
+                    return False
+                finished, ready = current.result()
+                if now - finished < self.ttl:
+                    return ready
+            self.entries = {k: f for k, f in self.entries.items()
+                            if not f.done() or now - f.result()[0] < self.ttl}
+            if len(self.entries) >= self.capacity:
+                return False
+            future = self.pool.submit(self._check, check, url)
+            self.entries[key] = future
+        return False
+
+    @staticmethod
+    def _check(check, url):
+        try:
+            ready = check(url)
+        except (ValueError, OSError):
+            ready = False
+        return time.monotonic(), ready
 
 
 def serve():
@@ -1650,6 +1732,7 @@ def serve():
     jwks = JwksCache()
     realm_users = RealmUsers()
     owner_subjects = OwnerSubjects()
+    route_cache = CatalogRouteCache()
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def _send(self, code, body):
@@ -1687,7 +1770,13 @@ def serve():
                 statuses = {}
                 for ws in workspaces:
                     try:
-                        statuses[ws["name"]] = workspace_status(k8s, ws["name"], catalog, ns, argo_ns, domain)
+                        mode = entry_deployment_mode(ws)
+                        scope = (ws["name"], mode, entry_generation(ws["name"], ws),
+                                 ws.get("intentGeneration", 0), os.environ.get("KEYCLOAK_URL"),
+                                 os.environ.get("KEYCLOAK_REALM"))
+                        check = owner_route_available if mode == "container" else ping_url
+                        statuses[ws["name"]] = workspace_status(k8s, ws["name"], catalog, ns, argo_ns, domain,
+                            ping=lambda url: route_cache.probe(scope, url, check))
                     except PortalError as exc:
                         log(f"WARN: status of saw-{ws['name']}: {exc}")
                 text = entities_yaml(workspaces, catalog, domain,
@@ -1763,7 +1852,10 @@ def serve():
                 return self._send(403, {"error": "forbidden"})
             try:
                 params = generator_params(owner_subjects.fill(list_workspaces(kube(), ns)), defaults,
-                                          lambda path:kube().call("GET",path,ok404=True),catalog)
+                                          lambda path:kube().call("GET",path,ok404=True),catalog,
+                                          lambda owner: _workspace.previous_child(kube().call("GET",
+                                              f"/apis/argoproj.io/v1alpha1/namespaces/{argo_ns}/applications/portal-ws-{owner['name']}",
+                                              ok404=True), "saw-portal-workspaces", owner))
             except PortalError as exc:
                 log(f"ERROR: {exc}")
                 return self._send(500, {"error": str(exc)})

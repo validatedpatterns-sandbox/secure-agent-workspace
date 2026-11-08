@@ -12,7 +12,7 @@ import uuid
 import yaml
 
 from .compiler import OWNER, canonical, compile_profile_files, digest
-from .controller import KEY, MAX_BODY, MAX_DATA, NAME
+from .controller import KEY, MAX_BODY, MAX_DATA, NAME, valid_lifecycle_intent
 
 
 class IntentError(ValueError):
@@ -70,11 +70,7 @@ def _previous(value, namespace, name, owner):
         intent = _json(data["intent.json"])
     except (ValueError, TypeError):
         raise IntentError("previous intent contains invalid JSON") from None
-    if (not isinstance(intent, dict) or set(intent) != {
-            "schemaVersion", "generation", "desiredState", "profileRef", "bindings"}
-            or type(intent["schemaVersion"]) is not int or intent["schemaVersion"] != 1
-            or type(intent["generation"]) is not int or intent["generation"] < 1
-            or intent["desiredState"] not in {"Running", "Stopped"}
+    if (not valid_lifecycle_intent(intent)
             or not isinstance(intent["bindings"], dict)
             or intent["bindings"].get("ownerID") != owner
             or intent["bindings"].get("namespace") != namespace):
@@ -89,7 +85,7 @@ def _previous(value, namespace, name, owner):
     return intent
 
 
-def build_intent(profile, bindings, *, name, generation, desired_state="Running", previous=None, pin_plan=False):
+def build_intent(profile, bindings, *, name, generation, desired_state="Running", previous=None, pin_plan=False, restart_generation=None):
     """Validate locally and return the controller's exact ConfigMap envelope.
 
     Observed metadata is required, but a local file is not authenticated cluster
@@ -122,8 +118,16 @@ def build_intent(profile, bindings, *, name, generation, desired_state="Running"
               "bindings": bindings}
     if pin_plan:
         intent["profileRef"]["planSHA256"] = plan["revision"]
-    if previous is not None:
-        old = _previous(previous, meta["namespace"], name, bindings["ownerID"])
+    old = _previous(previous, meta["namespace"], name, bindings["ownerID"]) if previous is not None else None
+    if restart_generation is None and old is not None:
+        restart_generation = old.get("restartGeneration")
+    if restart_generation is not None:
+        intent["restartGeneration"] = restart_generation
+    if not valid_lifecycle_intent(intent):
+        raise IntentError("invalid restart generation")
+    if old is not None:
+        if intent.get("restartGeneration", 0) < old.get("restartGeneration", 0):
+            raise IntentError("restart generation rolled back")
         if old["profileRef"]["name"] != meta["name"] or old["profileRef"]["uid"] != meta["uid"]:
             raise IntentError("profile identity changed; explicit controller recovery is required")
         if old["generation"] > generation or old["generation"] == generation and old != intent:
@@ -168,12 +172,13 @@ def main(argv=None):
     parser.add_argument("--name", required=True, help="Allowlisted controller intent ConfigMap name")
     parser.add_argument("--generation", required=True, type=int)
     parser.add_argument("--desired-state", choices=["Running", "Stopped"], default="Running")
+    parser.add_argument("--restart-generation", type=int, help="Lifecycle restart generation; defaults to the previous value when updating")
     parser.add_argument("--pin-plan", action="store_true", help="Require the deployed compiler to produce exactly this plan before applying")
     parser.add_argument("--previous-intent", help="Optional existing intent ConfigMap JSON for update/generation checks")
     try:
         args = parser.parse_args(argv)
         result = build_intent(_read(args.profile_configmap, json_only=True), _read(args.bindings),
-                              name=args.name, generation=args.generation, desired_state=args.desired_state, pin_plan=args.pin_plan,
+                              name=args.name, generation=args.generation, desired_state=args.desired_state, pin_plan=args.pin_plan, restart_generation=args.restart_generation,
                               previous=_read(args.previous_intent, json_only=True) if args.previous_intent else None)
         output = json.dumps(result, indent=2, sort_keys=True)
     except IntentError as exc:

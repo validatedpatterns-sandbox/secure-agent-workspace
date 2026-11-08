@@ -178,3 +178,35 @@ def test_orphaned_plugin_identity_is_not_silently_replaced():
     with pytest.raises(identity.IdentityError, match="orphaned"):
         identity.provision(identity_config(), api)
     assert len(api.created) == 2
+
+
+def test_missing_publication_holds_only_an_already_bound_owner(projector):
+    cfg = config()
+    bob = copy.deepcopy(cfg["users"][0])
+    bob.update(name="bob", registration="b"*16, installationID="33333333-3333-4333-8333-333333333333")
+    cfg["users"].append(bob)
+    cfg["containerSites"]["bob"] = copy.deepcopy(cfg["containerSites"]["alice"])
+    cfg.setdefault("workspaceRevisions", {})["bob"] = "c"*40
+    initial, _ = projector.parameters(cfg, catalog(), lambda _: {})
+    last = json.loads(initial["workspaceValues"])
+    last["containerSites"]["alice"]["enrollment"] = {"registration": "a"*16}
+
+    class Reader:
+        def __call__(self, path):
+            return {}
+        def previous(self, owner):
+            return copy.deepcopy(last) if owner["name"] == "alice" else None
+
+    a, b = projector.parameters(cfg, catalog(), Reader())
+    assert json.loads(a["workspaceValues"]) == last
+    assert b["name"] == "bob" and b["revision"] == "c"*40
+    assert "enrollment" not in json.loads(b["workspaceValues"])["containerSites"]["bob"]
+
+
+@pytest.mark.parametrize("field",["reference","relay","revision","image","buildNamespace"])
+def test_invalid_enabled_site_reports_owner_and_field(projector, field):
+    cfg = config()
+    auto = cfg["containerSites"]["alice"]["automaticEnrollment"]
+    auto.pop(field)
+    with pytest.raises(projector.ProjectionError, match="alice.*"+field):
+        projector.parameters(cfg, catalog(), lambda _: {})

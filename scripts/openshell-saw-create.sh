@@ -81,6 +81,12 @@ CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-podman}"
 GOVERNANCE_ENABLED="${GOVERNANCE_ENABLED:-true}"
 GOVERNANCE_ENGINE="${GOVERNANCE_ENGINE:-interceptor}"
 DASHBOARD="${DASHBOARD:-false}"
+GPU_ENABLED_OVERRIDE="${GPU_ENABLED_OVERRIDE:-${GPU_ENABLED+true}}"
+GPU_COUNT_OVERRIDE="${GPU_COUNT_OVERRIDE:-${GPU_COUNT+true}}"
+GPU_DEVICE_NAME_OVERRIDE="${GPU_DEVICE_NAME_OVERRIDE:-${GPU_DEVICE_NAME+true}}"
+GPU_ENABLED="${GPU_ENABLED:-false}"
+GPU_COUNT="${GPU_COUNT:-1}"
+GPU_DEVICE_NAME="${GPU_DEVICE_NAME:-}"
 
 # Validate all provider settings before changing the cluster.
 if [[ -n "${GCP_SA_JSON}" || -n "${SANDBOX_IMAGE:-}" ]]; then
@@ -107,8 +113,33 @@ additional_provider_secrets=()
 if [[ -n "${SAW_VALUES_FILE}" ]]; then
   mapfile -t additional_provider_secrets < <(python3 -c 'import sys,yaml; d=yaml.safe_load(open(sys.argv[1])) or {}; print("\n".join(d.get("additionalProviderSecrets") or []))' "${SAW_VALUES_FILE}")
 fi
+python3 - "${SAW_VALUES_FILE}" "${GPU_ENABLED_OVERRIDE}" "${GPU_ENABLED}" \
+  "${GPU_COUNT_OVERRIDE}" "${GPU_COUNT}" "${GPU_DEVICE_NAME_OVERRIDE}" "${GPU_DEVICE_NAME}" <<'PY'
+import sys
+import yaml
+
+path, enabled_override, enabled_arg, count_override, count_arg, name_override, name_arg = sys.argv[1:]
+values = yaml.safe_load(open(path)) if path else {}
+gpu = ((values or {}).get("vm") or {}).get("gpu") or {}
+enabled = enabled_arg if enabled_override == "true" else gpu.get("enabled", False)
+count = count_arg if count_override == "true" else gpu.get("count", 1)
+name = name_arg if name_override == "true" else gpu.get("deviceName", "")
+if str(enabled).lower() == "true":
+    if not name:
+        raise SystemExit("Error: GPU VM needs vm.gpu.deviceName in SAW_VALUES_FILE or GPU_DEVICE_NAME")
+    if not str(count).isdigit() or int(count) < 1:
+        raise SystemExit("Error: GPU VM needs a positive vm.gpu.count")
+PY
 if [[ "${DASHBOARD}" != true && "${DASHBOARD}" != false ]]; then
   echo "Error: DASHBOARD must be true or false." >&2
+  exit 1
+fi
+if [[ "${GPU_ENABLED}" != true && "${GPU_ENABLED}" != false ]]; then
+  echo "Error: GPU_ENABLED must be true or false." >&2
+  exit 1
+fi
+if [[ ! "${GPU_COUNT}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Error: GPU_COUNT must be a positive integer." >&2
   exit 1
 fi
 
@@ -418,6 +449,9 @@ helm_opts=(
 if [[ -n "${CREDENTIAL_PROXY_IMAGE}" ]]; then
   helm_opts+=(--set-string "credentialProxy.image=${CREDENTIAL_PROXY_IMAGE}")
 fi
+[[ "${GPU_ENABLED_OVERRIDE}" != true ]] || helm_opts+=(--set "vm.gpu.enabled=${GPU_ENABLED}")
+[[ "${GPU_COUNT_OVERRIDE}" != true ]] || helm_opts+=(--set "vm.gpu.count=${GPU_COUNT}")
+[[ "${GPU_DEVICE_NAME_OVERRIDE}" != true ]] || helm_opts+=(--set-string "vm.gpu.deviceName=${GPU_DEVICE_NAME}")
 if [[ -n "${SAW_VALUES_FILE}" ]]; then
   helm_opts=(-f "${SAW_VALUES_FILE}" -f "${NETWORK_TOPOLOGY_VALUES}" "${helm_opts[@]}")
 else

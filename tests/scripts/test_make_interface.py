@@ -74,6 +74,36 @@ def test_invalid_runtime_stops_before_build():
     assert "podman or docker" in result.stderr
 
 
+@pytest.mark.parametrize("cdi", [True, False])
+def test_gpu_build_only_changes_its_own_golden_objects(tmp_path, cdi):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "calls"
+    executable(bindir / "oc", r'''echo "oc $*" >> "$CALLS"
+case "$*" in
+  "api-resources --api-group=cdi.kubevirt.io -o name")
+    if [[ "$HAS_CDI" == true ]]; then
+      printf 'datavolumes.cdi.kubevirt.io\ndatasources.cdi.kubevirt.io\n'
+    fi ;;
+esac
+''')
+    executable(bindir / "helm", 'echo "helm $*" >> "$CALLS"\n')
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", CALLS=str(log),
+               HAS_CDI=str(cdi).lower())
+    env.pop("IMAGE_REPO", None)
+    env.pop("PUSH_IMAGE_REPO", None)
+    result = run_make("gateway-build-podman", "GATEWAY_GPU=true", env=env)
+    assert result.returncode == 0, result.stderr
+    calls = log.read_text()
+    assert "start-build openshell-gateway-gpu -n openshell-agents --follow --wait" in calls
+    assert "helm upgrade --install openshell-gateway-gpu-image" in calls
+    assert "--set gpu.enabled=true" in calls
+    assert not re.search(r"(?:^|\s)openshell-gateway(?:-golden|-image)?(?:\s|$)", calls)
+    assert ("delete dv openshell-gateway-gpu-golden" in calls) == cdi
+    assert ("delete datasource openshell-gateway-gpu" in calls) == cdi
+    assert ("--set goldenImage.enabled=false" in calls) == (not cdi)
+
+
 def test_alias_warns_and_forwards_to_canonical_target(tmp_path):
     scripts = tmp_path / "scripts"
     scripts.mkdir()

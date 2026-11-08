@@ -1,5 +1,5 @@
 {{- if .Values.goldenImage.enabled }}
-{{- $imageName := ternary "openshell-gateway-docker" "openshell-gateway" (eq .Values.containerRuntime "docker") -}}
+{{- $imageName := include "openshell-gateway-image.imageName" . -}}
 apiVersion: cdi.kubevirt.io/v1beta1
 kind: DataVolume
 metadata:

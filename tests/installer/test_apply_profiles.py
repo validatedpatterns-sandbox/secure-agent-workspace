@@ -154,7 +154,8 @@ def test_sandbox_create_passes_gpu_when_the_profile_asks(ab, fake_env, config, p
     assert onboard["gpu"] == "" and onboard["gpu_count"] == ""
     assert "--sandbox-gpu" not in onboard["args"] and "--gpu" not in onboard["args"]
     make_applier(ab, config, creds).verify(profiles)
-    assert any(call[:2] == ["sandbox", "exec"] and ["nvidia-smi", "-L"] == call[-2:]
+    assert any(call[:2] == ["sandbox", "exec"] and "--no-login-shell" in call
+               and ["nvidia-smi", "-L"] == call[-2:]
                for call in fake_env.openshell_calls())
 
 

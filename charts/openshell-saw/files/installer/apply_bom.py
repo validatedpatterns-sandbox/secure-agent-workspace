@@ -6003,8 +6003,10 @@ class ProfileApplier:
                     failures.append(f"sandbox '{sb.name}' in '{ws.name}' is missing")
                     continue
                 if sb.gpu_enabled:
+                    # Preserve the image's PATH: a login shell can drop sbin,
+                    # where newer NVIDIA packages install nvidia-smi.
                     gpu = self.cli("sandbox", "exec", "-n", sb.name, *ws_args(ws.name),
-                                   "--no-tty", "--", "nvidia-smi", "-L",
+                                   "--no-tty", "--no-login-shell", "--", "nvidia-smi", "-L",
                                    check=False, quiet=True)
                     if not gpu.ok:
                         detail = (gpu.err or gpu.out).strip().splitlines()[-1:] or [f"exit {gpu.rc}"]

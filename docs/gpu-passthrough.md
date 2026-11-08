@@ -210,7 +210,7 @@ sudo -u cloud-user podman run --rm --device nvidia.com/gpu=all \
 systemctl status nvidia-driver-setup saw-gpu-devices saw-install saw-apply
 ```
 
-Then run `openshell sandbox exec -n <sandbox> --workspace <workspace> --
+Then run `openshell sandbox exec -n <sandbox> --workspace <workspace> --no-login-shell --
 nvidia-smi -L`. If NVML reports `Insufficient Permissions`, inspect the
 `/dev/nvidia-caps` nodes, their SELinux labels, and the CDI entries. Compare
 the rootless Podman result with the sandbox result before changing

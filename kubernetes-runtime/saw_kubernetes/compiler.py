@@ -302,15 +302,19 @@ def compile_profile_files(files, config):
                 browser = bindings.get(f"{ws_name}/{sandbox.name}", {}).get("browser")
                 extra = ""
                 if browser is not None:
+                    if "toolGate" not in bindings[f"{ws_name}/{sandbox.name}"]:
+                        raise ContractError("browser requires the read-only tool gate for its relay proof")
                     mapping(browser, {"origin", "ownerLogin"}, {"origin", "ownerLogin"}, "browser")
                     origin, login = browser["origin"], browser["ownerLogin"]
                     if (not isinstance(origin, str) or not re.fullmatch(r"https://[a-z0-9.-]+", origin)
                             or not isinstance(login, str) or not NAME.fullmatch(login)):
                         raise ContractError("browser requires an explicit HTTPS origin and owner login")
-                    extra = ("config.gateway.trustedProxies = ['127.0.0.1/32','::1/128'];\n"
+                    extra = ("const proof = fs.readFileSync('/sandbox/.saw/trusted/relay-proof','ascii');\n"
+                             "if (!/^[a-f0-9]{64}$/.test(proof)) throw new Error('invalid browser relay proof');\n"
+                             "config.gateway.trustedProxies = ['127.0.0.1/32','::1/128'];\n"
                              "config.gateway.controlUi = {allowedOrigins:[" + json.dumps(origin) + "]};\n"
                              "config.gateway.auth = {mode:'trusted-proxy',password:config.gateway.auth.token,"
-                             "trustedProxy:{userHeader:'x-forwarded-email',allowUsers:[" + json.dumps(login) + "],"
+                             "trustedProxy:{userHeader:'x-saw-relay-identity',allowUsers:[" + json.dumps(config["ownerSubject"]) + " + '.' + proof],"
                              "allowLoopback:true,deviceAutoApprove:{enabled:true,scopes:['operator.read','operator.write']}}};\n")
                 script = script.replace("@SAW_BROWSER_CONFIG@\n", extra)
                 command = ["sh", "-ec", script, "saw-openclaw", info["model"]]
@@ -360,6 +364,9 @@ const model = selection.model;
                         command[2] = command[2].replace("[A-Za-z0-9._-]{0,99}", r"[A-Za-z0-9._\/-]{0,99}")
                     script = script.replace("for (const path of treeFiles(root).sort()) {",
                         "for (const path of treeFiles(root).sort()) {\n  if (path === root + '/model.json') continue;")
+                if browser:
+                    script = script.replace("for (const path of treeFiles(root).sort()) {",
+                        "for (const path of treeFiles(root).sort()) {\n  if (path === root + '/relay-proof') continue;")
                 if receipt_key:
                     # Keep the VM-style file preflight for previously published plans.
                     script = script[:script.index("if (!fs.lstatSync(audit)")] + """

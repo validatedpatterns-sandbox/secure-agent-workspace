@@ -76,6 +76,24 @@ data:
 {{- range $k, $v := $map }}
 {{- $values = replace (printf "@%s@" $k) $v $values }}
 {{- end }}
+{{- if eq $key "policy" }}
+{{- $policy := fromJson $values }}
+{{- $gw := $stack.gateway.values.kubernetes }}
+{{- $slots := dict }}
+{{- range $key, $slot := $targets }}
+{{- $binding := dig "enrollment" "intent" "bindings" "bindings" $key dict $site }}
+{{- $_ := set $slots (printf "%s--%s" $slot.workspace $slot.sandbox) (dict "image" ($slot.image | default "") "base" $slot.base "relayID" $slot.relayID "dataMounts" ($binding.mounts | default list)) }}
+{{- end }}
+{{- $_ := set $policy "slots" $slots }}
+{{- $_ := set $policy "preparationImage" (dig "enrollment" "image" (dig "automaticEnrollment" "image" "" $site) $site) }}
+{{- $_ := set $policy "forwarderImage" $stack.audit.values.image }}
+{{- $_ := set $policy "serverTLSSecret" (replace "@OWNER@" $u $gw.identity.serverTlsSecret) }}
+{{- $_ := set $policy "supervisorImage" (dig "supervisor" "image" $.Values.driverDefaults.supervisorImage $gw) }}
+{{- $_ := set $policy "runtimeImage" ($gw.workload.runtimeImage | default $.Values.driverDefaults.runtimeImage) }}
+{{- $proxyURL := replace "@TRUSTED@" $trusted (replace "@OWNER@" $u $gw.proxy.url) }}
+{{- $_ := set $policy "supervisorCommand" (list "/openshell-supervisor" "--backend-descriptor-file" "/.openshell/supervisor/runtime-descriptor.json" "--auth-bundle-file" "/.openshell/supervisor/auth.json" "--workdir" "/sandbox" "--health-socket-path" "/run/openshell/health.sock" "--health-port" "5501" "--upstream-proxy" $proxyURL "--upstream-proxy-connect-by-hostname" "--upstream-proxy-ca-bundle" "/.openshell/supervisor/upstream-proxy-ca.pem") }}
+{{- $values = toJson $policy }}
+{{- end }}
 {{- if and (eq $key "proxy") $site.providerPolicy }}
 {{- $proxy := fromJson $values }}
 {{- $secrets := list }}

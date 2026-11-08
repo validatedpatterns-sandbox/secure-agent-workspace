@@ -214,3 +214,19 @@ def test_default_build_output_is_internal_and_push_requires_explicit_destination
         "--set", "output.imageStreamTag=", "--set", "output.externalImage=ghcr.io/example/governance-interceptor:v0.1.2"], text=True)
     build = next(d for d in yaml.safe_load_all(rendered) if d and d["kind"] == "BuildConfig")
     assert build["spec"]["output"]["to"]["name"] == "ghcr.io/example/governance-interceptor:v0.1.2"
+
+
+@pytest.mark.parametrize("filename", ["build-governance-interceptor.yml", "build-kubernetes-runtime.yml"])
+def test_pr_image_jobs_cannot_publish(filename):
+    workflow = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())
+    assert workflow["permissions"] == {"contents": "read"}
+    jobs = workflow["jobs"]
+    assert "permissions" not in jobs["build"]
+    assert jobs["build"]["if"] == "github.event_name == 'pull_request' || github.ref != 'refs/heads/main'"
+    for job in ("publish", "merge"):
+        assert jobs[job]["if"] == "github.event_name != 'pull_request' && github.ref == 'refs/heads/main'"
+        assert jobs[job]["permissions"] == {"contents": "read", "packages": "write"}
+    assert jobs["merge"]["needs"] == "publish"
+    assert jobs["build"]["steps"] == jobs["publish"]["steps"]
+    image = next(s for s in jobs["build"]["steps"] if s.get("uses") == "./.github/actions/build-push-image")
+    assert "github.event_name != 'pull_request' && github.ref == 'refs/heads/main'" in image["with"]["registry_token"]

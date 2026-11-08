@@ -5,7 +5,7 @@ kind: ConfigMap
 metadata: {name: {{ $n }}}
 data:
   relay.json: {{ pick $v "issuer" "clientID" "subject" "audience" "gatewayEndpoint" | toJson | quote }}
-  users: {{ printf "%s\n" $v.ownerLogin | quote }}
+  users: {{ printf "%s\n" $v.ownerSubject | quote }}
   ca.crt: |
 {{ $v.gatewayCA | indent 4 }}
   token.py: |
@@ -57,7 +57,7 @@ spec:
         volumeMounts: *tokenMounts
         readinessProbe:
           exec:
-            command: [python3, -c, "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:18789/',timeout=4).status==200"]
+            command: [python3, -c, "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:28789/',timeout=4).status==200"]
           timeoutSeconds: 6
           periodSeconds: 15
       - name: forward
@@ -80,7 +80,12 @@ spec:
         # token.py shares this ConfigMap; isolate stdlib imports from /config.
         command: [python3, -I, /config/saw_ui_limit.py, '18789', '28789', '16', --connect-only]
         securityContext: *restricted
-        volumeMounts: [{name: config, mountPath: /config, readOnly: true}]
+        env:
+        - {name: SAW_BROWSER_OWNER_SUBJECT, value: {{ $v.ownerSubject | quote }}}
+        - {name: SAW_BROWSER_RELAY_PROOF_FILE, value: /proof/relay-proof}
+        volumeMounts:
+        - {name: config, mountPath: /config, readOnly: true}
+        - {name: proof, mountPath: /proof, readOnly: true}
       - name: browser-login
         image: {{ $v.proxyImage }}
         args:
@@ -93,7 +98,7 @@ spec:
         - --code-challenge-method=S256
         - --redirect-url=https://{{ $v.host }}/oauth2/callback
         - --scope=openid email profile
-        - --oidc-email-claim=preferred_username
+        - --oidc-email-claim=sub
         - --authenticated-emails-file=/config/users
         - --insecure-oidc-allow-unverified-email=true
         - --pass-user-headers=true
@@ -113,6 +118,8 @@ spec:
       volumes:
       - {name: session, emptyDir: {medium: Memory, sizeLimit: 2Mi}}
       - {name: config, configMap: {name: {{ $n }}}}
+      - name: proof
+        secret: {secretName: relay-credentials, items: [{key: relay-proof, path: relay-proof}]}
       - name: credential
         secret: {secretName: relay-credentials, defaultMode: 0440, items: [{key: client-secret, path: client-secret}]}
 ---

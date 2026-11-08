@@ -32,7 +32,7 @@ def sandbox_targets(user, registration, profile, *, model_lifecycle=False):
         suffix = hashlib.sha256((registration+"/"+key).encode()).hexdigest()[:16]
         single = len(enabled)==1
         targets[key] = dict(workspace=workspace, sandbox=sb["name"], ui=bool(sb.get("uiRoute")),
-                            base=user if single else user+"-"+suffix[:8],
+                            image=sb.get("image", ""), base=user if single else user+"-"+suffix[:8],
                             relayID=registration if single else suffix,
                             subjectMap="saw-portal-relay-subject" if single else "saw-portal-relay-"+suffix)
         if model_lifecycle and sb.get("modelInput"):
@@ -162,6 +162,8 @@ def project_workspace(workspace, defaults, site, catalog, read=None):
                                        model_lifecycle=managed),
             "selectedDigest": automatic.get("approvedProfiles", {}).get(selected, ""),
             "modelInputs": ws.get("modelInputs", {})}
+    for target in site["targets"].values():
+        target["image"] = overrides.get(target["sandbox"], target["image"])
     boundary = site.get("profileBoundaries", {}).get(selected)
     if boundary:
         site = {**site, "providerAllowHosts": boundary["allowHosts"],

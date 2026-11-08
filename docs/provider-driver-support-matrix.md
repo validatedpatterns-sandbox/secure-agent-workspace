@@ -1,11 +1,22 @@
 # SAW TP provider and driver support matrix
 
-**Updated:** 2026-11-06. Historical VM live results: 2026-10-21.
+**Updated:** 2026-11-08. Historical VM live results: 2026-10-21.
 
 Keep implementation, offline contracts and live qualification separate. The
 Kubernetes integration now compiles native OpenAI, Anthropic and NVIDIA
 providers, uses the shared governance/credential policy, and reconciles them
 through the stock gateway. This does not by itself qualify a live provider.
+
+The November 6 OpenAI results below describe the feature revision. The
+November 8 security policy was tested separately on OpenShift. It admitted all
+five legitimate Pod shapes and rejected the unmarked Pod, forged workload,
+unrelated supervisor Secret and workload image replacement. The real Agent
+Sandbox controller created the workload and the stock scheduling-gate removal
+was admitted. Service/Secret and projector checks admitted the expected shapes
+and denied NodePort, trust replacement and service-account-token creation.
+The gateway lacked NetworkPolicy creation permission. A fresh static installation served both OpenAI sandbox chats through the
+subject-bound relay. The deployed signed tool gate exited before the tool side
+effect when an approval could not write its audit record.
 
 ## Validation matrix
 

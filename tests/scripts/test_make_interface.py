@@ -593,7 +593,9 @@ def test_platform_builds_report_independently_and_merge_needs_both(name):
     matrix = build["strategy"]["matrix"]
     platforms = matrix.get("platform") or [e["platform"] for e in matrix["include"]]
     assert set(platforms) == {"linux/amd64", "linux/arm64"}
-    assert merge["needs"] == "build"
+    publisher = "publish" if "publish" in workflow["jobs"] else "build"
+    assert merge["needs"] == publisher
+    assert workflow["jobs"][publisher]["strategy"] == build["strategy"]
     assert text.count(".github/actions/merge-image/**") == 2
 
 

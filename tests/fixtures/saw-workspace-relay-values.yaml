@@ -2,7 +2,7 @@
 enabled: true
 clientID: saw-alice
 keycloakNamespace: saw-keycloak
-keycloakAdminSecret: keycloak-admin
+keycloakProvisionerSecret: keycloak-admin
 issuer: https://sso.example.test/realms/openshell
 trustedNamespace: saw-ci-trusted
 gatewayNamespace: saw-alice

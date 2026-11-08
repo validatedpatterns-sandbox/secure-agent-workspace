@@ -1,7 +1,7 @@
 enabled: false
 clientID: ""
 keycloakNamespace: ""
-keycloakAdminSecret: ""
+keycloakProvisionerSecret: ""
 issuer: ""
 audience: openshell-cli
 gatewayEndpoint: ""

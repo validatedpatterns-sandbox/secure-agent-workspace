@@ -24,6 +24,8 @@ function submitAuditRecord(publicKey, record) {
   const fd = fs.openSync(directory + "/" + id + ".tmp", "wx", 0o600);
   try { fs.writeFileSync(fd, body); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   fs.renameSync(directory + "/" + id + ".tmp", directory + "/" + id + ".req");
+  const directoryFd = fs.openSync(directory, fs.constants.O_DIRECTORY | fs.constants.O_RDONLY);
+  try { fs.fsyncSync(directoryFd); } finally { fs.closeSync(directoryFd); }
   const hash = createHash("sha256").update(body).digest("hex");
   const challenge = Buffer.from("saw-audit-v1:" + id + ":" + hash);
   const key = createPublicKey({key:Buffer.from(publicKey, "base64"), format:"der", type:"spki"});
@@ -63,6 +65,9 @@ export function handleBeforeToolCall(event, ctx) {
     sessionKey: (ctx && ctx.sessionKey) || (event && event.sessionKey) || "",
     sessionId: (ctx && ctx.sessionId) || (event && event.sessionId) || "",
     auditFile: AUDIT_PATH,
+    // OpenClaw catches callback exceptions and then permits the tool. End this
+    // executor synchronously before it can act on an unacknowledged approval.
+    unacknowledgedApproval: receiptKey.startsWith("MCowBQYDK2VwAyEA") ? () => process.exit(75) : undefined,
     appendRecord: receiptKey.startsWith("MCowBQYDK2VwAyEA") ? record => submitAuditRecord(receiptKey, record) : undefined,
   });
   return result.hook;

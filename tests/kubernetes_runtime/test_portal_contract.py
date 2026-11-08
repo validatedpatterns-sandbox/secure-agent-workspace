@@ -16,6 +16,7 @@ def resources(reg="0123456789abcdef", owner="12345678-1234-4123-a123-12345678901
     cfg=dict(namespace="runtime",trustedNamespace="saw-ctl-"+reg,ownerID=owner,governanceNamespace="gov",gateway="gw",proxyPolicy="proxy")
     refs=objects(cfg)
     data={p:{"metadata":{"uid":key},"spec":{},"data":{}} for key,(p,_) in refs.items()}
+    data[refs["gatewayRole"][0]]["rules"] = []
     def obj(k):return data[refs[k][0]]
     obj("proxy")["spec"]={"namespace":cfg["trustedNamespace"],"owner":owner,"image":"locked"}
     obj("gateway")["spec"]={"template":{"metadata":{"annotations":{"checksum/config":"c"*64}}}}
@@ -43,3 +44,28 @@ def test_unreviewed_differences_rejected(change):
     if change=="replacementIssuer":obj("gatewayConfig")["data"]["issuer"]="foreign"
     if change=="extra":expected["newKey"]="injected"
     with pytest.raises(BoundaryError):verify_contract(cfg,live.__getitem__,expected)
+
+
+@pytest.mark.parametrize("keys", [["w/a"], ["w/a", "w/b"]])
+def test_admission_rebinds_only_the_same_slot(keys):
+    import hashlib
+
+    def fixture(registration):
+        config, live, obj = resources(registration)
+        config["slotKeys"] = keys
+        rules = []
+        for slot in keys:
+            relay = hashlib.sha256((registration + "/" + slot).encode()).hexdigest()[:16] if len(keys) > 1 else registration
+            rules.append({"slot": slot, "proof": f"ui-{relay}-browser-proof",
+                          "prep": f"gate-{relay}-" if len(keys) > 1 else "saw-gate-preparation-",
+                          "claim": "gw-" + relay[:8] if len(keys) > 1 else "gw"})
+        obj("validation")["spec"] = {"rules": rules}
+        return config, live, rules
+
+    first, old, _ = fixture("0123456789abcdef")
+    second, new, rules = fixture("fedcba9876543210")
+    approved = contract(first, old.__getitem__)
+    verify_contract(second, new.__getitem__, approved)
+    rules[0]["proof"] = "ui-0123456789abcdef-browser-proof"
+    with pytest.raises(BoundaryError, match="validation"):
+        verify_contract(second, new.__getitem__, approved)

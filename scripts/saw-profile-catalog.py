@@ -185,7 +185,7 @@ def catalog():
                 required_string(sb, "name", (wdir / "sandbox.yaml").relative_to(ROOT))
                 ui = sb.get("ui") or {}
                 sandboxes.append({"name": sb["name"], "type": sb.get("type", "generic"),
-                                  "enabled": sb.get("enabled", True),
+                                  "enabled": sb.get("enabled", True), "image": sb.get("image", ""),
                                   "uiRoute": bool(ui.get("route", False)),
                                   "harnessRequired": bool(sb.get("harnessRef") and sb.get("harnessRequired"))})
                 model_ref = secret_ref((sb.get("inference") or {}).get("model"))

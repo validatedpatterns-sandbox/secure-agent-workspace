@@ -260,7 +260,30 @@ that arbitrary code inside a compromised application cannot perform other
 operations. Do not equate a recorded approval request with a completed tool
 execution or a recorded final human decision.
 
+The browser authenticates with the pinned issuer and enrolled subject. The
+authenticated relay replaces any caller-supplied relay identity with a random
+slot-specific proof. OpenClaw checks the proof as well as the subject. The
+preparation Job publishes it into that slot's read-only gate volume. A direct
+OpenShell forward with a guessed username or copied subject lacks this proof.
+Processes already executing as the agent can read their own local gateway
+configuration and remain inside the application's trust boundary.
+
+OpenClaw treats `onResolution` as a notification and catches its exceptions.
+The signed container gate therefore exits the executor synchronously if an
+approved decision cannot obtain its receipt, before control returns to the
+tool. The exchange request is fsynced before publication and the forwarder
+retries it. An audit outage can interrupt the agent and require a workspace
+restart. Retain the original decision and verify the history before retrying
+a consequential action.
+
 ## Lifecycle and installation surface
+
+The portal reserves the registry generation with a resource-version check
+before writing provider credentials. Pending entries do not project new
+workspaces. A failed publisher leaves its generation recorded for recovery.
+A later request can resume that same generation after the old pipeline ends.
+Deletion destroys credentials only for the registered generation.
+
 
 RHDH uses the existing create/update/delete forms and pipelines, with a backend
 selector and backend-approved profile choices. The registration carries the

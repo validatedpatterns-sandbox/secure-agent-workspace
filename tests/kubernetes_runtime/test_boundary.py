@@ -14,7 +14,8 @@ def installation():
         resources[path] = {"metadata": {"uid": key, "generation": 1}, field: {}}
     def obj(key):
         return resources[objects(config)[key][0]]
-    obj("validation")["status"] = {"observedGeneration": 1, "typeChecking": {}}
+    for key in ("validation", "secretGuard", "serviceGuard", "podDeleteGuard"):
+        obj(key)["status"] = {"observedGeneration": 1, "typeChecking": {}}
     for key in ("gateway", "governance", "proxy"):
         obj(key)["spec"]["replicas"] = 1
         obj(key)["status"] = {"observedGeneration": 1, "readyReplicas": 1, "updatedReplicas": 1}

@@ -81,9 +81,74 @@ field. Start from the component charts' values and schemas:
 | `stack.audit` | Pinned revision and [audit values](../charts/saw-audit-writer/values.yaml): history/exchange storage classes, image and owner identity. Targets derive from the BOM. |
 | `governanceNamespace`, `providerAllowHosts` | Shared governance location and permitted provider destinations. |
 | `automaticEnrollment` | `enabled`, pinned helper image/revision, build namespace, resource limits, approved profile digests and reviewed boundary reference. |
-| `automaticEnrollment.relay` | Pinned relay chart revision, issuer, Keycloak namespace/admin Secret **name**, and explicit DNS, OIDC and Kubernetes API egress. See [relay values](../charts/saw-workspace-relay/values.yaml). |
+| `automaticEnrollment.relay` | Pinned relay chart revision, issuer, Keycloak namespace and realm registrar Secret **name**, and explicit DNS, OIDC and Kubernetes API egress. See [relay values](../charts/saw-workspace-relay/values.yaml). |
 | `profileImageOverrides`, `profileBoundaries` | Optional per-profile pinned image overrides and explicit provider/boundary approval. Changing the profile requires its own approval. |
 | `imagePull` | Optional namespace and ImageStream names for access to an OpenShift internal registry. |
+
+The portal checks the current Keycloak subject before changing a container's
+registration or Vault credentials. Configure `portal.adminSubjects` with the
+immutable Keycloak subject for each portal administrator who may act for another
+owner. The portal Task needs the existing read-only directory client projection
+`saw-generator-keycloak` when container sites are enabled.
+
+### One-time Keycloak registration setup
+
+Use a dedicated Keycloak realm. Run this once from the checkout with an
+explicit kubeconfig for the intended cluster. The bootstrap Job needs the
+existing master bootstrap Secret only during setup. If the issuer requires
+a private CA, supply `--ca-configmap NAME` with key `ca-bundle.crt`.
+
+```sh
+python3 scripts/portal-container/setup-relay-provisioner.py \
+  --namespace "$KEYCLOAK_NAMESPACE" --issuer "$KEYCLOAK_ISSUER" \
+  --bootstrap-secret "$PLATFORM_BOOTSTRAP_SECRET" |
+  oc --kubeconfig="$KUBECONFIG" apply --server-side -f -
+oc --kubeconfig="$KUBECONFIG" -n "$KEYCLOAK_NAMESPACE" wait \
+  --for=condition=Complete job/saw-relay-provisioner --timeout=4m
+```
+
+Setup creates a confidential service account with only the realm-management
+`create-client` permission. It registers an administrator-defined client scope
+`saw-workspace-relay` for the OpenShell audience and user role, and allows that
+scope for authenticated dynamic registration. Its credential is stored in
+`saw-relay-provisioner` in the Keycloak namespace. Set
+`automaticEnrollment.relay.keycloakProvisionerSecret: saw-relay-provisioner`
+and use a full Git commit for `automaticEnrollment.relay.revision`.
+
+The registrar can create clients in the workspace realm. The Job enforces the
+registration-specific client name. Protect the registrar Secret and restrict who
+can schedule Jobs in its namespace. The cleanup Job mounts only its script and
+uses its service account to read the individual registration receipt.
+
+Relay Jobs use the registration API to create one client and retain its
+per-client registration access token in the Keycloak namespace for deletion.
+An ambiguous creation without a registration receipt requires administrator
+recovery of that exact client. A client ID collision fails closed. The browser
+Pods receive only their own login/forwarding material.
+
+The Kubernetes runtime and governance image workflows run pull-request builds
+with read-only repository access. Only main-branch publication and manifest
+merge jobs receive package-write permission.
+
+### Admission and upgrade
+
+Supply digest-pinned images for enabled sandbox slots through the shared BOM
+or its site image overrides. The composition derives the allowed slot image,
+runtime bootstrap, supervisor command and per-slot claims from those inputs.
+The five admitted Pod classes are the gateway StatefulSet, Sandbox workload,
+supervisor, gate-preparation Job and audit-forwarder ReplicaSet. Unknown Pods,
+foreign Secret projections and in-place executable changes are denied.
+The gateway can remove scheduling gates. It can create internal boundary
+Services and immutable Pod-owned bootstrap Secrets. Argo installs the stock
+network fences and the gateway can only read them. The static projector may
+create only its named Opaque plugin credential in the two designated namespaces.
+
+Re-review and capture the revised admission policies, bindings, gateway Role
+and network fences during foundation installation. Existing published
+boundaries and compiled plans reference the old specifications. Qualify a new
+registration before migrating an existing installation. For registrations made
+with the old relay scheme, retire the old client with the old installation's
+cleanup procedure before replacing its credentials.
 
 Component `values` accept the composition placeholders `@OWNER@`, `@SUBJECT@`,
 `@INSTALLATION@`, `@RUNTIME@`, `@TRUSTED@`, `@ARCHIVE@`, `@UI@` and `@DOMAIN@`.
@@ -407,3 +472,22 @@ from the reconciler in `saw-ctl-<registration>` and the application Pods; lifecy
 changes use public intent or RHDH. See the architecture page's
 [current boundaries](container-workspaces.md#current-boundaries) for the remaining
 security and access limitations.
+
+To reproduce the Pod admission regression on an enrolled container workspace,
+use a kubeconfig authorized to impersonate its gateway and Agent Sandbox
+controller. This requires running workload and supervisor Pods. The probes use
+API-server dry-run, including a malicious template submitted as the legitimate
+controller and an attempt to remove the workload’s role during an update.
+
+```sh
+python3 scripts/portal-container/check-pod-admission.py \
+  --kubeconfig "$KUBECONFIG" --namespace "$RUNTIME_NAMESPACE" --gateway "$GATEWAY"
+```
+
+Each probe must report denial by the workspace Pod policy. An RBAC error,
+missing API, or collision with an existing Pod fails the check.
+
+The Task reads the Tekton-owned `tekton.dev/pipelineRun` Pod label through the
+downward API to identify its credential reservation. If a pending writer disappears, inspect its PipelineRun and the owned
+Vault generation before clearing the writer annotation. A missing holder fails
+closed. A terminated failed run can be retried for the same registration.

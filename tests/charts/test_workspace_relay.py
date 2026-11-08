@@ -14,7 +14,7 @@ pytestmark = [pytest.mark.ci_external, pytest.mark.skipif(not shutil.which("helm
 
 
 def test_secret_and_membership_boundaries(tmp_path):
-    values = dict(enabled=True, clientID="site-agent", keycloakNamespace="kc", keycloakAdminSecret="kc-admin",
+    values = dict(enabled=True, clientID="site-agent", keycloakNamespace="kc", keycloakProvisionerSecret="kc-admin",
                   issuer="https://kc.example/realms/openshell", trustedNamespace="trusted", gatewayNamespace="runtime",
                   installationID="installation", gateway="gateway", workspace="agent", workspaceID="old-id",
                   sandbox="assistant", ownerLogin="alice", ownerSubject="owner", subject="relay",
@@ -29,12 +29,13 @@ def test_secret_and_membership_boundaries(tmp_path):
     deployment = next(d for d in resources if d["kind"] == "Deployment")
     pod = deployment["spec"]["template"]["spec"]
     assert pod["automountServiceAccountToken"] is False
-    assert [v["secret"]["secretName"] for v in pod["volumes"] if "secret" in v] == ["relay-credentials"]
+    assert {v["secret"]["secretName"] for v in pod["volumes"] if "secret" in v} == {"relay-credentials"}
     containers = {c["name"]:c for c in pod["containers"]}
     assert "credential" not in {v["name"] for v in containers["forward"]["volumeMounts"]}
     assert "--local 127.0.0.1:28789" in containers["forward"]["args"][0]
     assert containers["transport"]["command"] == ["python3", "-I", "/config/saw_ui_limit.py", "18789", "28789", "16", "--connect-only"]
-    assert containers["transport"]["volumeMounts"] == [{"name": "config", "mountPath": "/config", "readOnly": True}]
+    assert {m["name"] for m in containers["transport"]["volumeMounts"]} == {"config", "proof"}
+    assert "--oidc-email-claim=sub" in containers["browser-login"]["args"]
     assert containers["transport"]["securityContext"] == containers["forward"]["securityContext"]
     canonical = CHART.parent / "openshell-saw/files/installer/saw_ui_limit.py"
     assert (CHART / "files/saw_ui_limit.py").read_bytes() == canonical.read_bytes()
@@ -47,10 +48,10 @@ def test_secret_and_membership_boundaries(tmp_path):
     volumes = {v["name"]: v for v in jobs["trusted"]["volumes"]}
     assert volumes["identity"]["configMap"]["name"] == "gateway-gateway-ca"
     assert volumes["admin-session"]["emptyDir"] == {"medium": "Memory", "sizeLimit": "4Mi"}
-    runtime_role = next(d for d in resources if d["kind"] == "Role" and d["metadata"]["namespace"] == "runtime")
+    runtime_role = next(d for d in resources if d["kind"] == "Role" and d["metadata"]["name"] == "relay-admin-session")
     assert runtime_role["rules"] == [{"apiGroups": [""], "resources": ["secrets"],
                                      "resourceNames": ["gateway-client-ca"], "verbs": ["get", "update"]}]
-    binding = next(d for d in resources if d["kind"] == "RoleBinding" and d["metadata"].get("namespace") == "runtime")
+    binding = next(d for d in resources if d["kind"] == "RoleBinding" and d["metadata"]["name"] == "relay-admin-session")
     assert binding["subjects"] == [{"kind": "ServiceAccount", "name": "relay", "namespace": "trusted"}]
     assert [v["secret"]["secretName"] for v in jobs["kc"]["volumes"] if "secret" in v] == ["kc-admin"]
     role = next(d for d in resources if d["kind"]=="Role" and d["metadata"].get("namespace", "ui") == "ui")
@@ -58,7 +59,7 @@ def test_secret_and_membership_boundaries(tmp_path):
 
 
 def test_rendered_transport_starts_beside_projected_token_module(tmp_path):
-    values = dict(enabled=True, clientID="site-agent", keycloakNamespace="kc", keycloakAdminSecret="kc-admin",
+    values = dict(enabled=True, clientID="site-agent", keycloakNamespace="kc", keycloakProvisionerSecret="kc-admin",
                   issuer="https://kc.example/realms/openshell", trustedNamespace="trusted", gatewayNamespace="runtime",
                   installationID="installation", gateway="gateway", workspace="agent", workspaceID="workspace-id",
                   sandbox="assistant", ownerLogin="alice", ownerSubject="owner", subject="relay",
@@ -104,7 +105,7 @@ def test_rendered_transport_starts_beside_projected_token_module(tmp_path):
 
 
 def test_relay_jobs_change_with_images_and_mount_their_exact_scripts():
-    values = dict(enabled=True, clientID="site-agent", keycloakNamespace="kc", keycloakAdminSecret="kc-admin",
+    values = dict(enabled=True, clientID="site-agent", keycloakNamespace="kc", keycloakProvisionerSecret="kc-admin",
                   issuer="https://kc.example/realms/openshell", trustedNamespace="trusted", gatewayNamespace="runtime",
                   installationID="installation", gateway="gateway", workspace="agent", workspaceID="workspace-id",
                   sandbox="assistant", ownerLogin="alice", ownerSubject="owner", subject="relay",
@@ -127,3 +128,27 @@ def test_relay_jobs_change_with_images_and_mount_their_exact_scripts():
     changed = jobs({**values, "sdkImage": "example/sdk@sha256:"+"a"*64,
                     "pythonImage": "example/python@sha256:"+"a"*64})
     assert initial.isdisjoint(changed)
+
+
+def test_relay_replaces_spoofed_headers_and_requires_authenticated_subject(tmp_path):
+    import asyncio
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("review_transport", CHART/"files"/"saw_ui_limit.py")
+    transport = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(transport)
+    proof = tmp_path/"proof"
+    proof.write_bytes(b"a"*64)
+    async def request(headers):
+        reader = asyncio.StreamReader()
+        reader.feed_data(b"GET /ws HTTP/1.1\r\n"+headers+b"\r\n\r\n")
+        reader.feed_eof()
+        return await transport.relay_request(reader, proof, "owner-sub")
+    raw = asyncio.run(request(b"X-Forwarded-Email: owner-sub\r\nX-Saw-Relay-Identity: forged"))
+    assert b"Connection: close\r\n" in raw
+    upgraded = asyncio.run(request(b"X-Forwarded-Email: owner-sub\r\nUpgrade: websocket"))
+    assert b"Connection: Upgrade\r\n" in upgraded
+    assert raw.count(b"X-Saw-Relay-Identity: ") == 1
+    assert b"forged" not in raw and b"owner-sub."+b"a"*64 in raw
+    for headers in [b"X-Forwarded-Email: reused-login", b"X-Forwarded-Email: owner-sub\r\nX-Forwarded-Email: foreign"]:
+        with pytest.raises(ValueError):
+            asyncio.run(request(headers))

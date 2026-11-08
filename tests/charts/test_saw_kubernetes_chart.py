@@ -114,8 +114,12 @@ def test_network_does_not_grant_workload_or_namespace_wide_egress():
     deny = docs['NetworkPolicy', 'saw-test-default-deny']['spec']
     assert deny['egress'] == deny['ingress'] == []
     granting = [p for p in policies if p['spec'].get('egress')]
-    assert len(granting) == 1
-    assert granting[0]['spec']['podSelector']['matchLabels']['openshell.pattern/role'] == 'gateway'
+    assert {p['metadata']['name'] for p in granting} == {'saw-test-gateway', 'openshell-sandbox-supervisors'}
+    assert docs['NetworkPolicy', 'openshell-sandbox-supervisors']['spec']['podSelector'] == {
+        'matchLabels': {'openshell.ai/boundary-role': 'supervisor'}}
+    rules = docs['Role', 'saw-test-gateway']['rules']
+    fence, = [r for r in rules if 'networkpolicies' in r['resources']]
+    assert fence['verbs'] == ['get']
     assert not any(p['spec']['podSelector'].get('matchLabels', {}).get('openshell.ai/boundary-role') == 'workload' for p in granting)
     assert docs['Route', 'saw-test-gateway']['spec']['tls'] == {'termination': 'passthrough'}
 

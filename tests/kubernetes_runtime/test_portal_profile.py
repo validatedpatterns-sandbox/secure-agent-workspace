@@ -10,6 +10,8 @@ def test_portal_bom_route_requires_same_sandboxes_browser_binding():
          "ownerSubject":"owner","mode":"container","gatewayVersion":"0.1.2-rhaiv.6",
          "approvedCredentialFreeProviders":[],"proxyBindings":[{"type":"openai", "secret":"inference", "key":"api_key", "refresh":False}],"bindings":{"agent/audited":{
              "workspace":{"claimName":"tenant-data","uid":"claim","readOnly":False},
+             "toolGate":{"ownerLogin":"owner", "trusted":{"claimName":"saw-gate-fixture","uid":"gate","readOnly":True},
+                         "audit":{"claimName":"saw-audit-fixture","uid":"audit","readOnly":False}},
              "browser":{"origin":"https://owner.example.test","ownerLogin":"owner"}}}}
     plan=compile_profile(profile,cfg)
     assert plan["workspaces"][0]["sandboxes"][0]["name"]=="audited"

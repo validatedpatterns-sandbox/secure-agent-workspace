@@ -1,5 +1,8 @@
 {{- if .Values.enabled }}
 {{- $v := .Values }}{{- $n := .Release.Name }}{{- $ui := .Release.Namespace }}
+{{- range $image := list $v.pythonImage $v.cliImage $v.proxyImage }}
+{{- if not (regexMatch "^.+@sha256:[0-9a-f]{64}$" $image) }}{{ fail "relay images must be digest pinned" }}{{ end }}
+{{- end }}
 {{- $revision := dict "values" $v "script" (.Files.Get "files/identity.py") | toJson | sha256sum | trunc 10 }}
 {{- $script := printf "%s-identity-%s" $n $revision }}
 {{- if or (eq $ui $v.keycloakNamespace) (eq $ui $v.trustedNamespace) (not (hasPrefix "https://" $v.issuer)) (not $v.clientID) (not $v.workspace) (not $v.installationID) }}{{ fail "dedicated UI namespace, HTTPS issuer and explicit client/workspace scope required" }}{{ end }}
@@ -10,6 +13,44 @@ metadata:
   labels: {saw.redhat.com/runtime-owner: {{ $v.installationID | quote }}}
   annotations: {argocd.argoproj.io/sync-options: 'Prune=false,Delete=false'}
 type: Opaque
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $n }}-browser-proof
+  namespace: {{ $v.gatewayNamespace }}
+  labels: {saw.redhat.com/runtime-owner: {{ $v.installationID | quote }}}
+type: Opaque
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: {{ $n }}-proof, namespace: {{ $v.gatewayNamespace }}}
+rules: [{apiGroups: [""], resources: [secrets], resourceNames: [{{ $n }}-browser-proof], verbs: [get, patch]}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ $n }}-proof, namespace: {{ $v.gatewayNamespace }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $n }}-proof}
+subjects: [{kind: ServiceAccount, name: {{ $n }}-identity, namespace: {{ $v.keycloakNamespace }}}]
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $n }}-registration-state
+  namespace: {{ $v.keycloakNamespace }}
+  labels: {saw.redhat.com/runtime-owner: {{ $v.installationID | quote }}}
+type: Opaque
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: {{ $n }}-registration-state, namespace: {{ $v.keycloakNamespace }}}
+rules: [{apiGroups: [""], resources: [secrets], resourceNames: [{{ $n }}-registration-state], verbs: [get, patch]}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ $n }}-registration-state, namespace: {{ $v.keycloakNamespace }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $n }}-registration-state}
+subjects: [{kind: ServiceAccount, name: {{ $n }}-identity, namespace: {{ $v.keycloakNamespace }}}]
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -86,6 +127,10 @@ spec:
         - {name: PUBLIC_SUBJECT_MAP, value: {{ $v.publicSubjectMap | default "saw-portal-relay-subject" }}}
         - {name: PUBLIC_SUBJECT_NAMESPACE, value: {{ $v.trustedNamespace }}}
         {{- end }}
+        - {name: RUNTIME_NAMESPACE, value: {{ $v.gatewayNamespace | quote }}}
+        - {name: PROOF_NAME, value: {{ $n }}-browser-proof}
+        - {name: PROVISIONER_NAMESPACE, value: {{ $v.keycloakNamespace | quote }}}
+        - {name: REGISTRATION_STATE, value: {{ $n }}-registration-state}
         - {name: UI_NAMESPACE, value: {{ $ui }}}
         - {name: INSTALLATION, value: {{ $v.installationID | quote }}}
         - {name: WORKSPACE, value: {{ $v.workspace | quote }}}
@@ -94,9 +139,13 @@ spec:
         - {name: AUDIENCE, value: {{ $v.audience | quote }}}
         volumeMounts:
         - {name: script, mountPath: /scripts, readOnly: true}
-        - {name: kc, mountPath: /kc-admin, readOnly: true}
+        {{- if eq $action "create" }}
+        - {name: kc, mountPath: /kc-provisioner, readOnly: true}
+        {{- end }}
       volumes:
       - {name: script, configMap: {name: {{ $script }}}}
-      - {name: kc, secret: {secretName: {{ required "Keycloak bootstrap Secret required" $v.keycloakAdminSecret }}, defaultMode: 0440}}
+      {{- if eq $action "create" }}
+      - {name: kc, secret: {secretName: {{ required "realm-scoped Keycloak provisioner Secret required" $v.keycloakProvisionerSecret }}, defaultMode: 0440, items: [{key: issuer, path: issuer}, {key: client-id, path: client-id}, {key: client-secret, path: client-secret}]}}
+      {{- end }}
 {{- end }}
 {{- end }}

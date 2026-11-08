@@ -28,6 +28,7 @@
             {
               "enabled": true,
               "harnessRequired": false,
+              "image": "quay.io/aipcc/base-images/agentic/openclaw@sha256:896d1526ee29b53167034ba65d1c758c8da777f441ed094e19f3bcf6d7445c61",
               "name": "notebook",
               "type": "openclaw",
               "uiRoute": true
@@ -35,6 +36,7 @@
             {
               "enabled": false,
               "harnessRequired": false,
+              "image": "ghcr.io/validatedpatterns-sandbox/nemoclaw-sandbox:latest",
               "name": "cuda-sandbox",
               "type": "nemoclaw",
               "uiRoute": false
@@ -42,6 +44,7 @@
             {
               "enabled": false,
               "harnessRequired": false,
+              "image": "base",
               "name": "toolbox",
               "type": "generic",
               "uiRoute": false
@@ -105,6 +108,7 @@
               "enabled": true,
               "endpointInput": "inference.url",
               "harnessRequired": false,
+              "image": "quay.io/aipcc/base-images/agentic/openclaw@sha256:896d1526ee29b53167034ba65d1c758c8da777f441ed094e19f3bcf6d7445c61",
               "modelInput": "inference.model",
               "name": "notebook",
               "type": "openclaw",
@@ -170,6 +174,7 @@
             {
               "enabled": true,
               "harnessRequired": false,
+              "image": "quay.io/aipcc/base-images/agentic/openclaw@sha256:896d1526ee29b53167034ba65d1c758c8da777f441ed094e19f3bcf6d7445c61",
               "modelInput": "inference.model",
               "name": "notebook",
               "type": "openclaw",
@@ -178,6 +183,7 @@
             {
               "enabled": false,
               "harnessRequired": false,
+              "image": "ghcr.io/validatedpatterns-sandbox/nemoclaw-sandbox:latest",
               "name": "cuda-sandbox",
               "type": "nemoclaw",
               "uiRoute": false
@@ -185,6 +191,7 @@
             {
               "enabled": false,
               "harnessRequired": false,
+              "image": "base",
               "name": "toolbox",
               "type": "generic",
               "uiRoute": false
@@ -199,6 +206,7 @@
             {
               "enabled": true,
               "harnessRequired": false,
+              "image": "ghcr.io/validatedpatterns-sandbox/nemoclaw-sandbox:latest",
               "modelInput": "inference.cuda_model",
               "name": "cuda-sandbox",
               "type": "nemoclaw",
@@ -207,6 +215,7 @@
             {
               "enabled": false,
               "harnessRequired": false,
+              "image": "base",
               "name": "toolbox",
               "type": "generic",
               "uiRoute": false
@@ -290,6 +299,7 @@
             {
               "enabled": true,
               "harnessRequired": true,
+              "image": "ghcr.io/validatedpatterns-sandbox/nemoclaw-sandbox:latest",
               "name": "assistant",
               "type": "nemoclaw",
               "uiRoute": true

@@ -31,7 +31,7 @@ def once(x):
     nsobj=obj("namespace",ns)["metadata"]
     if nsobj["labels"].get("saw.redhat.com/runtime-owner")!=ident or nsobj.get("deletionTimestamp"):raise ValueError("namespace ownership")
     cfg=dict(namespace=ns,namespaceUID=nsobj["uid"],ownerID=ident,mode="container",trustedNamespace=t,
-             governanceNamespace=x["governance"],gateway=u,proxyPolicy=u+"-proxy-policy")
+             governanceNamespace=x["governance"],gateway=u,proxyPolicy=u+"-proxy-policy",slotKeys=sorted(x["targets"]))
     cache={}
     def get(p):
         if p not in cache:cache[p]=api(p)

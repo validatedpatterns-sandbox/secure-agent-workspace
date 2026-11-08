@@ -85,6 +85,46 @@ kind: ClusterRoleBinding
 metadata: {name: {{ $name }}-identity}
 roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ $name }}-identity}
 subjects: [{kind: ServiceAccount, name: {{ $name }}-identity, namespace: {{ .Release.Namespace }}}]
+---
+# Kubernetes RBAC cannot limit CREATE by resourceNames. Fence the bootstrap
+# identity before granting it create in either namespace, especially Argo CD.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ $name }}-credentials
+  annotations: {argocd.argoproj.io/sync-wave: "-12"}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - {apiGroups: [""], apiVersions: [v1], resources: [secrets], operations: [CREATE]}
+  matchConditions:
+    - name: projector-bootstrap
+      expression: request.userInfo.username == {{ printf "system:serviceaccount:%s:%s-identity" .Release.Namespace $name | toJson }}
+  validations:
+    - expression: >-
+        request.namespace in [{{ .Release.Namespace | toJson }}, {{ $argo | toJson }}] &&
+        object.metadata.name == {{ $name | toJson }} && object.type == 'Opaque' &&
+        has(object.immutable) && object.immutable && has(object.data) &&
+        object.data.size() == 1 && 'token' in object.data &&
+        has(object.metadata.labels) && object.metadata.labels.size() == 2 &&
+        object.metadata.labels['saw.redhat.com/projector-owner'] == {{ $owner | toJson }} &&
+        object.metadata.labels['app.kubernetes.io/part-of'] == 'argocd' &&
+        has(object.metadata.annotations) && object.metadata.annotations.size() == 1 &&
+        object.metadata.annotations['saw.redhat.com/identity-sha256'].matches('^[a-f0-9]{64}$') &&
+        has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() == 1 &&
+        object.metadata.ownerReferences[0].name == {{ $name | toJson }} &&
+        (request.namespace == {{ $argo | toJson }} ?
+         (object.metadata.ownerReferences[0].kind == 'ApplicationSet' && object.metadata.ownerReferences[0].apiVersion == 'argoproj.io/v1alpha1') :
+         (object.metadata.ownerReferences[0].kind == 'Deployment' && object.metadata.ownerReferences[0].apiVersion == 'apps/v1'))
+      message: Only the named immutable Opaque plugin credential may be created.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ $name }}-credentials
+  annotations: {argocd.argoproj.io/sync-wave: "-11"}
+spec: {policyName: {{ $name }}-credentials, validationActions: [Deny]}
 {{- range $ns := list .Release.Namespace $argo }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1

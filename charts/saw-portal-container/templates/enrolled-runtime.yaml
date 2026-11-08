@@ -60,7 +60,7 @@ subjects: [{kind: ServiceAccount, name: saw-gate-preparation, namespace: {{ $ns 
 {{- end }}
 {{- /* Job PodSpecs are immutable. A new artifact or bundle gets a new Job,
 while an unchanged sync keeps the completed publication. */ -}}
-{{- $publicationSpec := dict "image" $e.image "owner" $u "subject" $b.ownerSubject "target" $target "gate" $gate "model" $model "generation" $publication -}}
+{{- $publicationSpec := dict "version" 2 "image" $e.image "owner" $u "subject" $b.ownerSubject "target" $target "gate" $gate "model" $model "generation" $publication -}}
 {{- $job = printf "%s-%s" $job ($publicationSpec | toJson | sha256sum | trunc 10) }}
 ---
 apiVersion: batch/v1
@@ -78,10 +78,10 @@ spec:
       containers:
       - name: prep
         image: {{ $e.image | quote }}
-        command: [python3, -m, saw_kubernetes.prepare_gate, --owner, {{ $u | quote }}, --subject, {{ $b.ownerSubject | quote }}, --workspace, {{ $target.workspace }}, --sandbox, {{ $target.sandbox }}, --receipt-key, {{ $gate.receiptKey | quote }}{{ if $gate.harness }}, --harness, {{ $gate.harness.name | quote }}, {{ $gate.harness.digest | quote }}{{ end }}{{ if $model }}, --model, {{ $model | quote }}, --model-generation, {{ $publication | quote }}{{ end }}]
+        command: [python3, -m, saw_kubernetes.prepare_gate, --owner, {{ $u | quote }}, --subject, {{ $b.ownerSubject | quote }}, --workspace, {{ $target.workspace }}, --sandbox, {{ $target.sandbox }}, --receipt-key, {{ $gate.receiptKey | quote }}{{ if $target.ui }}, --browser-proof, /proof/relay-proof{{ end }}{{ if $gate.harness }}, --harness, {{ $gate.harness.name | quote }}, {{ $gate.harness.digest | quote }}{{ end }}{{ if $model }}, --model, {{ $model | quote }}, --model-generation, {{ $publication | quote }}{{ end }}]
         securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
-        volumeMounts: [{name: gate, mountPath: /volume}{{ if $gate.harness }}, {name: bom, mountPath: /bom, readOnly: true}{{ end }}]
-      volumes: [{name: gate, persistentVolumeClaim: {claimName: {{ $gate.trusted.claimName }}}}{{ if $gate.harness }}, {name: bom, configMap: {name: saw-bom-profiles}}{{ end }}]
+        volumeMounts: [{name: gate, mountPath: /volume}{{ if $target.ui }}, {name: proof, mountPath: /proof, readOnly: true}{{ end }}{{ if $gate.harness }}, {name: bom, mountPath: /bom, readOnly: true}{{ end }}]
+      volumes: [{name: gate, persistentVolumeClaim: {claimName: {{ $gate.trusted.claimName }}}}{{ if $target.ui }}, {name: proof, secret: {secretName: ui-{{ $target.relayID }}-browser-proof, items: [{key: relay-proof, path: relay-proof}]}}{{ end }}{{ if $gate.harness }}, {name: bom, configMap: {name: saw-bom-profiles}}{{ end }}]
 {{- end }}
 ---
 apiVersion: argoproj.io/v1alpha1

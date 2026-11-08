@@ -436,6 +436,14 @@ def world(portal, monkeypatch, tmp_path):
                  "VAULT_ADDR": url, "VAULT_AUTH_MOUNT": "hub", "VAULT_ROLE": "saw-portal-writer",
                  "VAULT_KV_MOUNT": "secret", "VAULT_PREFIX_BASE": "hub"}.items():
         monkeypatch.setenv(k, v)
+    monkeypatch.setenv("PIPELINE_RUN", "fixture-registration")
+    (tmp_path / "directory-secret").write_text("synthetic-directory-client")
+    monkeypatch.setenv("KEYCLOAK_URL", "https://directory.test")
+    monkeypatch.setenv("KEYCLOAK_REALM", "test")
+    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "directory-test")
+    monkeypatch.setenv("KEYCLOAK_SECRET_FILE", str(tmp_path / "directory-secret"))
+    monkeypatch.setattr(portal, "keycloak_user_ids", lambda *args, **kwargs: {
+        "alice": "478fdd1f-8db9-41e8-97ad-b563215c89e9"})
     yield fake, Tokens(auth, scaffolder)
     server.shutdown()
 
@@ -1850,3 +1858,44 @@ def test_headless_container_requires_current_runtime_and_healthy_argo(portal, mo
     assert status()["ready"] and not status()["links"]
     objects["saw-runtime-status"]=cm("status.json",{**state,"observedGeneration":0})
     assert not status()["ready"]
+
+
+def test_recycled_container_login_cannot_write_or_delete(portal, world, monkeypatch):
+    fake, signer = world
+    monkeypatch.setenv("SAW_DEPLOYMENT_MODES", '["vm","container"]')
+    monkeypatch.setenv("SAW_CONTAINER_SITES", json.dumps({"alice":{
+        "subject":"478fdd1f-8db9-41e8-97ad-b563215c89e9",
+        "automaticEnrollment":{"approvedProfiles":{"audited-openclaw":"a"*64}}}}))
+    fake.request("saw-req-owner", ds_request(signer, deploymentMode="container", profile="audited-openclaw"))
+    assert portal.main(["create","saw-req-owner"]) == 0
+    before = json.dumps([fake.vault, fake.objects[REGISTRY]], sort_keys=True)
+    monkeypatch.setattr(portal, "keycloak_user_ids", lambda *a, **kw: {"alice":"different-subject"})
+    for action in ["create","delete"]:
+        data = ds_request(signer, deploymentMode="container", profile="audited-openclaw")
+        fake.request("saw-req-reused", {**data, "action":action})
+        assert portal.main([action,"saw-req-reused"]) == 1
+        assert json.dumps([fake.vault, fake.objects[REGISTRY]], sort_keys=True) == before
+
+
+def test_failed_vault_write_retains_reserved_generation(portal, world, monkeypatch):
+    fake, signer = world
+    monkeypatch.setenv("SAW_DEPLOYMENT_MODES", '["vm","container"]')
+    monkeypatch.setenv("SAW_CONTAINER_SITES", json.dumps({"alice":{
+        "subject":"478fdd1f-8db9-41e8-97ad-b563215c89e9",
+        "automaticEnrollment":{"approvedProfiles":{"audited-openclaw":"a"*64}}}}))
+    real = portal.vault_client
+    def unavailable():
+        raise portal.PortalError("simulated Vault outage")
+    monkeypatch.setattr(portal, "vault_client", unavailable)
+    data = ds_request(signer, deploymentMode="container", profile="audited-openclaw")
+    fake.request("saw-req-reserve", data)
+    assert portal.main(["create","saw-req-reserve"]) == 1
+    entry = portal.read_entry(fake.objects[REGISTRY])
+    assert portal.entry_generation("alice", entry) == GEN[0]
+    assert not fake.vault
+    assert portal.list_workspaces(portal.kube(), "saw-portal") == []
+    monkeypatch.setattr(portal, "vault_client", real)
+    fake.request("saw-req-resume", data)
+    assert portal.main(["create","saw-req-resume"]) == 0
+    assert portal.entry_generation("alice", portal.read_entry(fake.objects[REGISTRY])) == GEN[0]
+    assert list(fake.vault) == [f"{KEYS}/inference"]

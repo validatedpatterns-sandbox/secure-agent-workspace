@@ -48,6 +48,90 @@
     },
     "global": {
       "type": "object"
+    },
+    "sandboxControllerUsername": {
+      "type": "string"
+    },
+    "supervisorImage": {
+      "type": "string"
+    },
+    "runtimeImage": {
+      "type": "string"
+    },
+    "serverTLSSecret": {
+      "type": "string"
+    },
+    "slots": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "image": {
+            "type": "string"
+          },
+          "base": {
+            "type": "string"
+          },
+          "relayID": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{16}$"
+          },
+          "dataMounts": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "claimName",
+                "mountPath",
+                "uid",
+                "readOnly"
+              ],
+              "properties": {
+                "claimName": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9.-]*$",
+                  "not": {
+                    "pattern": "^saw-(gate|audit)-"
+                  }
+                },
+                "mountPath": {
+                  "type": "string",
+                  "pattern": "^/data(/[a-zA-Z0-9._-]+)*$",
+                  "not": {
+                    "pattern": "/\\.{1,2}(/|$)"
+                  }
+                },
+                "uid": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "readOnly": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "image",
+          "base"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "supervisorCommand": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "preparationImage": {
+      "type": "string"
+    },
+    "forwarderImage": {
+      "type": "string"
     }
   },
   "required": [

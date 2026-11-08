@@ -52,6 +52,12 @@ def main():
     if a.profile_digest:
         print(fingerprint(read(f"/api/v1/namespaces/{ns}/configmaps/saw-bom-profiles")["data"]))
         return
+    from saw_kubernetes.core import shared
+    files = read(f"/api/v1/namespaces/{ns}/configmaps/saw-bom-profiles")["data"]
+    documents, _, _ = shared.split_bom_files(files)
+    config["slotKeys"] = sorted(ws.name+"/"+sb.name
+        for _, ws in shared.enabled_workspaces(shared.parse_profiles(documents))
+        for sb in ws.sandboxes if sb.enabled)
     reference = contract(config, read)
     result = ({key: {"path":path, field:read(path)[field]} for key,(path,field) in objects(config).items()}
               if a.show_objects else reference)

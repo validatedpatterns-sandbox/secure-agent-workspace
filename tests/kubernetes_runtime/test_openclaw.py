@@ -110,9 +110,15 @@ def test_browser_policy_is_bound_to_one_owner_and_exact_https_origin(source):
     agent(source)
     binding = next(iter(source[1]["bindings"].values()))
     binding["browser"] = {"origin":"https://agent.apps.example.com","ownerLogin":"alice"}
+    with pytest.raises(ContractError, match="browser requires the read-only tool gate"):
+        compile_profile(*source)
+    binding["toolGate"] = {"ownerLogin": "alice",
+        "trusted": {"claimName": "saw-gate-test", "uid": "gate-uid", "readOnly": True},
+        "audit": {"claimName": "saw-audit-test", "uid": "audit-uid", "readOnly": False}}
     ws = compile_profile(*source)["workspaces"][0]
     command = ws["sandboxes"][0]["spec"]["command"][2]
-    assert 'allowUsers:["alice"]' in command
+    assert 'x-saw-relay-identity' in command and source[1]['ownerSubject'] in command
+    assert '/sandbox/.saw/trusted/relay-proof' in command
     assert 'allowedOrigins:["https://agent.apps.example.com"]' in command
     assert command.index("config.gateway.trustedProxies") < command.index("fs.writeFileSync")
     binding["browser"]["origin"] = "https://*.example.com"

@@ -389,6 +389,9 @@ export function evaluateToolCall(input) {
     } catch {
       const record = { ...resolutionRecord(decided.record, resolution), auditWriteFailed: true };
       process.stderr.write(`${JSON.stringify(record)}\n`);
+      if (record.decision === "approved" && input.unacknowledgedApproval) {
+        input.unacknowledgedApproval();
+      }
     }
   });
   return { record: decided.record, hook };

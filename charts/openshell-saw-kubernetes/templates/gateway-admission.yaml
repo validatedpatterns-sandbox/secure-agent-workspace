@@ -1,0 +1,75 @@
+{{- $root := . }}
+{{- range $resource := list "secrets" "services" "pods" }}
+{{- $name := printf "%s-%s-driver" $root.Release.Namespace $resource }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ $name }}
+  annotations: {argocd.argoproj.io/sync-wave: "-12"}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ $root.Release.Namespace }}}}
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: [v1]
+      resources: [{{ $resource }}]
+      operations: {{ if eq $resource "pods" }}[DELETE]{{ else }}[CREATE, UPDATE, DELETE]{{ end }}
+  matchConditions:
+    - name: stock-gateway
+      expression: request.userInfo.username == {{ printf "system:serviceaccount:%s:%s-gateway" $root.Release.Namespace $root.Release.Name | toJson }}
+{{- if eq $resource "pods" }}
+  validations:
+    - expression: >-
+        (oldObject != null &&
+        oldObject.spec.serviceAccountName == {{ printf "%s-sandbox" $root.Release.Name | toJson }} &&
+        oldObject.metadata.ownerReferences.size() == 1 && oldObject.metadata.ownerReferences[0].kind == 'Sandbox' &&
+        oldObject.metadata.ownerReferences[0].apiVersion in ['agents.x-k8s.io/v1beta1','agents.x-k8s.io/v1alpha1'] &&
+        oldObject.metadata.labels['openshell.ai/boundary-role'] in ['workload','supervisor'])
+      message: The gateway may delete only Sandbox-owned runtime Pods.
+{{- else }}
+  variables:
+    - name: obj
+      expression: "request.operation == 'DELETE' ? oldObject : object"
+    - name: id
+      expression: >-
+        has(variables.obj.metadata.labels) && 'openshell.ai/sandbox-id' in variables.obj.metadata.labels ?
+        variables.obj.metadata.labels['openshell.ai/sandbox-id'] : ''
+  validations:
+    - expression: >-
+        variables.id.matches('^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$') &&
+        has(variables.obj.metadata.ownerReferences) && variables.obj.metadata.ownerReferences.size() == 1
+      message: Driver resources require a sandbox identity and owner.
+{{- if eq $resource "secrets" }}
+    - expression: >-
+        variables.obj.type == 'Opaque' && has(variables.obj.immutable) && variables.obj.immutable &&
+        variables.obj.metadata.name.matches('^os-(sandbox|supervisor)-' + variables.id + '-[a-f0-9]{12}$') &&
+        variables.obj.metadata.ownerReferences[0].kind == 'Pod' &&
+        variables.obj.metadata.ownerReferences[0].apiVersion == 'v1'
+      message: The driver may manage only its immutable Pod-owned bootstrap Secrets.
+{{- else }}
+    - expression: >-
+        variables.obj.metadata.name == 'os-boundary-' + variables.id &&
+        variables.obj.metadata.ownerReferences[0].kind == 'Sandbox' &&
+        variables.obj.metadata.ownerReferences[0].apiVersion in ['agents.x-k8s.io/v1beta1','agents.x-k8s.io/v1alpha1'] &&
+        variables.obj.spec.type == 'ClusterIP' && !has(variables.obj.spec.externalIPs) &&
+        !has(variables.obj.spec.externalName) && variables.obj.spec.selector.size() == 2 &&
+        variables.obj.spec.selector['openshell.ai/boundary-role'] == 'workload' &&
+        variables.obj.spec.selector['openshell.ai/boundary-pair'] == variables.id &&
+        variables.obj.spec.ports.size() == 1 && variables.obj.spec.ports[0].name == 'boundary' &&
+        variables.obj.spec.ports[0].protocol == 'TCP' && variables.obj.spec.ports[0].port == 5500 &&
+        variables.obj.spec.ports[0].targetPort == 5500
+      message: The driver may create only internal per-sandbox boundary Services.
+{{- end }}
+{{- end }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ $name }}
+  annotations: {argocd.argoproj.io/sync-wave: "-11"}
+spec:
+  policyName: {{ $name }}
+  validationActions: [Deny]
+{{- end }}

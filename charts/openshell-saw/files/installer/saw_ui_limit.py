@@ -23,6 +23,9 @@ brief stock-CLI restarts. Established WebSockets still close when upstream
 authentication expires; clients must reconnect normally.
 """
 import asyncio
+import os
+import re
+from pathlib import Path
 import sys
 import time
 
@@ -277,13 +280,47 @@ async def hedge(upstream, sent, ureader, uwriter, slots):
         await slots.release_extra(extras)
 
 
+async def relay_request(reader, proof_file, subject):
+    # Only the authenticated loopback proxy may supply the owner subject.
+    # Replace every caller-supplied proof header before sending to OpenShell.
+    raw = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 10)
+    if len(raw) > 65536:
+        raise ValueError("oversized browser request")
+    request, *headers = raw[:-4].split(b"\r\n")
+    checked = []
+    owners = []
+    websocket = False
+    for line in headers:
+        name, sep, value = line.partition(b":")
+        if not sep or not re.fullmatch(rb"[!#$%&'*+.^_`|~0-9a-zA-Z-]+", name):
+            raise ValueError("invalid browser header")
+        if name.lower() == b"x-forwarded-email":
+            owners.append(value.strip())
+        if name.lower() == b"upgrade" and value.strip().lower() == b"websocket":
+            websocket = True
+        if name.lower() not in (b"x-saw-relay-identity", b"connection"):
+            checked.append(line)
+    if owners != [subject.encode("ascii")]:
+        raise ValueError("missing authenticated owner")
+    proof = Path(proof_file).read_bytes()
+    if not re.fullmatch(rb"[a-f0-9]{64}", proof):
+        raise ValueError("invalid relay proof")
+    checked.append(b"Connection: Upgrade" if websocket else b"Connection: close")
+    checked.append(b"X-Saw-Relay-Identity: " + subject.encode("ascii") + b"." + proof)
+    return b"\r\n".join([request, *checked]) + b"\r\n\r\n"
+
+
 def handler(upstream, slots, retry_sent=True):
     async def handle(creader, cwriter):
         conn = None
         try:
             # The first bytes tell an HTTP request from a WebSocket upgrade,
             # and are what a retry resends.
-            sent = await creader.read(65536)
+            proof_file = os.environ.get("SAW_BROWSER_RELAY_PROOF_FILE")
+            if proof_file:
+                sent = await relay_request(creader, proof_file, os.environ["SAW_BROWSER_OWNER_SUBJECT"])
+            else:
+                sent = await creader.read(65536)
             if not sent:
                 return
             conn = Conn(b"upgrade: websocket" in sent.lower())
@@ -308,7 +345,7 @@ def handler(upstream, slots, retry_sent=True):
             await asyncio.gather(relay(creader, uwriter, conn, False),
                                  relay(ureader, cwriter, conn, True))
             uwriter.close()
-        except (ConnectionError, OSError):
+        except (ConnectionError, OSError, asyncio.IncompleteReadError, asyncio.LimitOverrunError, ValueError, TimeoutError):
             pass
         finally:
             if conn is not None:

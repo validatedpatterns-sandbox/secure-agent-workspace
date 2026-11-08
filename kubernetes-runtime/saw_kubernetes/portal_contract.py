@@ -5,6 +5,7 @@ The normal runtime verifier still pins object UIDs and the full, unmodified
 resource hashes after each registration; this comparison is the prerequisite.
 """
 import copy
+import hashlib
 import ipaddress
 import json
 import re
@@ -57,6 +58,17 @@ def contract(config, get):
         # Only substitutions produced by this owner's template are accepted.
         # The runtime namespace, owner login and OIDC issuer remain literal.
         text=text.replace(trusted,"@SAW_CONTROL_NS@").replace(owner,"@SAW_INSTALLATION@")
+        if key == "validation":
+            slots = config.get("slotKeys", [])
+            registration = trusted.removeprefix("saw-ctl-")
+            for slot in slots:
+                relay = hashlib.sha256((registration + "/" + slot).encode()).hexdigest()[:16] if len(slots) > 1 else registration
+                # Substitute only registered name forms. Keep slot, CA and spec
+                # checks literal, including the association between Job and PVC.
+                if len(slots) > 1:
+                    text = text.replace(config["gateway"] + "-" + relay[:8], "@SAW_SLOT_" + slot + "@")
+                    text = text.replace("gate-" + relay + "-", "gate-@SAW_RELAY_" + slot + "@-")
+                text = text.replace("ui-" + relay + "-browser-proof", "ui-@SAW_RELAY_" + slot + "@-browser-proof")
         output[key]=fingerprint(json.loads(text))
     return output
 

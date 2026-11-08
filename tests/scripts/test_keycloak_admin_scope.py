@@ -67,8 +67,9 @@ def test_invalid_or_ambiguous_scope_fails_without_writes(scopes):
 
 
 def test_relay_credentials_are_not_granted_admin_api_scope():
-    # Relay client-credentials tokens go to OpenShell; only its admin-cli
-    # bootstrap token calls Keycloak Admin REST. Keep its exact audience.
+    # Dynamic registration uses a separate registrar. Only the approved
+    # relay scope and basic identity belong in the workspace client.
     relay = (ROOT / "charts/saw-workspace-relay/files/identity.py").read_text()
-    assert '"defaultClientScopes":["basic"]' in relay
+    assert 'defaultClientScopes=["basic", "saw-workspace-relay"]' in relay
+    assert '"grant_type":"password"' not in relay
     assert "ensure_admin_api_scope" not in relay

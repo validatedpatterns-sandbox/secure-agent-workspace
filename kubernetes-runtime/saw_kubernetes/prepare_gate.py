@@ -10,12 +10,14 @@ import tempfile
 from .core import shared
 
 
-def verify(directory, files, model_selector=False):
+def verify(directory, files, model_selector=False, browser=False):
     if directory.is_symlink() or not directory.is_dir():
         raise ValueError("invalid gate directory")
     dirs = {p for item in files for p in Path(item).parents} - {Path(".")}
     for path in directory.rglob("*"):
         rel = path.relative_to(directory)
+        if browser and rel.as_posix() == "relay-proof" and not path.is_symlink() and path.is_file():
+            continue
         if model_selector and rel.as_posix()=="model.json" and path.is_file() and not path.is_symlink():
             continue
         if path.is_symlink() or (rel not in dirs if path.is_dir() else rel.as_posix() not in files):
@@ -26,17 +28,17 @@ def verify(directory, files, model_selector=False):
             raise ValueError("existing gate differs from the requested policy or owner")
 
 
-def publish(root, identity, receipt_key=None, *, model=None, generation=None):
+def publish(root, identity, receipt_key=None, *, model=None, generation=None, browser=False):
     assets = Path(shared.__file__).parent
     files, _, digest, _ = shared.tool_gate_bundle(assets, identity, receipt_key)
     target = root / "bundle"
-    publish_tree(root, target, files, model_selector=model is not None)
+    publish_tree(root, target, files, model_selector=model is not None, browser=browser)
     if model is not None:
         publish_model(root, target, model, generation)
     return digest
 
 
-def publish_tree(root, target, files, *, model_selector=False):
+def publish_tree(root, target, files, *, model_selector=False, browser=False):
     if not target.exists():
         with tempfile.TemporaryDirectory(dir=root) as scratch:
             tmp = Path(scratch) / "bundle"
@@ -54,7 +56,7 @@ def publish_tree(root, target, files, *, model_selector=False):
             except OSError:
                 if not target.is_dir():
                     raise
-    verify(target, files, model_selector=model_selector)
+    verify(target, files, model_selector=model_selector, browser=browser)
 
 
 def publish_harness(root, bom, name, expected_digest):
@@ -93,11 +95,31 @@ def publish_model(root, target, model, generation):
                 Path(tmp.name).unlink(missing_ok=True)
 
 
+def publish_browser_proof(directory, proof):
+    if not re.fullmatch(rb"[a-f0-9]{64}", proof):
+        raise ValueError("invalid browser proof")
+    path = directory / "relay-proof"
+    with tempfile.NamedTemporaryFile(dir=directory, delete=False) as tmp:
+        try:
+            tmp.write(proof)
+            tmp.flush()
+            os.fchmod(tmp.fileno(), 0o444)
+            os.fsync(tmp.fileno())
+            try:
+                os.link(tmp.name, path)
+            except FileExistsError:
+                if path.is_symlink() or path.read_bytes() != proof:
+                    raise ValueError("existing browser proof differs")
+        finally:
+            Path(tmp.name).unlink(missing_ok=True)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     for key in ("owner", "subject", "workspace", "sandbox"):
         parser.add_argument("--" + key, required=True)
     parser.add_argument("--harness", nargs=2, metavar=("NAME", "DIGEST"))
+    parser.add_argument("--browser-proof")
     parser.add_argument("--model")
     parser.add_argument("--model-generation",type=int)
     receipt = parser.add_mutually_exclusive_group()
@@ -112,4 +134,7 @@ if __name__ == "__main__":
     os.umask(0o022)
     if args.harness:
         publish_harness(Path("/volume"), Path("/bom"), *args.harness)
-    print(publish(Path("/volume"), shared.tool_gate_identity(args.owner, args.subject, args.workspace, args.sandbox), args.receipt_key, model=args.model, generation=args.model_generation))
+    result = publish(Path("/volume"), shared.tool_gate_identity(args.owner, args.subject, args.workspace, args.sandbox), args.receipt_key, model=args.model, generation=args.model_generation, browser=bool(args.browser_proof))
+    if args.browser_proof:
+        publish_browser_proof(Path("/volume/bundle"), Path(args.browser_proof).read_bytes())
+    print(result)

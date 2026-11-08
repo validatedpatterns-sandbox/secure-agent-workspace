@@ -28,6 +28,15 @@ def objects(config):
     core = "/api/v1/namespaces"
     return {
         "validation": (f"{admission}/validatingadmissionpolicies/{policy}", "spec"),
+        "podDeleteGuard": (f"{admission}/validatingadmissionpolicies/{ns}-pods-driver", "spec"),
+        "podDeleteBinding": (f"{admission}/validatingadmissionpolicybindings/{ns}-pods-driver", "spec"),
+        "secretGuard": (f"{admission}/validatingadmissionpolicies/{ns}-secrets-driver", "spec"),
+        "secretBinding": (f"{admission}/validatingadmissionpolicybindings/{ns}-secrets-driver", "spec"),
+        "serviceGuard": (f"{admission}/validatingadmissionpolicies/{ns}-services-driver", "spec"),
+        "serviceBinding": (f"{admission}/validatingadmissionpolicybindings/{ns}-services-driver", "spec"),
+        "gatewayRole": (f"/apis/rbac.authorization.k8s.io/v1/namespaces/{ns}/roles/{gateway}-gateway", "rules"),
+        "workloadFence": (f"{net}/{ns}/networkpolicies/openshell-sandbox-workloads", "spec"),
+        "supervisorFence": (f"{net}/{ns}/networkpolicies/openshell-sandbox-supervisors", "spec"),
         "binding": (f"{admission}/validatingadmissionpolicybindings/{policy}", "spec"),
         "network": (f"/apis/policy.networking.k8s.io/v1alpha1/adminnetworkpolicies/{policy}-egress", "spec"),
         "deny": (f"{net}/{ns}/networkpolicies/{gateway}-default-deny", "spec"),
@@ -102,11 +111,12 @@ def verify(config, plan, get):
                 if not governed.check_policy(kind, credentials, policy, plan.get("customInferenceURL")):
                     raise BoundaryError("OpenAIProxyBindingMismatch" if kind == "openai"
                                         else "ProviderProxyBindingMismatch")
-    vap = observed["validation"]
-    status = vap.get("status", {})
-    if (status.get("observedGeneration") != vap["metadata"]["generation"]
-            or "typeChecking" not in status or status["typeChecking"].get("expressionWarnings")):
-        raise BoundaryError("AdmissionUnavailable")
+    for key in ("validation", "secretGuard", "serviceGuard", "podDeleteGuard"):
+        vap = observed[key]
+        status = vap.get("status", {})
+        if (status.get("observedGeneration") != vap["metadata"]["generation"]
+                or "typeChecking" not in status or status["typeChecking"].get("expressionWarnings")):
+            raise BoundaryError("AdmissionUnavailable:" + key)
     network = observed["network"]
     priority = network["spec"]["priority"]
     policies = complete_list(get, "/apis/policy.networking.k8s.io/v1alpha1/adminnetworkpolicies")

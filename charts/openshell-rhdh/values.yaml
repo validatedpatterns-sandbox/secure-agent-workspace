@@ -119,6 +119,8 @@ portal:
   # (the "... for a user" templates). Keycloak user names. Everyone else acts
   # only for themselves.
   admins: []
+  # Immutable Keycloak subjects for administrators acting for container owners.
+  adminSubjects: {}
   generator:
     port: 4355
     # Only RHDH (catalog) and Argo CD (ApplicationSet plugin) may reach the

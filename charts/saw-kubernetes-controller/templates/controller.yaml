@@ -34,7 +34,7 @@ rules:
   - {apiGroups: [""], resources: [nodes], verbs: [list]}
   - {apiGroups: [policy.networking.k8s.io], resources: [adminnetworkpolicies], verbs: [list]}
   - {apiGroups: [policy.networking.k8s.io], resources: [adminnetworkpolicies], resourceNames: [{{ $policy }}-egress], verbs: [get]}
-  - {apiGroups: [admissionregistration.k8s.io], resources: [validatingadmissionpolicies, validatingadmissionpolicybindings], resourceNames: [{{ $policy }}], verbs: [get]}
+  - {apiGroups: [admissionregistration.k8s.io], resources: [validatingadmissionpolicies, validatingadmissionpolicybindings], resourceNames: [{{ $policy }}, {{ $n }}-pods-driver, {{ $n }}-secrets-driver, {{ $n }}-services-driver], verbs: [get]}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -48,6 +48,7 @@ kind: Role
 metadata: {name: {{ $name }}, namespace: {{ $ns }}}
 rules:
 {{- if eq $ns $n }}
+  - {apiGroups: [rbac.authorization.k8s.io], resources: [roles], resourceNames: [{{ $g }}-gateway], verbs: [get]}
   # Public trust only; no private administrator identity is stored in this Secret.
   - {apiGroups: [""], resources: [secrets], resourceNames: [{{ $g }}-client-ca], verbs: [get, update]}
   - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $c.profile }}, {{ $c.intent }}, {{ $g }}-gateway-config, {{ $g }}-proxy-ca], verbs: [get]}
@@ -56,7 +57,7 @@ rules:
   - {apiGroups: [""], resources: [persistentvolumeclaims], resourceNames: {{ $.Values.claimNames | toJson }}, verbs: [get]}
   - {apiGroups: [apps], resources: [statefulsets], resourceNames: [{{ $g }}-gateway], verbs: [get]}
   - {apiGroups: [""], resources: [services], resourceNames: [{{ $g }}-gateway], verbs: [get]}
-  - {apiGroups: [networking.k8s.io], resources: [networkpolicies], resourceNames: [{{ $g }}-gateway, {{ $g }}-default-deny], verbs: [get]}
+  - {apiGroups: [networking.k8s.io], resources: [networkpolicies], resourceNames: [{{ $g }}-gateway, {{ $g }}-default-deny, openshell-sandbox-workloads, openshell-sandbox-supervisors], verbs: [get]}
 {{- else if eq $ns $t }}
   - {apiGroups: [""], resources: [pods], verbs: [get]}
   - {apiGroups: [apps], resources: [deployments], resourceNames: [{{ $g }}-credential-proxy], verbs: [get]}

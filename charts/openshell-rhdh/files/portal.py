@@ -614,6 +614,63 @@ def put_configmap(k8s, ns, name, data, labels=None, resource_version=None, deplo
     put_configmap(k8s, ns, name, data, labels, current["metadata"]["resourceVersion"], deployment_mode)
 
 
+CREDENTIAL_WRITER = "saw.redhat.com/credential-writer"
+WRITER_NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+
+def check_credential_writer(k8s, namespace, cm):
+    """Serialize Vault changes with registration publication and deletion."""
+    holder = (cm or {}).get("metadata", {}).get("annotations", {}).get(CREDENTIAL_WRITER)
+    if not holder or holder == os.environ.get("PIPELINE_RUN"):
+        return
+    if not WRITER_NAME.fullmatch(holder):
+        raise PortalError("invalid registration credential writer")
+    run = k8s.call("GET", f"/apis/tekton.dev/v1/namespaces/{namespace}/pipelineruns/{holder}", ok404=True)
+    if not run:
+        raise PortalError("credential writer PipelineRun is missing; operator recovery required")
+    if not any(c.get("type") == "Succeeded" and c.get("status") in ("True", "False")
+                       for c in run.get("status", {}).get("conditions", [])):
+        raise PortalError("another pipeline is publishing this registration's credentials")
+
+
+def reserve_credentials(k8s, ns, name, previous, entry, user):
+    """A failed/crashed write always has a registered generation for recovery."""
+    writer = env("PIPELINE_RUN")
+    if not WRITER_NAME.fullmatch(writer):
+        raise PortalError("credential publication requires a named PipelineRun")
+    path = f"/api/v1/namespaces/{ns}/configmaps"
+    body = {"apiVersion": "v1", "kind": "ConfigMap",
+            "metadata": {"name": name, "namespace": ns,
+                         "labels": {WORKSPACE_LABEL: "true", "openshell.pattern/owner": user},
+                         "annotations": {CREDENTIAL_WRITER: writer}},
+            "data": {"user.json": json.dumps(entry, sort_keys=True)}}
+    if previous:
+        meta = body["metadata"] = dict(previous["metadata"])
+        meta["annotations"] = {**meta.get("annotations", {}), CREDENTIAL_WRITER: writer}
+    try:
+        return k8s.call("PUT" if previous else "POST", path + ("/"+name if previous else ""), body)
+    except HttpError as exc:
+        if exc.code != 409:
+            raise
+        raise PortalError("concurrent registration changed before credential publication") from None
+
+
+def check_container_identity(user, site):
+    """Resolve the authenticated catalog login in the configured issuer before any write."""
+    if not site or not site.get("subject"):
+        raise PortalError("missing enrolled container owner")
+    issuer = env("KEYCLOAK_URL").rstrip("/") + "/realms/" + env("KEYCLOAK_REALM")
+    relay_issuer = site.get("automaticEnrollment", {}).get("relay", {}).get("issuer")
+    if relay_issuer and relay_issuer.rstrip("/") != issuer:
+        raise PortalError("workspace relay and owner directory must use the same issuer")
+    path = env("KEYCLOAK_SECRET_FILE")
+    with open(path, encoding="utf-8") as credential:
+        ids = keycloak_user_ids(env("KEYCLOAK_URL"), env("KEYCLOAK_REALM"), env("KEYCLOAK_CLIENT_ID"),
+                                credential.read().strip(), [user], insecure=False)
+    if ids.get(user) != site["subject"]:
+        raise PortalError("current identity does not match the enrolled container owner")
+
+
 def is_deleting(cm):
     return (cm["metadata"].get("labels") or {}).get(DELETING_LABEL) == "true"
 
@@ -647,6 +704,8 @@ def list_workspaces(k8s, ns, deleting=False):
                 and name == f"saw-ws-{entry['name']}"):
             log(f"ERROR: registry entry {name} is malformed (no valid user.json); skipped")
             bad.append(name)
+            continue
+        if cm["metadata"].get("annotations", {}).get(CREDENTIAL_WRITER):
             continue
         if (cm["metadata"].get("labels") or {}).get(DELETING_LABEL) == "true" and not deleting:
             continue
@@ -1312,6 +1371,13 @@ def handle(action, request_name):
         name = f"saw-ws-{user}"
         cm = k8s.call("GET", f"/api/v1/namespaces/{ns}/configmaps/{name}", ok404=True)
         deleting = cm is not None and is_deleting(cm)
+        mode = entry_deployment_mode(read_entry(cm)) if cm else None
+        if mode == "container" or (action == "create" and data.get("deploymentMode") == "container"):
+            check_container_identity(user, container_site(user))
+            if caller != user:
+                pins = json.loads(os.environ.get("SAW_PORTAL_ADMIN_SUBJECTS", "{}"))
+                check_container_identity(caller, {"subject": pins.get(caller)})
+        check_credential_writer(k8s, ns, cm)
         if action == "create" and "runtimeAction" in data:
             entry = read_entry(cm)
             operation = data["runtimeAction"]
@@ -1364,10 +1430,6 @@ def handle(action, request_name):
             # registration gets its own generation (see vault_prefix).
             generation = entry_generation(user, read_entry(cm)) if cm else new_generation()
             prefix = vault_prefix(user, generation)
-            vault = vault_client()
-            for secret, values in secrets.items():
-                vault.write(f"{prefix}/{secret}", values)
-                log(f"Vault: {prefix}/{secret} ({', '.join(sorted(values))})")
             entry = registry_entry(user, profile, generation, mode)
             if mode == "container":
                 if lifecycle:
@@ -1386,6 +1448,11 @@ def handle(action, request_name):
                     slots=sandbox_targets(user,generation,catalog[profile])
                     entry["uiNamespaces"]=sorted({"saw-ui-"+slot["relayID"] for slot in slots.values() if slot["ui"]})
                 entry["intentGeneration"] = read_entry(cm).get("intentGeneration", 0) + 1
+            cm = reserve_credentials(k8s, ns, name, cm, entry, user)
+            vault = vault_client()
+            for secret, values in secrets.items():
+                vault.write(f"{prefix}/{secret}", values)
+                log(f"Vault: {prefix}/{secret} ({', '.join(sorted(values))})")
             put_configmap(k8s, ns, name, {"user.json": json.dumps(entry, sort_keys=True)},
                           {WORKSPACE_LABEL: "true", "openshell.pattern/owner": user},
                           resource_version=cm["metadata"].get("resourceVersion") if cm else None,

@@ -41,6 +41,10 @@ spec:
     - name: user
       description: The user the request was for.
   volumes:
+    {{- if .Values.portal.containerSites }}
+    - name: owner-directory
+      secret: {secretName: saw-generator-keycloak, items: [{key: client_secret, path: client_secret}]}
+    {{- end }}
     - name: scripts
       configMap:
         name: saw-portal-scripts
@@ -59,6 +63,9 @@ spec:
       # enabled on the Argo CD controller (off by default on a fresh install).
       computeResources: {}
       volumeMounts:
+        {{- if .Values.portal.containerSites }}
+        - {name: owner-directory, mountPath: /etc/saw-owner-directory, readOnly: true}
+        {{- end }}
         - name: scripts
           mountPath: /opt/saw
           readOnly: true
@@ -71,7 +78,8 @@ spec:
         - name: NAMESPACE
           value: {{ .Values.portal.namespace }}
         - name: PIPELINE_RUN
-          value: $(context.pipelineRun.name)
+          valueFrom:
+            fieldRef: {fieldPath: "metadata.labels['tekton.dev/pipelineRun']"}
         - name: RESULT_PATH
           value: $(results.user.path)
         - name: CLUSTER_DOMAIN
@@ -84,6 +92,18 @@ spec:
           value: /opt/saw/profile-catalog.json
         - name: RHDH_INTERNAL_URL
           value: {{ include "openshell-rhdh.internalUrl" . }}
+        {{- if .Values.portal.containerSites }}
+        - name: SAW_PORTAL_ADMIN_SUBJECTS
+          value: {{ .Values.portal.adminSubjects | default dict | toJson | quote }}
+        - name: KEYCLOAK_REALM
+          value: {{ .Values.keycloak.realm | quote }}
+        - name: KEYCLOAK_CLIENT_ID
+          value: {{ .Values.keycloak.clientId | quote }}
+        - name: KEYCLOAK_SECRET_FILE
+          value: /etc/saw-owner-directory/client_secret
+        - name: KEYCLOAK_CA_FILE
+          value: /opt/saw-ca/ca-bundle.crt
+        {{- end }}
         - name: KEYCLOAK_URL
           value: https://{{ include "openshell-rhdh.keycloakHost" . }}
         - name: ARGO_NAMESPACE

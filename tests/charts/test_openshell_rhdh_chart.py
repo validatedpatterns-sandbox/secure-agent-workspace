@@ -203,7 +203,8 @@ def test_the_pipeline_task_runs_portal_py(docs):
     assert env["RHDH_INTERNAL_URL"] == "http://backstage-developer-hub.rhdh.svc:80"
     assert env["ARGO_NAMESPACE"] == "vp-gitops"
     assert env["RESULT_PATH"] == "$(results.user.path)"
-    assert env["PIPELINE_RUN"] == "$(context.pipelineRun.name)"
+    run = next(e for e in step["env"] if e["name"] == "PIPELINE_RUN")
+    assert run["valueFrom"] == {"fieldRef": {"fieldPath": "metadata.labels['tekton.dev/pipelineRun']"}}
     scripts = one(docs, "ConfigMap", "saw-portal-scripts")
     assert scripts["data"]["portal.py"] == (CHART / "files" / "portal.py").read_text()
 
@@ -490,7 +491,7 @@ def test_admins_get_templates_for_another_user():
     targets = [loc["target"] for loc in config["catalog"]["locations"]]
     assert "/opt/app-root/src/saw/create-workspace-for-user.yaml" in targets
     task = one(docs, "Task", "saw-workspace")
-    env = {e["name"]: e["value"] for e in next(s for s in task["spec"]["steps"] if s["name"] == "run")["env"]}
+    env = {e["name"]: e.get("value") for e in next(s for s in task["spec"]["steps"] if s["name"] == "run")["env"]}
     assert env["PORTAL_ADMINS"] == "admin"
     none = render("--set", "portal.admins=null")
     assert "create-workspace-for-user.yaml" not in one(none, "ConfigMap", "saw-rhdh-templates")["data"]

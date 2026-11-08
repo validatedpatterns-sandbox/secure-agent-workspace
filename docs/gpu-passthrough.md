@@ -67,6 +67,25 @@ whole `pciHostDevices` list: copy all existing entries first. Where CNV is
 platform-owned, exclude its namespace, Subscription and application from the
 Pattern so install and uninstall cannot take ownership of them.
 
+For a platform-owned CNV installation, use an overlay like this:
+
+```yaml
+clusterGroup:
+  namespaces:
+    openshift-cnv:
+      disabled: true
+  subscriptions:
+    openshift-virtualization: null
+  applications:
+    openshift-cnv: null
+```
+
+Use `disabled: true` for namespace map entries. In clustergroup 0.9.58, a
+null namespace entry still creates the namespace and an OperatorGroup,
+which can break an existing operator with `TooManyOperatorGroups`. Render
+the root clustergroup chart before installing and confirm that it contains
+no CNV namespace, OperatorGroup, Subscription or application.
+
 Rendering fails if the list or either field is empty. Keep cluster values
 outside the repository and supply them through the Pattern's
 `extraParameters` or a local values file.

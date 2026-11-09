@@ -134,6 +134,19 @@ REGISTRAR_CLIENT = {
 }
 
 
+def ensure_admin_api_scope(call, client_id):
+    """Keep audience checking enabled and grant only the intended API scope."""
+    scopes = call("GET", "/client-scopes") or []
+    matching = [s for s in scopes if s.get("name") == "kc-admin-api"]
+    if len(matching) > 1:
+        raise RuntimeError("ambiguous Admin API scope")
+    if matching:
+        path = f"/clients/{client_id}/default-client-scopes"
+        assigned = call("GET", path) or []
+        if not any(s.get("id") == matching[0]["id"] for s in assigned):
+            call("PUT", path + "/" + matching[0]["id"])
+
+
 def bootstrap():
     url, realm, client_id = env("KC_URL", ""), env("REALM"), env("CLIENT_ID")
     admin = env("ADMIN_DIR")
@@ -160,6 +173,7 @@ def bootstrap():
     elif any(client.get(k) != v for k, v in REGISTRAR_CLIENT.items() if k != "description"):
         kc("PUT", f"/clients/{client['id']}", {**client, **REGISTRAR_CLIENT})
         log(f"client {client_id} settings restored")
+    ensure_admin_api_scope(kc, client["id"])
     account = kc("GET", f"/clients/{client['id']}/service-account-user")
     management = kc.client("realm-management")
     role = kc("GET", f"/clients/{management['id']}/roles/manage-clients")

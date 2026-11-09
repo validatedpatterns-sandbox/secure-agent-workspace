@@ -76,6 +76,19 @@ def exact_client(url, realm, token, name, ctx):
     return matches[0] if matches else None
 
 
+def ensure_admin_api_scope(call, client_id):
+    """Keycloak 26.8.2 requires its built-in Admin API audience scope."""
+    scopes = call("/client-scopes") or []
+    matching = [s for s in scopes if s.get("name") == "kc-admin-api"]
+    if len(matching) > 1:
+        raise RuntimeError("ambiguous Admin API scope")
+    if matching:
+        path = f"/clients/{client_id}/default-client-scopes"
+        assigned = call(path) or []
+        if not any(s.get("id") == matching[0]["id"] for s in assigned):
+            call(path + "/" + matching[0]["id"], "PUT")
+
+
 def keycloak_endpoint():
     """The verified Keycloak base URL and its TLS context.
 
@@ -118,6 +131,8 @@ def bootstrap():
         client = exact_client(url, realm, token, client_id, ctx)
     elif any(client.get(key) != value for key, value in spec.items()):
         raise RuntimeError("resolver client has unexpected settings")
+    ensure_admin_api_scope(lambda path, method="GET": kc_call(
+        url, realm, token, path, method, ctx=ctx), client["id"])
     account = kc_call(url, realm, token, f"/clients/{client['id']}/service-account-user", ctx=ctx)
     management = exact_client(url, realm, token, "realm-management", ctx)
     management_id = management["id"]

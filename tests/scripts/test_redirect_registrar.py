@@ -105,6 +105,8 @@ class FakeKeycloak:
                 if p == "/clients":
                     want = parse_qs(url.query).get("clientId", [None])[0]
                     return self.reply(200, [c for c in kc.clients.values() if c["clientId"] == want])
+                if p == "/client-scopes":
+                    return self.reply(200, [])
                 parts = p.strip("/").split("/")
                 if parts[0] == "clients" and parts[1] in kc.clients:
                     cid = parts[1]

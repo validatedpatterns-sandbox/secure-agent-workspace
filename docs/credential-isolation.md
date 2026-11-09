@@ -136,8 +136,37 @@ terminates TLS, verifies that the HTTP Host matches SNI, replaces bound markers
 in headers, decoded Basic authorization, path, and query, then verifies the
 upstream's TLS certificate against the system roots. An unknown marker, marker
 on the wrong host, missing Secret, or surviving marker gets a 502; the request
-does not reach the provider. Logs contain method, host, redacted path, binding,
-and status. They do not contain headers, query strings, bodies, or keys.
+does not reach the provider. Both intercepted and spliced connections resolve
+the destination once per dial, reject private, loopback, link-local, special-use
+and configured cluster CIDRs, then dial the checked IP. Configure the live
+cluster/service CIDRs even when VM-wide NetworkPolicy is staged off, especially
+on clusters using publicly numbered internal ranges.
+
+The proxy removes `Forwarded` and `X-Forwarded-*`, and inspects upstream status,
+headers and response bytes for bound static keys and access tokens minted for
+that request, including common URL, JSON and base64 representations. It rejects
+compressed responses and protocol upgrades on bound hosts, suppresses
+informational responses, strips trailers, and replaces upstream error bodies.
+An initial reflection produces a sanitized 502. A later streaming reflection
+terminates the response; HTTP status may already have been sent. A streaming
+filter retains possible token prefixes across reads without buffering the
+whole response. This is regression-tested byte-pattern enforcement, not a
+formal proof against arbitrary upstream transformations or partial disclosure.
+Logs contain the trusted host, binding and status. Request methods, paths,
+headers, query strings and bodies are omitted.
+
+Proxy ingress always has a NetworkPolicy permitting port 3128 only from gateway
+pods in the same namespace, including when `networkPolicy.enabled: false`.
+VM-wide segmentation and proxy egress rules still follow that switch. Health
+listens on pod loopback only and is checked by an exec readiness probe; neither
+the Service nor VM policy exposes 8081. Installer preflight checks readiness
+through a rejected reserved CONNECT target on 3128.
+
+The namespace-wide EgressFirewall permits direct VM connections to allowlisted
+provider hosts. It does not force every provider connection through the proxy.
+Those direct connections have no provider key in proxy mode. VM root retains
+authority to use a bound key through the proxy; credential custody does not
+provide per-task authorization or revoke previously accepted provider actions.
 
 Bindings come from `credentialProxy.secrets` and the keyed provider profile
 catalog. The Secret's `provider` metadata selects a permitted profile type;
@@ -149,6 +178,16 @@ custom HTTPS ports other than 443.
 Provider key rotation changes the projected Secret file in the proxy pod. The
 proxy reads it for each request, so no VM or proxy restart is needed. The
 actual delay is the Vault/External Secrets sync and kubelet projection delay.
+The 15-second ESO refresh interval is not an end-to-end revocation bound.
+Measure propagation on the deployed cluster, including existing tunnels and
+OAuth caches. Provider-side revocation is a separate operation.
+
+New proxy CAs expire after one year, cannot issue intermediate CAs, and carry
+critical DNS constraints derived from configured egress hosts (wildcards use
+their parent DNS suffix). IP certificates are excluded. The public CA is copied
+to the gateway driver's explicit bundle, not installed in the system trust
+store. Existing CAs are preserved on upgrade: rotate them during the documented
+maintenance procedure to adopt new constraints or changed allowed suffixes.
 
 ## Admin authority during apply
 

@@ -24,7 +24,9 @@ Compare it with a known allowed destination from the same VM. A `000` HTTP code 
 ## Provider call fails through the credential proxy
 
 Check `oc get deploy,pod,svc -n saw-<name> -l openshell.pattern/role=credential-proxy`
-and the proxy's `/healthz` Service port 8081. Inspect `saw-credential-proxy`
+and CONNECT port 3128. Health port 8081 is pod-loopback only; check it with
+`oc exec deploy/<user>-credential-proxy -n saw-<user> -- saw-credential-proxy healthcheck`.
+Inspect `saw-credential-proxy`
 NetworkPolicy for DNS, HTTPS and any scoped in-cluster peers; the CA hook has
 a separate API-egress policy during PreSync. Its logs report host, binding,
 and status without keys. An `unknown or unbound credential marker` 502 means

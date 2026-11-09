@@ -18,6 +18,10 @@ users:
 # opt into full VM segmentation for the second published-image baseline.
 defaults:
   openshellSaw:
+    credentialProxy:
+      # Audited branch build for cluster-clkq2; upstream defaults are released
+      # through the documented multi-architecture publication/pin workflow.
+      image: image-registry.openshift-image-registry.svc:5000/openshell-agents/saw-credential-proxy-audit@sha256:f4501425dc8b537b3a046fb8a308ec72c7560a5e85da76b86b3887e0d9d8d341
     networkPolicy:
       clusterNetworkCIDRs: [10.232.0.0/14]
       serviceNetworkCIDRs: [172.231.0.0/16]

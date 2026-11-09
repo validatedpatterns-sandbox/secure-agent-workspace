@@ -98,15 +98,19 @@ else
   fail "default-deny, scoped peers, ingress, CIDRs and firewall port parity"
 fi
 
-if helm template saw-test "${ROOT}/charts/openshell-saw" -n "${SAW_NS}" \
+helm template saw-test "${ROOT}/charts/openshell-saw" -n "${SAW_NS}" \
     -f "${ROOT}/tests/fixtures/saw-network-topology.yaml" \
     -f "${ROOT}/tests/fixtures/credential-proxy-values.yaml" \
-    --set sandboxName=saw-test --set networkPolicy.enabled=false 2>/dev/null \
-    | grep -q 'kind: NetworkPolicy'; then
-  fail "networkPolicy.enabled=false removes the policies"
-else
-  pass "networkPolicy.enabled=false removes the policies"
-fi
+    --set sandboxName=saw-test --set networkPolicy.enabled=false > "${tmpdir}/staged.yaml"
+"${PYTHON}" - "${tmpdir}/staged.yaml" <<'PY'
+import sys, yaml
+policies = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d['kind'] == 'NetworkPolicy']
+assert [p['metadata']['name'] for p in policies] == ['saw-credential-proxy']
+assert policies[0]['spec']['policyTypes'] == ['Ingress']
+assert policies[0]['spec']['ingress'] == [{'from': [{'podSelector': {'matchLabels': {
+    'openshell.pattern/role': 'gateway'}}}], 'ports': [{'protocol': 'TCP', 'port': 3128}]}]
+PY
+pass "VM segmentation off retains tenant-scoped credential proxy ingress"
 
 echo
 echo "== live cluster checks =="
@@ -374,6 +378,14 @@ else
         "${from_ns}" "${from_vm}" "${pod_ip}" "${port}"
       expect_tcp "${from_ns} to ${to_ns} Service:${port} is blocked" blocked \
         "${from_ns}" "${from_vm}" "${service_ip}" "${port}"
+    done
+    proxy_pod_ip="$(oc get pod -n "${to_ns}" -l openshell.pattern/role=credential-proxy -o jsonpath='{.items[0].status.podIP}')"
+    proxy_service_ip="$(oc get service "${to_vm}-credential-proxy" -n "${to_ns}" -o jsonpath='{.spec.clusterIP}')"
+    for port in 3128 8081; do
+      expect_tcp "${from_ns} to ${to_ns} proxy pod:${port} is blocked" blocked \
+        "${from_ns}" "${from_vm}" "${proxy_pod_ip}" "${port}"
+      expect_tcp "${from_ns} to ${to_ns} proxy Service:${port} is blocked" blocked \
+        "${from_ns}" "${from_vm}" "${proxy_service_ip}" "${port}"
     done
   done
 fi

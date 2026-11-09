@@ -65,3 +65,37 @@ def test_google_material_components_are_in_the_key_blind_scan(tmp_path):
     for value in material:
         parts = re.findall(rb"[A-Za-z0-9_-]{20,512}", value)
         assert parts and all(hashlib.sha256(part).digest()[:8] in digests for part in parts)
+
+
+def test_extended_scan_reads_process_inputs_and_memory(tmp_path):
+    import hashlib
+    process = tmp_path / "proc/123"
+    process.mkdir(parents=True)
+    values = [b"environment-credential-0123456789", b"commandline-credential-0123456789",
+              b"memory-only-credential-0123456789"]
+    (process / "environ").write_bytes(b"TOKEN=" + values[0] + b"\0")
+    (process / "cmdline").write_bytes(values[1] + b"\0")
+    memory = b" " * 64 + values[2] + b"\0"
+    (process / "mem").write_bytes(memory)
+    (process / "maps").write_text(f"00000040-{len(memory):08x} rw-p 00000000 00:00 0\n")
+    coverage = {}
+    digests = scan.extended_token_digests(str(tmp_path), coverage)
+    assert all(hashlib.sha256(value).digest()[:8] in digests for value in values)
+    assert coverage["process_inputs"]["sources"] == 2
+    assert coverage["process_memory"]["sources"] == 1
+    assert not coverage["process_memory"]["unreadable"]
+
+
+def test_extended_scan_reports_incomplete_memory_and_refuses_fake_devices(tmp_path):
+    process = tmp_path / "proc/123"
+    process.mkdir(parents=True)
+    (process / "maps").write_text("00000000-00000100 r--p 00000000 00:00 0\n")
+    (process / "mem").write_bytes(b" " * 256)
+    (tmp_path / "sys/class/block/fake").mkdir(parents=True)
+    (tmp_path / "dev").mkdir()
+    os.mkfifo(tmp_path / "dev/fake")
+    coverage = {}
+    scan.extended_token_digests(str(tmp_path), coverage, memory_limit=32)
+    assert coverage["process_memory"]["truncated"] == 1
+    assert coverage["process_inputs"]["unreadable"] == 2
+    assert coverage["block_devices"]["unreadable"] == 1

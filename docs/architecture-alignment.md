@@ -64,7 +64,7 @@ This document maps the [NVIDIA Secure Agent Workspace OpenShift Virtualization R
 - TLS passthrough on the gateway route preserves gRPC/HTTP2
 - Auth proxy restricts dashboard access to the sandbox owner
 - Each sandbox namespace gets an OpenShift `EgressFirewall` named `default`. The VM uses masquerade, so traffic leaving the guest is traffic leaving that pod. Undeclared internet hosts are denied. The allowlist is `egress.allow` plus `egress.extraAllow` in [`charts/openshell-saw/values.yaml`](../charts/openshell-saw/values.yaml), and the Keycloak route host from the OIDC issuer. See [Deployment guide](deployment-guide.md#egress-from-the-vm).
-- With NetworkPolicy enabled, a sandbox namespace keeps default-deny, a narrow VM allow policy, CDI importer access, and (when cleanup is enabled) exact API egress for the pre-delete cleanup hook. Proxy mode also adds `saw-credential-proxy`. Its temporary CA-hook policy allows API access while initializing the proxy CA and is removed after success. The CA hook runs as an Argo Sync / Helm `pre-install,pre-upgrade` hook; Argo applies the firewall first to avoid an upgrade deadlock. The VM may reach DNS, the selected governance engine, the internal registry, the Keycloak issuer Route through ingress, and outside TCP ports permitted by the EgressFirewall. Pod and Service CIDRs, exact API endpoint IPs, and link-local CIDRs are excluded from the outside rule. GitOps stages the policy off per user until an administrator checks live topology and in-cluster destinations. CI checks profile host and port parity with rendered firewall and policy rules.
+- With NetworkPolicy enabled, a sandbox namespace keeps default-deny, a narrow VM allow policy, CDI importer access, and (when cleanup is enabled) exact API egress for the pre-delete cleanup hook. Proxy mode always adds tenant-scoped ingress policy `saw-credential-proxy`, including when VM-wide segmentation is off. Its temporary CA-hook policy allows API access while initializing the proxy CA and is removed after success. The CA hook runs as an Argo Sync / Helm `pre-install,pre-upgrade` hook; Argo applies the firewall first to avoid an upgrade deadlock. The VM may reach DNS, the selected governance engine, the internal registry, the Keycloak issuer Route through ingress, and outside TCP ports permitted by the EgressFirewall. Pod and Service CIDRs, exact API endpoint IPs, and link-local CIDRs are excluded from the outside rule. GitOps stages the policy off per user until an administrator checks live topology and in-cluster destinations. CI checks profile host and port parity with rendered firewall and policy rules.
 
 **Residual risk:** NetworkPolicy and EgressFirewall cannot filter by Route host. Cluster Routes on TCP 443 remain reachable behind their own authentication. A fixed source address still needs EgressIP; an optional AdminNetworkPolicy could add a cluster-level guardrail.
 
@@ -116,11 +116,11 @@ on `credentialProxy.enabled`:
 | Mediator outside the agent process injects credentials | The OpenShell supervisor swaps the sandbox placeholder for a marker; the namespace proxy swaps that marker for the key at its bound HTTPS host | The OpenShell supervisor injects the real key |
 | Where raw credentials enter ("supervisor, guest or external service") | External service: the namespace proxy pod. The VM, gateway and supervisor hold markers; provider keys and Gmail OAuth material stay outside the guest | Guest: VM input disk, gateway store, supervisor and NemoClaw credentials file; Gmail refresh material is handled by the gateway |
 | Agent-process compromise (Table 7) | Provider keys stay outside the agent process and VM | Provider keys stay outside the agent process |
-| Root in the guest (Table 7) | Provider keys cannot be read from VM storage. VM root can still use bound keys through markers while it controls the VM; protection depends on the external proxy and request path remaining trusted | Keys are exposed. Revoke/rotate them; moving to proxy mode requires rotation plus a `credentialProxy.keyGeneration` bump |
+| Root in the guest (Table 7) | Provider keys are placed outside VM storage. Extended scans report unreadable sources as inconclusive; byte-pattern response filtering is not a formal absence proof. VM root can use bound keys through markers while it controls the VM; protection depends on the external proxy and request path remaining trusted | Keys are exposed. Revoke/rotate them; moving to proxy mode requires rotation plus a `credentialProxy.keyGeneration` bump |
 | Provider scope | Bindings restrict each marker to its profile hosts (or custom HTTPS URL host) on port 443 | OpenShell provider policy endpoints |
 | Token lifetime | Gmail access tokens minted and cached in the proxy, capped at 1 hour and refreshed 5 minutes early | Gmail access tokens minted through the gateway's provider refresh |
-| Audit | Proxy log per request: method, host, redacted path, binding and status; no unified OCSF pipeline (§8) | Gateway logs; no unified OCSF pipeline |
-| Revocation and rotation | Rotate in Vault; the proxy rereads projected keys per request and invalidates cached Gmail tokens when material changes. No VM restart; allow for ESO and volume projection delay | Rotate in Vault; restart the VM and apply, or apply after projected inputs update when `vm.liveInputs` is enabled |
+| Audit | Proxy log per request: trusted host, binding and status; request method and path omitted; no unified OCSF pipeline (§8) | Gateway logs; no unified OCSF pipeline |
+| Revocation and rotation | Rotate in Vault; the proxy rereads projected keys per request and invalidates cached Gmail tokens when material changes. No VM restart; ESO and volume projection delay must be measured. The configured interval is not a revocation bound; keyGeneration acknowledges operator rotation without enforcing provider revocation | Rotate in Vault; restart the VM and apply, or apply after projected inputs update when `vm.liveInputs` is enabled |
 
 **Alignment:** Proxy mode implements external provider-key custody for the
 guest-compromise threat model. This does not prevent VM root from making
@@ -132,6 +132,8 @@ Scope, token lifetime, audit and revocation must be evaluated separately;
 a unified OCSF audit pipeline remains a gap. See
 [Credential isolation](credential-isolation.md) for the request path,
 migration and rotation procedures.
+
+The [credential proxy audit](security/credential-proxy-audit.md) separates local regression evidence from live qualification and maps every Phase II attribute and Table 7 compromise level. Namespace EgressFirewall rules permit keyless direct VM connections to provider hosts; they do not force all traffic through the proxy. Cluster and management-plane administrators remain trusted. Team-lead review is recorded in the audit report and must not be inferred from this document.
 
 ### 7. Policy Distribution
 
@@ -180,7 +182,7 @@ migration and rotation procedures.
 | Reference Design Phase | This Implementation |
 |---|---|
 | **Phase I: Perimeter-based enforcement** | Largely implemented — VM isolation, OIDC, image governance, secret management, GitOps, operator controls |
-| **Phase II: Runtime-based enforcement** | Largely implemented — signed APF policy bundles, per-tool approval with user/task audit (`tool-actions.yaml`, `saw-tool-gate`), per-namespace credential proxying (default proxy mode; direct mode provides agent-process isolation only), and per-tool/endpoint, filesystem and process enforcement through the governance layer; remaining: a unified OCSF audit pipeline, NFS policy transport, and a durable anti-rollback counter |
+| **Phase II: Runtime-based enforcement** | Partial; deployment qualification required — signed APF policy bundles, per-tool approval with user/task audit (`tool-actions.yaml`, `saw-tool-gate`), per-namespace credential proxying (default proxy mode; direct mode provides agent-process isolation only), and per-tool/endpoint, filesystem and process enforcement through the governance layer; remaining: a unified OCSF audit pipeline, measured downstream revocation, process-bound agent/task delegation, enforcement qualification, NFS policy transport where required, and a durable anti-rollback counter |
 
 ## Recommendations for Closing Gaps
 

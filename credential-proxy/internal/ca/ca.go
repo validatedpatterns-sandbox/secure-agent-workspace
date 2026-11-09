@@ -13,7 +13,9 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -102,12 +104,17 @@ func (a *Authority) Certificate(host string) (*tls.Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
+	roots := x509.NewCertPool()
+	roots.AddCert(a.cert)
+	if _, err := leaf.Verify(x509.VerifyOptions{Roots: roots, DNSName: host}); err != nil {
+		return nil, errors.New("host is outside proxy CA constraints")
+	}
 	result := tls.Certificate{Certificate: [][]byte{der, a.cert.Raw}, PrivateKey: key, Leaf: leaf}
 	a.cache[host] = result
 	return &result, nil
 }
 
-func Generate() (certPEM, keyPEM []byte, err error) {
+func Generate(hosts ...string) (certPEM, keyPEM []byte, err error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, err
@@ -124,10 +131,32 @@ func Generate() (certPEM, keyPEM []byte, err error) {
 	template := &x509.Certificate{
 		SerialNumber: serial,
 		Subject:      pkix.Name{Organization: []string{"SAW"}, CommonName: "saw-credential-proxy-ca"},
-		NotBefore:    now.Add(-5 * time.Minute), NotAfter: now.AddDate(10, 0, 0),
+		NotBefore:    now.Add(-5 * time.Minute), NotAfter: now.AddDate(1, 0, 0),
 		IsCA: true, BasicConstraintsValid: true,
-		KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		MaxPathLen: 0, MaxPathLenZero: true,
+		KeyUsage:     x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		SubjectKeyId: keyID, AuthorityKeyId: keyID,
+	}
+	if len(hosts) > 0 {
+		template.PermittedDNSDomainsCritical = true
+		for _, host := range hosts {
+			// x509 constraints describe suffixes. A wildcard in the first
+			// label is constrained to its parent DNS suffix.
+			if strings.Contains(host, "*") {
+				_, parent, ok := strings.Cut(host, ".")
+				if !ok {
+					return nil, nil, errors.New("invalid CA DNS constraint")
+				}
+				host = "." + parent
+			}
+			if host == "" || !strings.Contains(host, ".") || strings.ContainsAny(host, "/:@ *") {
+				return nil, nil, errors.New("invalid CA DNS constraint")
+			}
+			template.PermittedDNSDomains = append(template.PermittedDNSDomains, host)
+		}
+		_, v4, _ := net.ParseCIDR("0.0.0.0/0")
+		_, v6, _ := net.ParseCIDR("::/0")
+		template.ExcludedIPRanges = []*net.IPNet{v4, v6}
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
 	if err != nil {

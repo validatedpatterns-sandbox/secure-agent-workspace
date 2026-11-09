@@ -12,6 +12,21 @@ def direct(config):
             "credentialProxy": {"url": "", "markerPrefix": "saw-cred", "secrets": [], "keyGeneration": 1}}
 
 
+def test_proxy_preflight_uses_connect_port_without_exposing_health(ab, config, monkeypatch):
+    class Connection:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def sendall(self, data):
+            assert data.startswith(b"CONNECT readiness.saw.invalid:443 HTTP/1.1")
+            assert b"/healthz" not in data
+        def recv(self, size): return b"HTTP/1.1 403 Forbidden\r\n"
+    def connect(address, **kwargs):
+        assert address[1] == 3128
+        return Connection()
+    monkeypatch.setattr(ab.socket, "create_connection", connect)
+    ab.check_proxy_health(config)
+
+
 def small_profile(ab, **provider):
     p = ab.Provider(name="nvidia", type="nvidia", credential_secret="inference", **provider)
     ws = ab.Workspace(name="default", providers=[p], sandboxes=[

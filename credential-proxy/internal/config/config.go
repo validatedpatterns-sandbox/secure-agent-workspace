@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/validatedpatterns-sandbox/secure-agent-workspace/credential-proxy/internal/oauth"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -24,6 +25,7 @@ type Policy struct {
 	AllowHosts   []string            `json:"allowHosts"`
 	Profiles     map[string][]string `json:"profiles"`
 	Bindings     []Binding           `json:"bindings"`
+	DenyCIDRs    []string            `json:"denyCIDRs,omitempty"`
 }
 
 type Refresh = oauth.Refresh
@@ -77,6 +79,11 @@ func (s *Store) Reload() error {
 	}
 	if len(p.AllowHosts) == 0 || len(p.Bindings) == 0 {
 		return errors.New("allowHosts and bindings are required")
+	}
+	for _, cidr := range p.DenyCIDRs {
+		if _, err := netip.ParsePrefix(cidr); err != nil {
+			return errors.New("invalid upstream deny CIDR")
+		}
 	}
 	for _, h := range p.AllowHosts {
 		if !validPattern(h) {

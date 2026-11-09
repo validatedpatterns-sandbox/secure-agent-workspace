@@ -6947,10 +6947,14 @@ def check_proxy_health(cfg, timeout=30):
     deadline = time.monotonic() + timeout
     while True:
         try:
-            with socket.create_connection((host, 8081), timeout=2) as conn:
-                conn.sendall(b"GET /healthz HTTP/1.1\r\nHost: proxy\r\nConnection: close\r\n\r\n")
+            # A reserved, non-allowlisted CONNECT target checks the normal
+            # tenant path. The proxy checks its CA and mounted bindings before
+            # refusing the target. Health port 8081 stays on pod loopback.
+            with socket.create_connection((host, 3128), timeout=2) as conn:
+                conn.sendall(b"CONNECT readiness.saw.invalid:443 HTTP/1.1\r\n"
+                             b"Host: readiness.saw.invalid:443\r\nConnection: close\r\n\r\n")
                 response = conn.recv(128)
-                if response.startswith(b"HTTP/1.1 200"):
+                if response.startswith(b"HTTP/1.1 403"):
                     return
         except OSError:
             pass

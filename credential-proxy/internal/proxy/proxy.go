@@ -13,12 +13,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/validatedpatterns-sandbox/secure-agent-workspace/credential-proxy/internal/ca"
 	"github.com/validatedpatterns-sandbox/secure-agent-workspace/credential-proxy/internal/config"
+	"github.com/validatedpatterns-sandbox/secure-agent-workspace/credential-proxy/internal/netguard"
 	"github.com/validatedpatterns-sandbox/secure-agent-workspace/credential-proxy/internal/rewrite"
 )
 
@@ -29,6 +31,23 @@ type Server struct {
 	// cluster DNS and the image's system root store.
 	DialUpstream func(context.Context, string, string) (net.Conn, error)
 	Roots        *x509.CertPool
+	LookupIP     func(context.Context, string) ([]net.IPAddr, error)
+}
+
+func (s *Server) dial(ctx context.Context, network, address string) (net.Conn, error) {
+	p, _, err := s.Store.Snapshot()
+	if err != nil {
+		return nil, errors.New("credential binding unavailable")
+	}
+	guard := netguard.Dialer{Dial: s.DialUpstream, LookupIP: s.LookupIP}
+	for _, cidr := range p.DenyCIDRs {
+		prefix, err := netip.ParsePrefix(cidr)
+		if err != nil {
+			return nil, errors.New("invalid upstream deny CIDR")
+		}
+		guard.Deny = append(guard.Deny, prefix)
+	}
+	return guard.DialContext(ctx, network, address)
 }
 
 func (s *Server) Health(w http.ResponseWriter, _ *http.Request) {
@@ -56,7 +75,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	host = strings.ToLower(host)
 	policy, bindings, err := s.Store.Snapshot()
-	if err != nil {
+	if err != nil || s.CA.Ready() != nil {
 		http.Error(w, "credential binding unavailable", http.StatusBadGateway)
 		return
 	}
@@ -120,11 +139,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) splice(client net.Conn, host string) {
-	dial := s.DialUpstream
-	if dial == nil {
-		dial = (&net.Dialer{Timeout: 15 * time.Second}).DialContext
-	}
-	upstream, err := dial(context.Background(), "tcp", net.JoinHostPort(host, "443"))
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	upstream, err := s.dial(ctx, "tcp", net.JoinHostPort(host, "443"))
 	if err != nil {
 		log.Printf("method=CONNECT host=%s path=- binding=- status=upstream-unavailable", host)
 		return
@@ -146,23 +163,29 @@ func (s *Server) splice(client net.Conn, host string) {
 }
 
 func (s *Server) intercept(client net.Conn, host string) {
-	dial := s.DialUpstream
-	if dial == nil {
-		dial = (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}).DialContext
-	}
 	transport := &http.Transport{
 		Proxy: nil, ForceAttemptHTTP2: false,
-		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}, RootCAs: s.Roots},
-		DialContext:     dial,
+		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}, RootCAs: s.Roots},
+		DialContext:           s.dial,
+		DisableCompression:    true,
+		ResponseHeaderTimeout: 30 * time.Second,
 	}
 	defer transport.CloseIdleConnections()
 	reverse := &httputil.ReverseProxy{
-		Director: func(req *http.Request) {
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			req := pr.Out
 			req.URL.Scheme = "https"
 			req.URL.Host = net.JoinHostPort(host, "443")
 			req.Host = host
+			for name := range req.Header {
+				if strings.EqualFold(name, "Forwarded") || strings.HasPrefix(strings.ToLower(name), "x-forwarded-") {
+					delete(req.Header, name)
+				}
+			}
+			req.Header.Set("Accept-Encoding", "identity")
 		},
 		Transport: transport, FlushInterval: -1,
+		ErrorLog: log.New(io.Discard, "", 0),
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
 			http.Error(w, "upstream unavailable", http.StatusBadGateway)
 		},
@@ -171,19 +194,15 @@ func (s *Server) intercept(client net.Conn, host string) {
 		// A CONNECT tunnel can carry multiple HTTP requests. Resolve mounted
 		// Secrets for each one so a rotation takes effect on keepalive tunnels.
 		policy, bindings, snapshotErr := s.Store.Snapshot()
-		path := r.URL.Path // capture before rewriting: logging the new path could leak a key
-		for _, b := range bindings {
-			if b.Value != "" {
-				path = strings.ReplaceAll(path, b.Value, "***")
-			}
-		}
 		status := &statusWriter{ResponseWriter: w}
 		binding := "-"
 		defer func() {
 			if status.code == 0 {
 				status.code = http.StatusOK
 			}
-			log.Printf("method=%s host=%s path=%q binding=%s status=%d", r.Method, host, path, binding, status.code)
+			// Request paths and methods are attacker-controlled and may contain
+			// raw or encoded credentials. Audit only the trusted destination.
+			log.Printf("host=%s path=- binding=%s status=%d", host, binding, status.code)
 		}()
 		if snapshotErr != nil || !config.Allowed(host, policy, bindings) {
 			http.Error(status, "credential binding unavailable", http.StatusBadGateway)
@@ -198,6 +217,19 @@ func (s *Server) intercept(client net.Conn, host string) {
 			return
 		}
 		var err error
+		secrets := &responseSecrets{}
+		for i := range bindings {
+			secrets.add(bindings[i].Value)
+			if token := bindings[i].Token; token != nil {
+				bindings[i].Token = func(ctx context.Context) (string, error) {
+					value, err := token(ctx)
+					if err == nil {
+						secrets.add(value)
+					}
+					return value, err
+				}
+			}
+		}
 		binding, err = rewrite.Request(r, host, policy.MarkerPrefix, bindings)
 		if err != nil {
 			if errors.Is(err, rewrite.ErrRefresh) {
@@ -212,7 +244,12 @@ func (s *Server) intercept(client net.Conn, host string) {
 		if binding == "" {
 			binding = "-"
 		}
-		reverse.ServeHTTP(status, r)
+		if auth := r.Header.Get("Authorization"); strings.HasPrefix(strings.ToLower(auth), "basic ") {
+			secrets.add(strings.TrimSpace(auth[6:]))
+		}
+		guarded := *reverse
+		guarded.ModifyResponse = secrets.checkResponse
+		guarded.ServeHTTP(status, r)
 	})
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 15 * time.Second, IdleTimeout: 2 * time.Minute}
 	_ = server.Serve(newSingleListener(client))
@@ -306,6 +343,11 @@ type statusWriter struct {
 }
 
 func (w *statusWriter) WriteHeader(code int) {
+	// ReverseProxy forwards informational headers before ModifyResponse.
+	// Suppress this uninspected channel (including 103 Early Hints).
+	if code < 200 {
+		return
+	}
 	w.code = code
 	w.ResponseWriter.WriteHeader(code)
 }

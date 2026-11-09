@@ -44,6 +44,16 @@ print(f'PASS offline: credential mode {mode}')
 PYCHECK
 done
 
+# Run the adversarial request path in CI using synthetic credentials and local
+# TLS upstreams. This includes reflection, spoofed forwarding and error dumps.
+if command -v go >/dev/null 2>&1; then
+  (cd "$ROOT/credential-proxy" && go test ./internal/proxy ./internal/netguard \
+    -run 'TestCredentialReflection|TestForwarded|TestTransportError|TestRejects|TestPins' -count=1)
+else
+  echo 'go is required for credential proxy negative regression checks' >&2
+  exit 1
+fi
+
 if [[ "${SKIP_LIVE:-}" == 1 ]]; then
   echo 'SKIP live checks (SKIP_LIVE=1)'
   exit 0
@@ -121,8 +131,14 @@ if CREDENTIAL_MODE == 'direct':
     assert not pathlib.Path('/home/cloud-user/.config/openshell/credential-proxy-ca.pem').exists()
     print('PASS guest: direct mode has no proxy config or CA', file=sys.stderr)
     raise SystemExit(0)
-import base64, gzip
-print(base64.b64encode(gzip.compress(b"".join(sorted(token_digests())))).decode())
+import base64, gzip, json
+coverage = {}
+digests = extended_token_digests(report=coverage)
+print('Guest scan coverage: ' + json.dumps(coverage, sort_keys=True), file=sys.stderr)
+print(base64.b64encode(gzip.compress(b"".join(sorted(digests)))).decode())
+if any(c['unreadable'] or c['truncated'] for c in coverage.values()):
+    print('INCONCLUSIVE: guest scan has unreadable/truncated sources', file=sys.stderr)
+    raise SystemExit(2)
 PY
 )"
 guest_b64="$(printf 'CREDENTIAL_MODE = "%s"\n%s' "$credential_mode" "$guest_code" | base64 -w0)"
@@ -136,7 +152,12 @@ for b in json.loads(cfg)['credentialProxy']['secrets']:
     for key in keys:
         print(b['name'], key, sep='\t')
 PY
-vm_exec "$remote" </dev/null > "$tmp/guest-digests.b64"
+guest_scan_incomplete=0
+vm_exec "$remote" </dev/null > "$tmp/guest-digests.b64" || guest_scan_incomplete=$?
+if [[ "$guest_scan_incomplete" != 0 && "$guest_scan_incomplete" != 2 ]]; then
+  echo 'FAIL guest scan command failed' >&2
+  exit "$guest_scan_incomplete"
+fi
 if [[ "$credential_mode" == proxy ]]; then
 while IFS=$'\t' read -r secret key; do
   oc get secret "$secret" -n "$SAW_NS" -o json | "$PYTHON" -c '
@@ -159,6 +180,41 @@ done < "$tmp/bindings.tsv"
 
 oc get deployment "$VM_NAME-credential-proxy" -n "$SAW_NS" -o jsonpath='{.status.readyReplicas}' | grep -qx 1
 echo 'PASS credential proxy Deployment is ready'
+
+# Probe the normal CONNECT/TLS path with markers only. Response bytes are
+# reduced to digests inside the guest; proxy logs stay in this private tempdir.
+"$PYTHON" - "$tmp/installer.json" "$ROOT/scripts/probe-credential-proxy.py" <<'PY' > "$tmp/probe.b64"
+import base64, json, sys
+cfg = json.loads(json.load(open(sys.argv[1]))['data']['config.json'])
+args = ['probe', '--proxy', cfg['credentialProxy']['url'],
+        '--ca', '/etc/openshell/credential-proxy-ca.pem']
+code = 'import sys\nsys.argv = ' + repr(args) + '\n' + open(sys.argv[2]).read()
+print(base64.b64encode(code.encode()).decode())
+PY
+probe_b64="$(cat "$tmp/probe.b64")"
+vm_exec "sudo python3 -c 'import base64; exec(base64.b64decode(\"$probe_b64\"))'" </dev/null > "$tmp/probes.json"
+oc logs "deploy/$VM_NAME-credential-proxy" -n "$SAW_NS" > "$tmp/proxy.log"
+"$PYTHON" - "$tmp/probes.json" <<'PY'
+import json, sys
+results = json.load(open(sys.argv[1]))
+for test in results['tests']:
+    print(test['result'], test['id'], 'status=' + str(test.get('status', 'unavailable')))
+assert all(test['result'] == 'PASS' for test in results['tests']), 'negative request-path probe failed'
+PY
+while IFS=$'\t' read -r secret key; do
+  oc get secret "$secret" -n "$SAW_NS" -o json | "$PYTHON" -c '
+import base64, gzip, hashlib, json, re, sys
+key = base64.b64decode(json.load(sys.stdin).get("data", {}).get(sys.argv[1], "")).strip()
+parts = re.findall(rb"[A-Za-z0-9_-]{20,512}", key)
+probes = json.load(open(sys.argv[2]))
+blob = gzip.decompress(base64.b64decode(probes["digests"]))
+captured = {blob[i:i+8] for i in range(0, len(blob), 8)}
+captured.update(hashlib.sha256(m.group()).digest()[:8] for m in re.finditer(
+    rb"[A-Za-z0-9_-]{20,512}", open(sys.argv[3], "rb").read()))
+if any(hashlib.sha256(part).digest()[:8] in captured for part in parts):
+    raise SystemExit("FAIL: credential digest matched response or proxy logs")
+print("PASS: no credential digest in captured responses or proxy logs")' "$key" "$tmp/probes.json" "$tmp/proxy.log"
+done < "$tmp/bindings.tsv"
 
 fi
 
@@ -190,4 +246,9 @@ if [[ "${SKIP_APPLY:-}" != 1 ]]; then
     echo 'FAIL did not observe temporary two-CA bundle followed by successful apply' >&2; exit 1; }
   vm_exec "sudo bash -c 'test ! -e /home/cloud-user/.local/state/openshell/tls/ca.key && test -z \"\$(find /run/user -maxdepth 2 -name \"saw-admin.*\" -print -quit)\"'" </dev/null >/dev/null
   echo 'PASS apply temporarily trusted its admin CA, then removed it and the runtime directory'
+fi
+
+if [[ "$guest_scan_incomplete" != 0 ]]; then
+  echo 'INCONCLUSIVE: extended guest scan coverage was incomplete' >&2
+  exit "$guest_scan_incomplete"
 fi

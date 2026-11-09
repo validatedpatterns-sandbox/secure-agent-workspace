@@ -35,7 +35,7 @@ def test_trusted_gui_selects_one_matching_sso_route_without_forwarding(tmp_path,
         executable(name, 'printf "%s" "$1" > "$OPENED_URL"\n')
     result = subprocess.run(["bash", "scripts/openshell-saw-gui.sh"], cwd=ROOT,
         env=dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}",
-                 GATEWAY_NAME="audit-a", SANDBOX_NAME="cuda-sandbox", WORKSPACE="cuda-dev",
+                 GATEWAY_NAME="audit-a", SANDBOX_NAME="cuda-sandbox", WORKSPACE="cuda-dev", SAW_NS="",
                  GUI_CONFIG=str(cfg), GUI_ROUTES=str(routes), OC_ARGS=str(tmp_path / "oc-args"),
                  OPENED_URL=str(tmp_path / "opened"), SSH_CALLED=str(tmp_path / "ssh")),
         capture_output=True, text=True)

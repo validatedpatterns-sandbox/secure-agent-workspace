@@ -88,7 +88,16 @@ else:
 PY
 
 if [[ "$credential_mode" == direct ]]; then
-  oc get deploy,svc,cm,sa,secret,externalsecret,networkpolicy -n "$SAW_NS" -o json > "$tmp/resources.json"
+  # Inspect names and the nonsecret mode slot without persisting Secret data.
+  oc get deploy,svc,cm,sa,secret,externalsecret,networkpolicy -n "$SAW_NS" -o json | \
+    "$PYTHON" -c 'import json,sys
+items = []
+for item in json.load(sys.stdin)["items"]:
+    projected = {"kind": item["kind"], "metadata": {"name": item["metadata"]["name"]}}
+    if item["kind"] == "ConfigMap" and item["metadata"]["name"] == sys.argv[1] + "-credential-mode":
+        projected["data"] = {"mode": item.get("data", {}).get("mode")}
+    items.append(projected)
+json.dump({"items": items}, sys.stdout)' "$VM_NAME" > "$tmp/resources.json"
   "$PYTHON" - "$tmp/resources.json" "$VM_NAME" <<'PYCHECK'
 import json, sys
 items = json.load(open(sys.argv[1]))['items']

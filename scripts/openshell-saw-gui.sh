@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Open the OpenClaw web UI through a forward owned by this process.
+# Open the authenticated route, or a process-owned forward in token mode.
 set -euo pipefail
 
 gateway="${GATEWAY_NAME:?GATEWAY_NAME is required}"
@@ -14,14 +14,38 @@ if [[ ! "${port}" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
   exit 1
 fi
 
+config="$(openshell --gateway "${gateway}" sandbox exec -n "${sandbox}" \
+  --workspace "${workspace}" --no-tty -- cat /sandbox/.openclaw/openclaw.json)"
+mode="$(jq -r '.gateway.auth.mode // empty' <<<"${config}")"
+if [[ "${mode}" == trusted-proxy ]]; then
+  # A direct SSH forward carries no owner identity headers. Keep the browser
+  # on the configured SSO path rather than weakening trusted-proxy auth.
+  namespace="${SAW_NS:-saw-${gateway}}"
+  routes="$(oc get routes -n "${namespace}" -l openshell.pattern/sandbox-ui=true -o json)"
+  if ! url="$(jq -er --arg workspace "${workspace}" --arg sandbox "${sandbox}" '
+    [.items[] | select(
+      .metadata.annotations["openshell.pattern/workspace"] == $workspace and
+      .metadata.annotations["openshell.pattern/sandbox"] == $sandbox and
+      (.spec.host | type == "string" and length > 0) and
+      .spec.tls.termination == "edge") | "https://" + .spec.host] |
+    if length == 1 then .[0] else error("expected exactly one matching SSO route") end
+  ' <<<"${routes}")"; then
+    echo "Error: trusted-proxy mode needs one owner-authenticated route. Run make sandbox-ui." >&2
+    exit 1
+  fi
+  unset config routes
+  if command -v open >/dev/null; then
+    open "${url}"
+  elif command -v xdg-open >/dev/null; then
+    xdg-open "${url}"
+  fi
+  echo "OpenClaw UI is available through the owner-authenticated route: ${url}"
+  exit 0
+fi
 if command -v lsof >/dev/null && lsof -nP -iTCP:"${port}" -sTCP:LISTEN >/dev/null; then
   echo "Error: local port ${port} is in use. Set GUI_PORT to a free port." >&2
   exit 1
 fi
-
-config="$(openshell --gateway "${gateway}" sandbox exec -n "${sandbox}" \
-  --workspace "${workspace}" --no-tty -- cat /sandbox/.openclaw/openclaw.json)"
-mode="$(jq -r '.gateway.auth.mode // empty' <<<"${config}")"
 token=""
 if [[ "${mode}" != "trusted-proxy" ]]; then
   token="$(jq -er '.gateway.auth.token | select(type == "string" and length > 0)' <<<"${config}")"

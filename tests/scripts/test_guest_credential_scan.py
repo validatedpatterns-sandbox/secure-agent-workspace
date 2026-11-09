@@ -46,6 +46,23 @@ def test_key_blind_ca_filename_check(tmp_path):
     assert scan.ca_key_files(str(tmp_path)) == [str(tmp_path / "ca.key")]
 
 
+def test_long_token_runs_cannot_stall_the_key_blind_scan():
+    # A bundle or disk image can contain long base64/ASCII runs. The old
+    # trailing-token regex took >3 seconds even for only 64 KiB plus '!'.
+    code = SOURCE.read_text() + """
+import io
+key = b'nvapi-boundary-credential-0123456789'
+payload = b'A' * (1024 * 1024) + b'!' + key + b'\\n'
+digests, count = stream_digests(io.BytesIO(payload))
+assert count == len(payload)
+assert hashlib.sha256(b'A' * 512).digest()[:8] in digests
+assert hashlib.sha256(key).digest()[:8] in digests
+"""
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+
+
 def test_live_scan_never_transmits_a_provider_needle_to_the_vm():
     script = (SOURCE.parents[1] / "tests/test-credential-isolation.sh").read_text()
     assert 'base64 -d | vm_exec' not in script

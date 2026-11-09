@@ -132,6 +132,25 @@ def test_saw_ssh_uses_sandbox_and_workspace(tmp_path):
     assert args[-1] == "sandbox@openshell-cuda-sandbox.cuda-dev"
 
 
+@pytest.mark.parametrize("mode", ["nemoclaw", "openclaw"])
+def test_tui_uses_existing_gateway_password_without_putting_it_on_argv(tmp_path, mode):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    marker = tmp_path / "arguments"
+    executable(bindir / "openshell", 'printf "%s\\n" "$@" > "$MARKER"\n')
+    result = subprocess.run(["bash", "scripts/saw-tui.sh", mode], cwd=ROOT,
+        env=dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", MARKER=str(marker),
+                 OPENSHELL_SAW_NAME="review-01", SANDBOX_NAME="cuda-sandbox", WORKSPACE="cuda-dev"),
+        capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    args = marker.read_text()
+    assert "--gateway\nreview-01\nsandbox\nexec" in args
+    assert "--workspace\ncuda-dev\n--tty" in args
+    assert 'export OPENCLAW_GATEWAY_PASSWORD="$password"' in args
+    assert "exec openclaw tui" in args
+    assert not result.stdout
+
+
 def test_lint_checks_each_shell_file_and_uses_ci_python(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()

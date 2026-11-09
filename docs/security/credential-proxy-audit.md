@@ -42,17 +42,17 @@ checks run through the installer workflow's existing pytest wrappers.
 | A05 | `TestHostMismatchAndSNIRefused`, `TestForwardedHeadersAreRemoved` | Forged authority refused; forwarded metadata absent upstream | Baseline forwarded-header test failed; fixed path strips both standard and arbitrary `X-Forwarded-*` headers |
 | A06 | `TestRejectsNonPublicAndClusterAnswersBeforeDial`, `TestPinsPublicAnswerWithoutSecondLookup`, `TestBothPathsRejectPrivateDNSBeforeDial` | No private/link-local/cluster dial or DNS rebinding between validation and connection | IP checks shared by intercepted and spliced traffic; mixed DNS answers rejected |
 | A07 | `TestTransportErrorDoesNotLogCredentialPath` | Sanitized 502, no key in output/logs | Baseline transport-error test passed; request paths are now omitted entirely |
-| B01 | Built binary test plus `TestHealthCannotBindOutsidePodLoopback` | Health loopback only; debug/metrics/expvar absent | Built binary and rejection tests added; Service exposes 3128 only |
+| B01 | Built binary test plus `TestHealthCannotBindOutsidePodLoopback` | Health loopback only; debug/metrics/expvar absent | Live fixed image: healthcheck exit 0; /proc/net/tcp binds 8081 to 127.0.0.1; Service exposes 3128 only; VM debug paths on 3128 return 405 |
 | B02 | Chart assertions and deployment inspection | Non-root, read-only root, dropped caps, no mounted API token | Live fixed-image inspection passed: non-root, RuntimeDefault seccomp, read-only root, drop ALL, no privilege escalation or API token |
 | C01 | Chart renders with `networkPolicy.enabled=false/true` | Same-namespace gateway-only ingress in both states | 181-test targeted suite passed; shell reports 4 passed, 0 failed |
 | C02 | `tests/test-network-policy.sh` with audit-a/audit-b | Both proxy pod and Service deny peer ports 3128/8081 | Published-image OFF pod probe: peer 3128 and 8081 both reachable (finding confirmed). VM OFF confirms Service and pod access on both ports; ON blocks all four attempts. Post-fix checks pending |
 | C03 | Keyless direct provider request from VM | TCP may connect; no provider key obtained | VM-root keyless direct POST reached NVIDIA and returned HTTP 400; this confirms transport reachability, not successful authentication |
-| C04 | `TestCAIsShortLivedAndConstrained` plus self-signed upstream test | Narrow trust and rejected untrusted upstream TLS | Baseline public CA measured 3653 days, no name constraints; new-CA regression passes. Live replacement CA: 365-day validity, critical DNS constraints, all IP certificates excluded; guest trust reload pending |
-| D01 | `tests/test-credential-isolation.sh` | Markers/public CA only in guest; no matching key digests | Extended filesystem/process/memory/block scan wired; live scan pending |
+| C04 | `TestCAIsShortLivedAndConstrained` plus self-signed upstream test | Narrow trust and rejected untrusted upstream TLS | Baseline public CA measured 3653 days, no name constraints; new-CA regression passes. Live replacement CA: 365-day validity, critical DNS constraints, all IP certificates excluded; guest fingerprint matches and proxy CA is absent from VM system roots |
+| D01 | `tests/test-credential-isolation.sh` | Markers/public CA only in guest; no matching key digests | Sandbox UID 998, provider-key digest absent from its credential value, supervisor environ unreadable, separate network namespace; full VM scan running |
 | D02 | `tests/installer/test_credential_modes.py` | Archive before key replacement; rotation warning persists until generation change | Existing behavior tested; live throwaway-user transition pending |
 | E01 | `TestRotationOnExistingTunnel` | Next request sees changed mounted key without VM/tunnel restart | Existing regression retained |
 | E02 | OAuth broker tests and `TestGmailRefreshAndFailureIsolation` | Access lifetime ≤1h, early refresh 5min; sanitized failures | Shipped Gmail profile is 3600s/300s; synthetic issuer tests retained |
-| E03 | Vault→ESO→projected-volume rotation measurement | Declared measured propagation time | Pending; configured ESO refresh period alone is insufficient |
+| E03 | Vault→ESO→projected-volume rotation measurement | Declared measured propagation time | Harmless whitespace update: ESO 10.94s, mounted volume 78.07s; restoration 9.95s/62.81s. Effective key unchanged in that probe. Distinct-key rotation and provider revocation pending |
 
 The guest-side `scripts/probe-credential-proxy.py` emits status codes and
 compressed candidate digests only. The live credential-isolation wrapper compares
@@ -69,15 +69,16 @@ It does not print captured response bodies, headers, or credential values.
 | H4: unnecessary VM health surface | Low | Health had no debug handlers but listened on all interfaces, appeared in the Service and was allowed from the VM. Bind loopback, exec readiness and remove 8081 peers; installer checks ordinary CONNECT port | B01 plus migration preflight test |
 | H5: broad, long-lived CA | Low | New roots last one year, have critical permitted DNS suffixes and no intermediate-CA authority; issuance verifies those constraints. The CA is not added to guest system roots | C04; existing roots need maintenance rotation |
 | H7: forwarded metadata reaches upstream | Medium | Reproduced in integration test. ReverseProxy Rewrite removes forwarding headers without adding client IP | A05 |
-| H11: scan skipped process state and block devices | Validation gap | Add process environ/cmdline, readable memory maps and read-only block scans, with explicit byte/source/unreadable/truncation counts | Guest scanner unit tests and D01 |
+| H11: scan skipped process state and block devices | Validation gap | Add process environ/cmdline, readable memory maps and read-only block scans, with explicit byte/source/unreadable/truncation counts. Live execution exposed quadratic trailing-token matching on long ASCII runs; replace with linear suffix handling. The old matcher exceeded 3s on 64 KiB; the guarded 1 MiB regression passes | Guest scanner unit tests and D01 |
 
 H6 is a documentation boundary: EgressFirewall permits keyless direct provider
 connections namespace-wide; it does not force all traffic through the proxy.
 H8 is an administrative trust dependency: the Secret's HTTPS URL can extend the
 bound host set; Vault/portal writers and namespace secret writers remain trusted.
 The EgressFirewall and dial guard still apply. Guest-root access alone does not
-grant permission to modify those cluster resources. Live RBAC review remains
-pending. H9 transport errors were sanitized in baseline tests; paths are now
+grant permission to modify those cluster resources. Live SubjectAccessReviews deny Secret updates to the default/gateway/proxy service-account names.
+Trusted Argo and operator-created pipeline principals retain namespace write access;
+this is an administrative trust boundary. H9 transport errors were sanitized in baseline tests; paths are now
 omitted to avoid unsafe redaction assumptions. H10 is an operator acknowledgement,
 not enforced provider revocation; the documentation explicitly retains this limit.
 
@@ -91,7 +92,7 @@ Existing enterprise integration gaps are not newly verified proxy exploits.
 | Kernel containment for tools, hooks, skills and MCP | OpenShell policy configuration; D01 pending | Partial: deployed coverage and generated/child-process execution not yet qualified |
 | Deny-by-default platform and sandbox egress | C01/C02 and EgressFirewall | Partial: external firewall configured; Pattern stages VM-wide segmentation off; sandbox enforcement requires live exercise |
 | Credential mediation / external custody | A01–A07, D01 | Partial qualification: external pod, digest tests and response guards; no formal non-disclosure proof; provider administration trusted |
-| Routed inference | Requested model in profile; live inference pending | Partial: routing configuration exists, post-fix request not yet proven |
+| Routed inference | Requested model plus sandbox/GUI inference | Live sandbox request returned HTTP 200 with choices; owner-protected CUDA GUI returned OK using the requested model |
 | Filesystem and process controls | Governance policies; D01 | Partial: guest-root defeats in-guest enforcement; immutable configuration-path coverage not qualified here |
 | Signed policy / controlled releases | Optional APF, digest image pins | Partial: default interceptor policy is unsigned; APF anti-rollback counter is not durable across restart |
 | OCSF audit / Table 6 common audit | Redacted proxy request/event logs | Gap: no unified versioned OCSF normalization, SIEM correlation or validated loss detection |
@@ -156,9 +157,13 @@ against `cluster-clkq2`; `make prereqs-check` was intentionally skipped.
   process before shipping the default image.
 - Normal PKCE account and gateway sign-in completed under the user’s explicit authorization.
   TUI/GUI, disposable provider-key revocation and team-lead sign-off remain human checkpoints.
+- Resumed scanner/TUI regression suite: 93 passed; static lint passed.
+- CUDA GUI: normal owner sign-in as audit-a and an OK inference response verified.
+  The authorized automated README checks exposed a NemoClaw TUI login omission;
+  both TUI modes now use the existing password-aware launch path, with regression coverage.
 - Upstream draft PR: [#155](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/pull/155),
   from `mtalvi:proxy-check` to upstream `main`, with these documents included.
-  Go tests, deployment validation and both architecture builds passed in CI; installer matrix pending.
+  Go tests, deployment validation, both architecture builds and the installer Python 3.12/3.14 matrix passed at commit `12d9ff7`; later changes require a fresh run.
 
 ## Sign-off
 

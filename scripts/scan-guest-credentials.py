@@ -5,6 +5,7 @@ import re
 import stat
 
 TOKENS = re.compile(rb"[A-Za-z0-9_-]{20,512}")
+TOKEN_BYTES = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
 
 
 def stream_digests(stream, limit=0, size=None):
@@ -23,18 +24,19 @@ def stream_digests(stream, limit=0, size=None):
         data = tail + chunk
         # Only finalize tokens with a known right boundary. A chunk boundary
         # must not create a digest for a partial token.
-        cutoff = len(data)
-        trailing = re.search(rb"[A-Za-z0-9_-]+$", data)
-        if trailing:
-            cutoff = trailing.start()
+        # A greedy, unanchored token regex ending in '$' retries each start
+        # position in long runs followed by a separator (quadratic time).
+        # rstrip finds exactly the same suffix in one backward pass.
+        cutoff = len(data.rstrip(TOKEN_BYTES))
         digests.update(hashlib.sha256(m.group()).digest()[:8]
                        for m in TOKENS.finditer(data[:cutoff]))
         tail = data[cutoff:]
         # Limit the tail even for a large run of token characters. The
         # tokenizer's maximum candidate size is 512 bytes.
-        while len(tail) > 512:
-            digests.add(hashlib.sha256(tail[:512]).digest()[:8])
-            tail = tail[512:]
+        complete = max(0, (len(tail) - 1) // 512 * 512)
+        for offset in range(0, complete, 512):
+            digests.add(hashlib.sha256(tail[offset:offset + 512]).digest()[:8])
+        tail = tail[complete:]
     digests.update(hashlib.sha256(m.group()).digest()[:8] for m in TOKENS.finditer(tail))
     return digests, count
 

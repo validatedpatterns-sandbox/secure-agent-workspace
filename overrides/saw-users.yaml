@@ -4,6 +4,20 @@ users:
   - name: audit-a
   - name: audit-b
 
+# cluster-clkq2 audit topology. Keep VM segmentation off for the published-image
+# baseline; enable it per audit user after recording the OFF probes.
+defaults:
+  openshellSaw:
+    networkPolicy:
+      clusterNetworkCIDRs: [10.232.0.0/14]
+      serviceNetworkCIDRs: [172.231.0.0/16]
+    cleanupApi:
+      serviceIP: 172.231.0.1
+      endpoints:
+        - {ip: 10.10.10.10, port: 6443}
+        - {ip: 10.10.10.11, port: 6443}
+        - {ip: 10.10.10.12, port: 6443}
+
 # For a custom inference endpoint outside the cluster, uncomment this block
 # and replace the hostname with the one in
 # overrides/governance-profiles/custom-inference.yaml and inference.url.

@@ -244,6 +244,16 @@ esac
 def test_pattern_prereqs_do_not_require_operators(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
+    users = tmp_path / "saw-users.yaml"
+    users.write_text(yaml.safe_dump({
+        "users": [{"name": "test-user", "values": {"networkPolicy": {"enabled": True}}}],
+        "defaults": {"openshellSaw": {
+            "networkPolicy": {"clusterNetworkCIDRs": ["10.232.0.0/14"],
+                              "serviceNetworkCIDRs": ["172.231.0.0/16"]},
+            "cleanupApi": {"serviceIP": "172.231.0.1",
+                           "endpoints": [{"ip": "10.10.10.10", "port": 6443}]},
+        }},
+    }))
     executable(bindir / "uv", 'exit 0\n')
     executable(bindir / "openshell", 'printf "openshell 0.1.2\\n"\n')
     executable(bindir / "oc", '''
@@ -264,7 +274,8 @@ case "$*" in
 esac
 ''')
     env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}",
-               CA_OUT=str(tmp_path / "ingress-ca.pem"))
+               CA_OUT=str(tmp_path / "ingress-ca.pem"),
+               SAW_USERS_VALUES_FILE=str(users))
     result = run_make("prereqs-check", env=env)
     assert result.returncode == 0, result.stderr
     assert "Default StorageClass: available" in result.stdout

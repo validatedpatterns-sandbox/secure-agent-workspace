@@ -15,8 +15,8 @@ pod-local health, and confirmed the existing NVIDIA key file is disposable.
 
 Only synthetic keys are used in local adversarial tests. Live provider values
 are compared locally using digests; they are never supplied to the guest scan.
-Raw outputs stay in a private scratch directory outside Git. The report contains
-redacted observations. Evidence timestamps below are UTC checkpoint times, not
+Raw outputs stay in a private scratch directory outside Git. The report and
+[checkpoint evidence](credential-proxy-evidence.json) contain redacted observations. Evidence timestamps below are UTC checkpoint times, not
 claims of exact request times.
 
 **Assurance limit:** these tests verify specific implementations and attack
@@ -43,11 +43,11 @@ checks run through the installer workflow's existing pytest wrappers.
 | A06 | `TestRejectsNonPublicAndClusterAnswersBeforeDial`, `TestPinsPublicAnswerWithoutSecondLookup`, `TestBothPathsRejectPrivateDNSBeforeDial` | No private/link-local/cluster dial or DNS rebinding between validation and connection | IP checks shared by intercepted and spliced traffic; mixed DNS answers rejected |
 | A07 | `TestTransportErrorDoesNotLogCredentialPath` | Sanitized 502, no key in output/logs | Baseline transport-error test passed; request paths are now omitted entirely |
 | B01 | Built binary test plus `TestHealthCannotBindOutsidePodLoopback` | Health loopback only; debug/metrics/expvar absent | Built binary and rejection tests added; Service exposes 3128 only |
-| B02 | Chart assertions and deployment inspection | Non-root, read-only root, dropped caps, no mounted API token | Existing chart hardening retained; live inspection pending |
+| B02 | Chart assertions and deployment inspection | Non-root, read-only root, dropped caps, no mounted API token | Live fixed-image inspection passed: non-root, RuntimeDefault seccomp, read-only root, drop ALL, no privilege escalation or API token |
 | C01 | Chart renders with `networkPolicy.enabled=false/true` | Same-namespace gateway-only ingress in both states | 181-test targeted suite passed; shell reports 4 passed, 0 failed |
 | C02 | `tests/test-network-policy.sh` with audit-a/audit-b | Both proxy pod and Service deny peer ports 3128/8081 | Published-image OFF pod probe: peer 3128 and 8081 both reachable (finding confirmed). VM OFF confirms Service and pod access on both ports; ON blocks all four attempts. Post-fix checks pending |
-| C03 | Keyless direct provider request from VM | TCP may connect; no provider key obtained | Namespace-wide firewall permits this by design; live request pending |
-| C04 | `TestCAIsShortLivedAndConstrained` plus self-signed upstream test | Narrow trust and rejected untrusted upstream TLS | Baseline public CA measured 3653 days, no name constraints; new-CA regression passes. Live trust check pending |
+| C03 | Keyless direct provider request from VM | TCP may connect; no provider key obtained | VM-root keyless direct POST reached NVIDIA and returned HTTP 400; this confirms transport reachability, not successful authentication |
+| C04 | `TestCAIsShortLivedAndConstrained` plus self-signed upstream test | Narrow trust and rejected untrusted upstream TLS | Baseline public CA measured 3653 days, no name constraints; new-CA regression passes. Live replacement CA: 365-day validity, critical DNS constraints, all IP certificates excluded; guest trust reload pending |
 | D01 | `tests/test-credential-isolation.sh` | Markers/public CA only in guest; no matching key digests | Extended filesystem/process/memory/block scan wired; live scan pending |
 | D02 | `tests/installer/test_credential_modes.py` | Archive before key replacement; rotation warning persists until generation change | Existing behavior tested; live throwaway-user transition pending |
 | E01 | `TestRotationOnExistingTunnel` | Next request sees changed mounted key without VM/tunnel restart | Existing regression retained |
@@ -137,7 +137,7 @@ a guest filesystem entry does not prove its previous raw disk blocks were erased
 ## Execution checkpoints and completion gates
 
 Published baseline branch push: `eab47bc`. `make ssh-key-generate` preserved the
-existing key; `make images-mirror` succeeded. Option A installation is running
+existing key; `make images-mirror` succeeded. Option A installation completed
 against `cluster-clkq2`; `make prereqs-check` was intentionally skipped.
 
 - Local lint: passed (82 Make-interface tests included).
@@ -147,13 +147,18 @@ against `cluster-clkq2`; `make prereqs-check` was intentionally skipped.
 - Tool gate: 10 passed.
 - Offline NetworkPolicy: 4 passed, 0 failed.
 - Final proxy vet/race suite: passed. Final chart/shell-wrapper suite: 173 passed.
-- Complete pytest suite and live baseline/post-fix results: pending final evidence update.
-- The fixed proxy must be built and selected by digest before live post-fix
+- Complete local pytest: 1,980 passed, three skipped, one checkout-dependent prerequisite fixture failed.
+  The fixture now uses its own topology; all 82 Make-interface tests pass afterward.
+- Live EgressFirewall: 13 passed, zero failed. Further post-fix guest checks remain pending.
+- The fixed proxy has been built, selected by digest, and deployed for live post-fix
   testing. The shipped upstream pin does not automatically include source edits;
   use a branch-specific audit override and follow the documented image release
   process before shipping the default image.
-- TUI/GUI, browser gateway sign-in, disposable provider-key revocation and
-  team-lead sign-off remain human checkpoints from the approved plan.
+- Normal PKCE account and gateway sign-in completed under the user’s explicit authorization.
+  TUI/GUI, disposable provider-key revocation and team-lead sign-off remain human checkpoints.
+- Upstream draft PR: [#155](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/pull/155),
+  from `mtalvi:proxy-check` to upstream `main`, with these documents included.
+  Go tests, deployment validation and both architecture builds passed in CI; installer matrix pending.
 
 ## Sign-off
 

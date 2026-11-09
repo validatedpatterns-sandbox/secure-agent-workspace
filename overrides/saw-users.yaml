@@ -1,6 +1,8 @@
 # Add real account names here after creating them with keycloak-add-users.
 # Each entry creates saw-<name>. Demo entries are in saw-users-demo.yaml.
-users: []
+users:
+  - name: audit-a
+  - name: audit-b
 
 # For a custom inference endpoint outside the cluster, uncomment this block
 # and replace the hostname with the one in

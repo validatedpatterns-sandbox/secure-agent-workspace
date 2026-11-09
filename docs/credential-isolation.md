@@ -350,6 +350,9 @@ portal chart takes precedence when a separate portal override is needed.
   recreated because their egress wiring fingerprint changed. Verify the
   Deployment is ready and a provider request succeeds before ending the
   maintenance window. An ordinary upgrade keeps the existing proxy CA.
+  When adding a bound hostname outside the existing CA's permitted DNS
+  suffixes, include it in the egress policy and rotate the CA in the same
+  maintenance window. An upgrade does not silently broaden an existing root.
 - **Gateway PKI:** increment `gatewayPki.generation` in values and upgrade
   the SAW. The installer rotates the gateway CA, server and relay identities,
   and recreates sandboxes. Users then fetch the new gateway CA with
@@ -380,8 +383,10 @@ Run `make test-credential-proxy` locally and
 `make test-credential-isolation OPENSHELL_SAW_NAME=<name> SAW_NS=saw-<name>`
 on a test SAW. For a live check, inspect `/var/lib/saw/status.json` for matching
 proxy and PKI fingerprints, confirm the proxy `/healthz` endpoint, and run an
-inference request from a sandbox. `SKIP_LIVE=1 tests/test-credential-isolation.sh`
-runs only the offline render checks. The live script uses an SSH key already
+inference request from a sandbox. Health is pod-local: run
+`oc exec -n saw-<name> deploy/<name>-credential-proxy -- /usr/local/bin/saw-credential-proxy healthcheck`.
+`SKIP_LIVE=1 tests/test-credential-isolation.sh` runs the offline render checks
+and adversarial Go request-path tests with synthetic credentials. The live script uses an SSH key already
 authorized for the VM and restarts `saw-apply` to observe the temporary CA;
 set `SKIP_APPLY=1` for read-only checks. Set `OLD_ADMIN_CERT` to a saved public
 admin certificate to check that the old issuer is no longer trusted.

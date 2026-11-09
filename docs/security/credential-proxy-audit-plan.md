@@ -1,3 +1,16 @@
+## Execution decisions (user overrides)
+
+The original plan below is preserved for traceability. The user selected the
+existing `proxy-check` branch and cluster-clkq2, approved always-on proxy ingress
+and pod-local health, authorized automated browser login and TUI/GUI checks,
+and requested the PR from `mtalvi:proxy-check` to upstream `main`.
+The user is handling team-lead review personally. They explicitly declined
+provider-side NVIDIA key revocation and its rejection test; do not revoke either
+key or treat invalidation as verified. The live delivery test switched Vault to
+the first-line `.env` key. `keyGeneration` stays 1 while invalidation is unverified.
+
+---
+
 Plan: Security audit of saw-credential-proxy against the NVIDIA Security and Governance Model
 
  Context

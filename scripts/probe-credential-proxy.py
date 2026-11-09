@@ -17,7 +17,7 @@ def probes(proxy, ca, host, marker):
     context.load_verify_locations(cafile=ca)
     results, digests = [], set()
 
-    def record(test_id, connection, method, path, headers, allowed):
+    def record(test_id, connection, method, path, headers, allowed, expected_body=None):
         try:
             connection.request(method, path, headers=headers)
             response = connection.getresponse()
@@ -28,8 +28,12 @@ def probes(proxy, ca, host, marker):
                 name + ": " + value for name, value in response.getheaders())).encode() + b"\n" + body
             digests.update(hashlib.sha256(m.group()).digest()[:8]
                            for m in re.finditer(rb"[A-Za-z0-9_-]{20,512}", captured))
-            verdict = "PASS" if response.status in allowed and len(body) <= 2*1024*1024 else "FAIL"
-            results.append({"id": test_id, "status": response.status, "result": verdict})
+            safe_body = expected_body is None or body == expected_body
+            verdict = "PASS" if response.status in allowed and len(body) <= 2*1024*1024 and safe_body else "FAIL"
+            result = {"id": test_id, "status": response.status, "result": verdict}
+            if expected_body is not None:
+                result["sanitized"] = safe_body
+            results.append(result)
         except (OSError, http.client.HTTPException):
             results.append({"id": test_id, "result": "INCONCLUSIVE", "error": "connection-failed"})
         finally:
@@ -41,15 +45,19 @@ def probes(proxy, ca, host, marker):
     for path in ("/debug/pprof", "/metrics", "/healthz", "/debug/vars"):
         connection = http.client.HTTPConnection(endpoint.hostname, endpoint.port, timeout=10)
         record("deny-debug-" + path, connection, "GET", path, {}, {405})
-    for test_id, headers in (
-        ("deny-host-spoof", {"Host": "attacker.saw.invalid", "Authorization": "Bearer " + marker}),
-        ("deny-unbound-marker", {"Authorization": "Bearer saw-cred.unknown.api_key"}),
-        ("forwarded-headers", {"Authorization": "Bearer " + marker, "X-Forwarded-Host": "attacker.saw.invalid",
+    for test_id, path, headers in (
+        ("deny-host-spoof", "/v1/models", {"Host": "attacker.saw.invalid", "Authorization": "Bearer " + marker}),
+        ("deny-unbound-marker", "/v1/models", {"Authorization": "Bearer saw-cred.unknown.api_key"}),
+        ("deny-upstream-error", "/v1/audit-does-not-exist/" + marker + "?audit=" + marker,
+         {"Authorization": "Bearer " + marker}),
+        ("forwarded-headers", "/v1/models", {"Authorization": "Bearer " + marker, "X-Forwarded-Host": "attacker.saw.invalid",
                                "X-Forwarded-For": "169.254.169.254", "Forwarded": "host=attacker.saw.invalid"}),
     ):
         connection = http.client.HTTPSConnection(endpoint.hostname, endpoint.port, context=context, timeout=20)
         connection.set_tunnel(host, 443)
-        record(test_id, connection, "GET", "/v1/models", headers, {502} if test_id.startswith("deny-") else {200})
+        expected = {404} if test_id == "deny-upstream-error" else {502} if test_id.startswith("deny-") else {200}
+        record(test_id, connection, "GET", path, headers, expected,
+               b"upstream request failed\n" if test_id == "deny-upstream-error" else None)
     return {"tests": results, "digests": base64.b64encode(gzip.compress(b"".join(sorted(digests)))).decode()}
 
 

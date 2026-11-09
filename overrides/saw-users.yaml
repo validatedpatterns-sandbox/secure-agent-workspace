@@ -12,6 +12,10 @@ users:
   - name: audit-migrate
     values:
       credentialProxy:
+        enabled: true
+        keyGeneration: 1
+      # Qualify always-on proxy ingress independently of full VM segmentation.
+      networkPolicy:
         enabled: false
 
 # cluster-clkq2 audit topology. OFF probes are recorded; audit-a/audit-b now

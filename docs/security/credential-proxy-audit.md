@@ -25,7 +25,8 @@ claims of exact request times.
 cases, not the absence of every defect. No formal model or machine-checked proof
 of arbitrary credential non-disclosure has been produced. Byte-pattern response
 filtering cannot prove safety against arbitrary encodings, partial disclosures,
-or a malicious authorized provider. Process/disk scans are moving snapshots;
+or a malicious authorized provider. Token-based guest scans can also miss a
+credential embedded within a longer token run. Process/disk scans are moving snapshots;
 unreadable or truncated sources make an absence claim inconclusive. Guest-root
 attacks do not justify trusting answers supplied by a compromised guest kernel.
 
@@ -50,8 +51,8 @@ checks run through the installer workflow's existing pytest wrappers.
 | C02 | `tests/test-network-policy.sh` with audit-a/audit-b | Both proxy pod and Service deny peer ports 3128/8081 | Published-image OFF pod probe: peer 3128 and 8081 both reachable (finding confirmed). VM OFF confirms Service and pod access on both ports; ON blocks all four attempts. Final fixed-image suite: 44 passed, 0 failed |
 | C03 | Keyless direct provider request from VM | TCP may connect; no provider key obtained | VM-root keyless direct POST reached NVIDIA and returned HTTP 400; this confirms transport reachability, not successful authentication |
 | C04 | `TestCAIsShortLivedAndConstrained` plus self-signed upstream test | Narrow trust and rejected untrusted upstream TLS | Baseline public CA measured 3653 days, no name constraints; new-CA regression passes. Live replacement CA: 365-day validity, critical DNS constraints, all IP certificates excluded; guest fingerprint matches and proxy CA is absent from VM system roots |
-| D01 | `tests/test-credential-isolation.sh` | Markers/public CA only in guest; no matching key digests | Sandbox UID 998, provider-key digest absent from its credential value, supervisor environ unreadable, separate network namespace; full VM scan running |
-| D02 | `tests/installer/test_credential_modes.py` | Archive before key replacement; rotation warning persists until generation change | Live archive/restore verified by preserved canary and empty recovery ledger after automatic retry. No key-component matches in targeted workspace/gateway-state scans; whole-guest absence and provider invalidation unverified. Apply finalization pending |
+| D01 | `tests/test-credential-isolation.sh` | Markers/public CA only in guest; no matching key digests | Sandbox UID 998, provider-key digest absent from its credential value, supervisor environ unreadable, separate network namespace. Full root scan stopped by user during raw-disk reading; no final digest set or aggregate coverage result. INCONCLUSIVE |
+| D02 | `tests/installer/test_credential_modes.py` | Archive before key replacement; rotation warning persists until generation change | Live archive/restore verified by preserved canary and empty recovery ledger after automatic retry. No key-component matches in targeted workspace/gateway-state scans; whole-guest absence and provider invalidation unverified. Final apply check pending at user request |
 | E01 | `TestRotationOnExistingTunnel` | Next request sees changed mounted key without VM/tunnel restart | Existing regression retained |
 | E02 | OAuth broker tests and `TestGmailRefreshAndFailureIsolation` | Access lifetime ≤1h, early refresh 5min; sanitized failures | Shipped Gmail profile is 3600s/300s; synthetic issuer tests retained |
 | E03 | Vault→ESO→projected-volume rotation measurement | Declared measured propagation time | Distinct-key rotation: ESO 17.33s; mounted key 74.54s; sandbox inference confirmed by 83.29s, VM unchanged. Provider revocation not run by user decision |
@@ -102,7 +103,7 @@ Existing enterprise integration gaps are not newly verified proxy exploits.
 | Runtime/connector/policy rollback | GitOps and pinned images | Partial: operational rollback and retained-state behavior require qualification |
 | Identity/delegation | OIDC owner binding and tool approvals | Partial: per-process agent/task authority, child narrowing, replay and pending/cached authority revocation not established by this proxy |
 | Prompt-injection validation | No saved composed-input benchmark in this audit | Gap: model/application qualification, benign controls and cost/completion metrics not executed |
-| Enforcement validation | Local adversarial suite; live request/tenant/UI/rotation-delivery checks; full scan/transition pending | Partial: precise tested properties only; no policy-prover or unsupported-protocol pass claimed |
+| Enforcement validation | Local adversarial suite; live request/tenant/UI/rotation-delivery checks; full scan stopped by user, transition finalization pending | Partial: precise tested properties only; no policy-prover or unsupported-protocol pass claimed |
 
 | Table 7 compromise level | Residual trusted boundary | Verdict |
 |---|---|---|
@@ -150,6 +151,9 @@ two channel entries were unreadable in the workspace scan. Provider-side revocat
 the user; old-key invalidation is therefore unverified and both provider keys
 remain active. The generation stays 1 and the rotation warning must remain. Archiving/deleting
 a guest filesystem entry does not prove its previous raw disk blocks were erased.
+The restored CUDA sandbox also completed a normal NVIDIA inference request
+(HTTP 200, choices present) as UID 998. Its credential digest matched neither
+provider key, and it could not read the supervisor environment.
 
 ## Execution checkpoints and completion gates
 
@@ -192,6 +196,12 @@ against `cluster-clkq2`; `make prereqs-check` was intentionally skipped.
 - The manual Pattern E2E workflow was not run: its repository configuration targets
   `cluster-df9qg`, rather than the authorized `cluster-clkq2`. This is an outstanding
   workflow qualification gate; the live checks above ran directly on `cluster-clkq2`.
+- Full guest scan: **incomplete by user decision**. The original SSH stream
+  disconnected; its digest/coverage pipes were recovered into private guest
+  files, but the scan had not produced its final results when stopped. The last
+  raw-disk position was 6,509,559,808 bytes into the 40 GiB `/dev/vda`; measured
+  throughput was about 2.6 MiB/s, with partitions also remaining. The scanner
+  process was confirmed stopped. No whole-guest credential-absence pass is claimed.
 
 ## Sign-off
 
@@ -218,8 +228,11 @@ The branch override selects this image for live qualification. It is not a
 published upstream multi-architecture release.
 The new exec readiness probe requires the matching binary. Publish and pin the
 matching multi-architecture image before deploying with chart defaults. The
-audit-only users, internal image override and cluster topology in
-`overrides/saw-users.yaml` must also be removed before upstream merge.
+live cluster follows fork deployment branch `codex/credential-proxy-audit-clkq2`
+at `9fa13c2`, which preserves its audit users, internal image override and topology.
+All 19 fork-sourced Argo application references were verified on that branch
+before restoring `overrides/saw-users.yaml` to the upstream empty-user defaults
+in this PR. Implementation and reporting remain on `proxy-check`.
 
 ## Additional deployment-validation fixes
 
@@ -238,7 +251,8 @@ alone did not establish a pre-OS failure. The chart now gives only `rootdisk`
 explicit boot order 1 to remove ambiguity among its system/input disks; four
 render cases cover direct/proxy and ISO/live inputs. The guest is now booted in
 proxy mode with the direct-to-proxy transition and rotation warnings recorded;
-archive/restore completed, while final apply status remains in progress.
+archive/restore completed. The user chose not to wait for the final apply
+check; the installer is left running and its final status remains unverified.
 
 The observed 74.54-second secret delivery time is one measurement, not an SLA or
 a provider revocation bound. Both NVIDIA keys remain active by user decision. The local `~/.nvidia-api-key`

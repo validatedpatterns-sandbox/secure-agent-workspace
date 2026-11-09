@@ -8,6 +8,15 @@ The user is handling team-lead review personally. They explicitly declined
 provider-side NVIDIA key revocation and its rejection test; do not revoke either
 key or treat invalidation as verified. The live delivery test switched Vault to
 the first-line `.env` key. `keyGeneration` stays 1 while invalidation is unverified.
+The user subsequently stopped the long full-disk scan after its measured rate
+implied several hours. Record full guest qualification as incomplete; do not
+restart that scan without a new request. The user also chose not to wait for
+migration finalization; leave the installer running and record its final check
+as pending.
+The live audit configuration is preserved on fork branch
+`codex/credential-proxy-audit-clkq2` at `9fa13c2`, while implementation and the
+upstream PR remain on `proxy-check`. This allows the PR to restore the normal
+empty `overrides/saw-users.yaml` without pruning the running audit VMs.
 
 ---
 

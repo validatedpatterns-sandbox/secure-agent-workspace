@@ -1,40 +1,6 @@
 # Add real account names here after creating them with keycloak-add-users.
 # Each entry creates saw-<name>. Demo entries are in saw-users-demo.yaml.
-users:
-  - name: audit-a
-    values:
-      networkPolicy:
-        enabled: true
-  - name: audit-b
-    values:
-      networkPolicy:
-        enabled: true
-  - name: audit-migrate
-    values:
-      credentialProxy:
-        enabled: true
-        keyGeneration: 1
-      # Qualify always-on proxy ingress independently of full VM segmentation.
-      networkPolicy:
-        enabled: false
-
-# cluster-clkq2 audit topology. OFF probes are recorded; audit-a/audit-b now
-# opt into full VM segmentation for the second published-image baseline.
-defaults:
-  openshellSaw:
-    credentialProxy:
-      # Audited branch build for cluster-clkq2; upstream defaults are released
-      # through the documented multi-architecture publication/pin workflow.
-      image: image-registry.openshift-image-registry.svc:5000/openshell-agents/saw-credential-proxy-audit@sha256:f4501425dc8b537b3a046fb8a308ec72c7560a5e85da76b86b3887e0d9d8d341
-    networkPolicy:
-      clusterNetworkCIDRs: [10.232.0.0/14]
-      serviceNetworkCIDRs: [172.231.0.0/16]
-    cleanupApi:
-      serviceIP: 172.231.0.1
-      endpoints:
-        - {ip: 10.10.10.10, port: 6443}
-        - {ip: 10.10.10.11, port: 6443}
-        - {ip: 10.10.10.12, port: 6443}
+users: []
 
 # For a custom inference endpoint outside the cluster, uncomment this block
 # and replace the hostname with the one in

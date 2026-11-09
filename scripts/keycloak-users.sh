@@ -189,7 +189,13 @@ copy_to_clipboard() {  # $1 text
   elif command -v xsel >/dev/null 2>&1; then tool=(xsel --clipboard --input)
   elif command -v clip.exe >/dev/null 2>&1; then tool=(clip.exe)
   else return 1; fi
-  printf '%s' "$1" | timeout 2 "${tool[@]}" >/dev/null 2>&1
+  # macOS provides pbcopy without GNU coreutils; bound the other helpers.
+  if [[ "${tool[0]}" != pbcopy ]]; then
+    if command -v timeout >/dev/null 2>&1; then tool=(timeout 2 "${tool[@]}")
+    elif command -v gtimeout >/dev/null 2>&1; then tool=(gtimeout 2 "${tool[@]}")
+    else return 1; fi
+  fi
+  printf '%s' "$1" | "${tool[@]}" >/dev/null 2>&1
 }
 
 password() {

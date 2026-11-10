@@ -4,7 +4,9 @@ import base64
 import json
 import os
 import re
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -297,6 +299,48 @@ def test_password_reports_secret_location_without_value(tmp_path, keycloak):
     assert stored(tmp_path)["alice"] not in alice.stdout
     missing = run(tmp_path, "password", "nobody")
     assert missing.returncode != 0 and "keycloak-reset-password KC_USER=nobody" in missing.stderr
+
+
+@pytest.mark.parametrize("clipboard, timer, timer_status, copied", [
+    ("pbcopy", None, 0, True),
+    ("wl-copy", "timeout", 0, True),
+    ("wl-copy", "gtimeout", 0, True),
+    ("wl-copy", None, 0, False),
+    ("wl-copy", "timeout", 124, False),
+])
+def test_password_clipboard_portability(tmp_path, monkeypatch, clipboard, timer, timer_status, copied):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    # Only expose these tools, independently of the host's clipboard and coreutils.
+    (bin_dir / "bash").symlink_to(shutil.which("bash"))
+    (bin_dir / "python3").symlink_to(sys.executable)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setenv("CI", "true")
+    monkeypatch.setenv("PYTHON", sys.executable)
+    helper = bin_dir / clipboard
+    helper.write_text('#!/bin/bash\nIFS= read -r password || :\n'
+                      'printf "%s" "$password" > "$FAKE_OC_STATE/clipboard"\n')
+    helper.chmod(0o755)
+    if timer:
+        wrapper = bin_dir / timer
+        wrapper.write_text(f'#!/bin/bash\n[[ "$1" == 2 ]] || exit 99\nshift\n'
+                           f'if [[ {timer_status} != 0 ]]; then exit {timer_status}; fi\nexec "$@"\n')
+        wrapper.chmod(0o755)
+    state = tmp_path / "state"
+    state.mkdir()
+    password = "clipboard-test-password"
+    (state / "secret-openshell-keycloak-user-passwords.json").write_text(
+        json.dumps({"data": {"alice": base64.b64encode(password.encode()).decode()}}))
+
+    result = run(tmp_path, "password", "alice")
+
+    assert result.returncode == 0, result.stderr
+    assert password not in result.stdout + result.stderr
+    assert "Secret openshell-keycloak-user-passwords" in result.stdout
+    assert ("password copied to the clipboard" in result.stdout) is copied
+    assert (state / "clipboard").exists() is copied
+    if copied:
+        assert (state / "clipboard").read_text() == password
 
 
 def test_password_prints_the_value_only_with_show(tmp_path, keycloak):

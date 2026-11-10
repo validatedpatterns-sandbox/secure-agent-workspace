@@ -14,6 +14,101 @@ resolver = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(resolver)
 
 
+@pytest.fixture
+def bootstrap_api(monkeypatch, tmp_path):
+    admin = tmp_path / "admin"
+    admin.mkdir()
+    (admin / "username").write_text("test-admin")
+    (admin / "password").write_text("test-password")
+    output = tmp_path / "client-secret"
+    for key, value in {"REALM": "openshell", "CLIENT_ID": "resolver",
+                       "ADMIN_DIR": str(admin), "OUT": str(output)}.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(resolver, "keycloak_endpoint", lambda: ("https://keycloak.test", None))
+    monkeypatch.setattr(resolver, "keycloak_token", lambda *_: "test-admin-token")
+    state = {
+        "client": {"id": "resolver-id", "clientId": "resolver", "protocol": "openid-connect",
+                   "publicClient": False, "clientAuthenticatorType": "client-secret",
+                   "serviceAccountsEnabled": True, "standardFlowEnabled": False,
+                   "directAccessGrantsEnabled": False, "implicitFlowEnabled": False},
+        "scopes": [{"id": "admin-scope", "name": "kc-admin-api"}],
+        "default_scopes": [],
+        "roles": [{"name": "view-users"}],
+        "calls": [],
+        "output": output,
+    }
+
+    def api(url, realm, token, path, method="GET", body=None, ctx=None):
+        assert (url, realm, token) == ("https://keycloak.test", "openshell", "test-admin-token")
+        state["calls"].append((method, path))
+        roles_path = "/users/service-user/role-mappings/clients/management-id"
+        if method == "GET":
+            return {
+                "": {"realm": "openshell"},
+                "/clients?clientId=resolver": [state["client"]] if state["client"] else [],
+                "/client-scopes": state["scopes"],
+                "/clients/resolver-id/default-client-scopes": state["default_scopes"],
+                "/clients/resolver-id/service-account-user": {"id": "service-user"},
+                "/clients?clientId=realm-management": [
+                    {"id": "management-id", "clientId": "realm-management"}],
+                roles_path: state["roles"],
+                "/clients/management-id/roles/view-users": {"name": "view-users"},
+                "/clients/resolver-id/client-secret": {"value": "test-client-secret"},
+            }[path]
+        if method == "POST" and path == "/clients":
+            state["client"] = {**body, "id": "resolver-id"}
+        elif method == "POST" and path == roles_path:
+            state["roles"].extend(body)
+        elif method == "PUT" and path == "/clients/resolver-id/default-client-scopes/admin-scope":
+            state["default_scopes"].append(state["scopes"][0])
+        else:
+            pytest.fail(f"Unexpected bootstrap request: {method} {path}")
+
+    monkeypatch.setattr(resolver, "kc_call", api)
+    return state
+
+
+@pytest.mark.parametrize("existing_client", [False, True], ids=["new-client", "existing-client"])
+@pytest.mark.parametrize("scope_state", ["absent", "unassigned", "assigned"])
+def test_bootstrap_admin_scope_is_compatible_and_idempotent(bootstrap_api, existing_client, scope_state):
+    state = bootstrap_api
+    if not existing_client:
+        state["client"] = None
+        state["roles"] = []
+    if scope_state == "absent":
+        state["scopes"] = []
+    elif scope_state == "assigned":
+        state["default_scopes"] = list(state["scopes"])
+
+    resolver.bootstrap()
+    resolver.bootstrap()
+
+    assert state["default_scopes"] == state["scopes"]
+    scope_assignment = ("PUT", "/clients/resolver-id/default-client-scopes/admin-scope")
+    assert state["calls"].count(scope_assignment) == (1 if scope_state == "unassigned" else 0)
+    assert state["calls"].count(("POST", "/clients")) == (0 if existing_client else 1)
+    assert state["roles"] == [{"name": "view-users"}]
+    assert state["output"].read_text() == "test-client-secret"
+    assert state["output"].stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("roles", [
+    [{"name": "manage-realm"}],
+    [{"name": "view-users"}, {"name": "manage-realm"}],
+], ids=["unexpected-role", "extra-role"])
+def test_bootstrap_rejects_roles_before_granting_admin_scope(bootstrap_api, roles):
+    state = bootstrap_api
+    state["roles"] = roles
+
+    with pytest.raises(RuntimeError, match="extra realm-management roles"):
+        resolver.bootstrap()
+
+    assert state["default_scopes"] == []
+    assert all(method == "GET" for method, _ in state["calls"])
+    assert not state["output"].exists()
+
+
+
 def test_exact_enabled_account_only():
     cases = [
         ([{"username": "alice", "enabled": True, "id": "subject-a"}], ("subject-a", "resolved")),

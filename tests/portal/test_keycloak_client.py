@@ -15,6 +15,7 @@ SCRIPT = Path(__file__).resolve().parents[2] / "charts" / "openshell-rhdh" / "fi
 class FakeKeycloak:
     def __init__(self, clients=None, users=(), groups=()):
         self.clients = list(clients or [])
+        self.scopes, self.default_scopes, self.scope_puts = [], [], []
         self.logins = []
         self.puts = []
         self.users = [{"id": f"u-{n}", "username": n} for n in users]
@@ -65,6 +66,10 @@ class FakeKeycloak:
                 base = "/admin/realms/openshell"
                 if not self._admin():
                     return self._reply(403)
+                if url.path == f"{base}/client-scopes":
+                    return self._reply(200, kc.scopes)
+                if url.path.endswith("/default-client-scopes"):
+                    return self._reply(200, kc.default_scopes)
                 if url.path == f"{base}/clients":
                     if q.get("clientId") == "realm-management":
                         return self._reply(200, [{"id": "rm", "clientId": "realm-management"}])
@@ -83,6 +88,11 @@ class FakeKeycloak:
 
             def do_PUT(self):
                 url = urlsplit(self.path)
+                if "/default-client-scopes/" in url.path and self._admin():
+                    scope_id = url.path.rsplit("/", 1)[1]
+                    kc.default_scopes.append(next(s for s in kc.scopes if s["id"] == scope_id))
+                    kc.scope_puts.append(scope_id)
+                    return self._reply(204)
                 if url.path.startswith("/admin/realms/openshell/default-groups/") and self._admin():
                     kc.default_groups.append(url.path.rsplit("/", 1)[1])
                     return self._reply(204)
@@ -209,3 +219,33 @@ def test_administrators_are_kept_out_of_the_users_group(client, monkeypatch):
     kc.members.add(("u-admin", "g-saw-users"))        # joined as a default-group member
     assert client(kc) == 0
     assert kc.members == {("u-alice", "g-saw-users")}
+
+
+@pytest.mark.parametrize("existing_client", [False, True])
+@pytest.mark.parametrize("scope_state", ["absent", "unassigned", "assigned"])
+def test_admin_scope_for_catalog_reader(client, monkeypatch, existing_client, scope_state):
+    monkeypatch.setenv("USERS_GROUP", "saw-users")
+    kc = FakeKeycloak([{"id": "rhdh-id", "clientId": "rhdh"}] if existing_client else [])
+    scope = {"id": "admin-scope", "name": "kc-admin-api"}
+    other = {"id": "profile-scope", "name": "profile"}
+    kc.scopes = [other] if scope_state == "absent" else [other, scope]
+    kc.default_scopes = [other] + ([scope] if scope_state == "assigned" else [])
+
+    assert client(kc) == 0
+    assert client(kc) == 0
+
+    assert kc.default_scopes == ([other] if scope_state == "absent" else [other, scope])
+    assert kc.scope_puts == (["admin-scope"] if scope_state == "unassigned" else [])
+    assert len(kc.clients) == 1
+    assert all([r["name"] for r in roles] == ["view-users", "query-users", "query-groups"]
+               for _, roles in kc.role_mappings)
+
+
+def test_login_only_client_does_not_get_admin_scope(client, monkeypatch):
+    monkeypatch.delenv("USERS_GROUP", raising=False)
+    kc = FakeKeycloak()
+    kc.scopes = [{"id": "admin-scope", "name": "kc-admin-api"}]
+    assert client(kc) == 0
+    assert kc.default_scopes == [] and kc.scope_puts == []
+    assert kc.role_mappings == []
+    assert kc.clients[0]["serviceAccountsEnabled"] is False

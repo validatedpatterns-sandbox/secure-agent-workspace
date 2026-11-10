@@ -108,6 +108,14 @@ def grant_catalog_reader(admin, client_uuid, token, ctx):
     roles = [call(f"{admin}/clients/{rm['id']}/roles/{name}", token=token, ctx=ctx) for name in READER_ROLES]
     call(f"{admin}/users/{sa['id']}/role-mappings/clients/{rm['id']}", method="POST", body=roles,
          token=token, ctx=ctx)
+    # Updated Keycloak versions require this scope as well as the reader roles.
+    scopes = call(f"{admin}/client-scopes", token=token, ctx=ctx) or []
+    admin_scope = next((s for s in scopes if s.get("name") == "kc-admin-api"), None)
+    if admin_scope is not None:
+        defaults = call(f"{admin}/clients/{client_uuid}/default-client-scopes", token=token, ctx=ctx) or []
+        if not any(s.get("name") == "kc-admin-api" for s in defaults):
+            call(f"{admin}/clients/{client_uuid}/default-client-scopes/{admin_scope['id']}",
+                 method="PUT", token=token, ctx=ctx)
     print(f"Service account {sa.get('username')} may read users and groups ({', '.join(READER_ROLES)})")
 
 

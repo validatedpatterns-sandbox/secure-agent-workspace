@@ -4,24 +4,32 @@
 {{- if eq (dig "deployment" "mode" "vm" ($user.values | default dict)) "container" }}
 {{- $users = append $users $user }}
 {{- end }}{{- end }}
-{{- if $users }}
-{{- $argo := include "saw-users.argoNamespace" . }}
-{{- if eq .Release.Namespace $argo }}{{ fail "workspace projection requires a dedicated namespace outside Argo CD" }}{{ end }}
-{{- if or (not .Values.projection.egress) (not (regexMatch "^.+@sha256:[a-f0-9]{64}$" .Values.projection.image)) }}{{ fail "projection requires a pinned helper image and explicit API/DNS egress" }}{{ end }}
-{{- if not .Values.projection.applicationSetControllerLabels }}{{ fail "projection requires the actual ApplicationSet controller Pod labels" }}{{ end }}
 {{- $owner := printf "%s/%s" .Release.Namespace .Release.Name | sha256sum | trunc 20 }}
 {{- $name := printf "saw-projector-%s" $owner }}
-{{- $config := deepCopy .Values }}
+{{- $config := dict }}
+{{- if $users }}{{- $config = deepCopy .Values }}{{- end }}
 {{- $_ := set $config "users" $users }}
 {{- range $user := $users }}
 {{- $site := index $config.containerSites $user.name }}
 {{- if not $site }}{{ fail (printf "user %q: deployment.mode=container requires a containerSites entry" $user.name) }}{{ end }}
 {{- $_ := set $site "observer" (dict "namespace" $.Release.Namespace "serviceAccount" $name) }}
 {{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: {{ $name }}-configuration}
+data:
+  workspaces.json: {{ $config | toJson | quote }}
+{{- if $users }}
+{{- $argo := include "saw-users.argoNamespace" . }}
+{{- if eq .Release.Namespace $argo }}{{ fail "workspace projection requires a dedicated namespace outside Argo CD" }}{{ end }}
+{{- if or (not .Values.projection.egress) (not (regexMatch "^.+@sha256:[a-f0-9]{64}$" .Values.projection.image)) }}{{ fail "projection requires a pinned helper image and explicit API/DNS egress" }}{{ end }}
+{{- if not .Values.projection.applicationSetControllerLabels }}{{ fail "projection requires the actual ApplicationSet controller Pod labels" }}{{ end }}
 {{- $identity := dict "namespace" .Release.Namespace "argoNamespace" $argo "name" $name "owner" $owner }}
 {{- $identityCode := .Files.Get "files/projector_identity.py" }}
 {{- $bootstrapRevision := dict "config" $identity "source" $identityCode "image" .Values.projection.image | toJson | sha256sum | trunc 12 }}
 {{- $bootstrap := printf "%s-%s" $name $bootstrapRevision }}
+---
 apiVersion: v1
 kind: ServiceAccount
 metadata: {name: {{ $name }}}
@@ -31,12 +39,6 @@ apiVersion: v1
 kind: ServiceAccount
 metadata: {name: {{ $name }}-identity}
 automountServiceAccountToken: false
----
-apiVersion: v1
-kind: ConfigMap
-metadata: {name: {{ $name }}-configuration}
-data:
-  workspaces.json: {{ $config | toJson | quote }}
 ---
 apiVersion: v1
 kind: ConfigMap

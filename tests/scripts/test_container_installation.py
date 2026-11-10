@@ -124,3 +124,65 @@ def test_commands_use_only_owned_helm_release_and_public_observations(action, mo
     if action != "status": assert "workspace-alice" in writes[0]
     if action == "delete": assert writes[0][-5:] == ("--cascade", "foreground", "--wait", "--timeout", "5m")
     assert not any("secret" in args or "patch" in args or "delete" in args for args in calls)
+
+
+@pytest.mark.parametrize(("error", "expected"), [
+    ("Unable to connect to the server: dial tcp: lookup example: no such host", "DNS lookup failed"),
+    ("Error from server (Forbidden): access denied", "HTTP 403"),
+    ("unexpected response", "oc operation failed"),
+])
+def test_oc_diagnostic_does_not_echo_stderr(monkeypatch, error, expected):
+    def failed(*args, **kwargs):
+        return install.subprocess.CompletedProcess(args, 1, "", error + " private-fixture-value")
+    monkeypatch.setattr(install.subprocess, "run", failed)
+    with pytest.raises(install.InstallError, match=expected) as exc:
+        install.run("oc", "get", "namespace", "test")
+    assert "private-fixture-value" not in str(exc.value)
+
+
+def test_make_applies_checked_overlay_before_render_and_fails_before_mutation_on_drift(monkeypatch, tmp_path):
+    values, user = install.select(inputs(), "alice")
+    values["containerSites"]["alice"]["automaticEnrollment"]["enabled"] = False
+    base = tmp_path / "site.yaml"
+    overlay = tmp_path / "net.yaml"
+    base.write_text(yaml.safe_dump(values))
+    network = install.container_topology
+    site = values["containerSites"]["alice"]
+    ip = ["10.0.0.7"]
+    def discover(config, probe, container):
+        assert probe == "ops/probe" and config["containerSites"]["alice"] == site
+        result = {"projection": {"egress": []}, "containerSites": {"alice": {}}}
+        o = result["containerSites"]["alice"]
+        for path in (network.GATEWAY + ("oidc", "issuerUrl"), network.RELAY + ("issuer",)):
+            network.put(o, path, "https://issuer.example")
+        for path in (network.BOOTSTRAP, network.RELAY + ("egress",), network.GATEWAY + ("kubernetes", "network", "gatewayEgress")):
+            network.put(o, path, [network.host_rule(ip[0], 443)])
+        return result
+
+    monkeypatch.setenv("SAW_TOPOLOGY_OVERLAY", str(overlay))
+    monkeypatch.setenv("SAW_TOPOLOGY_PROBE", "ops/probe")
+    monkeypatch.setattr(network, "container_overlay", discover)
+    monkeypatch.setattr(sys, "argv", ["container-workspace.py", "apply", "--name", "alice", "--values", str(base)])
+    monkeypatch.setattr(install.shutil, "which", lambda _: "/tool")
+    monkeypatch.setattr(install, "get", lambda kind, *a: {"spec":{"domain":"apps.cluster.example.test"}}
+                        if kind == "ingress.config.openshift.io" else None)
+    monkeypatch.setattr(install, "preflight", lambda *args: ({}, "vp-gitops"))
+    writes = []
+    monkeypatch.setattr(install, "ensure_namespace", lambda *args: writes.append("namespace"))
+    def run(*args, **kwargs):
+        if args[:2] == ("helm", "list"):
+            return "[]"
+        if args[:2] in (("helm", "template"), ("helm", "upgrade")):
+            rendered_values = json.loads(Path(args[args.index("-f")+1]).read_text())
+            assert network.path_value(rendered_values["containerSites"]["alice"], network.RELAY + ("egress",)) == [
+                network.host_rule("10.0.0.7", 443)]
+        if args[:2] == ("helm", "upgrade"):
+            writes.append("helm")
+        return ""
+    monkeypatch.setattr(install, "run", run)
+    assert install.main() == 0 and writes == ["namespace", "helm"]
+    ip[0] = "10.0.0.8"
+    writes.clear()
+    with pytest.raises(SystemExit):
+        install.main()
+    assert not writes

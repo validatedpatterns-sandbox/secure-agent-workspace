@@ -22,9 +22,17 @@ from urllib.request import HTTPRedirectHandler, build_opener
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-_spec = importlib.util.spec_from_file_location("saw_workspace", ROOT / "charts/saw-users/files/workspace.py")
-workspace = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(workspace)
+
+
+def load_module(name, source):
+    spec = importlib.util.spec_from_file_location(name, source)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+workspace = load_module("saw_workspace", ROOT / "charts/saw-users/files/workspace.py")
+container_topology = load_module("container_topology", ROOT / "scripts/container_topology.py")
 
 
 class InstallError(ValueError):
@@ -34,6 +42,13 @@ class InstallError(ValueError):
 def run(*args, capture=True, input_text=None):
     result = subprocess.run(args, capture_output=capture, text=True, input=input_text, timeout=360)
     if result.returncode:
+        # Report the failure class only. Tool stderr can include credentials,
+        # manifests, or a URL containing an authorization parameter.
+        error = result.stderr or ""
+        if args[0] == "oc" and "dial tcp: lookup " in error:
+            raise InstallError("OpenShift API DNS lookup failed; check the hostname for the current oc context")
+        if args[0] == "oc" and "Error from server (Forbidden)" in error:
+            raise InstallError("OpenShift refused this operation (HTTP 403); check access for the current oc identity")
         raise InstallError(f"{args[0]} operation failed; inspect that tool's status before continuing")
     return result.stdout if capture else ""
 
@@ -158,6 +173,14 @@ def main():
         config, user = select(yaml.safe_load(Path(args.values).read_text()), args.name)
         for command in ("oc", "helm"):
             if not shutil.which(command): raise InstallError(command+" is required")
+        overlay = os.environ.get("SAW_TOPOLOGY_OVERLAY")
+        if not overlay and os.environ.get("SAW_TOPOLOGY_PROBE"):
+            raise InstallError("set SAW_TOPOLOGY_OVERLAY to the local reviewed overlay path")
+        if overlay:
+            container_topology.install_values(config, args.name, overlay,
+                                              os.environ.get("SAW_TOPOLOGY_PROBE"),
+                                              os.environ.get("SAW_TOPOLOGY_CONTAINER"),
+                                              verify=args.action == "apply")
         # Validate chart inputs before contacting or changing the cluster.
         with tempfile.TemporaryDirectory(prefix="saw-container-values-") as directory:
             values_file = Path(directory)/"values.json"

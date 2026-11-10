@@ -57,13 +57,12 @@ def test_disabled_by_default():
 
 def test_only_stock_core_resources_are_installed(docs):
     assert {d["kind"] for d in docs} == {
-        "Namespace", "ServiceAccount", "ClusterRole", "ClusterRoleBinding",
+        "ServiceAccount", "ClusterRole", "ClusterRoleBinding",
         "Service", "Deployment", "CustomResourceDefinition"}
-    assert len(docs) == 7
+    assert len(docs) == 6
     for doc in docs:
         if "namespace" in doc["metadata"]:
             assert doc["metadata"]["namespace"] == "agent-sandbox-system"
-    assert by_kind(docs, "Namespace")["metadata"]["name"] == "agent-sandbox-system"
     assert by_kind(docs, "ClusterRoleBinding")["subjects"] == [{
         "kind": "ServiceAccount", "name": "agent-sandbox-controller",
         "namespace": "agent-sandbox-system"}]
@@ -106,11 +105,11 @@ def test_stock_image_with_process_health_and_restricted_configuration(docs):
 
 
 def test_retention_and_in_application_ordering(docs):
-    for kind, wave in [("Namespace", "-3"), ("CustomResourceDefinition", "-2"),
+    for kind, wave in [("CustomResourceDefinition", "-2"),
                        ("ClusterRole", "-1"), ("Deployment", "0")]:
         annotations = by_kind(docs, kind)["metadata"]["annotations"]
         assert annotations["argocd.argoproj.io/sync-wave"] == wave
-        if kind in {"Namespace", "CustomResourceDefinition"}:
+        if kind == "CustomResourceDefinition":
             assert annotations["helm.sh/resource-policy"] == "keep"
             assert annotations["argocd.argoproj.io/sync-options"] == "Prune=false,Delete=false"
 

@@ -49,13 +49,22 @@ def public_model_inputs(profile, secrets):
     custom_models = {sb.get("modelInput") for _, sb in enabled_catalog_sandboxes(profile) if sb.get("endpointInput")}
     for key in {sb["modelInput"] for _, sb in enabled_catalog_sandboxes(profile) if sb.get("modelInput")}:
         secret, field = key.split(".",1)
-        allowed = any(f["key"] == field and f["kind"] == "text" for f in profile["secrets"][secret]["fields"])
-        value = secrets.get(secret,{}).get(field)
-        spelling = r"[A-Za-z0-9][A-Za-z0-9._/-]{0,99}" if key in custom_models else r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}"
-        if not allowed or value and (value in confidential or not re.fullmatch(spelling, value)):
+        definition = next((f for f in profile["secrets"][secret]["fields"]
+                           if f["key"] == field and f["kind"] == "text"), None)
+        if definition is None:
             raise WorkspaceError("invalid public model selector")
-        if value:
-            values[key]=value
+        value = secrets.get(secret, {}).get(field)
+        if value is None or value == "":
+            continue
+        if not isinstance(value, str) or value in confidential:
+            raise WorkspaceError("invalid public model selector")
+        # An official provider may publish a qualified model ID as this field's
+        # BOM default. Other qualified IDs require the custom endpoint contract.
+        qualified = key in custom_models or value == definition.get("default")
+        spelling = r"[A-Za-z0-9][A-Za-z0-9._/-]{0,99}" if qualified else r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}"
+        if not re.fullmatch(spelling, value):
+            raise WorkspaceError("invalid public model selector")
+        values[key] = value
     return values
 
 

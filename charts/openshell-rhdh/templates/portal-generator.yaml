@@ -69,7 +69,7 @@ spec:
               value: {{ include "openshell-rhdh.url" . }}
             # /status checks the caller's Backstage token against RHDH's keys.
             - name: RHDH_INTERNAL_URL
-              value: {{ include "openshell-rhdh.internalUrl" . }}
+              value: {{ include "openshell-rhdh.url" . }}
             - name: ARGO_NAMESPACE
               value: {{ include "openshell-rhdh.argoNamespace" . }}
             {{- if .Values.rhdh.rbac.enabled }}

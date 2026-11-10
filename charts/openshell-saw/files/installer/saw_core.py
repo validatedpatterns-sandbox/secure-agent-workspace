@@ -300,8 +300,23 @@ PROFILE_PROVIDER_FIELDS = {
 }
 PROFILE_SANDBOX_FIELDS = {
     "name", "type", "enabled", "agent", "image", "providers", "model", "harnessRef", "env", "inference",
-    "harnessRequired", "ui",
+    "harnessRequired", "ui", "gpu",
 }
+
+
+def _sandbox_gpu(s, key):
+    gpu = s.get("gpu", {})
+    if not isinstance(gpu, dict):
+        raise InstallerError(f"{key}: sandbox '{s['name']}' gpu must be a mapping")
+    unknown = sorted(str(key) for key in gpu if key not in {"enabled", "count"})
+    if unknown:
+        raise InstallerError(f"{key}: sandbox '{s['name']}' gpu has unknown keys {', '.join(unknown)}")
+    if not isinstance(gpu.get("enabled", False), bool):
+        raise InstallerError(f"{key}: sandbox '{s['name']}' gpu.enabled must be true or false")
+    gpu_count = gpu.get("count", 1)
+    if isinstance(gpu_count, bool) or not isinstance(gpu_count, int):
+        raise InstallerError(f"{key}: sandbox '{s['name']}' gpu.count must be an integer")
+    return gpu.get("enabled", False), gpu_count
 
 
 def _profile_mapping(value, allowed, required, where):
@@ -362,6 +377,8 @@ def validate_profile_document(doc, kind, where="profile"):
             elif field_name in objects:
                 if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
                     raise InstallerError(f"{where}: {field_name} must be a mapping with string keys")
+            elif field_name == "gpu":
+                _sandbox_gpu(entry, where)
             elif field_name == "inferenceTimeout":
                 if type(value) is not int or value < 0:
                     raise InstallerError(f"{where}: inferenceTimeout must be a nonnegative integer")
@@ -483,17 +500,7 @@ def parse_profiles(files, *, strict=False, document_check=None):
                 for s in (_yaml(text, key).get("spec") or {}).get("sandboxes") or []:
                     if "name" not in s:
                         raise InstallerError(f"{key}: every sandbox needs a name")
-                    gpu = s.get("gpu", {})
-                    if not isinstance(gpu, dict):
-                        raise InstallerError(f"{key}: sandbox '{s['name']}' gpu must be a mapping")
-                    unknown = sorted(set(gpu) - {"enabled", "count"})
-                    if unknown:
-                        raise InstallerError(f"{key}: sandbox '{s['name']}' gpu has unknown keys {', '.join(unknown)}")
-                    if not isinstance(gpu.get("enabled", False), bool):
-                        raise InstallerError(f"{key}: sandbox '{s['name']}' gpu.enabled must be true or false")
-                    gpu_count = gpu.get("count", 1)
-                    if isinstance(gpu_count, bool) or not isinstance(gpu_count, int):
-                        raise InstallerError(f"{key}: sandbox '{s['name']}' gpu.count must be an integer")
+                    gpu_enabled, gpu_count = _sandbox_gpu(s, key)
                     ws.sandboxes.append(Sandbox(
                         name=s["name"], type=s.get("type", "generic"),
                         enabled=s.get("enabled", True),
@@ -505,7 +512,7 @@ def parse_profiles(files, *, strict=False, document_check=None):
                         ui=dict(s.get("ui") or {}),
                         env=s.get("env") if s.get("env") is not None else {},
                         inference=s.get("inference") if s.get("inference") is not None else {},
-                        gpu_enabled=gpu.get("enabled", False), gpu_count=gpu_count))
+                        gpu_enabled=gpu_enabled, gpu_count=gpu_count))
             profile.workspaces.append(ws)
         profiles.append(profile)
     return profiles

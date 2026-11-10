@@ -210,6 +210,18 @@ def check(actual, expected):
 
 def run(api, config, generator):
     validate(config)
+    # Argo can cache Helm capabilities across a CRD install. Check the actual
+    # APIs before publishing any gateway credential, including on a replay.
+    for group, resource, kind, namespaced in (
+        ("agents.x-k8s.io/v1beta1", "sandboxes", "Sandbox", True),
+        ("policy.networking.k8s.io/v1alpha1", "adminnetworkpolicies", "AdminNetworkPolicy", False),
+    ):
+        listing = api.request("GET", "/apis/" + group) or {}
+        if listing.get("groupVersion") != group or not any(
+            entry.get("name") == resource and entry.get("kind") == kind
+            and entry.get("namespaced") is namespaced for entry in listing.get("resources", [])
+        ):
+            raise Failure(f"required Kubernetes API is unavailable: {group}/{kind}")
     identities = {}
     for ns in (config["namespace"], config["targetNamespace"]):
         meta = (api.namespace(ns) or {}).get("metadata", {})

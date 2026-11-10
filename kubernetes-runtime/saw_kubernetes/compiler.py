@@ -286,6 +286,8 @@ def compile_profile_files(files, config):
             if not sandbox.enabled:
                 continue
             name(sandbox.name, "sandbox")
+            if sandbox.gpu_enabled:
+                raise ContractError("container workspaces do not support GPU device requests")
             command = ["sh", "-c", "sleep infinity"]
             if sandbox.env or sandbox.model or sandbox.agent != "openclaw":
                 raise ContractError("harness/UI/inference/env capability is not yet ported to Kubernetes")

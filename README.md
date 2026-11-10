@@ -201,7 +201,20 @@ Two deployment paths are available:
 
 #### Option A: Validated Pattern (automated, GitOps)
 
+Run `./pattern.sh` from a host that can execute the Validated Patterns utility
+image natively. For a `linux/amd64` utility image, use an x86_64 Linux bastion
+with Podman and the target cluster's kubeconfig. An Apple Silicon host can
+manage the cluster with `oc` while the install command runs on that bastion.
+
 Deploys the platform — operators, Vault, ESO, Keycloak, and secrets — via Argo CD. No workspace VM is created until you add a user in step 7 or request a workspace through the portal.
+
+On a fresh cluster, the Make target installs the Red Hat OpenShift GitOps
+Operator through OLM and waits for its deployment before creating the Pattern.
+It uses the channel and catalog from the framework's rendered configuration.
+This prevents a temporary default Argo CD instance from receiving a second
+root Application. Existing GitOps installations keep their operator configuration.
+The framework's normal sync and health checks run at the end.
+[OpenShift GitOps default-instance configuration](https://docs.redhat.com/en/documentation/red_hat_openshift_gitops/1.21/html/argo_cd_instance/setting-up-argocd-instance).
 
 ```bash
 # 1. Fork, then clone your fork. Argo CD deploys from the branch you push
@@ -332,6 +345,8 @@ make images-mirror
 # 7. Deploy Keycloak (if one is already running in KEYCLOAK_NS, it is used;
 #    you are asked before the OpenShell realm is imported into it;
 #    set USE_EXISTING_KEYCLOAK=yes to import the realm without the prompt)
+#    A fresh deploy waits for both the server and the openshell-keycloak-realm
+#    import. The OIDC endpoints are needed by the next two commands.
 make keycloak-deploy
 
 # 8. Verify Keycloak (realm, openshell-cli client, roles)
@@ -816,6 +831,15 @@ selection commands, CI coverage, and fixture rules. `make test` and
 
 ### Delete
 
+For a clean reinstall, retire workspaces while the portal, Keycloak and Argo
+are available. Use the RHDH **Delete my agent workspace** template for portal owners,
+remove static owners through Git with `pruneOnRemove: true`, and run
+`make saw-delete` with the original site inputs for standalone installations.
+Wait for each workspace Application and runtime namespace to disappear before
+uninstalling the platform. RHDH preserves generated Applications when its
+ApplicationSet disappears. A successful platform uninstall alone can therefore
+leave a workspace running. Container audit history is retained separately.
+
 ```bash
 # Delete a single sandbox
 make saw-delete
@@ -829,6 +853,83 @@ make quickstart-delete
 # Uninstall the validated pattern through the documented wrapper
 ./pattern.sh make pattern-uninstall
 ```
+
+A full SAW uninstall first drains the Pattern-owned `openshell-rhdh` and
+`saw-users` Applications. The command sets their clustergroup `disabled`
+overrides on the Pattern and waits for Argo to mark each child for pruning.
+It terminates any active sync and waits for foreground deletion before
+the framework removes operators and webhooks. The VM cleanup runs after this
+drain so a reconciling SAW Application cannot recreate a VM during teardown.
+If the drain fails, correct
+the reported problem and rerun `pattern-uninstall`. Those two overrides
+persist on the Pattern until uninstall completes.
+
+To qualify a fresh RHDH-enabled installation, run the first check on the
+clean cluster and the second after installing with the configured site inputs:
+
+```bash
+scripts/check-rhdh-bootstrap.sh before
+./pattern.sh make install
+scripts/check-rhdh-bootstrap.sh after
+```
+
+ESO creates `rhdh/rhdh-oidc` from Vault before the Keycloak client hook can
+start. The hook requires that Secret and has a 15-minute execution deadline.
+The check requires the completed Job, a Synced/Healthy RHDH Application, and
+a ready rollout of the actual Backstage Deployment. On a cold start, dynamic
+plugins can still be installing when Argo reports Healthy. The portal Deployment
+has a 30-minute rollout deadline and retains the operator’s startup health
+endpoint with a larger failure budget for a cold backend. The check waits up
+to 30 minutes for Deployment availability. Set `RHDH_NAME` if the Backstage
+resource has a site-specific name. Verify owner sign-in and workspace creation
+through the portal separately. After changing owner enrollment, wait until the
+RHDH catalog offers the intended deployment mode and profile before submitting
+a create request. Catalog ingestion can finish after the Deployment rollout.
+
+On busy clusters, use a site value to reserve CPU for the framework's
+imperative Jobs during cold bootstrap. For example, add this to
+`values-cluster-<name>.yaml` and size the requests for available nodes:
+
+```yaml
+clusterGroup:
+  extraObjects:
+    bootstrap-resources:
+      apiVersion: v1
+      kind: LimitRange
+      metadata:
+        name: bootstrap-requests
+        namespace: imperative
+      spec:
+        limits:
+          - type: Container
+            defaultRequest:
+              cpu: "1"
+              memory: 256Mi
+```
+
+Check `oc -n imperative get pods,limitrange` and the admitted unseal Pod's
+`spec.initContainers[].resources.requests`. In clustergroup 0.9.58 the stock
+unseal playbook has a 600-second timeout. Exit 124 followed by HTTP 403
+creating the Vault secrets engine can indicate an interruption after unseal
+and before the stock CLI login. In that state the RHDH ExternalSecret stays
+unready. A CPU reservation can reduce contention. It cannot recover an
+already interrupted bootstrap. [Stock Job](https://github.com/validatedpatterns/clustergroup-chart/blob/v0.9.58/templates/imperative/unsealjob.yaml),
+[stock Vault role](https://github.com/validatedpatterns/rhvp.cluster_utils/blob/6aec8c6d50/roles/vault_utils/tasks/vault_unseal.yaml).
+
+A reinstall also depends on OpenShift Virtualization cleanup. Uninstall waits
+up to one hour for the Pattern-owned `openshift-cnv` namespace to disappear
+before checking whether its marked HyperConverged CRD is unused. A timeout
+returns an error. Check namespace termination, then rerun
+`./pattern.sh make pattern-uninstall` before installing again. A retained
+CRD can point OLM at a conversion webhook that no longer exists.
+
+When switching from an OperatorHub Quickstart to a clean Pattern test, confirm
+that both the test CNV namespace and its HyperConverged CRD are absent. A CSV
+uninstall can leave the CRD behind. On Pattern teardown, the cleanup command
+reads HyperConverged objects through the CRD's served storage version. This
+allows it to remove the tracked SAW instance even after the conversion service
+disappears. It checks for other instances and subscriptions before deleting
+the marked CRD.
 
 ## Repository structure
 

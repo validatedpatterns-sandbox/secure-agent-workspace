@@ -41,10 +41,22 @@ Additional requirements:
 - RWO storage for gateway state, workspace data, controller ledger and audit
   history; a shared filesystem class for the preparation/audit exchange PVCs.
 - Reachable DNS, Kubernetes API, trusted OIDC issuer, governance, registry and
-  approved provider endpoints. Supply explicit network rules and allocate a
-  distinct AdminNetworkPolicy priority for each workspace.
+  approved provider endpoints. Use the [container topology preflight](#discover-and-review-container-egress)
+  to derive API, DNS and issuer rules, or supply those rules explicitly.
+  Allocate a distinct AdminNetworkPolicy priority for each workspace.
 - `oc`, Helm 3 and `uv` on the installation machine. Provider credentials stay
   in Vault; local files and Git contain references and public configuration.
+
+Argo CD can retain an older list of API versions after the stock Agent Sandbox
+CRD is installed. For a generated gateway Application, the parent supplies the
+two API versions used by its Helm chart when the parent, gateway and identity
+charts share one immutable revision. Mixed revisions retain normal Helm
+discovery. The identity Job reads the live API
+server over verified TLS and checks the group, version, resource, kind and scope
+of both Sandbox and AdminNetworkPolicy before creating or projecting any keys.
+Missing discovery stops identity bootstrap. The policy chart also applies the
+actual AdminNetworkPolicy objects. Direct gateway Helm installs keep their
+existing capability checks.
 
 If the cluster uses a private CA, configure client trust with a combined bundle
 containing the normal system roots **and** the independently verified cluster CA.
@@ -61,7 +73,10 @@ helm upgrade --install agent-sandbox charts/agent-sandbox \
   --set enabled=true --wait
 ```
 
-For a GitOps platform, declare the same chart as a platform Application. Its
+For a GitOps platform, declare the same chart as a platform Application.
+Provision its destination namespace `agent-sandbox-system` in the cluster group
+or enable `CreateNamespace=true` on that Application. The Helm command above
+creates the namespace with `--create-namespace`. The chart
 source lock pins the upstream manifest and controller digest. Removing an
 individual workspace must not uninstall this cluster-wide dependency.
 
@@ -85,11 +100,75 @@ field. Start from the component charts' values and schemas:
 | `profileImageOverrides`, `profileBoundaries` | Optional per-profile pinned image overrides and explicit provider/boundary approval. Changing the profile requires its own approval. |
 | `imagePull` | Optional namespace and ImageStream names for access to an OpenShift internal registry. |
 
+RHDH offers **Container** on the create form when `portal.deploymentModes`
+includes `container` and at least one configured owner site has a catalog profile
+in `automaticEnrollment.approvedProfiles`. The form lists the union of those
+profiles. The registration pipeline checks the signed-in owner's own site and
+approved profile. For a first registration, pin the reviewed profile digest
+and keep `automaticEnrollment.enabled: false` until the operator reviews
+the live foundation. Static GitOps and Make can start that review without an
+approved profile digest.
+
 The portal checks the current Keycloak subject before changing a container's
 registration or Vault credentials. Configure `portal.adminSubjects` with the
 immutable Keycloak subject for each portal administrator who may act for another
 owner. The portal Task needs the existing read-only directory client projection
 `saw-generator-keycloak` when container sites are enabled.
+
+### Prepare large images on cold nodes
+
+The pinned stock OpenShell driver rolls back a sandbox whose bootstrap remains
+unfinished for five minutes. A slow first image pull can consume that entire
+window. Check cold nodes when qualifying a profile. For large images, install
+the optional `charts/saw-image-cache` chart through the clustergroup before
+creating workspaces. Give it the same immutable digests selected by the BOM
+and site overrides. [Pinned driver](https://github.com/opendatahub-io/openshell/blob/305c8b3d7bbdb97a6f2f7264c3ad43b0087c307f/crates/openshell-driver-kubernetes/src/driver.rs#L284)
+
+```yaml
+# Site values
+clusterGroup:
+  namespaces:
+    saw-image-cache:
+      operatorGroup: false
+  applications:
+    saw-image-cache:
+      name: saw-image-cache
+      namespace: saw-image-cache
+      path: charts/saw-image-cache
+      extraValueFiles:
+        - /overrides/workspace-image-cache.yaml
+```
+
+```yaml
+# overrides/workspace-image-cache.yaml
+enabled: true
+images:
+  - <approved-registry>/<workspace-image>@sha256:<64-hex-digest>
+nodeSelector:
+  kubernetes.io/os: linux
+```
+
+Kubelet pulls the images as read-only OCI image volumes. The DaemonSet runs a
+separate nonroot holder with an immutable image, no service-account token,
+dropped capabilities, a read-only root filesystem and no pod network access.
+The workload images are never executed by the holder. Set `imagePullSecrets`
+to authorized namespaced references for a private registry. For OpenShift
+internal images in another namespace, grant the holder service account only
+`get` on the required `imagestreams/layers` resource names.
+[Image volume behavior](https://v1-35.docs.kubernetes.io/docs/concepts/storage/volumes/#image)
+
+```sh
+oc -n saw-image-cache rollout status daemonset/saw-image-cache --timeout=30m
+oc -n saw-image-cache get daemonset/saw-image-cache -o json |
+  jq -e '.status.desiredNumberScheduled > 0 and
+         .status.numberReady == .status.desiredNumberScheduled and
+         .status.updatedNumberScheduled == .status.desiredNumberScheduled'
+```
+
+Confirm that the ready holders cover every node eligible for the workload.
+Match workload selectors and tolerations, and recheck after adding nodes or
+changing digests. Each node needs space for the selected images. Keep the
+holder running while the profile is in use.
 
 ### One-time Keycloak registration setup
 
@@ -163,6 +242,11 @@ membership Job reads Pod identities and updates the named public client-trust
 Secret before connecting to OpenShell. DNS/OIDC access alone cannot complete
 that Job. The browser relay has no Kubernetes token or trust-write RBAC. Changing
 the relay inputs creates a new input-hashed binding Job through GitOps.
+
+For sites with split-horizon DNS, run the [topology preflight](#discover-and-review-container-egress)
+from a trusted in-cluster Pod. The gateway and relay need the issuer address
+that Pod resolves on TCP 443. A successful browser login from the workstation
+does not test this path.
 
 Public trust publication is asynchronous: the Kubernetes Secret volume must
 refresh, then the stock gateway must reload it. Initial TLS failures, including
@@ -256,6 +340,10 @@ Use published release digests or follow the
 to build and publish the runtime and governance images into the internal
 registry. A green PR image build does not publish an image or deploy it.
 Record the source SHA and both output digests before configuring the site.
+For the shipped data-science notebook, also run the
+[notebook image preparation target](container-images.md#prepare-the-data-science-notebook-for-container-workspaces)
+before any of the three container registration paths. Its output supplies the
+notebook image and scoped pull values used in the profile approval below.
 
 | Input | Value / consumer |
 |---|---|
@@ -323,8 +411,12 @@ On a cold static installation, the projector identity Job and ApplicationSet
 start asynchronously. A missing plugin Secret error can precede identity
 publication; the ApplicationSet then recovers on its automatic retry. Wait for
 its `ParametersGenerated=True` condition and healthy foundation Applications
-before reviewing the boundary. Record any failed bootstrap attempts separately
-from the final installation result.
+before reviewing the boundary. To verify creation, inspect the generated
+Application's `metadata.ownerReferences` in the Argo namespace. Its controller
+reference must match the ApplicationSet name **and UID**. Check the child
+Application's sync and health independently of its downstream workspace Pods
+and PVCs. Record any failed bootstrap attempts separately from the final
+installation result.
 
 Wait for foundation Applications to be Synced/Healthy. Inspect the exact public
 objects and normalized boundary separately:
@@ -349,6 +441,11 @@ uv run --locked python scripts/portal-container/inspect-boundary.py \
 ```
 
 These commands read public objects and do not grant approval or read Secrets.
+The RHDH create pipeline stays pending while the operator reviews a fresh container
+registration. Its intent wait uses `portal.sandboxReadyTimeoutMinutes` (at least
+10 minutes). Approve within this budget or the request fails. The VM provisioning
+stage retains its 10-minute wait.
+
 Review the resource specifications against the intended configuration. Put the
 approved reference under `automaticEnrollment.reference` and enable enrollment
 in the values file. Review the rendered BOM and put its digest under
@@ -373,7 +470,10 @@ from a lost publication. For the same owner, registration and installation, they
 retain the exact prior child parameters if an enrolled binding or published relay
 subject disappears. Other declared owners continue to update. An unreadable
 child, malformed enrollment or ownership mismatch fails projection. Removal of
-a declared static owner remains an intentional prune. Static sites must sync the
+a declared static owner remains an intentional prune. When the last static
+container entry is removed with projection still enabled, only the empty
+projector configuration remains for that backend. Argo can prune its children
+without enabling empty-application sync or retaining any projector RBAC. Static sites must sync the
 new namespaced Role granting GET on their named children before using the updated
 projector. No migration of ApplicationSets or child ownership is required.
 If the required Keycloak owner lookup fails, the shared VM/container projection
@@ -397,22 +497,80 @@ reconcile. Its namespace must be separate from Argo CD. VM users keep their
 existing Applications and owner-resolution behavior. A container user's
 resolved `ownerSubject` does not enable an owner override for VM users.
 
-For RHDH, configure:
+### Approve the first RHDH container profile
 
-```yaml
-portal:
-  deploymentModes: [vm, container]
-  containerSites:
-    alice: # the same approved site object; no provider credentials here
-      subject: <resolved-owner-subject>
-      # stack, automaticEnrollment, approved profiles and site policy
-```
+1. **Review the profile before offering it.** From the reviewed chart revision,
+   render the public BOM with the effective inputs for this owner. Set
+   `profiles: [data-science]` in `bom-values.yaml`. Include its effective
+   `imageOverrides`, `webSearch.enabled` and `harnessEnabled`, matching the
+   intended workspace. Inspect the rendered providers, models, sandbox images
+   and harness files. Hash the ConfigMap's `data` with the same function the
+   live verifier uses.
 
-Keep `projection.enabled` off for the RHDH-generated child values: the portal
-already performs that projection. The Create/update form includes the deployment
-selector; the server checks mode, approved profile, owner and cleanup policy.
-The Delete form and state actions use the backend recorded in the registration.
-Enabling the selector without a matching approved site does not permit creation.
+   ```sh
+   helm template review charts/saw-bom -f bom-values.yaml \
+     --show-only templates/configmap-bom.yaml > rendered-bom.yaml
+   less rendered-bom.yaml
+   PROFILE_DIGEST=$(PYTHONPATH=kubernetes-runtime uv run --locked python -c \
+     'import yaml; from saw_kubernetes.boundary import fingerprint; print(fingerprint(yaml.safe_load(open("rendered-bom.yaml"))["data"]))')
+   printf '%s\n' "$PROFILE_DIGEST"
+   ```
+
+2. **Offer the approved profile through GitOps.** Merge the following fields
+   into the owner's complete site in `overrides/saw-users.yaml`. Replace the
+   two placeholders with the resolved Keycloak subject and the printed 64-hex
+   digest. Keep the existing component, relay and policy settings.
+
+   ```yaml
+   portal:
+     deploymentModes: [vm, container]
+     pruneOnRemove: true
+     containerSites:
+       alice:
+         subject: <resolved-owner-subject>
+         automaticEnrollment:
+           enabled: false
+           approvedProfiles:
+             data-science: <reviewed-profile-digest>
+   ```
+
+   Commit and push the site change. Wait for `openshell-rhdh` to sync that
+   revision and for the Developer Hub Deployment to finish rolling out. Sign
+   in as the owner, open **Create or update my agent workspace**, choose
+   **Container** and **data-science**, supply the profile's requested
+   credentials in the form, and submit. Argo generates a child Application
+   after the portal's `register` task succeeds. The operator can then inspect
+   the new registration while the pipeline waits for readiness.
+
+3. **Verify the live BOM and approve enrollment.** For a portal registration
+   the registry ConfigMap supplies the registration ID. The inspection tool
+   derives the installation UUID. Set `OWNER`, `GOVERNANCE_NAMESPACE` and
+   the expected cluster API URL before running:
+
+   ```sh
+   REGISTRATION=$(oc -n saw-portal get cm "saw-ws-$OWNER" -o json |
+     jq -er '.data["user.json"] | fromjson | .vaultPrefix | split("/") | last | select(test("^[0-9a-f]{16}$"))')
+   inspect_owner() {
+     uv run --locked python scripts/portal-container/inspect-boundary.py \
+       --owner "$OWNER" --registration "$REGISTRATION" \
+       --governance-namespace "$GOVERNANCE_NAMESPACE" \
+       --api-server "$EXPECTED_API_SERVER" "$@"
+   }
+   LIVE_DIGEST=$(inspect_owner --profile-digest) && test "$LIVE_DIGEST" = "$PROFILE_DIGEST"
+   ```
+
+   Continue only after the comparison succeeds. If it differs, review the
+   effective inputs and the live BOM. Run `inspect_owner --show-objects` and
+   review those specifications, then run `inspect_owner > boundary-reference.json`.
+   Put that reviewed reference in the **same owner's** `automaticEnrollment.reference`,
+   change `enabled` to `true` and commit the change to site Git within the
+   configured approval timeout. Verify the create task reaches ready and open
+   the owner-only chat. The audit and gate claims must be Bound on an
+   RWX-capable filesystem for the audited workspace to run.
+
+Keep `projection.enabled` off for the RHDH-generated child values. The portal
+performs that projection. The Delete form and state actions use the backend
+recorded in the registration.
 
 ## Updates and current limitations
 
@@ -520,3 +678,78 @@ The intent CLI accepts `--restart-generation`. When updating with
 `--previous-intent`, omitting the option preserves the previous value,
 including absence on legacy intents. The value ranges from zero through the
 intent generation and cannot decrease.
+
+### Discover and review container egress
+
+The optional container topology preflight reuses the VM's API Service and ready
+EndpointSlice discovery. It also reads the OpenShift DNS Service and endpoint
+ports. It runs HTTPS discovery from an existing, administrator-selected Pod to
+find the issuer addresses in the cluster's DNS view. Use a trusted Pod with
+Python 3, the correct CA trust, DNS and HTTPS access. The caller needs read
+access to those cluster resources and exec access to that Pod. The probe sends
+no credentials, follows no redirects, and verifies the issuer hostname and
+discovery document at every IPv4 answer. IPv6 issuer answers are unsupported.
+
+Keep governance, proxy and other administrator-approved rules in your base site
+file. When migrating an existing site, remove the hand-maintained API, issuer
+and DNS rules from the base lists first. Every base rule is preserved. A stale
+address left in the base remains allowed. Configure the gateway or relay issuer
+once, or omit both to discover the Keycloak host in the relay's configured
+namespace with the same helper used by VM Make. The default realm is
+`openshell`; set `KEYCLOAK_REALM` for another realm. Explicit gateway and relay
+issuer URLs must agree.
+
+```sh
+export SAW_USERS_VALUES_FILE="$PWD/container-users.yaml"   # base values
+# On a stock SAW platform, the portal generator has Python 3 and access to its issuer.
+PROBE_POD=$(oc -n saw-portal get pods -l app.kubernetes.io/name=saw-workspaces-generator -o json |
+  jq -er '[.items[] | select(.metadata.deletionTimestamp == null and
+    any(.status.conditions[]?; .type == "Ready" and .status == "True"))][0].metadata.name')
+export SAW_TOPOLOGY_PROBE="saw-portal/$PROBE_POD"
+export SAW_TOPOLOGY_CONTAINER=generator
+export SAW_TOPOLOGY_OVERLAY="$PWD/container-network.yaml"
+# Set SAW_TOPOLOGY_CONTAINER if the Pod has multiple containers.
+make container-topology > "$SAW_TOPOLOGY_OVERLAY.new" &&
+  mv "$SAW_TOPOLOGY_OVERLAY.new" "$SAW_TOPOLOGY_OVERLAY"
+make check-container-topology
+```
+
+For GitOps, commit the generated file and include it **after** the base file
+in the Application's Helm value files. Generate from `containerSites` for
+saw-users or `portal.containerSites` for RHDH. A base file containing both
+produces both sets of overrides. Run the check against the original base file
+and the committed overlay before enrollment and when DNS or API endpoints
+change. A mismatch exits nonzero. Review the regenerated diff before syncing.
+
+For a Pattern site with both sources, store the reviewed overlay at
+`overrides/container-network.yaml` and declare the value file order in the
+site's cluster-group values. Preserve any other value files the site already
+uses.
+
+```yaml
+clusterGroup:
+  applications:
+    saw-users:
+      extraValueFiles: [/overrides/saw-users.yaml, /overrides/container-network.yaml]
+    openshell-rhdh:
+      extraValueFiles: [/overrides/saw-users.yaml, /overrides/container-network.yaml]
+```
+
+For standalone Make, keep the base and overlay paths for the installation.
+Run the Ready Pod selection above again before each `make saw-create`,
+including enrollment after the boundary review. A portal rollout can replace
+the probe Pod between those steps. Check the **existing** overlay against
+the current trusted Pod. Regenerate it only after reviewing a topology change.
+On first
+foundation apply (`automaticEnrollment.enabled: false`), Make can create the
+specified overlay if absent. Later applies require the saved values to match
+live discovery. Status and delete can use that file without contacting the
+issuer. Keep the file per installation. Existing deployments using explicit
+egress inputs can continue to use that workflow.
+
+Generated rules grant individual addresses and ports to the gateway and relay.
+API and DNS rules also go to bootstrap and, for static sites, the projector.
+Workload/supervisor policies, provider host approvals, storage and enrollment
+approval still come from their existing sources. This preflight validates the
+probe Pod's view; workload readiness after deployment verifies the actual
+gateway path.

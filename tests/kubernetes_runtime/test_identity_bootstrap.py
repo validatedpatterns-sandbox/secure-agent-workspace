@@ -33,8 +33,20 @@ class Api:
                            for name in (config["namespace"], config["targetNamespace"])}
         self.values, self.created = {}, []
         self.fail_after = None
+        self.discovery = {
+            "agents.x-k8s.io/v1beta1": [
+                {"name": "sandboxes", "kind": "Sandbox", "namespaced": True}],
+            "policy.networking.k8s.io/v1alpha1": [
+                {"name": "adminnetworkpolicies", "kind": "AdminNetworkPolicy", "namespaced": False}],
+        }
 
     def request(self, method, path, body=None):
+        if path.startswith("/apis/"):
+            assert method == "GET"
+            group = path.removeprefix("/apis/")
+            if group in self.discovery:
+                return {"groupVersion": group, "resources": self.discovery[group]}
+            return None
         parts = path.split("/")
         ns = parts[4]
         assert parts[5] == "configmaps"
@@ -60,6 +72,25 @@ class Api:
 
 def never():
     pytest.fail("existing retained bundle must not regenerate identity")
+
+
+@pytest.mark.parametrize("group", ["agents.x-k8s.io/v1beta1", "policy.networking.k8s.io/v1alpha1"])
+@pytest.mark.parametrize("defect", ["absent", "wrong-kind", "wrong-scope", "subresource-only"])
+def test_live_api_must_match_before_any_identity_is_written(config, group, defect):
+    api = Api(config)
+    if defect == "absent":
+        del api.discovery[group]
+    else:
+        entry = api.discovery[group][0]
+        if defect == "wrong-kind":
+            entry["kind"] = "Other"
+        elif defect == "wrong-scope":
+            entry["namespaced"] = not entry["namespaced"]
+        else:
+            entry["name"] += "/status"
+    with pytest.raises(boot.Failure, match="required Kubernetes API is unavailable"):
+        boot.run(api, config, never)
+    assert not api.created
 
 
 def test_repeat_sync_preserves_identity_without_retained_administrator(config):

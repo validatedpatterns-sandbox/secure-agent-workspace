@@ -110,8 +110,13 @@ skopeo inspect --no-creds docker://ghcr.io/validatedpatterns-sandbox/nemoclaw-cl
 
 Registry tooling verifies TLS. Route-based mirroring and publishing discover the
 ingress CA through the authenticated `oc` session. In-cluster mirror Jobs and the
-golden-image import use the OpenShift service CA for the internal registry. Local
-registry commands also accept `REGISTRY_CA_BUNDLE=/path/to/ca.pem` for private
+golden-image import use the OpenShift service CA for the internal registry.
+
+Local Linux mirroring uses `oc registry login`, which needs a bearer token. On a
+bastion, check `oc whoami --show-token >/dev/null` first. A certificate-based
+kubeconfig can access the Kubernetes API but cannot supply that token. Use the
+documented `oc login` step for the target cluster before `make images-mirror`.
+Local registry commands also accept `REGISTRY_CA_BUNDLE=/path/to/ca.pem` for private
 registries; the bundle supplements system trust. CA lookup or certificate failures
 never enable an insecure retry.
 
@@ -232,6 +237,32 @@ ConfigMap names, as above. Consumers use the captured digests, never a moving ta
 Record the Build names, source SHA and output digests outside the product PR.
 After recording them, remove the two local generated YAML files. Retain the
 published image blobs while any site references their digests.
+
+## Prepare the data-science notebook for container workspaces
+
+The shipped notebook image sets `WORKDIR /sandbox` with mode `0770` and
+ownership `1000:0`. Container workspaces run with the OpenShift namespace UID
+and group. They need search permission on this directory to start the sandbox
+entrypoint. Prepare the image once in the same build namespace as the runtime:
+
+```sh
+make container-notebook-image BUILD_NS="$BUILD_NS" BUILD_ARCH=amd64 > notebook-site.yaml
+cat notebook-site.yaml
+```
+
+Use `arm64` for ARM workers. The target reads the pinned notebook image from
+the BOM, builds on the selected architecture, adds only directory traversal
+(`chmod o+x /sandbox`), and restores the source image's declared non-root
+`USER`. It prints the digest from the completed Build and the ImageStream
+name used for scoped pull access. Each output supplies one architecture.
+
+Merge the emitted `profileImageOverrides.data-science.notebook` and
+`imagePull` fields into each container owner's site before rendering or
+approving the BOM. Preserve other named sandbox overrides and ImageStream
+entries. Use the same notebook digest in the image-cache values if enabled,
+and grant its service account pull access to the emitted ImageStream as
+described in the installation guide. A changed notebook digest requires a
+new profile approval. VM installations retain their regular image selection.
 
 ## Releasing a credential proxy change
 

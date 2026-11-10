@@ -109,6 +109,7 @@ portal:
   image: registry.access.redhat.com/ubi9/python-311:latest
   # Cold agent images on nested clusters may exceed the default. The portal
   # still requires every expected UI route; this never marks a timeout Ready.
+  # Container registration also uses this budget (at least 10 minutes) to wait for its reviewed intent.
   # Applies to newly created PipelineRuns, not a run already in progress.
   sandboxReadyTimeoutMinutes: 30
   # A portal workspace is deleted with its VM when it is removed.

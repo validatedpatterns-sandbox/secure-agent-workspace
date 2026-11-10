@@ -1,0 +1,155 @@
+---
+# Finish OLM bootstrap before the Patterns Operator decides whether this is
+# a new cluster or an upgrade using an existing openshift-gitops instance.
+- name: Prepare Red Hat OpenShift GitOps for a fresh pattern installation
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    include_crds: false
+    gitops_package: openshift-gitops-operator
+    gitops_namespace: openshift-gitops-operator
+  tasks:
+    - name: Discover existing GitOps subscriptions
+      kubernetes.core.k8s_info:
+        api_version: operators.coreos.com/v1alpha1
+        kind: Subscription
+      register: subscriptions
+
+    - name: Leave existing operator installations under their current management
+      ansible.builtin.meta: end_play
+      when: >-
+        subscriptions.resources | selectattr('spec.name', 'equalto', gitops_package)
+        | rejectattr('metadata.labels.saw_gitops_bootstrap', 'defined') | list | length > 0
+
+    - name: Resolve the same operator catalog and channel as the framework
+      block:
+        - ansible.builtin.include_role:
+            name: rhvp.cluster_utils.pattern_settings
+        - ansible.builtin.include_role:
+            name: rhvp.cluster_utils.install_settings
+        - ansible.builtin.include_role:
+            name: rhvp.cluster_utils.pattern_install_template
+        - name: Read the Patterns Operator settings from the rendered installation chart
+          ansible.builtin.set_fact:
+            operator_settings: >-
+              {{ pattern_install_rendered_yaml | from_yaml_all | select('mapping')
+                 | selectattr('kind', 'equalto', 'ConfigMap')
+                 | selectattr('metadata.name', 'equalto', 'patterns-operator-config') | first }}
+
+    - name: Respect an externally managed Patterns Operator or legacy installation namespace
+      ansible.builtin.meta: end_play
+      when: >-
+        operator_settings.metadata.namespace == 'openshift-operators' or
+        not (pattern_install_rendered_yaml | from_yaml_all | select('mapping')
+             | selectattr('kind', 'equalto', 'Subscription')
+             | selectattr('metadata.name', 'equalto', 'patterns-operator') | list)
+
+    - name: Validate the installation target before provisioning the operator
+      ansible.builtin.include_role:
+        name: rhvp.cluster_utils.validate_ocp_version
+
+    - name: Check the proposed operator namespace
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ gitops_namespace }}"
+      register: target_namespace
+
+    - name: Create the operator namespace on a fresh cluster
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ gitops_namespace }}"
+      when: not target_namespace.resources
+
+    - name: Discover the installed OperatorGroup
+      kubernetes.core.k8s_info:
+        api_version: operators.coreos.com/v1
+        kind: OperatorGroup
+        namespace: "{{ gitops_namespace }}"
+      register: operator_groups
+
+    - name: Require a single all-namespaces OperatorGroup when one already exists
+      ansible.builtin.assert:
+        that:
+          - operator_groups.resources | length <= 1
+          - not operator_groups.resources or not operator_groups.resources[0].spec.targetNamespaces | default([])
+          - not operator_groups.resources or not operator_groups.resources[0].spec.selector | default({})
+
+    - name: Install the standard all-namespaces OperatorGroup
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: operators.coreos.com/v1
+          kind: OperatorGroup
+          metadata:
+            namespace: "{{ gitops_namespace }}"
+            name: "{{ gitops_package }}"
+          spec: {}
+      when: not operator_groups.resources
+
+    - name: Subscribe to the stock operator without starting the default Argo CD instance
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: operators.coreos.com/v1alpha1
+          kind: Subscription
+          metadata:
+            namespace: "{{ gitops_namespace }}"
+            name: "{{ gitops_package }}"
+            labels:
+              saw_gitops_bootstrap: "true"
+          spec:
+            name: "{{ gitops_package }}"
+            channel: "{{ operator_settings.data['gitops.channel'] }}"
+            source: "{{ operator_settings.data['gitops.catalogSource'] }}"
+            sourceNamespace: openshift-marketplace
+            installPlanApproval: Automatic
+            config:
+              env:
+                - {name: ARGOCD_CLUSTER_CONFIG_NAMESPACES, value: "*"}
+                - {name: DISABLE_DEFAULT_ARGOCD_INSTANCE, value: "true"}
+      when: not subscriptions.resources | selectattr('spec.name', 'equalto', gitops_package) | list
+
+    - name: Wait for OLM to finish installing GitOps
+      kubernetes.core.k8s_info:
+        api_version: operators.coreos.com/v1alpha1
+        kind: Subscription
+        namespace: "{{ gitops_namespace }}"
+        name: "{{ gitops_package }}"
+      register: subscription
+      until: >-
+        subscription.resources | length > 0 and subscription.resources[0].status.installedCSV | default('') | length > 0
+        and subscription.resources[0].status.state | default('') == 'AtLatestKnown'
+      retries: 90
+      delay: 10
+
+    - name: Wait for the operator rollout that disables the default instance
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ gitops_namespace }}"
+        name: openshift-gitops-operator-controller-manager
+      register: rollout
+      until: >-
+        rollout.resources | length > 0 and rollout.resources[0].status.observedGeneration | default(0) == rollout.resources[0].metadata.generation
+        and rollout.resources[0].status.updatedReplicas | default(0) == rollout.resources[0].spec.replicas
+        and rollout.resources[0].status.availableReplicas | default(0) == rollout.resources[0].spec.replicas
+        and rollout.resources[0].status.replicas | default(0) == rollout.resources[0].spec.replicas
+        and rollout.resources[0].spec.replicas > 0
+        and (rollout.resources[0].spec.template.spec.containers | selectattr('name', 'equalto', 'manager') | first).env
+        | selectattr('name', 'equalto', 'DISABLE_DEFAULT_ARGOCD_INSTANCE') | selectattr('value', 'equalto', 'true') | list | length == 1
+      retries: 90
+      delay: 10
+
+    - name: Wait until the operator removes any transient default Argo CD instance
+      kubernetes.core.k8s_info:
+        api_version: argoproj.io/v1beta1
+        kind: ArgoCD
+        namespace: openshift-gitops
+        name: openshift-gitops
+      register: default_instance
+      until: default_instance.api_found and not default_instance.resources
+      retries: 90
+      delay: 10

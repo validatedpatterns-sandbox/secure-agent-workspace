@@ -248,6 +248,14 @@ provisioner, with the single parameter `request=saw-req-*`. A request is
 deleted when it has been handled, refused when older than an hour, and
 removed by the CronJob `saw-portal-cleanup` if no pipeline ever handled it.
 
+The pipeline and status service fetch RHDH signing keys from its configured
+HTTPS route using the mounted CA bundle. Redirects are rejected. The status
+service caches each of RHDH's two JWKS documents for five minutes.
+On an unfamiliar signing key ID it refetches the corresponding configured
+endpoint, with at most one additional fetch per endpoint every five seconds.
+A matching, valid ES256 signature is still required. An unpublished key or a
+bad signature receives HTTP 401.
+
 A workspace is refused when its namespace exists without the portal label
 (the user is in `overrides/saw-users.yaml`), when one of the Argo CD
 applications it needs belongs to someone else, or when the user name ends in

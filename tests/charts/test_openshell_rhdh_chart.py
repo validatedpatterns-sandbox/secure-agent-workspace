@@ -200,7 +200,7 @@ def test_the_pipeline_task_runs_portal_py(docs):
     assert "VERIFY_TOKEN" not in env
     values = yaml.safe_load((CHART / "values.yaml").read_text())
     assert "verifyToken" not in values["portal"]
-    assert env["RHDH_INTERNAL_URL"] == "http://backstage-developer-hub.rhdh.svc:80"
+    assert env["RHDH_INTERNAL_URL"] == "https://backstage-developer-hub-rhdh.apps.example.com"
     assert env["ARGO_NAMESPACE"] == "vp-gitops"
     assert env["RESULT_PATH"] == "$(results.user.path)"
     run = next(e for e in step["env"] if e["name"] == "PIPELINE_RUN")
@@ -421,7 +421,7 @@ def test_the_generator_may_only_read_progress(docs):
                      ("saw-portal", "", "pods/log", "get"), ("vp-gitops", "argoproj.io", "applications", "get")}
     env = {e["name"]: e["value"] for e in one(docs, "Deployment", "saw-workspaces-generator")
            ["spec"]["template"]["spec"]["containers"][0]["env"]}
-    assert env["ARGO_NAMESPACE"] == "vp-gitops" and env["RHDH_INTERNAL_URL"].startswith("http")
+    assert env["ARGO_NAMESPACE"] == "vp-gitops" and env["RHDH_INTERNAL_URL"] == env["RHDH_BASE_URL"]
 
 
 @pytest.mark.ci_external
@@ -783,13 +783,53 @@ def test_rhdh_identity_bootstrap_can_repair_unhealthy_consumers(docs):
     # A 401 makes the AppSet unhealthy; PostSync would prevent the bootstrap
     # that repairs it from running. PreSync would miss first-install inputs.
     assert job["metadata"]["annotations"]["argocd.argoproj.io/hook"] == "Sync"
-    assert job["metadata"]["annotations"].get("argocd.argoproj.io/sync-wave", "0") == "0"
-    for resource in (cm, one(docs, "ServiceAccount", "saw-rhdh-keycloak"),
-                     one(docs, "ExternalSecret", "rhdh-oidc"),
-                     one(docs, "Role", "saw-rhdh-keycloak-admin"),
-                     one(docs, "RoleBinding", "saw-rhdh-keycloak-admin")):
-        annotations = resource["metadata"].get("annotations", {})
-        assert not annotations.get("argocd.argoproj.io/hook")
-        assert annotations.get("argocd.argoproj.io/sync-wave", "0") == "0"
+    def wave(resource):
+        return int(resource["metadata"].get("annotations", {}).get("argocd.argoproj.io/sync-wave", "0"))
+
+    secret = one(docs, "ExternalSecret", "rhdh-oidc")
+    dependencies = [cm, one(docs, "ServiceAccount", "saw-rhdh-keycloak"), secret,
+                    one(docs, "Role", "saw-rhdh-keycloak-admin"),
+                    one(docs, "RoleBinding", "saw-rhdh-keycloak-admin"),
+                    one(docs, "Role", "saw-portal-ingress-ca"),
+                    one(docs, "RoleBinding", "saw-portal-ingress-ca")]
+    dependencies.extend(r for r in docs if r["kind"] == "ConfigMap"
+                        and r["metadata"]["name"] in ("saw-ca-sources", "saw-trusted-ca")
+                        and r["metadata"]["namespace"] == job["metadata"]["namespace"])
+    for resource in dependencies:
+        assert not resource["metadata"].get("annotations", {}).get("argocd.argoproj.io/hook")
+        assert wave(resource) < wave(job)
+    consumers = [r for r in docs if r["kind"] in ("Backstage", "ApplicationSet")]
+    assert {r["kind"] for r in consumers} == {"Backstage", "ApplicationSet"}
+    assert all(wave(job) < wave(r) for r in consumers)
+    client = job["spec"]["template"]["spec"]["containers"][0]
+    ref = next(e["valueFrom"]["secretKeyRef"] for e in client["env"] if e["name"] == "CLIENT_SECRET")
+    assert ref == {"name": secret["spec"]["target"]["name"], "key": "AUTH_OIDC_CLIENT_SECRET"}
+    assert 0 < job["spec"]["activeDeadlineSeconds"] <= 900
     assert any(v.get("configMap", {}).get("name") == cm["metadata"]["name"]
                for v in job["spec"]["template"]["spec"]["volumes"])
+
+
+@pytest.mark.parametrize("modes,minutes,task_minutes,pipeline", [
+    ("{vm}", 60, 12, "1h30m"), ("{vm,container}", 1, 12, "1h30m0s"),
+    ("{vm,container}", 30, 32, "1h40m0s"), ("{vm,container}", 60, 62, "2h40m0s"),
+])
+def test_container_enrollment_budget_reaches_task_form_and_pipeline(modes, minutes, task_minutes, pipeline):
+    docs = render("--set", f"portal.deploymentModes={modes}", "--set", f"portal.sandboxReadyTimeoutMinutes={minutes}")
+    tasks = one(docs, "Pipeline", "saw-workspace-create")["spec"]["tasks"]
+    task = next(t for t in tasks if t["name"] == "vm")
+    assert task["timeout"] == (f"{task_minutes}m0s" if task_minutes < 60 else "1h2m0s")
+    assert next(p["value"] for p in task["params"] if p["name"] == "timeout") == "600"
+    cm = one(docs, "ConfigMap", "saw-rhdh-templates")
+    for name in ("create-workspace.yaml", "create-workspace-for-user.yaml"):
+        if name not in cm["data"]:
+            continue
+        steps = {s["id"]: s for s in yaml.safe_load(cm["data"][name])["spec"]["steps"]}
+        assert len(steps["task-vm"]["each"]) == 3 * task_minutes
+        assert steps["run"]["input"]["body"]["spec"]["timeouts"]["pipeline"] == pipeline
+
+
+def test_portal_allows_cold_plugin_and_backend_startup(docs):
+    spec = one(docs, "Backstage", "developer-hub")["spec"]["deployment"]["patch"]["spec"]
+    assert spec["progressDeadlineSeconds"] == 1800
+    backend = next(c for c in spec["template"]["spec"]["containers"] if c["name"] == "backstage-backend")
+    assert backend["startupProbe"] == {"failureThreshold": 15}

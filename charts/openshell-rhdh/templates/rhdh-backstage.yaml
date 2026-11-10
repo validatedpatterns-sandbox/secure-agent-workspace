@@ -55,6 +55,8 @@ spec:
   deployment:
     patch:
       spec:
+        # Cold plugin installation can exceed Kubernetes' default ten-minute rollout deadline.
+        progressDeadlineSeconds: 1800
         template:
           metadata:
             annotations:
@@ -90,6 +92,9 @@ spec:
                   seccompProfile: { type: RuntimeDefault }
             containers:
               - name: backstage-backend
+                # Preserve the operator's health endpoint and allow five minutes for backend initialization.
+                startupProbe:
+                  failureThreshold: 15
                 volumeMounts:
                   - name: saw-ca
                     mountPath: /opt/saw-ca

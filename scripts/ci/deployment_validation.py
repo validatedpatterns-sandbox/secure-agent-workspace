@@ -100,6 +100,9 @@ def chart_args(chart: Path, mode="proxy") -> list[str]:
                 "openshell-agents/nemoclaw-discovery-runtime@sha256:" + "0" * 64]
     if name == "openshell-gateway-image":
         return ["--set", "goldenImage.enabled=false"]
+    if name == "saw-image-cache":
+        image = yaml.safe_load((chart / "values.yaml").read_text())["holderImage"]
+        return ["--set", "enabled=true", "--set-string", f"images[0]={image}"]
     if name == "agent-sandbox":
         return ["--namespace", "agent-sandbox-system", "--set", "enabled=true"]
     if name == "saw-kubernetes-controller":
@@ -191,8 +194,9 @@ def validate_schemas(result: Validation, output_dir: Path) -> None:
     if not rendered:
         result.error("charts", "schema", "no rendered resources to validate")
         return
+    # OpenShift 4.22, the minimum supported release, uses Kubernetes 1.35.
     command = ["kubeconform", "-strict", "-summary", "-output", "json",
-               "-kubernetes-version", "1.30.0"]
+               "-kubernetes-version", "1.35.0"]
     for location in SCHEMA_LOCATIONS:
         command.extend(("-schema-location", location))
     run = subprocess.run([*command, *map(str, rendered)], cwd=ROOT, text=True,

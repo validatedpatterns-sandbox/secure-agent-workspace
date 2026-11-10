@@ -16,7 +16,10 @@ spec:
       USER 0
       RUN test -d /sandbox && chmod o+x /sandbox
       USER {{ $i.imageUser }}
+  {{- with $.Values.buildArchitecture }}
+  nodeSelector: {kubernetes.io/arch: {{ . | quote }}}
+  {{- end }}
   strategy: {type: Docker, dockerStrategy: {}}
   output: {to: {kind: ImageStreamTag, name: "{{ $i.name }}:traverse"}}
-  triggers: [{type: ConfigChange}]
+  triggers: {{ ternary "[{type: ConfigChange}]" "[]" $.Values.configChangeTrigger }}
 {{- end }}

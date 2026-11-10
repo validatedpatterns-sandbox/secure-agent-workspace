@@ -146,6 +146,11 @@ check-oidc-ca: ## Check if the OIDC issuer needs a CA bundle
 ssh-key-generate: ## Generate or recover the SSH public key without replacing the private key
 	@$(SCRIPTS_DIR)/generate-keys.sh
 
+# Build once per architecture before enabling the container data-science profile.
+.PHONY: container-notebook-image
+container-notebook-image: ## Build the notebook image for OpenShift namespace UIDs and print the public site values
+	@$(SCRIPTS_DIR)/container-notebook-image.sh
+
 # --- NemoClaw images ---
 
 sandbox-build: .check-image-repo ## Build audited discovery artifacts, then the sandbox (IMAGE_REPO opts into pushing)
@@ -303,9 +308,10 @@ clean-stale-operators: ## Inspect stale CNV CRDs after operator cleanup
 # CSV/InstallPlan) is intentionally deferred to the uninstall target below,
 # after the Ansible framework removes ArgoCD apps — otherwise ArgoCD
 # immediately recreates the Subscription we just deleted.
-pre-uninstall: ## Delete pattern VMs before framework uninstall
+pre-uninstall: ## Drain GitOps writers, then delete owned VMs before framework uninstall
 	@$(SCRIPTS_DIR)/pattern-cnv-mark.sh
 	@$(SCRIPTS_DIR)/pattern-pipelines-mark.sh
+	@python3 $(SCRIPTS_DIR)/pattern-drain-applications.py
 	@$(SCRIPTS_DIR)/pattern-pre-uninstall.sh
 
 # Generate SSH keys before install. No deletions — safe to run repeatedly.
@@ -415,6 +421,14 @@ keycloak-delete: ## Uninstall Keycloak and its database
 # --- Sandbox ---
 
 ##@ Sandbox Operations
+
+.PHONY: container-topology check-container-topology
+container-topology: ## Print the site network overlay discovered from OpenShift and a trusted Pod
+	@$(or $(PYTHON),uv run --locked python) $(SCRIPTS_DIR)/container_topology.py
+
+check-container-topology: ## Compare the reviewed site network overlay with live OpenShift observations
+	@test -n "$${SAW_TOPOLOGY_OVERLAY}" || { echo "Set SAW_TOPOLOGY_OVERLAY" >&2; exit 1; }
+	@$(or $(PYTHON),uv run --locked python) $(SCRIPTS_DIR)/container_topology.py --check "$${SAW_TOPOLOGY_OVERLAY}"
 
 saw-create: .check-saw-name .check-deployment-mode ## Provision one SAW using DEPLOYMENT_MODE=vm or container
 	@if [ "$(DEPLOYMENT_MODE)" = container ]; then \

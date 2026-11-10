@@ -215,6 +215,11 @@ def verify_jwt(token, jwks, what, now=None, leeway=0):
     header, payload, signed, signature = decode_jwt(token)
     if header.get("alg") != "ES256":
         raise PortalError(f"{what}: unsupported algorithm {header.get('alg')!r} (expected ES256)")
+    kid = header.get("kid")
+    if not isinstance(kid, str) or not kid:
+        raise PortalError(f"{what}: missing signing key ID")
+    if callable(jwks):
+        jwks = jwks(kid)
     keys = [k for k in jwks.get("keys", []) if k.get("kid") == header.get("kid")
             and k.get("kty") == "EC" and k.get("crv") == "P-256"]
     if not keys:
@@ -309,8 +314,31 @@ def kube():
     return Http(f"https://{host}:{port}", token, cafile=f"{SA_DIR}/ca.crt")
 
 
-def fetch_json(url, insecure=False):
-    return Http(url, insecure=insecure).call("GET", "")
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args):
+        return None
+
+
+def fetch_json(url):
+    """Read RHDH signing keys over verified TLS without following redirects."""
+    endpoint = urllib.parse.urlsplit(url)
+    if (endpoint.scheme != "https" or not endpoint.hostname or endpoint.username is not None
+            or endpoint.password is not None or endpoint.query or endpoint.fragment):
+        raise PortalError("RHDH signing keys require a configured HTTPS endpoint")
+    opener = urllib.request.build_opener(NoRedirect(), urllib.request.HTTPSHandler(
+        context=ssl.create_default_context()))
+    try:
+        with opener.open(urllib.request.Request(url, headers={"Accept": "application/json"}), timeout=15) as response:
+            raw = response.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise PortalError("RHDH signing key response is too large")
+        data = json.loads(raw)
+    except (OSError, ValueError) as exc:
+        raise PortalError("could not fetch RHDH signing keys from the configured HTTPS endpoint") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("keys"), list) or not all(
+            isinstance(key, dict) for key in data["keys"]):
+        raise PortalError("invalid RHDH signing key response")
+    return data
 
 
 class Vault:
@@ -512,13 +540,15 @@ def token_user(token, jwks=None, leeway=0):
     published keys. `jwks(path)` fetches a JWKS (the generator caches)."""
     if jwks is None:
         rhdh = env("RHDH_INTERNAL_URL").rstrip("/")
-        insecure = os.environ.get("RHDH_SKIP_VERIFY") == "true"
-        jwks = lambda path: fetch_json(rhdh + path, insecure=insecure)  # noqa: E731
-    scaffolder_jwks = None
-    if decode_jwt(token)[0].get("typ") == PLUGIN_TYP:
-        scaffolder_jwks = jwks("/api/scaffolder/.backstage/auth/v1/jwks.json")
-    return check_user(verify_backstage_token(token, jwks("/api/auth/.well-known/jwks.json"),
-                                             scaffolder_jwks, leeway=leeway))
+        jwks = lambda path: fetch_json(rhdh + path)  # noqa: E731
+    def keys_for(path):
+        if isinstance(jwks, JwksCache):
+            return lambda kid: jwks(path, kid)
+        return lambda kid: jwks(path)
+
+    return check_user(verify_backstage_token(token, keys_for("/api/auth/.well-known/jwks.json"),
+                                             keys_for("/api/scaffolder/.backstage/auth/v1/jwks.json"),
+                                             leeway=leeway))
 
 
 def requester(data):
@@ -1067,9 +1097,6 @@ def ping_url(url, timeout=3):
 
 
 def owner_route_available(url, timeout=3):
-    class NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, *args):
-            return None
     issuer = os.environ.get("KEYCLOAK_URL", "").rstrip("/")
     if not issuer:
         return False
@@ -1286,20 +1313,31 @@ def wait_for(check, done, seconds, sleep=time.sleep, clock=time.monotonic):
 
 
 class JwksCache:
-    """RHDH's JWKS documents, refetched every few minutes."""
+    """Cache RHDH keys, with bounded on-demand refetches for rotating key IDs."""
 
     def __init__(self, ttl=300):
         self.ttl, self.docs = ttl, {}
+        self.next_miss_refresh = {}
+        self.lock = threading.Lock()
 
-    def __call__(self, path):
-        now = time.time()
-        hit = self.docs.get(path)
-        if hit and now - hit[0] < self.ttl:
-            return hit[1]
-        rhdh = env("RHDH_INTERNAL_URL").rstrip("/")
-        doc = fetch_json(rhdh + path, insecure=os.environ.get("RHDH_SKIP_VERIFY") == "true")
-        self.docs[path] = (now, doc)
-        return doc
+    def __call__(self, path, kid=None):
+        # The verifier chooses one of two fixed paths. No token field selects
+        # the issuer or URL. Coalesce misses per issuer, not per untrusted kid.
+        with self.lock:
+            now = time.monotonic()
+            hit = self.docs.get(path)
+            if hit and now - hit[0] < self.ttl:
+                if kid is None or any(k.get("kid") == kid for k in hit[1].get("keys", [])):
+                    return hit[1]
+                if now < self.next_miss_refresh.get(path, 0):
+                    return hit[1]
+                self.next_miss_refresh[path] = now + 5
+            rhdh = env("RHDH_INTERNAL_URL").rstrip("/")
+            doc = fetch_json(rhdh + path)
+            self.docs[path] = (time.monotonic(), doc)
+            if kid is not None and not any(k.get("kid") == kid for k in doc.get("keys", [])):
+                self.next_miss_refresh[path] = time.monotonic() + 5
+            return doc
 
 
 PORTAL_NS_LABEL = "saw.redhat.com/portal"
@@ -1609,14 +1647,18 @@ def wait_stage(stage, user, timeout, sleep=time.sleep, clock=time.monotonic, pin
     domain = os.environ.get("CLUSTER_DOMAIN", "")
     if stage != "gone" and stage not in STAGE_IDS:
         raise PortalError(f"unknown stage {stage}; one of {', '.join(STAGE_IDS)}, gone")
-    deadline, last = clock() + timeout, None
+    started, last = clock(), None
     while True:
+        budget = timeout
         if stage == "gone":
             marker = k8s.call("GET", f"/api/v1/namespaces/{ns}/configmaps/saw-ws-{user}", ok404=True)
             done, detail = removal_status(k8s, user, argo_ns, read_entry(marker))
             failed = False
         else:
             st = workspace_status(k8s, user, catalog, ns, argo_ns, domain, ping)
+            if stage == "vm" and st.get("deploymentMode") == "container":
+                # The initial intent can only be published after the new registration is reviewed.
+                budget = max(timeout, int(os.environ.get("SAW_CONTAINER_ENROLLMENT_SECONDS", timeout)))
             current = next((x for x in st["steps"] if x["id"] == stage), {})
             detail = current.get("detail") or st["message"]
             done = current.get("state") == "done"
@@ -1631,8 +1673,8 @@ def wait_stage(stage, user, timeout, sleep=time.sleep, clock=time.monotonic, pin
             return
         if failed:
             raise PortalError(detail)
-        if clock() >= deadline:
-            raise PortalError(f"not done after {timeout // 60} minutes: {detail}")
+        if clock() >= started + budget:
+            raise PortalError(f"not done after {budget // 60} minutes: {detail}")
         sleep(POLL_SECONDS * 2)
 
 

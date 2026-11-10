@@ -104,6 +104,29 @@ def test_multiple_catalog_sandboxes_receive_distinct_storage_and_ui_namespaces()
         assert identity["workspace"]+"/"+identity["sandbox"] in targets
 
 
+@pytest.mark.parametrize("older_component", [None, "identity", "gateway"])
+def test_gateway_api_versions_require_the_same_reviewed_identity_revision(older_component):
+    site = json.loads(json.dumps(SITE))
+    revision = "a" * 40
+    site["stack"]["identity"]["revision"] = revision
+    site["stack"]["gateway"]["revision"] = revision
+    if older_component:
+        site["stack"][older_component]["revision"] = "b" * 40
+    values = dict(site=site, owner=U, registration=REG, installationID=user()["installationID"],
+                  ownerSubject=SITE["subject"], vaultPrefix=user()["vaultPrefix"],
+                  **{"global": {**GLOBAL, "targetRevision": revision}})
+    apps = [r for r in render("saw-portal-container", U, "saw-" + U, values)
+            if r["kind"] == "Application"]
+    gateway, = [app for app in apps if app["spec"]["source"]["path"] == "charts/openshell-saw-kubernetes"]
+    expected = ["agents.x-k8s.io/v1beta1/Sandbox", "policy.networking.k8s.io/v1alpha1/AdminNetworkPolicy"]
+    for app in apps:
+        helm = app["spec"]["source"]["helm"]
+        if app is gateway and older_component is None:
+            assert helm["apiVersions"] == expected
+        else:
+            assert "apiVersions" not in helm
+
+
 def test_model_gate_claim_is_shared_only_for_the_publisher_and_agent():
     audit = SITE["stack"]["audit"]["values"]
     # Use the same per-registration Helm values projection as the nested Applications.
@@ -193,6 +216,13 @@ def test_static_projection_owns_no_workload_and_generates_same_composition():
     assert appset["spec"]["template"]["spec"]["source"]["targetRevision"] == "{{ .revision }}"
     assert appset["spec"]["template"]["spec"]["source"]["helm"]["values"] == "{{ .workspaceValues }}"
     configuration, = [o for o in docs if "workspaces.json" in o.get("data", {})]
+    pod = deployment["spec"]["template"]["spec"]
+    config_volume, = [v for v in pod["volumes"] if v["name"] == "configuration"]
+    assert configuration["kind"] == "ConfigMap"
+    assert configuration["metadata"]["name"] == config_volume["configMap"]["name"]
+    account, = [o for o in docs if o["kind"] == "ServiceAccount"
+                and o["metadata"]["name"] == pod["serviceAccountName"]]
+    assert "data" not in account
     cfg = json.loads(configuration["data"]["workspaces.json"])
     observer = cfg["containerSites"][U]["observer"]
     assert observer == {"namespace": "saw-installation", "serviceAccount": deployment["metadata"]["name"]}
@@ -267,3 +297,11 @@ def test_runtime_pull_grants_follow_the_configured_image(stream):
               and obj["metadata"]["name"] in {"enroll-" + REG + "-pull", "portal-gate-" + REG}]
     assert len(grants) == 2
     assert all(rule["resourceNames"] == [stream] and rule["verbs"] == ["get"] for rule in grants)
+
+def test_removing_last_static_owner_keeps_only_empty_registration_config():
+    docs = render("saw-users", "static", "saw-workspaces", {
+        "global": GLOBAL, "users": [], "projection": {"enabled": True}})
+    assert len(docs) == 1
+    assert docs[0]["kind"] == "ConfigMap"
+    assert docs[0]["metadata"]["name"].endswith("-configuration")
+    assert json.loads(docs[0]["data"]["workspaces.json"]) == {"users": []}

@@ -168,9 +168,15 @@ def test_wire_deadline_after_create_is_observed_after_reconciler_restart(source,
     backend.fail_after_create = True
     status = reconciler.reconcile(plan, generation=1)
     assert status["phase"] == "Retry" and status["reason"] == "DEADLINE_EXCEEDED"
+    original_id = backend.sandboxes[("default", "toolbox")]["metadata"]["id"]
     restarted = Reconciler(adapter, tmp_path / "state", lambda _: None)
     assert restarted.reconcile(plan, generation=1)["phase"] == "Pending"
-    assert sum(name == "CreateSandbox" for name, *_ in channel.calls) == 1
+    creates = [body for name, body, *_ in channel.calls if name == "CreateSandbox"]
+    assert len(creates) == 2 and creates[0]["request_id"] and creates[0] == creates[1]
+    assert list(backend.sandbox_receipts) == [creates[0]["request_id"]]
+    assert list(backend.sandboxes) == [("default", "toolbox")]
+    assert backend.sandboxes[("default", "toolbox")]["metadata"]["id"] == original_id
+    assert restarted.store.load()["objectIDs"]["sandbox/default/toolbox"] == original_id
 
 
 @pytest.mark.parametrize("extra", [

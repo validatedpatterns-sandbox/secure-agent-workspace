@@ -128,6 +128,13 @@ spec:
     targetRevision: {{ $item.revision | quote }}
     path: charts/{{ index $c 0 }}
     helm:
+      {{- if and (eq $key "gateway") (eq $stack.identity.revision $g.targetRevision) (eq $item.revision $g.targetRevision) }}
+      # The identity bootstrap independently checks both discovery endpoints
+      # against the destination API server before issuing gateway credentials.
+      apiVersions:
+        - agents.x-k8s.io/v1beta1/Sandbox
+        - policy.networking.k8s.io/v1alpha1/AdminNetworkPolicy
+      {{- end }}
       releaseName: {{ $release }}
       valuesObject: {{ $values }}
   syncPolicy:

@@ -134,7 +134,7 @@ def test_profile_source_cannot_redirect_to_another_file(source, tmp_path):
     {"type": "openclaw"}, {"type": "nemoclaw"}, {"harnessRef": {"name": "harness"}},
     {"env": {"TOKEN": {"secret": "inference"}}}, {"driver_config": {"hostPath": "/"}},
     {"serviceAccountName": "admin"}, {"ui": {"route": True}}, {"inference": {"providerRef": "nvidia"}},
-    {"image": "registry.example/sandbox:latest"}, {"enabled": "false"},
+    {"image": "registry.example/sandbox:latest"}, {"enabled": "false"}, {"gpu": {"enabled": True, "count": 1}},
 ])
 def test_unported_or_privileged_profile_fails_before_rpc(source, extra):
     sandbox(source, lambda sb: sb.update(extra))

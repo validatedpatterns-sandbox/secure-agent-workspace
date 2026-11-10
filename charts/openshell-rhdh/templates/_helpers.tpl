@@ -23,11 +23,6 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- printf "https://%s/realms/%s" (include "openshell-rhdh.keycloakHost" .) .Values.keycloak.realm -}}
 {{- end -}}
 
-{{/* The in-cluster RHDH service the pipeline fetches the JWKS from. */}}
-{{- define "openshell-rhdh.internalUrl" -}}
-{{- printf "http://backstage-%s.%s.svc:80" .Values.rhdh.name .Values.rhdh.namespace -}}
-{{- end -}}
-
 {{- /* The init container that writes the CA bundle (files/ca-bundle.py)
 to the saw-ca volume, and the volumes it needs; see tls in values.yaml.
 Each pod mounts saw-ca at /opt/saw-ca and reads /opt/saw-ca/ca-bundle.crt. */ -}}

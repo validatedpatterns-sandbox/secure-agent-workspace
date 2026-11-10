@@ -9,7 +9,7 @@
 {{- end }}
 {{- range $part := splitList "\n---" $manifest }}
 {{- $object := fromYaml $part }}
-{{- if $object.kind }}
+{{- if and $object.kind (ne $object.kind "Namespace") }}
 {{- $meta := $object.metadata }}
 {{- $labels := default dict $meta.labels }}
 {{- $_ := set $labels "app.kubernetes.io/name" "agent-sandbox" }}
@@ -17,15 +17,13 @@
 {{- $_ := set $meta "labels" $labels }}
 {{- $annotations := default dict $meta.annotations }}
 {{- $wave := "-1" }}
-{{- if eq $object.kind "Namespace" }}
-{{- $wave = "-3" }}
-{{- else if eq $object.kind "CustomResourceDefinition" }}
+{{- if eq $object.kind "CustomResourceDefinition" }}
 {{- $wave = "-2" }}
 {{- else if eq $object.kind "Deployment" }}
 {{- $wave = "0" }}
 {{- end }}
 {{- $_ := set $annotations "argocd.argoproj.io/sync-wave" $wave }}
-{{- if or (eq $object.kind "Namespace") (eq $object.kind "CustomResourceDefinition") }}
+{{- if eq $object.kind "CustomResourceDefinition" }}
 {{- $_ := set $annotations "helm.sh/resource-policy" "keep" }}
 {{- $_ := set $annotations "argocd.argoproj.io/sync-options" "Prune=false,Delete=false" }}
 {{- end }}

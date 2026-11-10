@@ -4540,7 +4540,9 @@ class ProfileApplier:
                       # directory metadata; then overwrite writable files in place
                       # (their parent directory may belong to the image's root).
                       "readonly=$(mktemp) || exit 1; trap 'rm -f \"$readonly\"' EXIT; "
-                      "find . ! -type d ! -writable -printf '%p\\n%P\\n' > \"$readonly\" || exit 1; "
+                      "find . ! -type d -exec sh -c 'for path do "
+                      "if [ ! -w \"$path\" ]; then printf \"%s\\n\" \"$path\" \"${path#./}\" || exit 1; "
+                      "fi; done' sh {} + > \"$readonly\" || exit 1; "
                       f"tar -xzf {self.PRESERVE_ARCHIVE} --skip-old-files "
                       "--same-permissions --no-same-owner || exit 1; "
                       f"LC_ALL=C tar -tzf {self.PRESERVE_ARCHIVE} | grep -v '/$' | "

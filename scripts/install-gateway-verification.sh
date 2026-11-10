@@ -9,7 +9,10 @@ case "$floor" in ''|off|warn|enforce) ;; *) echo 'Error: invalid signing.floor.'
 [[ "${COSIGN_SHA256:-}" =~ ^[a-fA-F0-9]{64}$ ]] || { echo 'Error: invalid Cosign checksum.' >&2; exit 1; }
 archive="$(mktemp)"
 trap 'rm -f "$archive"' EXIT
-curl -fsSL -o "$archive" "${COSIGN_URL:?COSIGN_URL is required}"
+# A transient release-host 5xx must not discard a completed guest customization.
+# Retry curl's transient errors only, with finite connection/transfer limits.
+curl -fsSL --retry 3 --retry-max-time 300 --connect-timeout 20 --max-time 180 \
+  -o "$archive" "${COSIGN_URL:?COSIGN_URL is required}"
 printf '%s  %s\n' "$COSIGN_SHA256" "$archive" | sha256sum -c -
 install -d -m 0755 "$guest/etc/saw/trust"
 install -D -m 0755 "$files/verify-bundle" "$guest/usr/libexec/saw/verify-bundle"

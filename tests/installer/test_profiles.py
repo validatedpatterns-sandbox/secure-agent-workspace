@@ -28,6 +28,53 @@ def test_shipped_profile_parses(ab, shipped_profile_files):
     assert [s.name for s in default.sandboxes if not s.enabled] == ["cuda-sandbox", "toolbox"]
 
 
+def test_shipped_cuda_sandbox_does_not_request_a_gpu(ab, shipped_profile_files):
+    """cuda-sandbox is enabled in the default profile. gpu.enabled true there
+    would pass --gpu on every deploy and fail verification without a device."""
+    sandboxes = [s for p in ab.parse_profiles(shipped_profile_files)
+                 for ws in p.workspaces for s in ws.sandboxes if s.name == "cuda-sandbox"]
+    assert sandboxes and all(s.gpu_enabled is False and s.gpu_count == 1 for s in sandboxes)
+
+
+def test_sandbox_gpu_field_parses(ab):
+    files = make_files(providers=[NVIDIA], sandboxes=[
+        {"name": "box", "type": "generic", "providers": ["nvidia"],
+         "gpu": {"enabled": True, "count": 2}}])
+    sb = ab.parse_profiles(files)[0].workspaces[0].sandboxes[0]
+    assert sb.gpu_enabled is True and sb.gpu_count == 2
+    ab.validate_profiles(ab.parse_profiles(files))
+
+
+@pytest.mark.parametrize("gpu, message", [
+    (None, "gpu must be a mapping"),
+    (False, "gpu must be a mapping"),
+    ([], "gpu must be a mapping"),
+    ({"enable": True}, "gpu has unknown keys enable"),
+    ({"enabled": "false"}, "gpu.enabled must be true or false"),
+    ({"count": True}, "gpu.count must be an integer"),
+    ({"count": "2"}, "gpu.count must be an integer"),
+    ({"count": 1.5}, "gpu.count must be an integer"),
+    ({"count": None}, "gpu.count must be an integer"),
+])
+def test_sandbox_gpu_rejects_untyped_fields(ab, gpu, message):
+    files = make_files(providers=[NVIDIA], sandboxes=[
+        {"name": "box", "type": "generic", "providers": ["nvidia"], "gpu": gpu}])
+    with pytest.raises(ab.InstallerError, match=message):
+        ab.parse_profiles(files)
+
+
+def test_sandbox_gpu_rejects_bad_values(ab):
+    files = make_files(providers=[NVIDIA], sandboxes=[
+        {"name": "box", "type": "generic", "providers": ["nvidia"], "gpu": "yes"}])
+    with pytest.raises(ab.InstallerError, match="gpu must be a mapping"):
+        ab.parse_profiles(files)
+    files = make_files(providers=[NVIDIA], sandboxes=[
+        {"name": "box", "type": "generic", "providers": ["nvidia"],
+         "gpu": {"enabled": True, "count": 0}}])
+    with pytest.raises(ab.InstallerError, match="gpu.count must be at least 1"):
+        ab.validate_profiles(ab.parse_profiles(files))
+
+
 def test_shipped_profile_is_valid(ab, shipped_profile_files):
     ab.validate_profiles(ab.parse_profiles(shipped_profile_files))
 

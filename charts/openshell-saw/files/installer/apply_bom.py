@@ -720,6 +720,12 @@ class Sandbox:
     inference: dict = field(default_factory=dict)
     inference_values: dict = field(default_factory=dict)
 
+    # Container-level GPU request (`openshell sandbox create --gpu`).
+    # Independent of the gateway VM's vm.gpu.enabled (KubeVirt hostDevices).
+    # Off unless the BOM sandbox sets gpu.enabled. See docs/gpu-passthrough.md.
+    gpu_enabled: bool = False
+    gpu_count: int = 1
+
     @property
     def env_values(self):
         """NAME -> value for the sandbox's env (literal entries; anything
@@ -1462,6 +1468,17 @@ def parse_profiles(files):
                 for s in (_yaml(text, key).get("spec") or {}).get("sandboxes") or []:
                     if "name" not in s:
                         raise InstallerError(f"{key}: every sandbox needs a name")
+                    gpu = s.get("gpu", {})
+                    if not isinstance(gpu, dict):
+                        raise InstallerError(f"{key}: sandbox '{s['name']}' gpu must be a mapping")
+                    unknown = sorted(set(gpu) - {"enabled", "count"})
+                    if unknown:
+                        raise InstallerError(f"{key}: sandbox '{s['name']}' gpu has unknown keys {', '.join(unknown)}")
+                    if not isinstance(gpu.get("enabled", False), bool):
+                        raise InstallerError(f"{key}: sandbox '{s['name']}' gpu.enabled must be true or false")
+                    gpu_count = gpu.get("count", 1)
+                    if isinstance(gpu_count, bool) or not isinstance(gpu_count, int):
+                        raise InstallerError(f"{key}: sandbox '{s['name']}' gpu.count must be an integer")
                     ws.sandboxes.append(Sandbox(
                         name=s["name"], type=s.get("type", "generic"),
                         enabled=s.get("enabled", True),
@@ -1471,7 +1488,10 @@ def parse_profiles(files):
                         model=s.get("model", ""),
                         harness_ref=dict(s.get("harnessRef") or {}),
                         env=s.get("env") if s.get("env") is not None else {},
-                        inference=s.get("inference") if s.get("inference") is not None else {}))
+                        inference=s.get("inference") if s.get("inference") is not None else {},
+                        gpu_enabled=gpu.get("enabled", False),
+                        gpu_count=gpu_count))
+
             profile.workspaces.append(ws)
         profiles.append(profile)
     return profiles
@@ -1716,6 +1736,8 @@ def validate_profiles(profiles, known_profiles=(), governed=False):
                 for name, src in s.env.items():
                     errors += [f"{where}: sandbox '{s.name}' env '{name}' {problem}"
                                for problem in sandbox_env_problems(name, src)]
+            if s.gpu_enabled and s.gpu_count < 1:
+                errors.append(f"{where}: sandbox '{s.name}' gpu.count must be at least 1")
     if errors:
         raise InstallerError("invalid profiles:\n  - " + "\n  - ".join(errors))
 
@@ -3264,6 +3286,10 @@ ENV_LABEL_KEY = "saw.redhat.com/env"
 # was created *with*, which the desired configuration can be rolled back to,
 # so it can never say *which* sandbox this is.
 INSTANCE_LABEL_KEY = "saw.redhat.com/instance"
+# GPU attachment is fixed at creation. A missing label means no GPU, so
+# upgrading existing CPU sandboxes does not recreate them.
+GPU_LABEL_KEY = "saw.redhat.com/gpu"
+
 # OpenShell 0.0.116 and 0.1.2 print the two kinds differently (confirmed on
 # a 0.0.116 guest, and the same in the 0.1.2 CLI): `sandbox get` human text
 # is one `key: value` line per label and `--output json` has
@@ -3279,6 +3305,11 @@ _RESOURCE_NOT_FOUND_RE = re.compile(
     r"|\b(?:sandbox|workspace|provider)\s+(?:'[^']*'\s+)?(?:was\s+)?not\s+found\b",
     re.IGNORECASE)
 PRUNE_ORDER = ("sandbox", "provider", "profile", "workspace")
+
+
+def gpu_label(sb):
+    return str(sb.gpu_count) if sb.gpu_enabled else ""
+
 
 
 def _strip_ansi(text):
@@ -4329,6 +4360,19 @@ class ProfileApplier:
         """A running sandbox must have been created with the current proxy CA."""
         return self.sandbox_label_matches(ws, sb, "saw.redhat.com/egress-wiring", self.wiring_label)
 
+    def sandbox_gpu_ok(self, ws, sb):
+        """The sandbox was created with the GPU request its profile asks for."""
+        got = self.cli("sandbox", "get", sb.name, *ws_args(ws.name), "--output", "json",
+                       check=False, quiet=True)
+        have = _label_from_json(got.out, GPU_LABEL_KEY) if got.ok else None
+        if have is None:
+            got = self.cli("sandbox", "get", sb.name, *ws_args(ws.name),
+                           check=False, quiet=True)
+            if not got.ok:
+                return True  # Never recreate on a read failure.
+            have = _label_from_text(got.out, GPU_LABEL_KEY)
+        return have == gpu_label(sb)
+
     def sandbox_gateway_ca_ok(self, ws, sb):
         return self.sandbox_label_matches(ws, sb, "saw.redhat.com/gateway-ca", self.gateway_ca_label)
 
@@ -4608,6 +4652,9 @@ class ProfileApplier:
                 self.begin_migration(ws, sb, labels, reason="different proxy wiring",
                                      via_volume=bool(self.cfg.get("credentialMigration")))
                 state = "missing"
+            elif not self.sandbox_gpu_ok(ws, sb):
+                self.begin_migration(ws, sb, labels, reason="a different GPU request")
+                state = "missing"
         if state == "running" and not self.sh.dry_run and not self.sandbox_mounts_ok(ws, sb):
             self.begin_migration(ws, sb, labels, reason="stale or missing trusted mounts")
             state = "missing"
@@ -4652,6 +4699,11 @@ class ProfileApplier:
                 log(f"WARN: sandbox '{sb.name}' created without skipped provider '{prov}'")
                 continue
             args += ["--provider", prov]
+        if sb.gpu_enabled:
+            # OpenShell sandbox create --gpu [COUNT] (checked on CLI 0.1.2).
+            # Asks the Podman driver to attach GPU devices via CDI. A no-op
+            # request unless the VM itself received a passed-through GPU.
+            args += ["--label", f"{GPU_LABEL_KEY}={gpu_label(sb)}", "--gpu", str(sb.gpu_count)]
         # Keep the sandbox Ready for the follow-up `sandbox exec` setup.
         args += ["--no-tty", "--detach", "--", "sh", "-c", "sleep infinity"]
         self.cli(*args, timeout=900)
@@ -4718,6 +4770,8 @@ class ProfileApplier:
                 "not to nemoclaw onboard (no such setting)")
         if PROVIDER_CRED_MAP.get(nc_provider):
             env[PROVIDER_CRED_MAP[nc_provider]] = credential
+        # GPU attachment is openshell sandbox create --gpu in create_sandbox().
+        # nemoclaw onboard does not read NEMOCLAW_GPU_* and has no count flag.
         result = self.sh.run(["nemoclaw", "onboard", "--fresh", "--non-interactive",
                               "--name", sb.name, "--agent", sb.agent or "openclaw",
                               "--yes", "--yes-i-accept-third-party-software"],
@@ -5948,6 +6002,15 @@ class ProfileApplier:
                 if not self.cli("sandbox", "get", sb.name, *ws_args(ws.name), check=False, quiet=True).ok:
                     failures.append(f"sandbox '{sb.name}' in '{ws.name}' is missing")
                     continue
+                if sb.gpu_enabled:
+                    # Preserve the image's PATH: a login shell can drop sbin,
+                    # where newer NVIDIA packages install nvidia-smi.
+                    gpu = self.cli("sandbox", "exec", "-n", sb.name, *ws_args(ws.name),
+                                   "--no-tty", "--no-login-shell", "--", "nvidia-smi", "-L",
+                                   check=False, quiet=True)
+                    if not gpu.ok:
+                        detail = (gpu.err or gpu.out).strip().splitlines()[-1:] or [f"exit {gpu.rc}"]
+                        failures.append(f"GPU unavailable in sandbox '{sb.name}': {detail[0]}")
                 if sb.type in ("openclaw", "nemoclaw"):
                     # The agent setup steps are best effort; this is what
                     # catches an image whose OpenClaw cannot run under the

@@ -121,6 +121,87 @@ def test_shipped_profile_lifecycle(ab, fake_env, config, profiles, creds, capsys
     assert len(fake_env.other_calls("nemoclaw")) == 1
 
 
+def _creates(fake_env, name):
+    found = []
+    for call in fake_env.openshell_calls():
+        if call[:2] == ["sandbox", "create"] and "--name" in call:
+            if call[call.index("--name") + 1] == name:
+                found.append(call)
+    return found
+
+
+def test_sandbox_create_omits_gpu_unless_the_profile_asks(ab, fake_env, config, profiles, creds):
+    make_applier(ab, config, creds).apply(profiles)
+    creates = [c for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "create"]]
+    assert creates and all("--gpu" not in c for c in creates)
+    onboard = fake_env.other_calls("nemoclaw")[0]
+    assert onboard["gpu"] == "" and onboard["gpu_count"] == ""
+    assert "--sandbox-gpu" not in onboard["args"] and "--gpu" not in onboard["args"]
+
+
+def test_sandbox_create_passes_gpu_when_the_profile_asks(ab, fake_env, config, profiles, creds):
+    cuda = next(s for p in profiles for ws in p.workspaces for s in ws.sandboxes
+                if s.name == "cuda-sandbox" and s.enabled)
+    cuda.gpu_enabled = True
+    cuda.gpu_count = 2
+    make_applier(ab, config, creds).apply(profiles)
+    create = _creates(fake_env, "cuda-sandbox")
+    assert len(create) == 1
+    assert create[0][create[0].index("--gpu") + 1] == "2"
+    assert _creates(fake_env, "notebook") and "--gpu" not in _creates(fake_env, "notebook")[0]
+    # nemoclaw onboard does not read NEMOCLAW_GPU_* and has no count flag.
+    onboard = fake_env.other_calls("nemoclaw")[0]
+    assert onboard["gpu"] == "" and onboard["gpu_count"] == ""
+    assert "--sandbox-gpu" not in onboard["args"] and "--gpu" not in onboard["args"]
+    make_applier(ab, config, creds).verify(profiles)
+    assert any(call[:2] == ["sandbox", "exec"] and "--no-login-shell" in call
+               and ["nvidia-smi", "-L"] == call[-2:]
+               for call in fake_env.openshell_calls())
+
+
+@pytest.mark.parametrize("before, after", [(None, 1), (1, 2), (1, None)])
+def test_gpu_drift_recreates_and_preserves_files(ab, fake_env, config, profiles, creds,
+                                                capsys, before, after):
+    cuda = next(s for p in profiles for ws in p.workspaces for s in ws.sandboxes
+                if s.name == "cuda-sandbox" and s.enabled)
+    cuda.gpu_enabled, cuda.gpu_count = before is not None, before or 1
+    make_applier(ab, config, creds).apply(profiles)
+    state = fake_env.openshell_state()
+    state["sandboxes"]["cuda-dev/cuda-sandbox"]["files"] = {"proof.txt": "keep this work"}
+    (fake_env.state / "openshell.json").write_text(json.dumps(state))
+    cuda.gpu_enabled, cuda.gpu_count = after is not None, after or 1
+    make_applier(ab, config, creds).apply(profiles)
+    creates = _creates(fake_env, "cuda-sandbox")
+    assert len(creates) == 2
+    assert len(_creates(fake_env, "notebook")) == 1
+    if after is None:
+        assert "--gpu" not in creates[-1]
+    else:
+        assert creates[-1][creates[-1].index("--gpu") + 1] == str(after)
+        assert f"{ab.GPU_LABEL_KEY}={after}" in creates[-1]
+    assert fake_env.openshell_state()["sandboxes"]["cuda-dev/cuda-sandbox"]["files"]["proof.txt"] == "keep this work"
+    assert "a different GPU request; recreating it" in capsys.readouterr().out
+    make_applier(ab, config, creds).apply(profiles)
+    assert len(_creates(fake_env, "cuda-sandbox")) == 2
+
+
+def test_gpu_off_upgrade_keeps_sandboxes_without_gpu_labels(ab, fake_env, config, profiles, creds):
+    make_applier(ab, config, creds).apply(profiles)
+    state = fake_env.openshell_state()
+    assert all(ab.GPU_LABEL_KEY not in labels for labels in state["labels"].values())
+    make_applier(ab, config, creds).apply(profiles)
+    assert len(_creates(fake_env, "cuda-sandbox")) == 1
+    assert len(_creates(fake_env, "notebook")) == 1
+
+
+def test_gpu_inspection_read_failure_does_not_trigger_recreation(ab, fake_env, config, profiles, creds):
+    applier = make_applier(ab, config, creds)
+    applier.apply(profiles)
+    fake_env.deny("sandbox get")
+    ws = next(ws for p in profiles for ws in p.workspaces if ws.name == "cuda-dev")
+    assert applier.sandbox_gpu_ok(ws, ws.sandboxes[0]) is True
+
+
 def test_changed_proxy_ca_recreates_sandboxes(ab, fake_env, config, profiles, creds, capsys):
     make_applier(ab, config, creds).apply(profiles)
     before = len([c for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "create"]])

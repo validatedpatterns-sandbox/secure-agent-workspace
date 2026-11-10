@@ -205,6 +205,30 @@ def test_cdi_outside_rule_follows_selected_disk_source(tmp_path, source, expecte
 
 
 @pytest.mark.ci_external
+@pytest.mark.parametrize("namespace", ["openshell-agents", "saw-alice"])
+def test_host_assisted_clone_allows_only_source_cdi_pods(namespace):
+    ps = policies(render("--set", "source.dataSource=gpu-golden",
+                         "--set", f"source.dataSourceNamespace={namespace}"))
+    expected = {"from": [{
+        "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": namespace}},
+        "podSelector": {"matchLabels": {"cdi.kubevirt.io": "cdi-clone-source"}}}],
+        "ports": [{"protocol": "TCP", "port": 8443}]}
+    assert by_port(ps["saw-cdi-import"]["spec"]["ingress"], 8443) == [expected]
+    assert not by_port(ps["saw-vm"]["spec"]["ingress"], 8443)
+    assert not by_port(ps["saw-vm"]["spec"]["egress"], 8443)
+
+
+@pytest.mark.ci_external
+@pytest.mark.parametrize("args", [
+    (),
+    ("--set", "source.dataSource=gpu-golden", "--set", "source.registryURL=docker://images.example.net/disk:1"),
+    ("--set", "source.dataSource=gpu-golden", "--set", "source.httpURL=https://images.example.net/disk.qcow2"),
+])
+def test_non_clone_disk_sources_do_not_open_upload_port(args):
+    assert not by_port(policies(render(*args))["saw-cdi-import"]["spec"]["ingress"], 8443)
+
+
+@pytest.mark.ci_external
 def test_vm_egress_is_exact_and_cdi_import_has_minimum_peers():
     ps = policies(render())
     vm = ps["saw-vm"]["spec"]

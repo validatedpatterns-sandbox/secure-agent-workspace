@@ -5,7 +5,17 @@ filesystem_policy:
   # /opt/openclaw: where the AIPCC OpenClaw image installs OpenClaw. Only that
   # directory, not all of /opt.
   read_only: [/usr, /lib, /proc, /dev/urandom, /app, /etc, /var/log, /opt/openclaw]
-  read_write: [/sandbox, /tmp, /dev/null]
+  # --gpu controls CDI device attachment. best_effort skips GPU paths that
+  # are absent in CPU-only sandboxes; this does not attach devices itself.
+  read_write:
+    - /sandbox
+    - /tmp
+    - /dev/null
+    - /dev/nvidiactl
+    - /dev/nvidia-uvm
+    - /dev/nvidia-uvm-tools
+    - /dev/nvidia0
+    - /dev/nvidia-caps
 
 landlock:
   compatibility: best_effort

@@ -63,6 +63,8 @@ if ! jq -e '.items | any((.spec.unschedulable != true) and
 fi
 echo "Ready schedulable node: available"
 
+[[ "${GPU_ENABLED:-false}" != true ]] || "${script_dir}/gpu-prereqs-check.sh"
+
 if [[ "${PREREQS_MODE:-pattern}" == quickstart ]]; then
   cnv="$(oc get csv -n openshift-cnv -o json)"
   if ! jq -e '.items | any(.metadata.name | contains("kubevirt"))' <<<"${cnv}" >/dev/null; then

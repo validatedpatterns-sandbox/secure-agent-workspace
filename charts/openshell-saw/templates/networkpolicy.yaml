@@ -163,6 +163,20 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: openshift-cnv
+    {{- if eq (include "openshell-sandbox.diskSource" .) "dataSource" }}
+    # Host-assisted CDI clones push from the golden PVC's namespace into
+    # the target upload server when storage has no CSI clone/snapshot support.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ include "openshell-sandbox.goldenNamespace" . | quote }}
+          podSelector:
+            matchLabels:
+              cdi.kubevirt.io: cdi-clone-source
+      ports:
+        - protocol: TCP
+          port: 8443
+    {{- end }}
   egress:
 {{ include "openshell-sandbox.commonEgressRules" (list . $cdiPorts) | indent 4 }}
 {{- if .Values.cleanupOnDelete }}

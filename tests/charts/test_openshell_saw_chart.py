@@ -193,6 +193,15 @@ def test_pattern_settings_gateway_service_has_no_ssh():
 # -- VM wiring -------------------------------------------------------------
 
 @pytest.mark.ci_external
+@pytest.mark.parametrize("proxy", ["true", "false"])
+@pytest.mark.parametrize("live_inputs", ["true", "false"])
+def test_vm_boots_only_the_system_disk_across_credential_modes(proxy, live_inputs):
+    docs = render("--set", f"credentialProxy.enabled={proxy}",
+                  "--set", f"vm.liveInputs={live_inputs}")
+    disks = docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]["domain"]["devices"]["disks"]
+    assert [(d["name"], d["bootOrder"]) for d in disks if "bootOrder" in d] == [("rootdisk", 1)]
+
+
 def test_vm_attaches_inputs_as_serial_disks(default_docs):
     spec = default_docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]
     disks = {d["name"]: d.get("serial") for d in spec["domain"]["devices"]["disks"]}
@@ -1024,7 +1033,10 @@ def test_pattern_puts_keycloak_and_each_saw_in_their_own_namespaces():
     assert users_app["path"] == "charts/saw-users"
     assert users_app["extraValueFiles"] == ["/overrides/saw-users.yaml"]
     assert users_app["syncPolicy"]["automated"]["prune"] is True
-    listed = yaml.safe_load((ROOT / "overrides/saw-users.yaml").read_text())["users"]
+    # The chart ships with no accounts. The README explicitly asks operators
+    # to customize overrides/saw-users.yaml; that deployment input is not a
+    # fixed chart default (the live audit uses disposable accounts there).
+    listed = yaml.safe_load((ROOT / "charts/saw-users/values.yaml").read_text())["users"]
     assert listed == []
     for app in ("governance-interceptor", "governance-policy"):
         assert apps[app]["namespace"] == "openshell-agents", app

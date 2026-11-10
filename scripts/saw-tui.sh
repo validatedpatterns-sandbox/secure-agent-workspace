@@ -15,12 +15,7 @@ if [[ -z "${sandbox}" ]]; then
 fi
 
 case "${mode}" in
-  nemoclaw)
-    exec ssh -o "ProxyCommand=openshell ssh-proxy --gateway-name ${gateway} --name ${sandbox} --workspace ${workspace}" \
-      -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-      -o LogLevel=ERROR -tt "sandbox@openshell-${sandbox}.${workspace}" openclaw
-    ;;
-  openclaw)
+  nemoclaw|openclaw)
     exec openshell --gateway "${gateway}" sandbox exec -n "${sandbox}" \
       --workspace "${workspace}" --tty -- /bin/bash -ic \
       'set -e

@@ -140,8 +140,8 @@ def test_topology_is_required_for_standalone_chart(tmp_path):
         path.write_text(yaml.safe_dump(overlay))
         result = helm_template("-f", str(path))
         assert result.returncode != 0 and error in result.stderr, (overlay, result.stderr)
-    assert not policies(render("--set", "networkPolicy.enabled=false",
-                               "--set-json", "cleanupApi.endpoints=[]"))
+    assert set(policies(render("--set", "networkPolicy.enabled=false",
+                               "--set-json", "cleanupApi.endpoints=[]"))) == {"saw-credential-proxy"}
 
 
 @pytest.mark.ci_external
@@ -311,7 +311,26 @@ def test_route_ingress_ports_match_service_and_sandbox_ui(tmp_path):
 
 @pytest.mark.ci_external
 def test_toggles_and_custom_namespaces():
-    assert not policies(render("--set", "networkPolicy.enabled=false"))
+    assert set(policies(render("--set", "networkPolicy.enabled=false"))) == {"saw-credential-proxy"}
+
+
+@pytest.mark.ci_external
+@pytest.mark.parametrize("enabled", ["true", "false"])
+def test_proxy_ingress_is_always_tenant_scoped_and_health_is_local(enabled):
+    docs = render("--set", "networkPolicy.enabled=" + enabled)
+    proxy = policies(docs)["saw-credential-proxy"]["spec"]
+    assert proxy["ingress"] == [{"from": [{"podSelector": {"matchLabels": {
+        "openshell.pattern/role": "gateway"}}}], "ports": [{"protocol": "TCP", "port": 3128}]}]
+    assert proxy["policyTypes"] == (["Ingress", "Egress"] if enabled == "true" else ["Ingress"])
+    service = docs[("Service", "saw-test-credential-proxy")]["spec"]
+    assert [p["port"] for p in service["ports"]] == [3128]
+    container = docs[("Deployment", "saw-test-credential-proxy")]["spec"]["template"]["spec"]["containers"][0]
+    assert [p["containerPort"] for p in container["ports"]] == [3128]
+    assert container["readinessProbe"]["exec"]["command"] == ["/usr/local/bin/saw-credential-proxy", "healthcheck"]
+
+
+@pytest.mark.ci_external
+def test_other_network_policy_toggles():
     assert set(policies(render("--set", "egress.enabled=false"))) == {
         "saw-default-deny", "saw-vm", "saw-credential-proxy", "saw-cdi-import",
         "saw-cleanup-hook", "saw-credential-proxy-ca-hook"}

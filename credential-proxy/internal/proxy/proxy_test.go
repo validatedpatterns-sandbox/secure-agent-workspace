@@ -78,6 +78,9 @@ func newFixture(t *testing.T, upstreamHost string, handler http.HandlerFunc) *fi
 	upRoots := x509.NewCertPool()
 	upRoots.AppendCertsFromPEM(upCert)
 	s := &Server{Store: store, CA: proxyAuthority, Roots: upRoots,
+		LookupIP: func(context.Context, string) ([]net.IPAddr, error) {
+			return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
+		},
 		DialUpstream: func(_ context.Context, _, _ string) (net.Conn, error) {
 			return net.Dial("tcp", upstream.Listener.Addr().String())
 		}}
@@ -310,6 +313,10 @@ func TestGmailRefreshAndFailureIsolation(t *testing.T) {
 		if r.Header.Get("Authorization") != "Bearer minted-gmail-private" && r.Header.Get("Authorization") != "Bearer real-test-key" {
 			t.Error("upstream did not receive resolved credential")
 		}
+		if r.URL.Path == "/reflect" {
+			_, _ = io.WriteString(w, r.Header.Get("Authorization"))
+			return
+		}
 		w.WriteHeader(200)
 	})
 	root := filepath.Dir(filepath.Dir(f.secretPath))
@@ -365,6 +372,18 @@ func TestGmailRefreshAndFailureIsolation(t *testing.T) {
 		}
 	}
 	request("gmail.googleapis.com", "saw-cred.gmail.access_token", 200, "")
+	reflected, _ := http.NewRequest("GET", "https://gmail.googleapis.com/reflect", nil)
+	reflected.Header.Set("Authorization", "Bearer saw-cred.gmail.access_token")
+	response, err := f.client.Do(reflected)
+	if err != nil {
+		t.Fatal("OAuth reflection request failed")
+	}
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	assertNoCredential(t, body, "minted-gmail-private")
+	if response.StatusCode != 502 {
+		t.Fatal("minted OAuth token reflection accepted")
+	}
 	request("api.example.test", "saw-cred.gmail.access_token", 502, "unknown or unbound credential marker")
 	if posts.Load() != 1 {
 		t.Fatal("unbound host triggered refresh")

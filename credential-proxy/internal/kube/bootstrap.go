@@ -106,10 +106,14 @@ func InitCA(namespace, secretName, mapName string) error {
 	if err != nil {
 		return err
 	}
-	return initCA(c, namespace, secretName, mapName)
+	hosts := strings.Split(os.Getenv("SAW_CA_DNS_NAMES"), ",")
+	if len(hosts) == 1 && hosts[0] == "" {
+		return errors.New("proxy CA DNS constraints are required")
+	}
+	return initCA(c, namespace, secretName, mapName, hosts...)
 }
 
-func initCA(c *client, namespace, secretName, mapName string) error {
+func initCA(c *client, namespace, secretName, mapName string, hosts ...string) error {
 	base := "/api/v1/namespaces/" + namespace
 	secretPath := base + "/secrets/" + secretName
 	status, secret, err := c.call(http.MethodGet, secretPath, nil)
@@ -117,7 +121,7 @@ func initCA(c *client, namespace, secretName, mapName string) error {
 		return err
 	}
 	if status == http.StatusNotFound {
-		cert, key, err := ca.Generate()
+		cert, key, err := ca.Generate(hosts...)
 		if err != nil {
 			return err
 		}

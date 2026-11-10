@@ -121,6 +121,12 @@ def test_built_proxy_refuses_unknown_marker_and_unready_secret(tmp_path):
                                b"Connection: close\r\n\r\n")
                 assert tunnel.recv(4096).startswith(b"HTTP/1.1 502")
 
+        for path in ("/debug/pprof", "/metrics", "/debug/vars", "/healthz/extra"):
+            with pytest.raises(HTTPError) as denied:
+                urlopen(f"http://127.0.0.1:{health_port}{path}", timeout=1)
+            assert denied.value.code == 404
+        completed = subprocess.run([str(binary), "healthcheck"], env=env, capture_output=True)
+        assert completed.returncode == 0 and completed.stdout == b""
         credential.unlink()
         assert _health(health_port) == 503
     finally:

@@ -27,6 +27,28 @@ def test_exact_enabled_account_only():
         assert resolver.subject_for(lambda _: users, "alice") == expected
 
 
+@pytest.mark.parametrize("assigned", [False, True])
+def test_admin_api_scope_is_assigned_without_broadening_roles(assigned):
+    calls = []
+    scope = {"id": "scope-admin", "name": "kc-admin-api"}
+    def call(path, method="GET"):
+        calls.append((method, path))
+        if path == "/client-scopes": return [scope]
+        if method == "GET": return [scope] if assigned else []
+    resolver.ensure_admin_api_scope(call, "resolver-id")
+    writes = [(method, path) for method, path in calls if method != "GET"]
+    assert writes == ([] if assigned else [("PUT", "/clients/resolver-id/default-client-scopes/scope-admin")])
+
+
+def test_older_keycloak_needs_no_admin_api_scope():
+    calls = []
+    def call(path, method="GET"):
+        calls.append((method, path))
+        return []
+    resolver.ensure_admin_api_scope(call, "resolver-id")
+    assert calls == [("GET", "/client-scopes")]
+
+
 class FakeKube:
     def __init__(self, subject=""):
         self.subject = subject

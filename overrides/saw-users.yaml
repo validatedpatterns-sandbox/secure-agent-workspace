@@ -2,8 +2,10 @@
 # Each entry creates saw-<name>. Demo entries are in saw-users-demo.yaml.
 users: []
 
-defaults:
-  openshellSaw:
-    egress:
-      extraAllow:
-        - api.inference.example.com
+# Opt in only for users of a configured custom-inference endpoint. Match
+# the hostname in overrides/governance-profiles/custom-inference.yaml.
+# defaults:
+#   openshellSaw:
+#     egress:
+#       extraAllow:
+#         - api.inference.example.com

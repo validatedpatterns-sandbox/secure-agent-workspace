@@ -30,6 +30,12 @@ the arm64 Podman disk ([arm64 guide](arm64.md)). The legacy
 `openshell-gateway-docker` disk is x86_64 only and publishes its tags directly;
 ARM clusters use the default Podman runtime.
 
+The OpenShell 0.1.6 upgrade requires a matching interceptor publication before
+release acceptance. The current interceptor chart digest is the previously
+published 0.1.2 artifact; it does **not** validate the 0.1.6 upgrade. See the
+[0.1.6 publication requirements](openshell-016-release.md). Preliminary tests
+must supply a matching build by digest in deployment overrides.
+
 Pull requests build without registry credentials or pushing. Publishing is
 restricted to `main`, including manual workflow dispatches. Every push verifies
 the published commit tag with an empty Docker auth configuration (harness builds

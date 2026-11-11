@@ -238,7 +238,7 @@ def test_prereqs_distinguish_missing_operator_from_access_failure(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     executable(bindir / "uv", 'exit 0\n')
-    executable(bindir / "openshell", 'printf "openshell 0.1.2\\n"\n')
+    executable(bindir / "openshell", 'printf "openshell 0.1.6\\n"\n')
     executable(bindir / "oc", '''
 case "$*" in
   whoami) exit 0 ;;
@@ -275,7 +275,7 @@ def test_pattern_prereqs_do_not_require_operators(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     executable(bindir / "uv", 'exit 0\n')
-    executable(bindir / "openshell", 'printf "openshell 0.1.2\\n"\n')
+    executable(bindir / "openshell", 'printf "openshell 0.1.6\\n"\n')
     executable(bindir / "oc", '''
 case "$*" in
   whoami) exit 0 ;;

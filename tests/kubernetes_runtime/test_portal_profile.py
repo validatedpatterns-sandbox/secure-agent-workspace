@@ -1,9 +1,22 @@
 import copy
 from pathlib import Path
+import re
 import pytest
+import yaml
 from saw_kubernetes.compiler import compile_profile, ContractError
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_enabled_builtin_agent_profiles_pin_their_images():
+    profiles = ROOT / "charts/saw-bom/profiles"
+    for path in profiles.rglob("sandbox.yaml"):
+        document = yaml.safe_load(path.read_text())
+        for sandbox in document["spec"]["sandboxes"]:
+            if sandbox.get("enabled") and sandbox.get("type") in {"openclaw", "nemoclaw"}:
+                assert re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", sandbox["image"]), path
+
+
 def test_portal_bom_route_requires_same_sandboxes_browser_binding():
     profile=ROOT/"tests/fixtures/profiles/audited-openclaw"
     cfg={"namespace":"saw-owner","namespaceUID":"ns","ownerID":"76c95ca5-b9bc-4be7-b764-bc028087ae28",

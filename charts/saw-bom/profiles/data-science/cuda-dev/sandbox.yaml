@@ -7,7 +7,7 @@ spec:
       type: nemoclaw
       enabled: true
       agent: openclaw
-      image: ghcr.io/validatedpatterns-sandbox/nemoclaw-sandbox:latest
+      image: ghcr.io/validatedpatterns-sandbox/nemoclaw-sandbox@sha256:28457eec59e71eca310cd72fc4b57c71506c3fce4c30f2636a237dca85725dbd
       providers:
         - nvidia
       # How the agent reaches its model: the `nvidia` provider's credential

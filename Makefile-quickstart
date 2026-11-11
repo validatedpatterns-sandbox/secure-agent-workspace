@@ -430,8 +430,8 @@ check-container-topology: ## Compare the reviewed site network overlay with live
 	@test -n "$${SAW_TOPOLOGY_OVERLAY}" || { echo "Set SAW_TOPOLOGY_OVERLAY" >&2; exit 1; }
 	@$(or $(PYTHON),uv run --locked python) $(SCRIPTS_DIR)/container_topology.py --check "$${SAW_TOPOLOGY_OVERLAY}"
 
-saw-create: .check-saw-name .check-deployment-mode ## Provision one SAW using DEPLOYMENT_MODE=vm or container
-	@if [ "$(DEPLOYMENT_MODE)" = container ]; then \
+saw-create: .check-saw-name .check-deployment-mode ## Provision one SAW using DEPLOYMENT_MODE=vm, container or kata
+	@if [ "$(DEPLOYMENT_MODE)" != vm ]; then \
 		$(or $(PYTHON),uv run --locked python) $(SCRIPTS_DIR)/container-workspace.py apply; \
 	else $(SCRIPTS_DIR)/openshell-saw-create.sh; fi
 
@@ -448,7 +448,7 @@ saw-logs: .check-saw-name .check-vm-deployment ## Follow the VM installer log
 		-l "vm.kubevirt.io/name=$(OPENSHELL_SAW_NAME)" -c guest-console-log --tail=-1
 
 saw-status: .check-saw-name .check-deployment-mode ## Show the selected workspace's installation status
-	@if [ "$(DEPLOYMENT_MODE)" = container ]; then \
+	@if [ "$(DEPLOYMENT_MODE)" != vm ]; then \
 		$(or $(PYTHON),uv run --locked python) $(SCRIPTS_DIR)/container-workspace.py status; \
 	else \
 		$(MAKE) .check-ssh-key && VM_NAME="$(OPENSHELL_SAW_NAME)" \
@@ -657,13 +657,13 @@ test-harness-e2e: .check-saw-name ## Verify one SAW's harness bundle on the clus
 # --- Teardown ---
 
 saw-delete: sandbox-pre-delete ## Uninstall one sandbox and its owned namespace
-	@if [ "$(DEPLOYMENT_MODE)" = container ]; then \
+	@if [ "$(DEPLOYMENT_MODE)" != vm ]; then \
 		$(or $(PYTHON),uv run --locked python) $(SCRIPTS_DIR)/container-workspace.py delete; \
 	else $(SCRIPTS_DIR)/saw-delete.sh; fi
 
 .PHONY: .check-deployment-mode
 .check-deployment-mode:
-	@case "$(DEPLOYMENT_MODE)" in vm|container) ;; *) echo "DEPLOYMENT_MODE must be vm or container" >&2; exit 1 ;; esac
+	@case "$(DEPLOYMENT_MODE)" in vm|container|kata) ;; *) echo "DEPLOYMENT_MODE must be vm, container or kata" >&2; exit 1 ;; esac
 
 .PHONY: .check-vm-deployment
 .check-vm-deployment: .check-deployment-mode
@@ -801,3 +801,7 @@ $(eval $(call deprecated_alias,governance-create-profile,governance-profile-crea
 .PHONY: .check-image-repo
 .check-image-repo:
 	@$(SCRIPTS_DIR)/check-build-repo.sh "$$PUSH_IMAGE_REPO"
+
+.PHONY: kata-worker-check
+kata-worker-check: ## Verify firmware and KVM on explicitly selected local-Kata workers
+	@python3 scripts/kata_worker_check.py

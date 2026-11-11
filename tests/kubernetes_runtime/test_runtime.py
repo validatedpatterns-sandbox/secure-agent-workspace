@@ -431,7 +431,7 @@ def test_shutdown_does_not_skip_its_identity_verifier(runtime):
     assert not gateway.calls
 
 
-@pytest.mark.parametrize("mode", ["kata", "confidential", "vm"])
+@pytest.mark.parametrize("mode", ["confidential", "vm"])
 def test_unsupported_backend_is_rejected_before_gateway_calls(source, mode):
     source[1]["mode"] = mode
     with pytest.raises(ContractError, match="only accepts container"):
@@ -615,3 +615,44 @@ def test_frontend_attachment_check_preserves_standalone_boundary_requirement():
     assert reads == [("namespace","saw-one")] and not boundary_calls
     verifier(plan)
     assert len(reads) == 2 and boundary_calls == [plan]
+
+
+def test_kata_reuses_container_workload_requests(source):
+    profile, config = source
+    ordinary = compile_profile(profile, config)
+    config.update(mode="kata", workloadRuntimeClass="saw-kata",
+                  workloadRuntimeClassUID=str(uuid.uuid4()), workloadRuntimeClassDigest="a" * 64)
+    plan = compile_profile(profile, config)
+    assert plan["workspaces"] == ordinary["workspaces"]
+    assert plan["requestedPlacement"] == {"supervisor": "container", "workload": "kata"}
+    assert plan["runtimeClass"]["uid"] == config["workloadRuntimeClassUID"]
+    assert ordinary["runtimeClass"] == {"name": "", "uid": ""}
+
+
+@pytest.mark.parametrize("bad", [
+    {"workloadRuntimeClass": ""}, {"workloadRuntimeClassUID": ""},
+    {"workloadRuntimeClassUID": str(uuid.UUID(int=0))}, {"workloadRuntimeClassDigest": "bad"},
+])
+def test_kata_rejects_incomplete_review(source, bad):
+    profile, config = source
+    config.update(mode="kata", workloadRuntimeClass="saw-kata",
+                  workloadRuntimeClassUID=str(uuid.uuid4()), workloadRuntimeClassDigest="a" * 64)
+    config.update(bad)
+    with pytest.raises(ContractError):
+        compile_profile(profile, config)
+
+
+def test_live_attachment_verifier_checks_runtimeclass_drift(resources):
+    plan, namespace, pvc, _ = resources
+    placement = {"handler": "kata", "overhead": {"podFixed": {"memory": "256Mi"}},
+                 "scheduling": {"nodeSelector": {"pool": "dedicated"}}}
+    runtime = dict(placement, metadata={"uid": "reviewed", "labels": {"openshell.ai/sandbox-attachable": "true"}})
+    plan["runtimeClass"] = {"name": "saw-kata", "uid": "reviewed", "sha256": digest(placement)}
+    objects = {"namespace": namespace, "persistentvolumeclaim": pvc, "runtimeclass": runtime}
+    verifier = KubernetesResourceVerifier(lambda kind, *args: objects[kind], lambda _: None)
+    verifier(plan)
+    for change in ({"handler": "runc"}, {"overhead": {}}, {"scheduling": {}},
+                   {"metadata": dict(runtime["metadata"], uid="replaced")}):
+        objects["runtimeclass"] = dict(runtime, **change)
+        with pytest.raises(ContractError):
+            verifier(plan)

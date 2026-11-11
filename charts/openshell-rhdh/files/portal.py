@@ -382,7 +382,8 @@ def check_user(user):
 
 
 # Request policy is operator-owned, never taken from a form or registry entry.
-DEPLOYMENT_MODES = ("vm", "container")
+KUBERNETES_MODES = ("container", "kata")
+DEPLOYMENT_MODES = ("vm", *KUBERNETES_MODES)
 # A renderable foundation is not a qualified provisioning/readiness adapter.
 # Expand only when runtime lifecycle, BOM and readiness are implemented.
 PROVISIONABLE_MODES = ("vm",)
@@ -404,7 +405,7 @@ def container_profiles(site):
 
 
 def registered_links(entry, catalog, domain):
-    if entry_deployment_mode(entry) == "container":
+    if entry_deployment_mode(entry) in KUBERNETES_MODES:
         if entry.get("desiredState") == "Stopped":
             return []
         return sandbox_ui_links(entry["name"], entry.get("profiles", []), catalog, domain) if domain else []
@@ -440,13 +441,13 @@ def deployment_modes():
     if (not isinstance(modes, list) or not modes or "vm" not in modes
             or any(not isinstance(m, str) or m not in DEPLOYMENT_MODES for m in modes)
             or len(set(modes)) != len(modes)):
-        raise PortalError("SAW_DEPLOYMENT_MODES must contain vm and unique supported modes: vm, container")
+        raise PortalError("SAW_DEPLOYMENT_MODES must contain vm and unique supported modes: vm, container, kata")
     return tuple(modes)
 
 
 def validate_deployment_mode(mode):
     if not isinstance(mode, str) or mode not in DEPLOYMENT_MODES:
-        raise PortalError("deploymentMode must be one of vm, container")
+        raise PortalError("deploymentMode must be one of vm, container, kata")
     return mode
 
 
@@ -483,7 +484,7 @@ def parse_request(data, catalog):
     if profile not in catalog:
         raise PortalError(f"unknown profile {profile!r}; available: {', '.join(sorted(catalog))}")
     secrets, missing = {}, []
-    allowed = catalog[profile].get("dedicatedEndpointSecrets") if request_deployment_mode(data) == "container" else None
+    allowed = catalog[profile].get("dedicatedEndpointSecrets") if request_deployment_mode(data) in KUBERNETES_MODES else None
     for name, spec in sorted(catalog[profile].get("secrets", {}).items()):
         if allowed is not None and name not in allowed:
             continue
@@ -640,7 +641,7 @@ def put_configmap(k8s, ns, name, data, labels=None, resource_version=None, deplo
         raise PortalError(f"{name} changed while this request ran (a delete?); request it again")
     if deployment_mode is not None:
         assert_mode_unchanged(read_entry(current), deployment_mode)
-        if deployment_mode == "container":
+        if deployment_mode in KUBERNETES_MODES:
             raise PortalError("concurrent container registration; refusing to replace its identity")
     put_configmap(k8s, ns, name, data, labels, current["metadata"]["resourceVersion"], deployment_mode)
 
@@ -1147,7 +1148,7 @@ def workspace_status(k8s, user, catalog, ns, argo_ns, domain, ping=None):
                 "title": message, "text": message, "message": message, "ready": False,
                 "failed": state != "running", "steps": [], "links": []}
     mode = entry_deployment_mode(entry)
-    if mode == "container" and container_site(user):
+    if mode in KUBERNETES_MODES and container_site(user):
         return container_status(k8s, user, entry, argo_ns, domain, ping or owner_route_available, catalog)
     if mode not in PROVISIONABLE_MODES:
         message = f"{mode} workspace lifecycle and readiness are not qualified in this release"
@@ -1235,7 +1236,7 @@ def removal_status(k8s, user, argo_ns, entry=None):
     ns = k8s.call("GET", f"/api/v1/namespaces/saw-{user}", ok404=True) if prune else None
     if ns is not None:
         left.append(f"namespace saw-{user} ({(ns.get('status') or {}).get('phase', 'Active')})")
-    if entry and entry_deployment_mode(entry) == "container":
+    if entry and entry_deployment_mode(entry) in KUBERNETES_MODES:
         reg = entry_generation(user, entry)
         if not reg:
             raise PortalError("refusing container cleanup without a registration")
@@ -1453,7 +1454,7 @@ def handle(action, request_name):
         cm = k8s.call("GET", f"/api/v1/namespaces/{ns}/configmaps/{name}", ok404=True)
         deleting = cm is not None and is_deleting(cm)
         mode = entry_deployment_mode(read_entry(cm)) if cm else None
-        if mode == "container" or (action == "create" and data.get("deploymentMode") == "container"):
+        if mode in KUBERNETES_MODES or (action == "create" and data.get("deploymentMode") in KUBERNETES_MODES):
             check_container_identity(user, container_site(user))
             if caller != user:
                 pins = json.loads(os.environ.get("SAW_PORTAL_ADMIN_SUBJECTS", "{}"))
@@ -1465,7 +1466,7 @@ def handle(action, request_name):
             entry = read_entry(cm)
             operation = data["runtimeAction"]
             if (operation not in ("start", "stop") or caller != user or deleting or not cm
-                    or entry_deployment_mode(entry) != "container" or entry.get("lifecycleVersion") != 1
+                    or entry_deployment_mode(entry) not in KUBERNETES_MODES or entry.get("lifecycleVersion") != 1
                     or entry_generation(user, entry) != data.get("registration")
                     or f"g-{entry.get('intentGeneration')}" != data.get("expectedGeneration")):
                 raise PortalError("lifecycle request does not match the current owner registration and generation")
@@ -1483,7 +1484,11 @@ def handle(action, request_name):
             mode = request_deployment_mode(data)
             if cm is not None:
                 assert_mode_unchanged(read_entry(cm), mode)
-            if mode == "container" and container_site(user):
+            if mode in KUBERNETES_MODES and container_site(user):
+                try:
+                    _workspace.validate_runtime_placement(mode, container_site(user))
+                except _workspace.WorkspaceError as exc:
+                    raise PortalError(str(exc)) from exc
                 approved = container_profiles(container_site(user))
                 if data.get("profile") not in approved:
                     raise PortalError("selected profile is not approved for your container workspace; "
@@ -1495,7 +1500,7 @@ def handle(action, request_name):
             elif mode not in PROVISIONABLE_MODES:
                 raise PortalError(f"{mode} workspace provisioning is not available in this release")
             profile, secrets = parse_request(data, catalog)
-            if mode == "container":
+            if mode in KUBERNETES_MODES:
                 if cm and read_entry(cm)["profiles"] != [profile]:
                     raise PortalError("changing the profile requires a new container registration")
                 endpoint = approved_endpoint(catalog[profile], secrets,
@@ -1514,7 +1519,7 @@ def handle(action, request_name):
             generation = entry_generation(user, read_entry(cm)) if cm else new_generation()
             prefix = vault_prefix(user, generation)
             entry = registry_entry(user, profile, generation, mode)
-            if mode == "container":
+            if mode in KUBERNETES_MODES:
                 if lifecycle:
                     entry["lifecycleVersion"] = 1
                     entry["initialModelInputs"] = previous.get("initialModelInputs", models)
@@ -1656,7 +1661,7 @@ def wait_stage(stage, user, timeout, sleep=time.sleep, clock=time.monotonic, pin
             failed = False
         else:
             st = workspace_status(k8s, user, catalog, ns, argo_ns, domain, ping)
-            if stage == "vm" and st.get("deploymentMode") == "container":
+            if stage == "vm" and st.get("deploymentMode") in KUBERNETES_MODES:
                 # The initial intent can only be published after the new registration is reviewed.
                 budget = max(timeout, int(os.environ.get("SAW_CONTAINER_ENROLLMENT_SECONDS", timeout)))
             current = next((x for x in st["steps"] if x["id"] == stage), {})
@@ -1705,7 +1710,7 @@ def generator_params(workspaces, defaults, read=None, catalog=None, previous=Non
     for entry in workspaces:
         ws = {**entry, "values": {**entry.get("values", {}),
                                   "deployment": {"mode": entry_deployment_mode(entry)}}}
-        site = container_site(ws["name"]) if entry_deployment_mode(ws) == "container" else {}
+        site = container_site(ws["name"]) if entry_deployment_mode(ws) in KUBERNETES_MODES else {}
         if site:
             if not ws.get("ownerSubject") or ws["ownerSubject"] != site["subject"]:
                 continue
@@ -1816,7 +1821,7 @@ def serve():
                         scope = (ws["name"], mode, entry_generation(ws["name"], ws),
                                  ws.get("intentGeneration", 0), os.environ.get("KEYCLOAK_URL"),
                                  os.environ.get("KEYCLOAK_REALM"))
-                        check = owner_route_available if mode == "container" else ping_url
+                        check = owner_route_available if mode in KUBERNETES_MODES else ping_url
                         statuses[ws["name"]] = workspace_status(k8s, ws["name"], catalog, ns, argo_ns, domain,
                             ping=lambda url: route_cache.probe(scope, url, check))
                     except PortalError as exc:

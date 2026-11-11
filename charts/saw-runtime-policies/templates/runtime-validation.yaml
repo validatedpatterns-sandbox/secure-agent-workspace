@@ -276,8 +276,13 @@ spec:
       message: Stock supervisor Pods must use the default container runtime.
       reason: Forbidden
     - expression: >-
+{{- if eq .Values.mode "kata" }}
+        variables.role != 'workload' || (has(object.spec.runtimeClassName) && object.spec.runtimeClassName == {{ .Values.workloadRuntimeClassName | toJson }})
+      message: Kata workloads require the approved RuntimeClass.
+{{- else }}
         variables.role != 'workload' || !has(object.spec.runtimeClassName) || object.spec.runtimeClassName == ''
       message: Container-mode workload Pods must use the default container runtime.
+{{- end }}
       reason: Forbidden
 ---
 apiVersion: admissionregistration.k8s.io/v1

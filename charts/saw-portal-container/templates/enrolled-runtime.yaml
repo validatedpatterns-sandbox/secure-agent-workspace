@@ -7,7 +7,7 @@
 {{- $ctl := printf "saw-ctl-%s" $reg }}
 {{- $history := printf "saw-history-%s" $reg }}
 {{- $b := $e.intent.bindings }}
-{{- if or (ne $b.ownerID .Values.installationID) (ne $b.ownerSubject .Values.ownerSubject) (ne $b.namespace $ns) (ne $b.mode "container") (ne $e.intent.profileRef.name "saw-bom-profiles") }}{{ fail "enrollment belongs to a different registration" }}{{ end }}
+{{- if or (ne $b.ownerID .Values.installationID) (ne $b.ownerSubject .Values.ownerSubject) (ne $b.namespace $ns) (ne $b.mode (ternary "kata" "container" (not (empty $site.kataRuntimeClass)))) (ne $e.intent.profileRef.name "saw-bom-profiles") }}{{ fail "enrollment belongs to a different registration" }}{{ end }}
 {{- if not (regexMatch "^.+@sha256:[0-9a-f]{64}$" $e.image) }}{{ fail "pinned controller image required" }}{{ end }}
 {{- $targets := include "portal.targets" . | fromJson }}
 {{- $claims := include "portal.claims" . | fromJsonArray }}
@@ -115,7 +115,10 @@ spec:
           proxyPolicy: {{ $u }}-proxy-policy
           ownerID: {{ $b.ownerID }}
           namespaceUID: {{ $b.namespaceUID }}
-          mode: container
+          mode: {{ $b.mode }}
+{{- with $site.kataRuntimeClass }}
+          workloadRuntimeClass: {{ .name | quote }}
+{{- end }}
           intent: saw-runtime-intent
           profile: saw-bom-profiles
           status: saw-runtime-status

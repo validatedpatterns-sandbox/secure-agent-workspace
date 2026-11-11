@@ -153,6 +153,18 @@ def previous_child(application, appset, owner):
     return values
 
 
+def validate_runtime_placement(mode, site):
+    runtime = site.get("kataRuntimeClass")
+    if mode == "kata":
+        if (not isinstance(runtime, dict) or set(runtime) != {"name", "uid", "sha256"}
+                or not re.fullmatch(r"[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?", str(runtime["name"]))
+                or not re.fullmatch(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", str(runtime["uid"]))
+                or not re.fullmatch(r"[a-f0-9]{64}", str(runtime["sha256"]))):
+            raise WorkspaceError("kata requires a reviewed site RuntimeClass")
+    elif runtime is not None:
+        raise WorkspaceError("container registration cannot use a Kata approval")
+
+
 def project_workspace(workspace, defaults, site, catalog, read=None, previous=None):
     try:
         values = _project_workspace(workspace, defaults, site, catalog, read)
@@ -192,7 +204,7 @@ def _project_workspace(workspace, defaults, site, catalog, read=None):
     """
     ws = {**workspace, "values": {**workspace.get("values", {})}}
     mode = ws["values"].get("deployment", {}).get("mode", "vm")
-    if mode not in {"vm", "container"}:
+    if mode not in {"vm", "container", "kata"}:
         raise WorkspaceError("unsupported workspace deployment mode")
     ws["values"]["deployment"] = {"mode": mode}
     # This map belongs to the operator's installation configuration, never the
@@ -206,12 +218,13 @@ def _project_workspace(workspace, defaults, site, catalog, read=None):
     values = {**{k:v for k,v in defaults.items() if k != "workspaceRevisions"}, "users": [ws]}
     if ws.get("name") in revisions:
         values["global"] = {**defaults.get("global", {}), "targetRevision": revisions[ws["name"]]}
-    if mode != "container":
+    if mode == "vm":
         return values
     if not isinstance(site, dict) or not site:
         raise WorkspaceError(f"container site is missing for {ws['name']}")
     if ws.get("ownerSubject") != site.get("subject"):
         raise WorkspaceError("container site must bind the resolved owner subject")
+    validate_runtime_placement(mode, site)
     automatic = site.get("automaticEnrollment", {})
     selected, *extra = ws.get("profiles", []) or [None]
     foundation = automatic.get("enabled") is False
@@ -290,7 +303,7 @@ def container_status(read_resource, entry, site, argo_ns, domain, ping, catalog=
     bound = bool(reg and site and gen and intent.get("generation") == rev
                  and intent.get("bindings", {}).get("ownerSubject") == site["subject"]
                  and intent.get("bindings", {}).get("namespace") == ns
-                 and intent.get("bindings", {}).get("mode") == "container"
+                 and intent.get("bindings", {}).get("mode") == entry.get("values", {}).get("deployment", {}).get("mode", "container")
                  and intent.get("bindings", {}).get("ownerID") == entry["installationID"])
     desired = entry.get("desiredState", "Running")
     bound = bound and intent.get("desiredState") == desired
@@ -334,7 +347,7 @@ def container_status(read_resource, entry, site, argo_ns, domain, ping, catalog=
     if stopped and not failed:
         message = "Workspace stopped"
         phase = "stopped"
-    return dict(user=user, deploymentMode="container", phase="failed" if failed else phase, title=message,
+    return dict(user=user, deploymentMode=entry.get("values", {}).get("deployment", {}).get("mode", "container"), phase="failed" if failed else phase, title=message,
                 registration=reg, generation=rev, observedGeneration=st.get("observedGeneration"),
                 desiredState=desired, modelInputs=entry.get("modelInputs", {}),
                 message=message, text=message, ready=ready and not failed, failed=failed, steps=steps,

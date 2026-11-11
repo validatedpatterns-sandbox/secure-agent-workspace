@@ -25,6 +25,9 @@ def main():
     def read(kind, name, namespace=None):
         if not NAME.fullmatch(name):
             raise ContractError("invalid resource name")
+        if (kind == "runtimeclass" and namespace is None and config["mode"] == "kata"
+                and name == config["workloadRuntimeClass"]):
+            return get("/apis/node.k8s.io/v1/runtimeclasses/" + name)
         if kind == "namespace" and name == scope.namespace:
             return get("/api/v1/namespaces/" + name)
         if kind == "persistentvolumeclaim" and namespace == scope.namespace:

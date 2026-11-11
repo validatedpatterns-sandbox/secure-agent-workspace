@@ -1,7 +1,7 @@
 {{- include "saw-users.validate" . -}}
 {{- range $user := .Values.users | default list }}
-{{- if not (and $.Values.projection.enabled (eq (dig "deployment" "mode" "vm" ($user.values | default dict)) "container")) }}
-{{- $container := eq (dig "deployment" "mode" "vm" ($user.values | default dict)) "container" }}
+{{- if not (and $.Values.projection.enabled (has (dig "deployment" "mode" "vm" ($user.values | default dict)) (list "container" "kata"))) }}
+{{- $container := has (dig "deployment" "mode" "vm" ($user.values | default dict)) (list "container" "kata") }}
 {{- if not $container }}
 ---
 {{ include "saw-users.application" (dict
@@ -27,6 +27,8 @@
 ---
 {{- if $container }}
 {{- $site := deepCopy (index $.Values.containerSites $user.name | default dict) }}
+{{- $mode := dig "deployment" "mode" "vm" ($user.values | default dict) }}
+{{- if ne (eq $mode "kata") (not (empty $site.kataRuntimeClass)) }}{{ fail "registration placement differs from the site RuntimeClass approval" }}{{- end }}
 {{- with $site.providerAllowHosts }}
 {{- $scope := dict "root" $ "user" $user }}
 {{- $policy := include "saw.governedProxyPolicy" (dict "catalog" ($.Files.Get "files/governed-profiles.json" | fromJson) "bindings" (include "saw-users.credentialBindings" $scope | fromJsonArray) "attached" (include "saw-users.secretNames" $scope | fromJsonArray) "allowHosts" .) | fromJson }}

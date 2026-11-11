@@ -74,8 +74,9 @@ def select(values, name):
     if len(users) != 1:
         raise InstallError("the inputs must contain exactly one matching user")
     user = users[0]
-    if user.get("values", {}).get("deployment", {}).get("mode") != "container":
-        raise InstallError("the selected user must explicitly select container deployment")
+    mode = user.get("values", {}).get("deployment", {}).get("mode")
+    if mode not in {"container", "kata"} or mode != os.environ.get("DEPLOYMENT_MODE", "container"):
+        raise InstallError("the selected user must explicitly select the requested Kubernetes deployment mode")
     config["ownerResolution"] = {**config.get("ownerResolution", {}), "enabled": False}
     for field, pattern in [("registration", r"[a-f0-9]{16}"),
                            ("installationID", r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}"),
@@ -100,7 +101,7 @@ def check_existing(existing, user):
     if len(owners) != 1 or any(owners[0].get(k) != user[k]
                               for k in ("name", "registration", "installationID", "ownerSubject")):
         raise InstallError("existing release belongs to another registration; refusing adoption")
-    if owners[0].get("values", {}).get("deployment", {}).get("mode") != "container":
+    if owners[0].get("values", {}).get("deployment", {}).get("mode") != user["values"]["deployment"]["mode"]:
         raise InstallError("existing release uses another backend")
 
 

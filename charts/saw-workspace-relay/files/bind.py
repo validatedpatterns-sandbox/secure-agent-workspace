@@ -21,47 +21,65 @@ def main():
                         os.environ["GATEWAY"], os.environ["INSTALLATION"], Path("/identity/ca.crt").read_bytes(),
                         os.environ["POD_NAME"], os.environ["POD_UID"])
     with GatewaySessions(trust, os.environ["ENDPOINT"]).open() as g:
-        for attempt in range(30):
-            try:
-                meta = g.call("GetWorkspace", {"name":ws})["workspace"]["metadata"]
+        bind(g, ws, wid, relay, owner, os.environ["INSTALLATION"], os.environ.get("DISCOVER_ID") == "true")
+
+
+def bind(gateway, workspace, expected_id, relay, owner, installation, discover, *,
+         timeout=210, monotonic=time.monotonic, sleep=time.sleep):
+    scope = {"workspace_scope": {"workspace": workspace}}
+
+    def members():
+        roles, seen = {}, set()
+        page = ""
+        while True:
+            response = gateway.call("ListWorkspaceMembers", {**scope, "page_size": 100, "page_token": page})
+            for member in response.get("members", []):
+                roles[member["principal_subject"]] = member["role"]
+            page = response.get("next_page_token", "")
+            if not page:
+                return roles
+            if page in seen or len(seen) >= 100:
+                raise ValueError("invalid membership pagination")
+            seen.add(page)
+
+    # The reconciler creates the workspace and assigns its owner in separate passes.
+    # Pin the first accepted UUID across observations before granting any access.
+    deadline = monotonic() + timeout
+    while True:
+        try:
+            meta = gateway.call("GetWorkspace", {"name": workspace})["workspace"]["metadata"]
+            labels = meta.get("labels", {})
+            builtin = discover and workspace == "default" and not labels
+            managed = (labels.get("saw.redhat.com/managed-by") == "kubernetes-runtime"
+                       and labels.get("saw.redhat.com/runtime-owner") == installation)
+            if not expected_id and discover:
+                expected_id = meta["id"]
+            if (not expected_id or not uuid.UUID(expected_id).int or meta["id"] != expected_id
+                    or meta["name"] != workspace or meta.get("deletion_time") or not (managed or builtin)):
+                raise ValueError("workspace identity mismatch")
+            roles = members()
+            if builtin and set(roles) - {owner, relay}:
+                raise ValueError("unexpected membership in dedicated default workspace")
+            if relay in roles and roles[relay] != "WORKSPACE_ROLE_USER":
+                raise ValueError("unexpected relay role")
+            if owner in roles:
+                if roles[owner] != "WORKSPACE_ROLE_ADMIN":
+                    raise ValueError("owner mismatch")
                 break
-            except RpcError as exc:
-                if exc.code not in ("NOT_FOUND","UNAVAILABLE") or attempt == 29: raise
-                time.sleep(2)
-        # The built-in workspace is created by this registration's dedicated
-        # gateway. Its mTLS CA, active workspace UUID and owner membership
-        # anchor the binding; custom workspaces also carry installer labels.
-        builtin = ws == "default" and os.environ.get("DISCOVER_ID")=="true" and not meta.get("labels")
-        managed = (meta.get("labels",{}).get("saw.redhat.com/managed-by")=="kubernetes-runtime" and
-                   meta.get("labels",{}).get("saw.redhat.com/runtime-owner")==os.environ["INSTALLATION"])
-        if not wid and os.environ.get("DISCOVER_ID")=="true" and (managed or builtin):
-            wid=meta["id"]
-        if not wid or uuid.UUID(wid).int==0:
-            raise ValueError("invalid workspace ID")
-        if (meta["id"] != wid or meta["name"] != ws or meta.get("deletion_time") or
-                not (managed or builtin)):
-            raise ValueError("workspace identity mismatch")
-        scope = {"workspace_scope":{"workspace":ws}}
-        def members():
-            result, page = {}, ""
-            while True:
-                response = g.call("ListWorkspaceMembers", {**scope, "page_size":100, "page_token":page})
-                for m in response.get("members", []):
-                    result[m["principal_subject"]] = m["role"]
-                page = response.get("next_page_token")
-                if not page:
-                    return result
-        roles = members()
-        if builtin and set(roles) - {owner,relay}:
-            raise ValueError("unexpected membership in dedicated default workspace")
-        if roles.get(owner) != "WORKSPACE_ROLE_ADMIN":
-            raise ValueError("owner mismatch")
-        if relay not in roles:
-            g.call("AddWorkspaceMember", {**scope,"principal_subject":relay, "role":"WORKSPACE_ROLE_USER",
-                "request_id":str(uuid.uuid5(uuid.UUID(wid), "relay-user/" + relay))})
-        if members().get(relay) != "WORKSPACE_ROLE_USER":
-            raise ValueError("unexpected relay role")
-        print(json.dumps({"workspace":ws, "workspaceID":wid, "subject":relay,"role":"WORKSPACE_ROLE_USER"}))
+        except RpcError as exc:
+            if exc.code not in {"NOT_FOUND", "UNAVAILABLE"}:
+                raise
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise TimeoutError("verified workspace and owner membership were not ready")
+        sleep(min(2, remaining))
+
+    if relay not in roles:
+        gateway.call("AddWorkspaceMember", {**scope, "principal_subject": relay, "role": "WORKSPACE_ROLE_USER",
+                     "request_id": str(uuid.uuid5(uuid.UUID(expected_id), "relay-user/" + relay))})
+    if members().get(relay) != "WORKSPACE_ROLE_USER":
+        raise ValueError("unexpected relay role")
+    print(json.dumps({"workspace": workspace, "workspaceID": expected_id, "subject": relay, "role": "WORKSPACE_ROLE_USER"}))
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 from urllib.parse import urlsplit
 
-from .compiler import ContractError, OWNER
+from .compiler import ContractError, OWNER, digest
 from .reconcile import RpcError
 
 RPC_METHODS = {
@@ -159,3 +159,6 @@ class KubernetesResourceVerifier:
             meta = self._identity(obj, runtime["uid"])
             if meta.get("labels", {}).get("openshell.ai/sandbox-attachable") != "true":
                 raise ContractError("RuntimeClass has not been approved")
+            placement = {k: obj.get(k) for k in ("handler", "overhead", "scheduling")}
+            if obj.get("handler") != "kata" or digest(placement) != runtime.get("sha256"):
+                raise ContractError("RuntimeClass handler, scheduling or overhead differs from approval")

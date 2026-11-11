@@ -228,3 +228,22 @@ def test_gateway_proxy_identity_requires_pinned_statefulset_and_controller():
     assert any("variables.previousGatewayClaim == variables.gatewayClaim" in c for c in checks)
     assert any("system:serviceaccount:kube-system:statefulset-controller" in c and
                "request.operation != 'CREATE'" in c for c in checks)
+
+
+def test_kata_enforces_reviewed_runtime_at_sandbox_and_pod():
+    result = helm_template("--set", "mode=kata", "--set", "workloadRuntimeClassName=saw-kata")
+    assert result.returncode == 0, result.stderr
+    policies = [d["spec"] for d in yaml.safe_load_all(result.stdout)
+                if d and d["kind"] == "ValidatingAdmissionPolicy"]
+    assert len(policies) == 2
+    for policy in policies:
+        assert policy["failurePolicy"] == "Fail"
+        checks = [entry["expression"] for entry in policy["validations"]]
+        resource = policy["matchConstraints"]["resourceRules"][0]["resources"][0]
+        if resource == "sandboxes":
+            assert any('podTemplate.spec.runtimeClassName == "saw-kata"' in check for check in checks)
+        else:
+            assert resource == "pods"
+            assert any('object.spec.runtimeClassName == "saw-kata"' in check for check in checks)
+            assert any("variables.role != 'supervisor' || !has(object.spec.runtimeClassName)" in check
+                       for check in checks)

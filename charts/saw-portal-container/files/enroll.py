@@ -24,14 +24,19 @@ def api(path, patch=None):
 def once(x):
     u,r,sub,ident=x["user"],x["registration"],x["subject"],x["installation"]
     ns,t,hist="saw-"+u,"saw-ctl-"+r,"saw-history-"+r
+    runtime=x.get("kataRuntimeClass")
+    mode="kata" if runtime else "container"
     def obj(kind,name,namespace=ns):
+        if kind=="runtimeclass" and runtime and name==runtime["name"]:
+            return api("/apis/node.k8s.io/v1/runtimeclasses/"+name)
         if kind=="namespace":return api("/api/v1/namespaces/"+name)
         plural={"persistentvolumeclaim":"persistentvolumeclaims","configmap":"configmaps"}[kind]
         return api("/api/v1/namespaces/"+namespace+"/"+plural+"/"+name)
     nsobj=obj("namespace",ns)["metadata"]
     if nsobj["labels"].get("saw.redhat.com/runtime-owner")!=ident or nsobj.get("deletionTimestamp"):raise ValueError("namespace ownership")
-    cfg=dict(namespace=ns,namespaceUID=nsobj["uid"],ownerID=ident,mode="container",trustedNamespace=t,
+    cfg=dict(namespace=ns,namespaceUID=nsobj["uid"],ownerID=ident,mode=mode,trustedNamespace=t,
              governanceNamespace=x["governance"],gateway=u,proxyPolicy=u+"-proxy-policy",slotKeys=sorted(x["targets"]))
+    if runtime: cfg["workloadRuntimeClass"]=runtime["name"]
     cache={}
     def get(p):
         if p not in cache:cache[p]=api(p)
@@ -66,8 +71,11 @@ def once(x):
             host="-".join((u,target["workspace"],target["sandbox"],"ui"))
             slot["browser"]={"ownerLogin":u,"origin":"https://"+host+".apps."+x["domain"]}
         slots[key]=slot
-    bindings=dict(ownerID=ident,namespace=ns,namespaceUID=nsobj["uid"],ownerSubject=sub,mode="container",
+    bindings=dict(ownerID=ident,namespace=ns,namespaceUID=nsobj["uid"],ownerSubject=sub,mode=mode,
        gatewayVersion="0.1.2-rhaiv.6",approvedCredentialFreeProviders=[],bindings=slots)
+    if runtime:
+        bindings.update(workloadRuntimeClass=runtime["name"],workloadRuntimeClassUID=runtime["uid"],
+                        workloadRuntimeClassDigest=runtime["sha256"])
     if x.get("providerPolicy"):
         bindings["proxyBindings"] = [{"secret": b["secret"], "key": b["key"], "type": typ,
                                       "refresh": bool(b.get("refresh"))}

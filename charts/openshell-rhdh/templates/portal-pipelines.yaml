@@ -8,7 +8,7 @@ so RHDH's Tekton tab draws a workspace's create and delete as a pipeline. */ -}}
 {{- end -}}
 {{- $taskTimeout := include "openshell-rhdh.minutesDuration" (add (int $readyMinutes) 2) -}}
 {{- $intentMinutes := 10 -}}
-{{- if has "container" .Values.portal.deploymentModes -}}
+{{- if or (has "container" .Values.portal.deploymentModes) (has "kata" .Values.portal.deploymentModes) -}}
 {{- $intentMinutes = max 10 (int $readyMinutes) -}}
 {{- end -}}
 apiVersion: tekton.dev/v1

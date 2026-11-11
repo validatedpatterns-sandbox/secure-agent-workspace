@@ -26,7 +26,14 @@ def objects(config):
     apps = "/apis/apps/v1/namespaces"
     net = "/apis/networking.k8s.io/v1/namespaces"
     core = "/api/v1/namespaces"
+    placement = {}
+    if config.get("mode") == "kata":
+        placement = {
+            "sandboxPlacement": (f"{admission}/validatingadmissionpolicies/{policy}-kata", "spec"),
+            "sandboxPlacementBinding": (f"{admission}/validatingadmissionpolicybindings/{policy}-kata", "spec"),
+        }
     return {
+        **placement,
         "validation": (f"{admission}/validatingadmissionpolicies/{policy}", "spec"),
         "podDeleteGuard": (f"{admission}/validatingadmissionpolicies/{ns}-pods-driver", "spec"),
         "podDeleteBinding": (f"{admission}/validatingadmissionpolicybindings/{ns}-pods-driver", "spec"),
@@ -111,7 +118,16 @@ def verify(config, plan, get):
                 if not governed.check_policy(kind, credentials, policy, plan.get("customInferenceURL")):
                     raise BoundaryError("OpenAIProxyBindingMismatch" if kind == "openai"
                                         else "ProviderProxyBindingMismatch")
-    for key in ("validation", "secretGuard", "serviceGuard", "podDeleteGuard"):
+    checks = ["validation", "secretGuard", "serviceGuard", "podDeleteGuard"]
+    if config["mode"] == "kata":
+        import tomllib
+        driver = tomllib.loads(observed["gatewayConfig"]["data"]["gateway.toml"])["openshell"]["drivers"]["kubernetes"]
+        runtime = config.get("workloadRuntimeClass")
+        if (not runtime or plan.get("runtimeClass", {}).get("name", runtime) != runtime
+                or driver.get("default_runtime_class_name") != runtime):
+            raise BoundaryError("WrongWorkloadPlacement")
+        checks.append("sandboxPlacement")
+    for key in checks:
         vap = observed[key]
         status = vap.get("status", {})
         if (status.get("observedGeneration") != vap["metadata"]["generation"]

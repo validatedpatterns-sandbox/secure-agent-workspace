@@ -6,7 +6,7 @@
 {{- define "openshell-rhdh.readinessTemplate" -}}
 {{- $template := .template -}}
 {{- $minutes := int .root.Values.portal.sandboxReadyTimeoutMinutes -}}
-{{- $container := has "container" .root.Values.portal.deploymentModes -}}
+{{- $container := or (has "container" .root.Values.portal.deploymentModes) (has "kata" .root.Values.portal.deploymentModes) -}}
 {{- $enrollmentTaskMinutes := add (max 10 $minutes) 2 -}}
 {{- range $step := $template.spec.steps -}}
 {{- if and $container (eq $step.id "task-vm") -}}

@@ -185,3 +185,14 @@ def test_unbounded_gateway_egress_rejected(rules):
     result = template('--set-json', 'kubernetes.network.gatewayEgress=' + json.dumps(rules))
     assert result.returncode != 0
     assert not result.stdout.strip()
+
+
+def test_kata_uses_stock_workload_runtime_default_and_named_read():
+    docs = render('--set', 'deployment.mode=kata', '--set', 'kubernetes.workload.runtimeClassName=saw-kata')
+    driver = config(docs)['drivers']['kubernetes']
+    assert driver['default_runtime_class_name'] == 'saw-kata'
+    assert 'supervisor_runtime_class_name' not in driver
+    rules = docs['ClusterRole', 'saw-test-saw-test-gateway']['rules']
+    assert [r for r in rules if 'runtimeclasses' in r['resources']] == [
+        {'apiGroups': ['node.k8s.io'], 'resources': ['runtimeclasses'], 'verbs': ['get'],
+         'resourceNames': ['saw-kata']}]

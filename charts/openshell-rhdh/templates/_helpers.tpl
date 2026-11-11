@@ -155,8 +155,8 @@ from the release is enough and keeps renders stable.
 {{- if not (kindIs "string" $mode) -}}
 {{- fail "portal.deploymentModes must contain only strings" -}}
 {{- end -}}
-{{- if not (has $mode (list "vm" "container")) -}}
-{{- fail "portal.deploymentModes supports vm and container" -}}
+{{- if not (has $mode (list "vm" "container" "kata")) -}}
+{{- fail "portal.deploymentModes supports vm, container and kata" -}}
 {{- end -}}
 {{- if hasKey $seen $mode -}}{{- fail "portal.deploymentModes must not contain duplicates" -}}{{- end -}}
 {{- $_ := set $seen $mode true -}}
@@ -174,27 +174,34 @@ allowlist into both forms without enabling privileged form parameters. */}}
 {{- $modes := include "openshell-rhdh.deploymentModes" $root | fromJsonArray -}}
 {{- /* The form can advertise a site-wide union, never an owner authorization.
 The server still verifies the authenticated owner's exact profile approval. */ -}}
-{{- $approved := dict -}}
+{{- $approved := dict "container" (dict) "kata" (dict) -}}
 {{- range $site := $root.Values.portal.containerSites | default dict -}}
 {{- if and (kindIs "map" $site) (regexMatch "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$" (toString ($site.subject | default ""))) -}}
-{{- $automatic := $site.automaticEnrollment | default dict -}}
-{{- $profiles := dict -}}
-{{- if hasKey $automatic "approvedProfiles" -}}{{- $profiles = $automatic.approvedProfiles -}}{{- end -}}
-{{- range $id, $digest := $profiles -}}
-{{- if regexMatch "^[0-9a-f]{64}$" (toString $digest) -}}{{- $_ := set $approved $id true -}}{{- end -}}
+{{- $mode := "container" -}}
+{{- if hasKey $site "kataRuntimeClass" -}}
+{{- $class := $site.kataRuntimeClass -}}
+{{- if not (and (kindIs "map" $class) (eq (len $class) 3) (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" (toString ($class.name | default ""))) (regexMatch "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$" (toString ($class.uid | default ""))) (regexMatch "^[0-9a-f]{64}$" (toString ($class.sha256 | default "")))) -}}
+{{- fail "Kata site requires a reviewed RuntimeClass name, UID and placement digest" -}}{{- end -}}
+{{- $mode = "kata" -}}
+{{- end -}}
+{{- range $id, $digest := ($site.automaticEnrollment | default dict).approvedProfiles | default dict -}}
+{{- if regexMatch "^[0-9a-f]{64}$" (toString $digest) -}}{{- $_ := set (index $approved $mode) $id true -}}{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
-{{- $containerIDs := list -}}{{- $containerNames := list -}}
+{{- $profilesByMode := dict -}}
+{{- range $mode := list "container" "kata" -}}
+{{- $ids := list -}}{{- $names := list -}}
 {{- range $i, $id := $step.properties.profile.enum -}}
-{{- if hasKey $approved $id -}}
-{{- $containerIDs = append $containerIDs $id -}}
-{{- $containerNames = append $containerNames (index $step.properties.profile.enumNames $i) -}}
+{{- if hasKey (index $approved $mode) $id -}}
+{{- $ids = append $ids $id -}}{{- $names = append $names (index $step.properties.profile.enumNames $i) -}}
 {{- end -}}
 {{- end -}}
-{{- if not $containerIDs -}}{{- $modes = without $modes "container" -}}{{- end -}}
+{{- if not $ids -}}{{- $modes = without $modes $mode -}}{{- end -}}
+{{- $_ := set $profilesByMode $mode (dict "enum" $ids "enumNames" $names) -}}
+{{- end -}}
 {{- $_ := set $step.properties.deploymentMode "enum" $modes -}}
-{{- $labels := dict "vm" "Virtual machine" "container" "Container" -}}
+{{- $labels := dict "vm" "Virtual machine" "container" "Container" "kata" "Kata" -}}
 {{- $names := list -}}
 {{- range $mode := $modes -}}{{- $names = append $names (index $labels $mode) -}}{{- end -}}
 {{- $_ := set $step.properties.deploymentMode "enumNames" $names -}}
@@ -209,10 +216,11 @@ dependency and its credential fields shared by all deployment branches. */ -}}
 {{- $branches := list -}}
 {{- range $mode := $modes -}}
 {{- $field := deepCopy $profileField -}}
-{{- if eq $mode "container" -}}
-{{- $_ := set $field "enum" $containerIDs -}}{{- $_ := set $field "enumNames" $containerNames -}}
-{{- $_ := set $field "default" (first $containerIDs) -}}
-{{- $_ := set $field "description" "Container profiles configured at this site. Your administrator must also approve the selected profile for your account; existing container registrations keep their profile." -}}
+{{- if hasKey $profilesByMode $mode -}}
+{{- $choices := index $profilesByMode $mode -}}
+{{- $_ := set $field "enum" $choices.enum -}}{{- $_ := set $field "enumNames" $choices.enumNames -}}
+{{- $_ := set $field "default" (first $choices.enum) -}}
+{{- $_ := set $field "description" "Profiles configured for this deployment. Your administrator must also approve the selected profile for your account." -}}
 {{- else -}}
 {{- $_ := set $field "enum" $vmIDs -}}{{- $_ := set $field "enumNames" $vmNames -}}
 {{- end -}}

@@ -19,9 +19,11 @@
     },
     "mode": {
       "enum": [
-        "container"
+        "container",
+        "kata"
       ]
     },
+    "workloadRuntimeClassName": {"type": "string"},
     "network": {
       "type": "object",
       "additionalProperties": false,

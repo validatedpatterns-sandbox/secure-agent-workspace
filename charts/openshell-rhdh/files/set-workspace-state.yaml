@@ -3,7 +3,7 @@ apiVersion: scaffolder.backstage.io/v1beta3
 kind: Template
 metadata:
   name: set-saw-workspace-state
-  title: Stop or start my container workspace
+  title: Stop or start my Container or Kata workspace
   description: Pause or resume all sandboxes while retaining workspace files and audit history.
   tags: [openshell, openclaw, nemoclaw, secure-agent-workspace]
   labels: {saw.redhat.com/owners: 'true'}

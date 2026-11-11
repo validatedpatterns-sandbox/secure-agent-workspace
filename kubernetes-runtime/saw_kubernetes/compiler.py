@@ -227,7 +227,7 @@ def compile_profile_files(files, config):
         # status; do not accidentally turn that into a profile/secret echo.
         raise ContractError("profile documents fail shared SAW schema or semantic validation") from None
     mapping(config, {"ownerID", "namespace", "namespaceUID", "ownerSubject", "mode",
-                     "workloadRuntimeClass", "workloadRuntimeClassUID", "bindings",
+                     "workloadRuntimeClass", "workloadRuntimeClassUID", "workloadRuntimeClassDigest", "bindings",
                      "approvedCredentialFreeProviders", "gatewayVersion", "retiredSandboxes", "modelInputs", "proxyBindings", "customInferenceURL"},
             {"ownerID", "namespace", "namespaceUID", "ownerSubject", "mode", "bindings",
              "approvedCredentialFreeProviders", "gatewayVersion"}, "administrator configuration")
@@ -243,10 +243,24 @@ def compile_profile_files(files, config):
             raise ContractError(f"{key} must be a nonempty string")
     mode = config["mode"]
     runtime = config.get("workloadRuntimeClass", "")
-    if mode != "container":
-        raise ContractError("this adapter only accepts container")
-    if runtime or config.get("workloadRuntimeClassUID"):
-        raise ContractError("container mode must not select a RuntimeClass")
+    runtime_ref = {"name": runtime, "uid": config.get("workloadRuntimeClassUID", "")}
+    if mode == "container":
+        if any(runtime_ref.values()) or "workloadRuntimeClassDigest" in config:
+            raise ContractError("container mode must not select a RuntimeClass")
+    elif mode == "kata":
+        name(runtime, "workload RuntimeClass", 63)
+        try:
+            uid = uuid.UUID(runtime_ref["uid"])
+            if str(uid) != runtime_ref["uid"] or not uid.int:
+                raise ValueError()
+        except (ValueError, AttributeError, TypeError):
+            raise ContractError("kata requires a reviewed RuntimeClass UID") from None
+        sha = config.get("workloadRuntimeClassDigest")
+        if not isinstance(sha, str) or not re.fullmatch("[a-f0-9]{64}", sha):
+            raise ContractError("kata requires a reviewed RuntimeClass digest")
+        runtime_ref["sha256"] = sha
+    else:
+        raise ContractError("this adapter only accepts container or kata")
     approved = config["approvedCredentialFreeProviders"]
     if not isinstance(approved, list) or any(not isinstance(p, str) for p in approved):
         raise ContractError("approvedCredentialFreeProviders must be a list")
@@ -418,7 +432,7 @@ exec openclaw gateway""")
             "namespace": config["namespace"], "namespaceUID": config["namespaceUID"],
             "ownerSubject": config["ownerSubject"], "mode": mode, "gatewayVersion": config["gatewayVersion"],
             "requestedPlacement": {"supervisor": "container", "workload": mode},
-            "runtimeClass": {"name": runtime, "uid": config.get("workloadRuntimeClassUID", "")},
+            "runtimeClass": runtime_ref,
             "claims": sorted(all_refs, key=lambda r: (r["workspace"], r["name"])),
             "workspaces": sorted(workspaces, key=lambda w: w["name"])}
     if any(p["type"] == "custom-inference" for w in workspaces for p in w["providers"]):

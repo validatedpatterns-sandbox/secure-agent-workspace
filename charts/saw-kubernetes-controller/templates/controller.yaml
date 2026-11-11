@@ -32,6 +32,10 @@ metadata: {name: {{ $t }}-{{ $name }}}
 rules:
   - {apiGroups: [""], resources: [namespaces], resourceNames: [{{ $n }}], verbs: [get]}
   - {apiGroups: [""], resources: [nodes], verbs: [list]}
+  {{- if eq $c.mode "kata" }}
+  - {apiGroups: [node.k8s.io], resources: [runtimeclasses], resourceNames: [{{ required "approved RuntimeClass name required" $c.workloadRuntimeClass | quote }}], verbs: [get]}
+  - {apiGroups: [admissionregistration.k8s.io], resources: [validatingadmissionpolicies, validatingadmissionpolicybindings], resourceNames: [{{ $policy }}-kata], verbs: [get]}
+  {{- end }}
   - {apiGroups: [policy.networking.k8s.io], resources: [adminnetworkpolicies], verbs: [list]}
   - {apiGroups: [policy.networking.k8s.io], resources: [adminnetworkpolicies], resourceNames: [{{ $policy }}-egress], verbs: [get]}
   - {apiGroups: [admissionregistration.k8s.io], resources: [validatingadmissionpolicies, validatingadmissionpolicybindings], resourceNames: [{{ $policy }}, {{ $n }}-pods-driver, {{ $n }}-secrets-driver, {{ $n }}-services-driver], verbs: [get]}

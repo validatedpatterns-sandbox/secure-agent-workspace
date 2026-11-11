@@ -53,7 +53,7 @@ def test_projection_rejects_unbound_input(fault):
 def test_legacy_vm_remains_vm_and_reserved_modes_never_fall_back():
     result = workspace.project_workspace({"name": "alice"}, {}, {}, CATALOG)
     assert result["users"][0]["values"]["deployment"]["mode"] == "vm"
-    for mode in ("kata", "confidential"):
+    for mode in ("unknown", "confidential"):
         with pytest.raises(workspace.WorkspaceError, match="unsupported"):
             workspace.project_workspace({"name": "alice", "values": {"deployment": {"mode": mode}}}, {}, {}, CATALOG)
 
@@ -107,3 +107,18 @@ def test_operator_revision_pin_is_shared_and_does_not_change_repository(mode):
 def test_revision_pin_requires_operator_mapping_of_owner_to_full_commit(pins):
     with pytest.raises(workspace.WorkspaceError, match="workspaceRevisions"):
         workspace.project_workspace({"name": "alice"}, {"workspaceRevisions": pins}, {}, CATALOG)
+
+
+def test_kata_requires_reviewed_placement_and_reuses_the_same_targets():
+    owner, site = inputs()
+    targets = workspace.project_workspace(owner, {}, site, CATALOG)["containerSites"]["alice"]["targets"]
+    owner["values"]["deployment"]["mode"] = "kata"
+    with pytest.raises(workspace.WorkspaceError, match="RuntimeClass"):
+        workspace.project_workspace(owner, {}, site, CATALOG)
+    site["kataRuntimeClass"] = {"name": "saw-kata", "uid": owner["installationID"], "sha256": "f"*64}
+    actual = workspace.project_workspace(owner, {}, site, CATALOG)["containerSites"]["alice"]
+    assert actual["targets"] == targets
+    assert actual["kataRuntimeClass"] == site["kataRuntimeClass"]
+    owner["values"]["deployment"]["mode"] = "container"
+    with pytest.raises(workspace.WorkspaceError, match="Kata approval"):
+        workspace.project_workspace(owner, {}, site, CATALOG)

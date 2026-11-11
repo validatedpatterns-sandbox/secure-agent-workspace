@@ -680,7 +680,7 @@ def test_portal_workspaces_inherit_shared_credential_mode(tmp_path, enabled):
 
 
 @pytest.mark.ci_external
-@pytest.mark.parametrize("modes", [["vm"], ["vm", "container"]])
+@pytest.mark.parametrize("modes", [["vm"], ["vm", "container"], ["vm", "kata"]])
 def test_operator_mode_policy_reaches_both_forms_and_server(modes):
     docs = render("--set-json", f"portal.deploymentModes={json.dumps(modes)}",
                   "--set-json", 'portal.admins=["admin"]')
@@ -689,7 +689,7 @@ def test_operator_mode_policy_reaches_both_forms_and_server(modes):
         form = yaml.safe_load(templates[name])
         field = form["spec"]["parameters"][-1]["properties"]["deploymentMode"]
         # An operator allowlist alone does not make a container profile usable.
-        assert field["enum"] == [m for m in modes if m != "container"] and field["default"] == "vm"
+        assert field["enum"] == ["vm"] and field["default"] == "vm"
         request = form["spec"]["steps"][0]["input"]["body"]["stringData"]
         assert request["deploymentMode"] == "${{ parameters.deploymentMode }}"
         assert "runtimeClassName" not in str(form)
@@ -702,7 +702,7 @@ def test_operator_mode_policy_reaches_both_forms_and_server(modes):
 
 
 @pytest.mark.ci_external
-@pytest.mark.parametrize("modes", [[], ["container"], ["vm", "vm"], ["vm", "confidential"], ["vm", "kata"],
+@pytest.mark.parametrize("modes", [[], ["container"], ["vm", "vm"], ["vm", "confidential"], ["vm", "kata", "kata"],
                                   ["vm", "bogus"], ["vm", {}], "vm"])
 def test_invalid_operator_mode_policy_rejects_chart(modes):
     result = run_helm([HELM, "template", "openshell-rhdh", str(CHART), "-n", "rhdh",
@@ -833,3 +833,23 @@ def test_portal_allows_cold_plugin_and_backend_startup(docs):
     assert spec["progressDeadlineSeconds"] == 1800
     backend = next(c for c in spec["template"]["spec"]["containers"] if c["name"] == "backstage-backend")
     assert backend["startupProbe"] == {"failureThreshold": 15}
+
+
+@pytest.mark.ci_external
+def test_kata_forms_offer_only_profiles_approved_for_that_placement():
+    uid = "11111111-1111-1111-1111-111111111111"
+    sites = {
+        "alice": {"subject": uid, "automaticEnrollment": {"approvedProfiles": {"custom-inference": "1"*64}}},
+        "bob": {"subject": "22222222-2222-2222-2222-222222222222",
+                "kataRuntimeClass": {"name": "site-kata", "uid": uid, "sha256": "2"*64},
+                "automaticEnrollment": {"approvedProfiles": {"data-science": "3"*64}}},
+    }
+    docs = render("--set-json", 'portal.deploymentModes=["vm","container","kata"]',
+                  "--set-json", 'portal.admins=["admin"]', "--set-json", "portal.containerSites="+json.dumps(sites))
+    templates = one(docs, "ConfigMap", "saw-rhdh-templates")["data"]
+    for name in ("create-workspace.yaml", "create-workspace-for-user.yaml"):
+        step, fields = _deployment_profiles(yaml.safe_load(templates[name]))
+        assert step["properties"]["deploymentMode"]["enumNames"] == ["Virtual machine", "Container", "Kata"]
+        assert fields["container"]["enum"] == ["custom-inference"]
+        assert fields["kata"]["enum"] == ["data-science"]
+        assert "site-kata" not in templates[name]

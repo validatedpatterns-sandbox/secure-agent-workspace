@@ -70,3 +70,21 @@ def test_second_tenant_network_precedence(installation, subject, disjoint):
     else:
         with pytest.raises(BoundaryError, match="EarlierNetworkPolicy"):
             verify(config, config, resources.__getitem__)
+
+
+def test_kata_review_includes_sandbox_admission_and_gateway_placement(installation):
+    config, resources, _, _ = installation
+    config = dict(config, mode="kata", workloadRuntimeClass="saw-kata")
+    refs = objects(config)
+    for key in ("sandboxPlacement", "sandboxPlacementBinding"):
+        resources[refs[key][0]] = {"metadata": {"uid": key, "generation": 1}, "spec": {}}
+    resources[refs["sandboxPlacement"][0]]["status"] = {"observedGeneration": 1, "typeChecking": {}}
+    gateway = resources[refs["gatewayConfig"][0]]["data"]
+    gateway["gateway.toml"] = '[openshell.drivers.kubernetes]\ndefault_runtime_class_name = "saw-kata"'
+    approved = capture(config, resources.__getitem__)
+    assert set(approved["approved"]) >= {"sandboxPlacement", "sandboxPlacementBinding"}
+    with pytest.raises(BoundaryError, match="WrongWorkloadPlacement"):
+        verify(approved, dict(config, runtimeClass={"name": "other"}), resources.__getitem__)
+    gateway["gateway.toml"] = '[openshell.drivers.kubernetes]\ndefault_runtime_class_name = ""'
+    with pytest.raises(BoundaryError, match="WrongWorkloadPlacement"):
+        capture(config, resources.__getitem__)

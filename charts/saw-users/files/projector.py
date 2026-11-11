@@ -83,7 +83,7 @@ def parameters(config, catalog, read):
         if not re.fullmatch(r"[a-z0-9](?:[-a-z0-9]{0,17}[a-z0-9])?", name) or name in seen:
             raise ProjectionError("workspace names must be unique DNS labels of at most 19 characters")
         seen.add(name)
-        if owner.get("values", {}).get("deployment", {}).get("mode", "vm") != "container":
+        if owner.get("values", {}).get("deployment", {}).get("mode", "vm") not in {"container", "kata"}:
             raise ProjectionError("standalone container projection received another backend")
         site = sites.get(name)
         try:

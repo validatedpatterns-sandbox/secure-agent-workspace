@@ -88,7 +88,7 @@ metadata:
   annotations: {argocd.argoproj.io/sync-wave: '2'}
 spec:
   backoffLimit: 2
-  activeDeadlineSeconds: 360
+  activeDeadlineSeconds: 510
   template:
     metadata: {labels: {app: {{ $n }}, role: bind}}
     spec:

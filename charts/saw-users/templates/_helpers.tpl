@@ -24,7 +24,7 @@ watches, not in whatever namespace this chart happens to be released into.
 {{- range .Values.users | default list -}}
 {{- $name := .name | default "" | toString -}}
 {{- include "saw-users.validateDeploymentMode" (dict "root" $ "user" .) -}}
-{{- if and $.Values.ownerResolution.enabled (ne (dig "deployment" "mode" "vm" (.values | default dict)) "container") -}}
+{{- if and $.Values.ownerResolution.enabled (not (has (dig "deployment" "mode" "vm" (.values | default dict)) (list "container" "kata"))) -}}
 {{- $entryValues := .values | default dict -}}
 {{- $entryAccess := index $entryValues "accessControl" | default dict -}}
 {{- if or (hasKey . "ownerSubject") (hasKey $entryAccess "ownerSubject") (hasKey $entryAccess "owner") -}}
@@ -456,13 +456,13 @@ openshellValues. Keep omission as vm without changing existing rendered values. 
 {{- end -}}
 {{- end -}}
 {{- end -}}
-{{- if not (has $mode (list "vm" "container")) -}}
-{{- fail "deployment.mode must be one of vm, container" -}}
+{{- if not (has $mode (list "vm" "container" "kata")) -}}
+{{- fail "deployment.mode must be one of vm, container, kata" -}}
 {{- end -}}
-{{- if and (eq $mode "container") (hasKey (.root.Values.containerSites | default dict) .user.name) -}}
+{{- if and (has $mode (list "container" "kata")) (hasKey (.root.Values.containerSites | default dict) .user.name) -}}
 {{- $u := .user -}}
 {{- $site := index .root.Values.containerSites $u.name -}}
-{{- if ne (dig "deployment" "mode" "vm" ($u.values | default dict)) "container" -}}{{- fail "deployment.mode=container must be explicit on each user" -}}{{- end -}}
+{{- if not (has (dig "deployment" "mode" "vm" ($u.values | default dict)) (list "container" "kata")) -}}{{- fail "deployment.mode=container must be explicit on each user" -}}{{- end -}}
 {{- $foundation := eq (dig "automaticEnrollment" "enabled" true $site | toString) "false" -}}
 {{- $catalog := (.root.Files.Get "files/profile-catalog.json" | fromJson).profiles -}}
 {{- $profile := first ($u.profiles | default list) | default "" -}}
@@ -470,7 +470,7 @@ openshellValues. Keep omission as vm without changing existing rendered values. 
 {{- if or (not $u.ownerSubject) (ne $u.ownerSubject $site.subject) (not (regexMatch "^[0-9a-f]{16}$" (default "" $u.registration))) (ne (len ($u.profiles | default list)) 1) (not (hasKey $catalog $profile)) (not $approved) (not $u.pruneOnRemove) -}}
 {{- fail "container requires verified owner subject, scoped registration, approved BOM profile and foreground cleanup" -}}
 {{- end -}}
-{{- else if eq $mode "container" -}}
+{{- else if has $mode (list "container" "kata") -}}
 {{- fail (printf "user %q: deployment.mode=container requires a containerSites entry" .user.name) -}}
 {{- end -}}
 {{- end -}}

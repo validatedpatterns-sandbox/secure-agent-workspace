@@ -9,7 +9,8 @@
         "mode": {
           "type": "string",
           "enum": [
-            "container"
+            "container",
+            "kata"
           ]
         }
       },

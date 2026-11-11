@@ -76,8 +76,18 @@ data:
 {{- range $k, $v := $map }}
 {{- $values = replace (printf "@%s@" $k) $v $values }}
 {{- end }}
+{{- if and (eq $key "gateway") $site.kataRuntimeClass }}
+{{- $gateway := fromJson $values }}
+{{- $_ := set $gateway "deployment" (dict "mode" "kata") }}
+{{- $_ := set $gateway.kubernetes.workload "runtimeClassName" $site.kataRuntimeClass.name }}
+{{- $values = toJson $gateway }}
+{{- end }}
 {{- if eq $key "policy" }}
 {{- $policy := fromJson $values }}
+{{- if $site.kataRuntimeClass }}
+{{- $_ := set $policy "mode" "kata" }}
+{{- $_ := set $policy "workloadRuntimeClassName" $site.kataRuntimeClass.name }}
+{{- end }}
 {{- $gw := $stack.gateway.values.kubernetes }}
 {{- $slots := dict }}
 {{- range $key, $slot := $targets }}

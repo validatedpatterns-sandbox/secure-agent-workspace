@@ -478,7 +478,7 @@ def render_template(cat, for_user=False):
 def render_lifecycle_template(catalog):
     """Use the owner create pipeline for authentication, admission, progress and logs."""
     template = yaml.safe_load(render_template(catalog))
-    template["metadata"].update(labels={"saw.redhat.com/owners": "true"}, name="set-saw-workspace-state", title="Stop or start my container workspace",
+    template["metadata"].update(labels={"saw.redhat.com/owners": "true"}, name="set-saw-workspace-state", title="Stop or start my Container or Kata workspace",
                                 description="Pause or resume all sandboxes while retaining workspace files and audit history.")
     spec = template["spec"]
     spec["parameters"] = [{"title": "Workspace state", "required": ["operation"],

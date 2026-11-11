@@ -14,6 +14,13 @@ install = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(install)
 
 
+@pytest.fixture(autouse=True)
+def standalone_container_mode(monkeypatch):
+    # The documented container invocation sets this explicitly. The outer
+    # make test-installer invocation can export its own VM default.
+    monkeypatch.setenv("DEPLOYMENT_MODE", "container")
+
+
 def inputs():
     site = yaml.safe_load((ROOT / "tests/fixtures/container-site.yaml").read_text())["portal"]["containerSites"]["alice"]
     user = dict(name="alice", registration="a"*16, installationID="22222222-2222-4222-8222-222222222222",
@@ -33,6 +40,17 @@ def test_select_isolates_container_without_modifying_vm_or_input():
     assert selected["users"] == [user]
     assert selected["ownerResolution"]["enabled"] is False
     assert selected["projection"]["enabled"] is True
+
+
+@pytest.mark.parametrize(("requested", "declared"), [
+    ("container", "kata"), ("kata", "container"), ("vm", "container"),
+])
+def test_requested_backend_must_match_the_registration(monkeypatch, requested, declared):
+    monkeypatch.setenv("DEPLOYMENT_MODE", requested)
+    values = inputs()
+    values["users"][0]["values"]["deployment"]["mode"] = declared
+    with pytest.raises(install.InstallError, match="requested Kubernetes deployment mode"):
+        install.select(values, "alice")
 
 
 @pytest.mark.parametrize("fault", ["missing", "duplicate", "mode", "subject", "registration", "generation", "cleanup"])

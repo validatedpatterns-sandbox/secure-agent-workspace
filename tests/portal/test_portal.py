@@ -1602,16 +1602,16 @@ def test_deployment_request_defaults_to_vm(portal, monkeypatch):
     assert portal.request_deployment_mode({}) == "vm"
 
 
-@pytest.mark.parametrize("mode", ["container"])
+@pytest.mark.parametrize("mode", ["container", "kata"])
 def test_mode_requires_administrator_allowlist(portal, monkeypatch, mode):
     monkeypatch.delenv("SAW_DEPLOYMENT_MODES", raising=False)
     with pytest.raises(portal.PortalError, match="not enabled"):
         portal.request_deployment_mode({"deploymentMode": mode})
-    monkeypatch.setenv("SAW_DEPLOYMENT_MODES", '["vm", "container"]')
+    monkeypatch.setenv("SAW_DEPLOYMENT_MODES", json.dumps(['vm', mode]))
     assert portal.request_deployment_mode({"deploymentMode": mode}) == mode
 
 
-@pytest.mark.parametrize("mode", ["kata", "confidential", "typo", "", None, False, [], {}])
+@pytest.mark.parametrize("mode", ["confidential", "typo", "", None, False, [], {}])
 def test_unknown_or_malformed_mode_is_rejected(portal, mode):
     with pytest.raises(portal.PortalError):
         portal.request_deployment_mode({"deploymentMode": mode})
@@ -1745,13 +1745,17 @@ def test_container_preflight_explains_profile_and_cleanup_failures(portal, world
     assert not fake.vault and REGISTRY not in fake.objects
 
 
-def test_container_portal_register_update_delete(portal, world, monkeypatch):
+@pytest.mark.parametrize("mode", ["container", "kata"])
+def test_container_portal_register_update_delete(portal, world, monkeypatch, mode):
     fake, signer = world
     subject = "478fdd1f-8db9-41e8-97ad-b563215c89e9"
-    monkeypatch.setenv("SAW_DEPLOYMENT_MODES", '["vm","container"]')
-    monkeypatch.setenv("SAW_CONTAINER_SITES", json.dumps({"alice":{"subject":subject,"automaticEnrollment":{"approvedProfiles":{"audited-openclaw":"a"*64}}}}))
+    monkeypatch.setenv("SAW_DEPLOYMENT_MODES", json.dumps(["vm", mode]))
+    site = {"subject": subject, "automaticEnrollment": {"approvedProfiles": {"audited-openclaw": "a"*64}}}
+    if mode == "kata":
+        site["kataRuntimeClass"] = {"name": "saw-kata", "uid": subject, "sha256": "b"*64}
+    monkeypatch.setenv("SAW_CONTAINER_SITES", json.dumps({"alice": site}))
     for i in [1, 2]:
-        fake.request("saw-req-" + str(i), ds_request(signer, deploymentMode="container",
+        fake.request("saw-req-" + str(i), ds_request(signer, deploymentMode=mode,
                     profile="audited-openclaw", **{"inference.api_key":f"test-{i}"}))
         assert portal.main(["create", "saw-req-" + str(i)]) == 0
         entry = portal.read_entry(fake.objects[REGISTRY])
@@ -1761,6 +1765,7 @@ def test_container_portal_register_update_delete(portal, world, monkeypatch):
         output = portal.generator_params([{**entry,"ownerSubject":subject}], {},
                                          catalog=portal.load_catalog(os.environ["CATALOG_PATH"]))[0]
         user = json.loads(output["values"])["users"][0]
+        assert user["values"]["deployment"]["mode"] == mode
         assert user["installationID"] == portal.installation_id("alice", GEN[0])
         assert "test-" not in output["values"]
     fake.request("saw-req-3", {"token":signer.token(), "action":"delete", "workspace":"component:default/saw-alice"})
@@ -2038,3 +2043,17 @@ def test_enrollment_budget_only_extends_the_container_intent_wait(portal, world,
     with pytest.raises(portal.PortalError, match=f"not done after {expected // 60} minutes"):
         portal.wait_stage(stage, "alice", 600, sleep=lambda _: now.__setitem__(0, now[0] + 600), clock=lambda: now[0])
     assert now == [expected]
+
+
+@pytest.mark.parametrize("requested, bound", [("kata", "container"), ("container", "kata")])
+def test_portal_rejects_wrong_site_placement_before_registration(portal, world, monkeypatch, requested, bound):
+    fake, signer = world
+    subject = "478fdd1f-8db9-41e8-97ad-b563215c89e9"
+    site = {"subject": subject, "automaticEnrollment": {"approvedProfiles": {"audited-openclaw": "a"*64}}}
+    if bound == "kata":
+        site["kataRuntimeClass"] = {"name": "saw-kata", "uid": subject, "sha256": "b"*64}
+    monkeypatch.setenv("SAW_DEPLOYMENT_MODES", '["vm","container","kata"]')
+    monkeypatch.setenv("SAW_CONTAINER_SITES", json.dumps({"alice": site}))
+    fake.request("saw-req-placement", ds_request(signer, deploymentMode=requested, profile="audited-openclaw"))
+    assert portal.main(["create", "saw-req-placement"]) != 0
+    assert not fake.vault and REGISTRY not in fake.objects

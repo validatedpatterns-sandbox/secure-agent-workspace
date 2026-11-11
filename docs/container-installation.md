@@ -82,6 +82,8 @@ individual workspace must not uninstall this cluster-wide dependency.
 
 ## Public inputs and credential references
 
+For Kata workload placement, follow the [Kata installation and Developer Hub guide](kata-workspaces.md). Both modes use the same Kubernetes lifecycle and workspace BOM.
+
 The same site object is used as `containerSites.<owner>` for static installs or
 `portal.containerSites.<owner>` for RHDH. It is administrator-owned, not a form
 field. Start from the component charts' values and schemas:
@@ -240,7 +242,10 @@ Service/backends and their ports, using the same approved destinations as the
 controller's bootstrap egress, as well as DNS and the OIDC issuer. The relay
 membership Job reads Pod identities and updates the named public client-trust
 Secret before connecting to OpenShell. DNS/OIDC access alone cannot complete
-that Job. The browser relay has no Kubernetes token or trust-write RBAC. Changing
+that Job. The gateway can create the workspace before the reconciler grants the
+owner its administrator role. The binding Job waits up to 210 seconds after
+authentication for both observations, pins the workspace UUID once observed,
+and rejects a changed UUID or unexpected owner role. The browser relay has no Kubernetes token or trust-write RBAC. Changing
 the relay inputs creates a new input-hashed binding Job through GitOps.
 
 For sites with split-horizon DNS, run the [topology preflight](#discover-and-review-container-egress)

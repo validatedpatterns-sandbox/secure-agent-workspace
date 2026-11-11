@@ -10,7 +10,7 @@ metadata:
 data:
   create-workspace.yaml: |
 {{ include "openshell-rhdh.createTemplate" (dict "root" . "path" "files/create-workspace.yaml") | indent 4 }}
-  {{- if has "container" (include "openshell-rhdh.deploymentModes" . | fromJsonArray) }}
+  {{- if or (has "container" (include "openshell-rhdh.deploymentModes" . | fromJsonArray)) (has "kata" (include "openshell-rhdh.deploymentModes" . | fromJsonArray)) }}
   set-workspace-state.yaml: |
 {{ include "openshell-rhdh.readinessTemplate" (dict "root" . "template" (.Files.Get "files/set-workspace-state.yaml" | fromYaml)) | indent 4 }}
   {{- end }}

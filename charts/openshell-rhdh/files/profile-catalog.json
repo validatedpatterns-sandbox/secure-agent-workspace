@@ -36,7 +36,7 @@
             {
               "enabled": false,
               "harnessRequired": false,
-              "image": "ghcr.io/validatedpatterns-sandbox/nemoclaw-sandbox:latest",
+              "image": "ghcr.io/validatedpatterns-sandbox/nemoclaw-sandbox@sha256:28457eec59e71eca310cd72fc4b57c71506c3fce4c30f2636a237dca85725dbd",
               "name": "cuda-sandbox",
               "type": "nemoclaw",
               "uiRoute": false
@@ -186,7 +186,7 @@
             {
               "enabled": false,
               "harnessRequired": false,
-              "image": "ghcr.io/validatedpatterns-sandbox/nemoclaw-sandbox:latest",
+              "image": "ghcr.io/validatedpatterns-sandbox/nemoclaw-sandbox@sha256:28457eec59e71eca310cd72fc4b57c71506c3fce4c30f2636a237dca85725dbd",
               "name": "cuda-sandbox",
               "type": "nemoclaw",
               "uiRoute": false
@@ -209,7 +209,7 @@
             {
               "enabled": true,
               "harnessRequired": false,
-              "image": "ghcr.io/validatedpatterns-sandbox/nemoclaw-sandbox:latest",
+              "image": "ghcr.io/validatedpatterns-sandbox/nemoclaw-sandbox@sha256:28457eec59e71eca310cd72fc4b57c71506c3fce4c30f2636a237dca85725dbd",
               "modelInput": "inference.cuda_model",
               "name": "cuda-sandbox",
               "type": "nemoclaw",
@@ -302,7 +302,7 @@
             {
               "enabled": true,
               "harnessRequired": true,
-              "image": "ghcr.io/validatedpatterns-sandbox/nemoclaw-sandbox:latest",
+              "image": "ghcr.io/validatedpatterns-sandbox/nemoclaw-sandbox@sha256:28457eec59e71eca310cd72fc4b57c71506c3fce4c30f2636a237dca85725dbd",
               "name": "assistant",
               "type": "nemoclaw",
               "uiRoute": true

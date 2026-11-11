@@ -6,7 +6,7 @@ and separate supervisor run as ordinary Pods. Each data-science slot is a
 separate workload Pod. The workspace BOM, images, storage, credential routing,
 relay and audit flows are shared with container workspaces.
 
-## Check worker firmware before installing OSC
+## Check worker KVM access before installing OSC
 
 Run this from a platform administrator's existing OpenShift login. Supply the
 expected API address independently and a selector for the intended worker
@@ -18,13 +18,16 @@ KATA_API_SERVER=https://api.example.com:6443 \
 KATA_NODE_SELECTOR='saw.example.com/kata-pool=true' make kata-worker-check
 ```
 
-Each selected node must report `UEFI KVM`. An empty selector, a control-plane
-node, a missing host probe, legacy BIOS or missing KVM prevents a pass.
-A legacy-BIOS result identifies a worker outside the documented OSC local installation prerequisites. Record firmware separately from any empirical lab qualification. Firmware and device availability establish eligibility for the next test.
+Each selected node must report either `UEFI KVM` or `legacy-BIOS KVM`. An
+empty selector, a control-plane node, a missing host probe or missing KVM
+prevents a pass. The firmware value is context only. Red Hat's OSC guide lists
+CPU virtualization flags and KVM modules for node eligibility; it does not
+list UEFI as a requirement. This check does not replace OSC node eligibility
+checks or a live workload test.
 The running Kata handler, guest seccomp behavior, RWX mounts and the OpenShell
 supervisor connection require live qualification. Configure eligible workers
 before installing OSC. Creating a KataConfig can reboot workers.
-[Red Hat OSC installation prerequisites](https://docs.redhat.com/en/documentation/openshift_sandboxed_containers/1.13/html/deploying_openshift_sandboxed_containers_on_bare-metal_servers/install-osc-overview_metal-osc)
+[Red Hat OSC node eligibility checks](https://docs.redhat.com/en/documentation/openshift_sandboxed_containers/1.12/html/deploying_openshift_sandboxed_containers_on_bare-metal_servers/install-osc-overview_metal-osc#install-osc-node-eligibility-checks_metal-osc)
 
 ## Verify a deployed worker
 

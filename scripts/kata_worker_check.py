@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the selected x86 local-Kata workers before installing OSC."""
+"""Check KVM device access on selected x86 local-Kata workers."""
 import json
 import os
 import subprocess
@@ -60,9 +60,9 @@ def main():
         facts = oc("-n", ns, "exec", ready[0], "-c", "machine-config-daemon", "--",
                    "chroot", "/rootfs", "sh", "-c", PROBE).splitlines()
         print(f"{name}: {' '.join(facts)}")
-        passed &= facts == ["UEFI", "KVM"]
+        passed &= len(facts) == 2 and facts[0] in {"UEFI", "legacy-BIOS"} and facts[1] == "KVM"
     if not passed:
-        raise ValueError("OSC local Kata requires UEFI-booted workers with /dev/kvm")
+        raise ValueError("selected workers must expose /dev/kvm; firmware is reported for context only")
 
 
 if __name__ == "__main__":

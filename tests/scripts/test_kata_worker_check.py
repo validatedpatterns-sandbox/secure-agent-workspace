@@ -25,7 +25,7 @@ def test_reject_unsafe_target(items):
         check.workers(items)
 
 
-@pytest.mark.parametrize("facts, passes", [("legacy-BIOS\nKVM", False), ("UEFI\nmissing-KVM", False),
+@pytest.mark.parametrize("facts, passes", [("legacy-BIOS\nKVM", True), ("UEFI\nmissing-KVM", False),
                                            ("", False), ("UEFI\nKVM", True)])
 def test_probe(monkeypatch, facts, passes):
     monkeypatch.setenv("KATA_NODE_SELECTOR", "role=dedicated")
@@ -38,5 +38,5 @@ def test_probe(monkeypatch, facts, passes):
     if passes:
         check.main()
     else:
-        with pytest.raises(ValueError, match="requires UEFI"):
+        with pytest.raises(ValueError, match="must expose /dev/kvm"):
             check.main()

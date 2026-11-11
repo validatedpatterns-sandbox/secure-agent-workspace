@@ -803,5 +803,5 @@ $(eval $(call deprecated_alias,governance-create-profile,governance-profile-crea
 	@$(SCRIPTS_DIR)/check-build-repo.sh "$$PUSH_IMAGE_REPO"
 
 .PHONY: kata-worker-check
-kata-worker-check: ## Verify firmware and KVM on explicitly selected local-Kata workers
+kata-worker-check: ## Report firmware and verify KVM on selected local-Kata workers
 	@python3 scripts/kata_worker_check.py

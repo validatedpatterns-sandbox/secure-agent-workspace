@@ -818,7 +818,7 @@ make test
 # Tool-action gate tests (needs node; also included in the CI suite)
 make test-tool-gate
 
-# Run offline template validation (48 checks)
+# Run offline template validation
 ./tests/test-oidc-templates.sh
 
 # NetworkPolicy chart checks run offline; name two test SAWs for live checks
@@ -830,8 +830,8 @@ SAW_NS=saw-nptest-a VM_NAME=nptest-a PEER_NS=saw-nptest-b \
 When a sandbox has an owner-restricted UI route, its gateway uses trusted-proxy
 authentication. The localhost GUI forward authenticates with the gateway's
 loopback password: enter `gateway.auth.password` from the selected sandbox's
-`/sandbox/.openclaw/openclaw.json` in **Password (not stored)** and click
-**Connect**. The `make sandbox-ui` routes use the owner's Keycloak sign-in.
+`/sandbox/.openclaw/openclaw.json` in **Gateway secret** (or **Password (not
+stored)** in older clients) and click **Connect**. The `make sandbox-ui` routes use the owner's Keycloak sign-in.
 
 See the [test-writing and test-running guide](docs/testing.md) for local tools,
 selection commands, CI coverage, and fixture rules. `make test` and

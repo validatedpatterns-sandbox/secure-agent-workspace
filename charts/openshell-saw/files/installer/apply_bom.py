@@ -4170,13 +4170,24 @@ class ProfileApplier:
         source = f"gate:{digest}"
         return tree, source, digest, policy_hash
 
-    def prepare_tool_gate(self, ws, sb):
+    def prepare_tool_gate(self, ws, sb, existing=False):
         """Fill trusted plugin, policy and identity from the host, before create."""
         if sb.type not in ("openclaw", "nemoclaw"):
             return
         # Existing agents must be confined before their mounted policy changes.
-        if self.sandbox_state(ws, sb) == "running":
+        if existing:
+            # After a VM restart the gateway can report Ready before exec
+            # works. Wait before reading config, without changing its policy.
+            if not self.wait_exec_ready(ws, sb):
+                self.quiesce_openclaw(ws, sb)
+                raise InstallerError(f"sandbox '{sb.name}': cannot verify workspace confinement")
             self.ensure_workspace_confinement(ws, sb)
+        elif not self.sh.dry_run and self.workload_container(ws, sb, check=True):
+            # A failed gateway read is not proof that a sandbox is absent.
+            # Keep its old policy intact and its agent stopped until retry.
+            self.quiesce_openclaw(ws, sb)
+            raise InstallerError(f"sandbox '{sb.name}': workload exists but the gateway "
+                                 "did not confirm it; refusing to replace its tool policy")
         tree, source, digest, policy_hash = self.tool_gate_bundle(ws, sb)
         key = (ws.name, sb.name)
         self.gate_expected[key] = (source, digest, policy_hash)
@@ -4290,13 +4301,13 @@ class ProfileApplier:
                 self._podman("rm", "-f", cid, check=False, quiet=True, force=True)
             return read_harness_tar(exported)
 
-    def workload_container(self, ws, sb):
+    def workload_container(self, ws, sb, check=False):
         """Return the unique workload container, excluding its supervisor."""
         names = self._podman("ps", "-a",
                              "--filter", f"label=openshell.ai/sandbox-name={sb.name}",
                              "--filter", f"label=openshell.ai/sandbox-workspace={ws.name}",
                              "--filter", f"label={WORKLOAD_ROLE_LABEL}",
-                             "--format", "{{.Names}}", check=False, quiet=True)
+                             "--format", "{{.Names}}", check=check, quiet=True)
         found = (names.out or "").split()
         if not names.ok or not found:
             return None
@@ -4597,7 +4608,6 @@ class ProfileApplier:
         """configure_harness=False: the caller runs start_openclaw right
         after this, which configures the harness itself; skip the redundant
         round trip here."""
-        self.prepare_tool_gate(ws, sb)
         self.prepare_harness(ws, sb)
         state = self.sandbox_state(ws, sb)
         if state == "broken":
@@ -4661,6 +4671,10 @@ class ProfileApplier:
         if state == "running" and not self.sh.dry_run and not self.sandbox_mounts_ok(ws, sb):
             self.begin_migration(ws, sb, labels, reason="stale or missing trusted mounts")
             state = "missing"
+        # Reconcile recovery/recreation first, then prove confinement before
+        # replacing the live mounted policy. New sandboxes are still created
+        # only after their trusted gate and audit volumes have been prepared.
+        self.prepare_tool_gate(ws, sb, existing=state == "running")
         if state == "running":
             log(f"Sandbox '{sb.name}' already exists")
             self.attach_missing_providers(ws, sb)

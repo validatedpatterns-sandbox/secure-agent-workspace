@@ -416,7 +416,7 @@ def test_the_gateway_waits_until_the_sandbox_accepts_exec(ab, fake_env, config, 
     calls = fake_env.openshell_calls()[before:]
     probes = [c for c in calls if c[:2] == ["sandbox", "exec"] and c[-1] == "true"]
     assert len(probes) >= 5
-    run = [i for i, c in enumerate(calls) if c[:2] == ["sandbox", "exec"] and "openclaw gateway run" in c[-1]]
+    run = [i for i, c in enumerate(calls) if c[:2] == ["sandbox", "exec"] and 'cat > "$SUP"' in c[-1]]
     assert run and run[-1] > calls.index(probes[-1])
     assert fake_env.openshell_state()["notReadyExecs"] == 0
 
@@ -813,3 +813,33 @@ def test_existing_workspace_confinement_is_repaired_before_policy_update(
     ws, name = target.split("/")
     assert ab.sandbox_volume_name(ab.GATE_VOLUME_PREFIX, ws, name) not in fills
     assert fake_env.openshell_state()["sandboxes"][target]["agentStopped"] is True
+
+
+def test_gateway_get_failure_cannot_replace_a_running_agents_policy(
+        ab, fake_env, config, profiles, creds, monkeypatch):
+    applier = applier_with_shipped_profiles(ab, config, creds)
+    applier.apply(profiles)
+    fake_env.deny("sandbox get")
+    fills = []
+    original = applier.volumes.fill
+    def record_fill(*args, **kwargs):
+        fills.append(args[0])
+        return original(*args, **kwargs)
+    monkeypatch.setattr(applier.volumes, "fill", record_fill)
+    with pytest.raises(ab.InstallerError, match="refusing to replace its tool policy"):
+        applier.apply(profiles)
+    assert not fills
+    assert all(sb["agentStopped"] for sb in fake_env.openshell_state()["sandboxes"].values())
+
+
+def test_confinement_exec_failure_stops_the_host_workload(
+        ab, fake_env, config, profiles, creds):
+    applier = applier_with_shipped_profiles(ab, config, creds)
+    applier.apply(profiles)
+    (fake_env.state / "workspace-confinement.json").write_text(json.dumps({
+        "default/notebook": {"getFail": True, "quiesceFail": True}}))
+    with pytest.raises(ab.InstallerError, match="cannot quiesce OpenClaw"):
+        applier.apply(profiles)
+    sb = fake_env.openshell_state()["sandboxes"]["default/notebook"]
+    assert sb["agentStopped"] is True and sb["phase"] == "Completed"
+    assert ["stop", "--time", "5", "openshell-default--notebook-0000"] in fake_env.podman_calls()

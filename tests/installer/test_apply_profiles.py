@@ -753,3 +753,63 @@ def test_attaching_a_keyless_provider_marks_openclaw_for_restart(
     applier.cli("provider", "create", "--name", "local-mcp", "--type", "local-mcp")
     applier.attach_missing_providers(ws, sb)
     assert applier.harness_refilled[("default", "notebook")] is True
+
+
+@pytest.mark.parametrize("target", ["default/notebook", "cuda-dev/cuda-sandbox"])
+@pytest.mark.parametrize("fault", [
+    {"setFail": True}, {"getFail": True}, {"response": "false"},
+    {"response": '"true"'}, {"response": "1"}, {"response": "null"},
+    {"response": "not-json"}, {"response": '{"tools.fs.workspaceOnly": true}'},
+])
+def test_workspace_confinement_failure_stops_apply(
+        ab, fake_env, config, profiles, creds, target, fault):
+    (fake_env.state / "workspace-confinement.json").write_text(json.dumps({target: fault}))
+    with pytest.raises(ab.InstallerError):
+        applier_with_shipped_profiles(ab, config, creds).apply(profiles)
+    sandbox = fake_env.openshell_state()["sandboxes"][target]
+    assert sandbox["agentStopped"] is True
+    ws, name = target.split("/")
+    calls = [c for c in fake_env.openshell_calls()
+             if c[:2] == ["sandbox", "exec"] and name in c]
+    assert not any("openclaw plugins enable saw-tool-gate" in c[-1] for c in calls)
+    assert not any('cat > "$SUP"' in c[-1] for c in calls)
+
+
+@pytest.mark.parametrize("target", ["default/notebook", "cuda-dev/cuda-sandbox"])
+def test_existing_workspace_confinement_is_repaired_before_policy_update(
+        ab, fake_env, config, profiles, creds, target, monkeypatch):
+    applier = applier_with_shipped_profiles(ab, config, creds)
+    applier.apply(profiles)
+    state = fake_env.openshell_state()
+    state["sandboxes"][target]["openclawConfig"]["tools.fs.workspaceOnly"] = False
+    fake_env.set_openshell_state(state)
+    before = len(fake_env.openshell_calls())
+    applier.apply(profiles)
+    repaired = fake_env.openshell_state()["sandboxes"][target]
+    assert repaired["openclawConfig"]["tools.fs.workspaceOnly"] is True
+    assert repaired["agentStopped"] is False
+    calls = fake_env.openshell_calls()[before:]
+    name = target.split("/")[1]
+    scripts = [c[-1] for c in calls if c[:2] == ["sandbox", "exec"] and name in c]
+    assert any("# SAW: quiesce OpenClaw" in s for s in scripts)
+    before = len(fake_env.openshell_calls())
+    applier.apply(profiles)
+    assert not any("# SAW: quiesce OpenClaw" in c[-1]
+                   for c in fake_env.openshell_calls()[before:])
+
+    # Reapply failure leaves the old mounted policy intact and the agent stopped.
+    state = fake_env.openshell_state()
+    state["sandboxes"][target]["openclawConfig"].pop("tools.fs.workspaceOnly")
+    fake_env.set_openshell_state(state)
+    (fake_env.state / "workspace-confinement.json").write_text(json.dumps({target: {"setFail": True}}))
+    fills = []
+    original = applier.volumes.fill
+    def record_fill(*args, **kwargs):
+        fills.append(args[0])
+        return original(*args, **kwargs)
+    monkeypatch.setattr(applier.volumes, "fill", record_fill)
+    with pytest.raises(ab.InstallerError):
+        applier.apply(profiles)
+    ws, name = target.split("/")
+    assert ab.sandbox_volume_name(ab.GATE_VOLUME_PREFIX, ws, name) not in fills
+    assert fake_env.openshell_state()["sandboxes"][target]["agentStopped"] is True

@@ -520,6 +520,10 @@ elif op == "sandbox exec":
         return {}
 
     script = args[-1] if args else ""
+    if "cat > \"$SUP\"" in script:
+        sb["agentStopped"] = False
+        save()
+        sys.exit(0)
     if script.startswith("if [ -f /sandbox/.openclaw/saw-models.json ]"):
         print(sb.get("files", {}).get(".openclaw/saw-models.json", "[]"))
         sys.exit(0)
@@ -574,6 +578,20 @@ elif op == "sandbox exec":
         sb["mcpWrites"] = sb.get("mcpWrites", 0) + 1
         save()
         sys.exit(0)
+    if "# SAW: quiesce OpenClaw for workspace confinement" in script:
+        sb["agentStopped"] = True
+        save()
+        sys.exit(0)
+    if "openclaw config " in script and "tools.fs.workspaceOnly" in script:
+        fault_file = state_dir / "workspace-confinement.json"
+        faults = json.loads(fault_file.read_text()) if fault_file.exists() else {}
+        fault = faults.get(f"{ws}/{opt('-n')}", {})
+        operation = "set" if "openclaw config set " in script else "get"
+        if fault.get(operation + "Fail"):
+            fail("Error: workspace confinement " + operation + " failed")
+        if operation == "get" and "response" in fault:
+            print(fault["response"])
+            sys.exit(0)
     if "openclaw config set " in script:
         m = re.search(r"openclaw config set (\S+)\s+(.*)", script)
         if m:
@@ -584,7 +602,7 @@ elif op == "sandbox exec":
             except (ValueError, json.JSONDecodeError):
                 val = rest.strip("'\"")
             if key.startswith(("plugins.load", "skills.load", "models.providers.", "agents.entries.",
-                               "agents.defaults.")):
+                               "agents.defaults.", "tools.fs.")):
                 sb.setdefault("openclawConfig", {})[key] = val
             record = re.search(r"printf '%s\\n' (.*) > /sandbox/.openclaw/saw-models.json", script)
             if record:

@@ -4174,6 +4174,9 @@ class ProfileApplier:
         """Fill trusted plugin, policy and identity from the host, before create."""
         if sb.type not in ("openclaw", "nemoclaw"):
             return
+        # Existing agents must be confined before their mounted policy changes.
+        if self.sandbox_state(ws, sb) == "running":
+            self.ensure_workspace_confinement(ws, sb)
         tree, source, digest, policy_hash = self.tool_gate_bundle(ws, sb)
         key = (ws.name, sb.name)
         self.gate_expected[key] = (source, digest, policy_hash)
@@ -4802,9 +4805,63 @@ class ProfileApplier:
                 log(f"  waiting for sandbox '{sb.name}' to be ready")
             time.sleep(self.POLL_SECONDS)
 
+    def quiesce_openclaw(self, ws, sb):
+        """Stop the relauncher and agent before repairing unsafe filesystem config.
+
+        If exec cannot prove they stopped, stop the workload from the host and
+        fail apply. Never replace its permissive policy in that case.
+        """
+        script = "\n".join([
+            "# SAW: quiesce OpenClaw for workspace confinement",
+            _GATEWAY_PIDS_SH, _SUP_PIDS_SH,
+            'for p in $(sup_pids); do kill "$p" 2>/dev/null || true; done',
+            'sleep 1',
+            'for p in $(sup_pids) $(gateway_pids); do kill -KILL "$p" 2>/dev/null || true; done',
+            'sleep 1',
+            '[ -z "$(sup_pids)$(gateway_pids)" ]',
+        ])
+        stopped = self.cli("sandbox", "exec", "-n", sb.name, *ws_args(ws.name),
+                           "--no-tty", "--", "sh", "-c", script, check=False, quiet=True)
+        if not stopped.ok:
+            container = self.workload_container(ws, sb)
+            if container:
+                self._podman("stop", "--time", "5", container)
+            raise InstallerError(f"sandbox '{sb.name}': cannot quiesce OpenClaw; "
+                                 "workspace confinement could not be established")
+
+    def ensure_workspace_confinement(self, ws, sb):
+        """Only the JSON boolean true permits filesystem tools and agent startup."""
+        if self.sh.dry_run:
+            return
+        exec_cmd = ("sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty", "--")
+        get = f"{OPENCLAW_EXEC_ENV} openclaw config get tools.fs.workspaceOnly --json"
+
+        def confined():
+            result = self.cli(*exec_cmd, "sh", "-c", get, check=False, quiet=True)
+            try:
+                return result.ok and json.loads(result.out) is True
+            except ValueError:
+                return False
+
+        # Avoid restarting a successfully configured, unchanged sandbox. A
+        # false, missing, malformed or unreadable setting requires quiescence.
+        stopped = not confined()
+        if stopped:
+            self.quiesce_openclaw(ws, sb)
+        try:
+            self.cli(*exec_cmd, "sh", "-c",
+                     f"{OPENCLAW_EXEC_ENV} openclaw config set tools.fs.workspaceOnly true --strict-json")
+            if not confined():
+                raise InstallerError(f"sandbox '{sb.name}': tools.fs.workspaceOnly "
+                                     "must read back as the JSON boolean true")
+        except InstallerError:
+            if not stopped:
+                self.quiesce_openclaw(ws, sb)
+            raise
+
     def start_openclaw(self, ws, sb, provider):
         """Onboard openclaw inside the sandbox and start its web gateway.
-        These steps are best effort, as before; verification decides."""
+        Onboarding is best effort; workspace confinement is mandatory."""
         exec_cmd = ["sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty", "--"]
         self.wait_exec_ready(ws, sb)
         self.finalize_tool_audit(ws, sb)
@@ -4939,9 +4996,7 @@ class ProfileApplier:
         # Tool actions permit workspace writes and edits. Keep OpenClaw's
         # filesystem tool confined to that workspace even if image defaults
         # or a prior onboarding changed its broader filesystem setting.
-        self.cli(*exec_cmd, "sh", "-c",
-                 f"{oc_env} openclaw config set tools.fs.workspaceOnly true --strict-json",
-                 check=False)
+        self.ensure_workspace_confinement(ws, sb)
         # The request timeout: OpenClaw's per-provider HTTP timeout
         # (models.providers.<id>.timeoutSeconds; the custom provider's id is
         # the --custom-provider-id above, a native one's its type).

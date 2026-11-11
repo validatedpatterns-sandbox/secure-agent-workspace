@@ -16,10 +16,12 @@ enabled: true
 # The pattern sets global.governance.engine (values-global.yaml), which wins.
 engine: interceptor
 
-# Built by .github/workflows/build-governance-interceptor.yml on main. This is
-# the immutable digest that `latest` resolved to while the release-tagged
-# v0.1.6 artifact is unavailable. Replace it with the v0.1.6 digest when that
-# artifact is published; the interceptor must match the SAW gateways' release.
+# This is the published v0.1.2 interceptor, not a validated v0.1.6 default.
+# Merging PR #156 triggers the main-only v0.1.6 publication workflow. The
+# follow-up will pin its verified public digest and complete clean-install
+# acceptance: https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157
+# Wait for that follow-up to merge and acceptance to pass before deploying
+# the v0.1.6 upgrade. See docs/openshell-016-release.md.
 image: "ghcr.io/validatedpatterns-sandbox/governance-interceptor@sha256:253b58d070d3ed341287fcbab44684d84a437fcb9f26be5834ebf554a40ec22f"
 # gRPC listen port
 port: 18081

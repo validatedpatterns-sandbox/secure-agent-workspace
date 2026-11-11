@@ -30,11 +30,18 @@ the arm64 Podman disk ([arm64 guide](arm64.md)). The legacy
 `openshell-gateway-docker` disk is x86_64 only and publishes its tags directly;
 ARM clusters use the default Podman runtime.
 
-The OpenShell 0.1.6 upgrade requires a matching interceptor publication before
-release acceptance. The current interceptor chart digest is the previously
-published 0.1.2 artifact; it does **not** validate the 0.1.6 upgrade. See the
-[0.1.6 publication requirements](openshell-016-release.md). Preliminary tests
-must supply a matching build by digest in deployment overrides.
+The OpenShell 0.1.6 rollout is split across two PRs: merge #156 to trigger
+upstream publication, then pin the verified public interceptor digest and
+complete clean-install acceptance in a follow-up. Track it in
+[the release issue](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157) and the
+[0.1.6 release plan](openshell-016-release.md).
+
+**Deployment hold:** the current interceptor chart digest is the published
+0.1.2 artifact. Preliminary testing used a matching local 0.1.6 build; the
+shipped old-interceptor/new-gateway pair is unvalidated. Wait for the follow-up
+to merge and clean-install acceptance to pass before deploying the 0.1.6
+upgrade from `main`. Preliminary tests must supply a matching build by digest
+in deployment overrides.
 
 Pull requests build without registry credentials or pushing. Publishing is
 restricted to `main`, including manual workflow dispatches. Every push verifies

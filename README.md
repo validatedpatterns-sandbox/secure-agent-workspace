@@ -2,6 +2,14 @@
 
 Deploy isolated, per-user AI agent sandboxes on OpenShift Virtualization with OIDC authentication and policy-controlled access.
 
+> **OpenShell 0.1.6 rollout:** merging PR #156 triggers the upstream interceptor
+> publication workflow. A [follow-up issue](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157) tracks pinning
+> the public 0.1.6 image and completing clean-install validation. The current
+> default still uses the 0.1.2 interceptor; preliminary tests used a matching
+> local 0.1.6 build. Wait for the follow-up to merge and clean-install acceptance
+> to pass before deploying this upgrade from `main`. See the
+> [release plan](docs/openshell-016-release.md).
+
 ## Upgrade: stage network isolation per user
 
 This release adds default-deny NetworkPolicy to each SAW. The `openshell-saw`

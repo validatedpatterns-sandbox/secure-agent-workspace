@@ -827,6 +827,12 @@ SAW_NS=saw-nptest-a VM_NAME=nptest-a PEER_NS=saw-nptest-b \
   PEER_VM_NAME=nptest-b REQUIRE_PEER=1 ./tests/test-network-policy.sh
 ```
 
+When a sandbox has an owner-restricted UI route, its gateway uses trusted-proxy
+authentication. The localhost GUI forward authenticates with the gateway's
+loopback password: enter `gateway.auth.password` from the selected sandbox's
+`/sandbox/.openclaw/openclaw.json` in **Password (not stored)** and click
+**Connect**. The `make sandbox-ui` routes use the owner's Keycloak sign-in.
+
 See the [test-writing and test-running guide](docs/testing.md) for local tools,
 selection commands, CI coverage, and fixture rules. `make test` and
 `make test-installer` both run the complete pytest suite.

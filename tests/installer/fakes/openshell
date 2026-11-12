@@ -611,11 +611,6 @@ elif op == "sandbox exec":
             if target["type"] == "models.providers.apiKey":
                 assert segments == ["models", "providers", target["providerId"], "apiKey"]
                 sb.setdefault("openclawConfig", {})[target["path"]] = target["ref"]
-            elif target["type"] == "auth-profiles.api_key.key":
-                assert segments[0] == "profiles" and segments[2] == "key"
-                assert target["agentId"] == "main"
-                assert target["authProfileProvider"] == segments[1].split(":", 1)[0]
-                sb.setdefault("openclawAuthRefs", {})[segments[1]] = target["ref"]
             else:
                 fail("unsupported secret plan target")
         sb.setdefault("credentialRefPlans", []).append(plan)

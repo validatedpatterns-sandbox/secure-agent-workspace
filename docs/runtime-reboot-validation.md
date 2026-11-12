@@ -18,16 +18,22 @@ agent turn succeed. This experiment did not require new provider credentials,
 network exceptions, package changes or sandbox recreation.
 
 The installer now requests OpenClaw's reference credential-persistence mode.
-For custom providers, it also replaces the temporary onboarding alias
-`CUSTOM_API_KEY` with a reference to the governance profile's actual variable
-(for example, `CUSTOM_INFERENCE_API_KEY` or `NVIDIA_API_KEY`). Later processes
-therefore use the placeholder issued to their current runtime. Reapply can
-also save an inactive replacement credential in OpenClaw's auth store. The
-installer binds that new profile through OpenClaw's supported `secrets apply`
-plan API before activating it, including provider metadata when the agent-local
-auth-profile mapping must be created. The preflight runs before writes and the
-broad scrub passes are disabled so unrelated credentials remain intact. OpenShell's endpoint and
-credential-identity enforcement remains in effect.
+For custom providers, it binds the managed provider to the governance profile's
+actual environment variable (for example, `CUSTOM_INFERENCE_API_KEY` or
+`NVIDIA_API_KEY`) through OpenClaw's supported secrets-plan API. Preflight runs
+before writes, and the broad scrub passes are disabled. No auth-profile targets
+are migrated by that plan.
+
+An existing custom model can also retain an `@profile` binding whose auth-store
+entry is absent after reboot. That overrides the provider's valid environment
+reference and fails with `Auth profile ... is not configured`. The installer
+selects the managed custom model without that binding, preserving fallback models
+and unrelated configuration. Native providers continue preserving their selected
+credentials. Native onboarding/activation retains its own saved connection
+metadata; when a custom replacement needs activation, its temporary onboarding
+alias is provided for that command. The running custom route then uses the
+managed provider reference directly. OpenShell's endpoint and credential-identity
+enforcement remains in effect.
 
 Reapply repairs the managed provider configuration in place. Validate the
 shipped ConfigMap/installer path on new workspaces and existing data: perform

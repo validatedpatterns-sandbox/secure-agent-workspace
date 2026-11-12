@@ -259,3 +259,128 @@ def test_under_governance_a_provider_is_named_after_its_type(ab):
     # Shipped profiles all satisfy it.
     for name in ("custom-inference", "data-science"):
         ab.validate_profiles(ab.parse_profiles(profile_files(name)), governed=True)
+
+
+def test_reapply_replaces_saved_runtime_placeholder_with_provider_env_reference(
+        ab, fake_env, config, profiles, custom_secrets, governed_catalog):
+    """A reboot issues a new opaque OpenShell credential revision (#161).
+
+    Persisting the old value in openclaw.json makes inference fail before it
+    reaches the credential proxy. Keep a reference to the actual provider env
+    name, including when repairing an existing sandbox in place.
+    """
+    creds = resolve(ab, profiles, custom_secrets)
+    applier = ab.ProfileApplier(ab.Shell(), config, creds)
+    applier.apply(profiles)
+    state = fake_env.openshell_state()
+    sb = state["sandboxes"]["default/notebook"]
+    key = "models.providers.custom-inference.apiKey"
+    sb["openclawConfig"][key] = "openshell:resolve:env:v111_CUSTOM_INFERENCE_API_KEY"
+    sb["openclawConfig"]["models.providers.user-choice.apiKey"] = "keep-user-choice"
+    sb.setdefault("files", {})["notes.md"] = "preserve across reapply"
+    fake_env.set_openshell_state(state)
+    before = len(fake_env.openshell_calls())
+    applier.apply(profiles)
+    actual = fake_env.openshell_state()["sandboxes"]["default/notebook"]
+    assert actual["openclawConfig"][key] == {
+        "source": "env", "provider": "default", "id": "CUSTOM_INFERENCE_API_KEY"}
+    assert actual["openclawConfig"]["models.providers.user-choice.apiKey"] == "keep-user-choice"
+    assert actual["files"]["notes.md"] == "preserve across reapply"
+    assert not any(c[:2] == ["sandbox", "delete"]
+                   for c in fake_env.openshell_calls()[before:])
+
+
+def test_failed_credential_reference_write_stops_apply_before_agent_launch(
+        ab, fake_env, config, profiles, custom_secrets, governed_catalog, monkeypatch):
+    creds = resolve(ab, profiles, custom_secrets)
+    applier = ab.ProfileApplier(ab.Shell(), config, creds)
+    original = applier.cli
+    launched = []
+
+    def reject_reference(*args, **kwargs):
+        if "# SAW: bind runtime credential references" in str(args[-1]):
+            raise ab.InstallerError("credential reference write failed")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(applier, "cli", reject_reference)
+    monkeypatch.setattr(applier, "launch_openclaw", lambda *a, **kw: launched.append(True))
+    with pytest.raises(ab.InstallerError, match="credential reference write failed"):
+        applier.apply(profiles)
+    assert not launched
+
+
+def test_custom_route_uses_provider_ref_instead_of_stale_auth_profile(
+        ab, fake_env, config, profiles, custom_secrets, governed_catalog):
+    creds = resolve(ab, profiles, custom_secrets)
+    applier = ab.ProfileApplier(ab.Shell(), config, creds)
+    applier.apply(profiles)
+    state = fake_env.openshell_state()
+    saved = state["sandboxes"]["default/notebook"]
+    saved["openclawConfig"]["agents.entries.main.model"] = {
+        "primary": "custom-inference/old@custom-inference:missing-after-reboot",
+        "fallbacks": ["user-provider/model@user-provider:keep"]}
+    saved["openclawAuthRefs"] = {"user-provider:keep": {"source": "env", "provider": "default", "id": "USER_KEY"}}
+    fake_env.set_openshell_state(state)
+    profile_id = "custom-inference:setup-00000000-0000-0000-0000-000000000001"
+    output = ("Replacement credential saved but inactive.\n"
+              f"openclaw models auth activate {profile_id} --agent main")
+    (fake_env.state / "exec-output.json").write_text(json.dumps({"openclaw onboard": output}))
+    applier.apply(profiles)
+    actual = fake_env.openshell_state()["sandboxes"]["default/notebook"]
+    assert actual["openclawConfig"]["agents.entries.main.model"] == {
+        "primary": f"custom-inference/{MODEL}",
+        "fallbacks": ["user-provider/model@user-provider:keep"]}
+    assert actual["openclawAuthRefs"] == saved["openclawAuthRefs"]
+    plan = actual["credentialRefPlans"][-1]
+    assert plan["scrubEnv"] is False
+    assert plan["scrubAuthProfilesForProviderTargets"] is False
+    assert [t["type"] for t in plan["targets"]] == ["models.providers.apiKey"]
+    assert plan["targets"][0]["ref"]["id"] == "CUSTOM_INFERENCE_API_KEY"
+    scripts = [str(c[-1]) for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "exec"]]
+    activation = next(text for text in scripts if f"openclaw models auth activate {profile_id}" in text)
+    assert 'CUSTOM_API_KEY="$CUSTOM_INFERENCE_API_KEY" openclaw models auth activate' in activation
+    migration = next(text for text in scripts if "# SAW: bind runtime credential references" in text)
+    assert 'CUSTOM_API_KEY="$CUSTOM_INFERENCE_API_KEY" openclaw secrets apply' in migration
+    gateway = next(text for text in scripts if "# providers: custom-inference" in text)
+    assert f'export {ab.OPENCLAW_EXEC_ENV} CUSTOM_API_KEY="$CUSTOM_INFERENCE_API_KEY"' in gateway
+
+
+@pytest.mark.parametrize("preflight_fails", [False, True])
+def test_reference_plan_shell_validates_regular_file_and_cleans_up(ab, tmp_path, preflight_fails):
+    """Run the generated shell against the native API's regular-JSON-file contract."""
+    import os
+    import subprocess
+    import textwrap
+
+    capture = tmp_path / "captured.jsonl"
+    executable = tmp_path / "openclaw"
+    executable.write_text(textwrap.dedent("""\
+        #!/usr/bin/env python3
+        import json, os, pathlib, stat, sys
+        assert sys.argv[1:3] == ['secrets', 'apply']
+        assert os.environ.get('CUSTOM_API_KEY') == 'current-issued-placeholder'
+        path = pathlib.Path(sys.argv[sys.argv.index('--from') + 1])
+        assert path.is_file()
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        plan = json.loads(path.read_text())
+        assert [t['type'] for t in plan['targets']] == ['models.providers.apiKey']
+        with open(os.environ['ISSUE161_TEST_CAPTURE'], 'a') as out:
+            out.write(json.dumps({'dryRun': '--dry-run' in sys.argv, 'plan': plan}) + '\\n')
+        if os.environ.get('ISSUE161_PREFLIGHT_FAIL') == '1' and '--dry-run' in sys.argv:
+            raise SystemExit(1)
+        """))
+    executable.chmod(0o755)
+    script = ab.openclaw_credential_ref_script(
+        "custom-inference", "CUSTOM_INFERENCE_API_KEY", 'CUSTOM_API_KEY="$CUSTOM_INFERENCE_API_KEY"')
+    script = script.replace("/sandbox/.openclaw/state", str(tmp_path))
+    result = subprocess.run(['sh', '-c', script], capture_output=True, text=True,
+                            env={**os.environ, 'PATH': str(tmp_path) + os.pathsep + os.environ['PATH'],
+                                 'ISSUE161_TEST_CAPTURE': str(capture),
+                                 'CUSTOM_INFERENCE_API_KEY': 'current-issued-placeholder',
+                                 'CUSTOM_API_KEY': '',
+                                 'ISSUE161_PREFLIGHT_FAIL': '1' if preflight_fails else '0'})
+    assert (result.returncode != 0) == preflight_fails, result.stderr
+    calls = [json.loads(line) for line in capture.read_text().splitlines()]
+    assert [c['dryRun'] for c in calls] == ([True] if preflight_fails else [True, False])
+    assert all(t['ref']['id'] == 'CUSTOM_INFERENCE_API_KEY' for t in calls[0]['plan']['targets'])
+    assert not list(tmp_path.glob('saw-credential-ref.*'))

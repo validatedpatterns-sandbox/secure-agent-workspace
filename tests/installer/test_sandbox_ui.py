@@ -480,7 +480,7 @@ def test_start_openclaw_sets_the_origins(ab, fake_env, config, profiles, creds):
                if c[:2] == ["sandbox", "exec"] and c[3] == "notebook"]
     assert any("gateway.controlUi.allowedOrigins" in s and
                "https://alice-default-notebook-ui.apps.example.com" in s for s in scripts)
-    run = next(s for s in scripts if "openclaw gateway run" in s)
+    run = next(s for s in scripts if 'cat > "$SUP"' in s)
     assert "--bind lan" in run, "the gateway listens on 0.0.0.0 in the sandbox"
 
 
@@ -633,7 +633,7 @@ def test_start_openclaw_runs_the_gateway_script(ab, fake_env, config, profiles, 
     make_applier(ab, config, creds).apply(profiles)
     scripts = [c[-1] for c in fake_env.openshell_calls()
                if c[:2] == ["sandbox", "exec"] and c[3] == "notebook"]
-    run = next(s for s in scripts if "openclaw gateway run" in s)
+    run = next(s for s in scripts if 'cat > "$SUP"' in s)
     assert "gateway.auth.mode '\"trusted-proxy\"'" in run
 
 

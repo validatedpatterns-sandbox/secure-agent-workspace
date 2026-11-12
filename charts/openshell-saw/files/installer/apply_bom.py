@@ -1223,11 +1223,11 @@ def resolve_sandbox_inference(ws, sb, secrets_dir, mode="proxy", forbidden=()):
     return resolve_inference(ws, sb, read_value, validate_endpoint, forbidden)
 
 
-def openclaw_agent_model(model_ref, current):
-    """Change the model without dropping its provider's selected credential."""
+def openclaw_agent_model(model_ref, current, preserve_binding=True):
+    """Keep native credential bindings; managed custom routes can use provider refs."""
     primary = current.get("primary", "") if isinstance(current, dict) else current
     provider = model_ref.split("/", 1)[0]
-    if isinstance(primary, str) and primary.startswith(provider + "/"):
+    if preserve_binding and isinstance(primary, str) and primary.startswith(provider + "/"):
         binding = primary.partition("@")[2]
         if binding.startswith(provider + ":"):
             model_ref += "@" + binding
@@ -2160,6 +2160,26 @@ def openclaw_replacement_profile(output):
     return ids[0] if len(set(ids)) == 1 else None
 
 
+def openclaw_credential_ref_script(provider_type, key_var, oc_env):
+    """Bind the managed provider only; leave OpenClaw auth-store profiles intact."""
+    ref = {"source": "env", "provider": "default", "id": key_var}
+    targets = [{"type": "models.providers.apiKey",
+                "path": f"models.providers.{provider_type}.apiKey",
+                "pathSegments": ["models", "providers", provider_type, "apiKey"],
+                "providerId": provider_type, "ref": ref}]
+    plan = {"version": 1, "protocolVersion": 1, "targets": targets,
+            "scrubEnv": False, "scrubAuthProfilesForProviderTargets": False}
+    return "\n".join([
+        "# SAW: bind runtime credential references",
+        "set -eu", "umask 077",
+        "plan=$(mktemp /sandbox/.openclaw/state/saw-credential-ref.XXXXXX)",
+        """trap 'rm -f "$plan"' EXIT""",
+        "printf '%s\\n' " + shlex.quote(json.dumps(plan)) + ' > "$plan"',
+        f'{oc_env} openclaw secrets apply --from "$plan" --dry-run',
+        f'{oc_env} openclaw secrets apply --from "$plan"',
+    ]) + "\n"
+
+
 def ws_args(name):
     return [] if name == "default" else ["--workspace", name]
 
@@ -2560,6 +2580,23 @@ class ProfileApplier:
         # old /sandbox and its checksum, kept until the restore is verified.
         self.migrations_path = (Path(prune["ledgerPath"]).with_name("sandbox-migrations.json")
                                 if prune.get("ledgerPath") else None)
+        # A confinement stop must survive a new installer process. In
+        # particular, a host-stopped workload must never enter broken-sandbox
+        # deletion while its /sandbox is the only copy of the user's files.
+        self.confinement_stops_path = (
+            Path(prune["ledgerPath"]).with_name("confinement-stops.json")
+            if prune.get("ledgerPath") else
+            Path.home() / ".local/state/openshell/confinement-stops.json")
+        self.confinement_stops = {}
+        if not shell.dry_run:
+            try:
+                self.confinement_stops = json.loads(self.confinement_stops_path.read_text())
+            except FileNotFoundError:
+                pass
+            except (OSError, ValueError) as exc:
+                raise InstallerError(f"cannot read confinement stop state: {exc}") from exc
+            if not isinstance(self.confinement_stops, dict):
+                raise InstallerError("confinement stop state is not an object")
         self.refresh_state = (Path(prune["ledgerPath"]).with_name("refresh.json")
                               if prune.get("ledgerPath") else None)
         self.migrations = (read_json(self.migrations_path, {})
@@ -3027,16 +3064,23 @@ class ProfileApplier:
     def sandbox_state(self, ws, sb):
         """'running', 'broken' (Error/Completed), 'deleting' or 'missing'."""
         state = self.cli("sandbox", "get", sb.name, *ws_args(ws.name), check=False, quiet=True)
+        clean = re.sub(r"\x1b\[[0-9;]*m", "", state.out)
+        if (self.migration_key(ws, sb) in self.confinement_stops and
+                (not state.ok or re.search(r"Phase:\s*(Completed|Error|Stopped|Stopping|Deleting)\b", clean)
+                 or "Error" in clean)):
+            raise InstallerError(
+                f"sandbox '{sb.name}' is held for workspace confinement repair; "
+                "its workload is stopped or unavailable and will not be recreated. "
+                "Recover and start the existing sandbox, then retry apply")
         if not state.ok:
             return "missing"
-        clean = re.sub(r"\x1b\[[0-9;]*m", "", state.out)
         if re.search(r"Phase:\s*Deleting", clean):
             return "deleting"
         return "broken" if ("Error" in clean or "Phase: Completed" in clean) else "running"
 
     # Found live after a VM restart: a sandbox reports an error for a while
-    # as its supervisor reconnects, then recovers. Recreating it would lose
-    # /sandbox, so a broken sandbox gets this long to come back first.
+    # as its supervisor reconnects, then recovers. Recreation preserves
+    # /sandbox but ends open sessions, so give it this long to recover first.
     BROKEN_GRACE_SECONDS = 90
     # `sandbox delete` only accepts the deletion; creating the same name
     # before the cleanup finishes fails with "already exists".
@@ -3051,6 +3095,23 @@ class ProfileApplier:
             time.sleep(self.POLL_SECONDS)
             state = self.sandbox_state(ws, sb)
         return state
+
+    def log_broken_sandbox(self, ws, sb):
+        """Capture bounded, read-only diagnostics after the recovery grace."""
+        got = self.cli("sandbox", "get", sb.name, *ws_args(ws.name), check=False, quiet=True)
+        clean = re.sub(r"\x1b\[[0-9;]*m", "", got.out + "\n" + got.err)
+        lines = [line.strip() for line in clean.splitlines()
+                 if re.search(r"\b(Phase|Error|Reason|Message)\b", line, re.IGNORECASE)]
+        for line in lines[:10]:
+            log(f"Sandbox '{sb.name}': {self.sh.mask(line)}")
+        name = self.workload_container(ws, sb)
+        if name:
+            state = self._podman("inspect", "--format",
+                                 "{{.State.Status}} exit={{.State.ExitCode}} "
+                                 "oom={{.State.OOMKilled}} {{.State.Error}}",
+                                 name, check=False, quiet=True)
+            if state.ok:
+                log(f"Workload '{name}': {self.sh.mask(state.out)}")
 
     def harness_source(self, sb):
         """(source id, inline bundle) for a sandbox's harnessRef, or (None, None).
@@ -3079,10 +3140,33 @@ class ProfileApplier:
     def tool_gate_bundle(self, ws, sb):
         return _saw_core.tool_gate_bundle(Path(__file__).resolve().parent, self.tool_gate_identity(ws, sb))
 
-    def prepare_tool_gate(self, ws, sb):
+    def prepare_tool_gate(self, ws, sb, existing=False):
         """Fill trusted plugin, policy and identity from the host, before create."""
         if sb.type not in ("openclaw", "nemoclaw"):
             return
+        # Existing agents must be confined before their mounted policy changes.
+        if existing:
+            # After a VM restart the gateway can report Ready before exec
+            # works. Wait before reading config, without changing its policy.
+            if not self.wait_exec_ready(ws, sb):
+                # An old workload can exit while reconnecting after a runtime
+                # upgrade, after our first lifecycle check. No
+                # confinement read or policy change has happened yet: leave
+                # lifecycle recovery to the next apply, which archives /sandbox
+                # before recreating it. A confinement hold here would prevent
+                # that recovery indefinitely.
+                if self.sandbox_state(ws, sb) in ("broken", "deleting"):
+                    raise InstallerError(f"sandbox '{sb.name}' stopped while waiting for exec; "
+                                         "retry apply to recover it before changing its tool policy")
+                self.quiesce_openclaw(ws, sb)
+                raise InstallerError(f"sandbox '{sb.name}': cannot verify workspace confinement")
+            self.ensure_workspace_confinement(ws, sb)
+        elif not self.sh.dry_run and self.workload_container(ws, sb, check=True):
+            # A failed gateway read is not proof that a sandbox is absent.
+            # Keep its old policy intact and its agent stopped until retry.
+            self.quiesce_openclaw(ws, sb)
+            raise InstallerError(f"sandbox '{sb.name}': workload exists but the gateway "
+                                 "did not confirm it; refusing to replace its tool policy")
         tree, source, digest, policy_hash = self.tool_gate_bundle(ws, sb)
         key = (ws.name, sb.name)
         self.gate_expected[key] = (source, digest, policy_hash)
@@ -3196,13 +3280,13 @@ class ProfileApplier:
                 self._podman("rm", "-f", cid, check=False, quiet=True, force=True)
             return read_harness_tar(exported)
 
-    def workload_container(self, ws, sb):
+    def workload_container(self, ws, sb, check=False):
         """Return the unique workload container, excluding its supervisor."""
         names = self._podman("ps", "-a",
                              "--filter", f"label=openshell.ai/sandbox-name={sb.name}",
                              "--filter", f"label=openshell.ai/sandbox-workspace={ws.name}",
                              "--filter", f"label={WORKLOAD_ROLE_LABEL}",
-                             "--format", "{{.Names}}", check=False, quiet=True)
+                             "--format", "{{.Names}}", check=check, quiet=True)
         found = (names.out or "").split()
         if not names.ok or not found:
             return None
@@ -3483,7 +3567,6 @@ class ProfileApplier:
         """configure_harness=False: the caller runs start_openclaw right
         after this, which configures the harness itself; skip the redundant
         round trip here."""
-        self.prepare_tool_gate(ws, sb)
         self.prepare_harness(ws, sb)
         state = self.sandbox_state(ws, sb)
         if state == "broken":
@@ -3492,18 +3575,31 @@ class ProfileApplier:
             state = self.wait_sandbox(ws, sb, lambda s: s != "broken", self.BROKEN_GRACE_SECONDS)
         if state == "broken":
             key = self.migration_key(ws, sb)
-            if not self.sh.dry_run and key not in self.migrations and not self.sandbox_gateway_ca_ok(ws, sb):
+            self.log_broken_sandbox(ws, sb)
+            if self.sh.dry_run or key in self.migrations:
+                # A record can outlive its archive between applies. Verify it
+                # again before deleting the remaining copy of the workspace.
+                if not self.sh.dry_run:
+                    record = self.migrations[key]
+                    try:
+                        verified = sha256_file(Path(record["archive"])) == record["sha256"]
+                    except (OSError, KeyError, TypeError):
+                        verified = False
+                    if not verified:
+                        raise InstallerError(f"saved /sandbox archive of '{sb.name}' is missing "
+                                             "or invalid; nothing was deleted")
+                log(f"Sandbox '{sb.name}' is not running; recreating it")
+                self.cli("sandbox", "delete", sb.name, *ws_args(ws.name), check=False)
+                state = "deleting"
+            else:
                 labels = self.sandbox_labels(ws, sb)
                 if labels is None:
                     raise InstallerError(f"sandbox '{sb.name}' labels cannot be read; "
                                          "nothing was changed, the apply is retried")
-                self.begin_migration(ws, sb, labels, reason="a stale or missing gateway CA",
-                                     via_volume=True)
+                reason = ("a stale or missing gateway CA" if not self.sandbox_gateway_ca_ok(ws, sb)
+                          else "a workload that did not recover")
+                self.begin_migration(ws, sb, labels, reason=reason, via_volume=True)
                 state = "missing"
-            else:
-                log(f"Sandbox '{sb.name}' is not running; recreating it")
-                self.cli("sandbox", "delete", sb.name, *ws_args(ws.name), check=False)
-                state = "deleting"
         if state == "deleting":
             # Also a deletion an earlier run started (found live: that run
             # failed on "already exists" and left the sandbox Deleting).
@@ -3547,6 +3643,10 @@ class ProfileApplier:
         if state == "running" and not self.sh.dry_run and not self.sandbox_mounts_ok(ws, sb):
             self.begin_migration(ws, sb, labels, reason="stale or missing trusted mounts")
             state = "missing"
+        # Reconcile recovery/recreation first, then prove confinement before
+        # replacing the live mounted policy. New sandboxes are still created
+        # only after their trusted gate and audit volumes have been prepared.
+        self.prepare_tool_gate(ws, sb, existing=state == "running")
         if state == "running":
             log(f"Sandbox '{sb.name}' already exists")
             self.attach_missing_providers(ws, sb)
@@ -3691,9 +3791,103 @@ class ProfileApplier:
                 log(f"  waiting for sandbox '{sb.name}' to be ready")
             time.sleep(self.POLL_SECONDS)
 
+    def quiesce_openclaw(self, ws, sb):
+        """Stop the relauncher and agent before repairing unsafe filesystem config.
+
+        If exec cannot prove they stopped, stop the workload from the host and
+        fail apply. Never replace its permissive policy in that case.
+        """
+        # Persist before either stop: a crash or failed readback must retain
+        # both the no-delete guard and the obligation to resume after repair.
+        if not self.sh.dry_run:
+            self.confinement_stops[self.migration_key(ws, sb)] = True
+            write_json_atomic(self.confinement_stops_path, self.confinement_stops, mode=0o600)
+        script = "\n".join([
+            "# SAW: quiesce OpenClaw for workspace confinement",
+            _GATEWAY_PIDS_SH, _SUP_PIDS_SH,
+            'for p in $(sup_pids); do kill "$p" 2>/dev/null || true; done',
+            'sleep 1',
+            'for p in $(sup_pids) $(gateway_pids); do kill -KILL "$p" 2>/dev/null || true; done',
+            'sleep 1',
+            '[ -z "$(sup_pids)$(gateway_pids)" ]',
+        ])
+        stopped = self.cli("sandbox", "exec", "-n", sb.name, *ws_args(ws.name),
+                           "--no-tty", "--", "sh", "-c", script, check=False, quiet=True)
+        if not stopped.ok:
+            container = self.workload_container(ws, sb)
+            if container:
+                self._podman("stop", "--time", "5", container)
+            raise InstallerError(f"sandbox '{sb.name}': cannot quiesce OpenClaw; "
+                                 "workspace confinement could not be established")
+
+    def ensure_workspace_confinement(self, ws, sb):
+        """Only the JSON boolean true permits filesystem tools and agent startup."""
+        if self.sh.dry_run:
+            return
+        exec_cmd = ("sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty", "--")
+        get = f"{OPENCLAW_EXEC_ENV} openclaw config get tools.fs.workspaceOnly --json"
+
+        def confined():
+            result = self.cli(*exec_cmd, "sh", "-c", get, check=False, quiet=True)
+            try:
+                return result.ok and json.loads(result.out) is True
+            except ValueError:
+                return False
+
+        # Avoid restarting a successfully configured, unchanged sandbox. A
+        # false, missing, malformed or unreadable setting requires quiescence.
+        stopped = not confined()
+        if stopped:
+            self.quiesce_openclaw(ws, sb)
+        try:
+            self.cli(*exec_cmd, "sh", "-c",
+                     f"{OPENCLAW_EXEC_ENV} openclaw config set tools.fs.workspaceOnly true --strict-json")
+            if not confined():
+                raise InstallerError(f"sandbox '{sb.name}': tools.fs.workspaceOnly "
+                                     "must read back as the JSON boolean true")
+        except InstallerError:
+            if not stopped:
+                self.quiesce_openclaw(ws, sb)
+            raise
+
+    def clear_confinement_stop(self, ws, sb):
+        key = self.migration_key(ws, sb)
+        if not self.sh.dry_run and key in self.confinement_stops:
+            self.confinement_stops.pop(key)
+            write_json_atomic(self.confinement_stops_path, self.confinement_stops, mode=0o600)
+
+    def resume_openclaw(self, ws, sb):
+        """Resume a previously configured agent without changing its provider.
+
+        A fresh sandbox with no provider has no saved gateway supervisor and
+        remains unonboarded. A repaired existing agent keeps its current model
+        and credential configuration, even when no provider is usable now.
+        """
+        if self.migration_key(ws, sb) not in self.confinement_stops:
+            return
+        if not self.wait_exec_ready(ws, sb):
+            raise InstallerError(f"sandbox '{sb.name}': cannot resume confinement repair")
+        self.ensure_workspace_confinement(ws, sb)
+        exec_cmd = ("sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty", "--")
+        configured = self.cli(*exec_cmd, "sh", "-c",
+                              "# SAW: check saved OpenClaw supervisor\n"
+                              "if test -f /sandbox/.openclaw/state/saw-gateway-supervise.sh; "
+                              "then printf present; else printf absent; fi", quiet=True)
+        if configured.out.strip() not in ("present", "absent"):
+            raise InstallerError(f"sandbox '{sb.name}': cannot read saved OpenClaw supervisor")
+        if configured.out.strip() == "absent":
+            # No installer-started agent to resume. The repair is complete.
+            self.clear_confinement_stop(ws, sb)
+            return
+        self.finalize_tool_audit(ws, sb)
+        self.configure_harness(ws, sb, exec_cmd, OPENCLAW_EXEC_ENV)
+        self.install_tool_gate(ws, sb, enable=True)
+        self.disable_provider_channels(ws, sb, exec_cmd, OPENCLAW_EXEC_ENV)
+        self.launch_openclaw(ws, sb, exec_cmd, OPENCLAW_EXEC_ENV)
+
     def start_openclaw(self, ws, sb, provider):
         """Onboard openclaw inside the sandbox and start its web gateway.
-        These steps are best effort, as before; verification decides."""
+        Onboarding is best effort; workspace confinement is mandatory."""
         exec_cmd = ["sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty", "--"]
         self.wait_exec_ready(ws, sb)
         self.finalize_tool_audit(ws, sb)
@@ -3721,6 +3915,7 @@ class ProfileApplier:
             # No openclaw.json yet, so the plugin entry is not enabled. The
             # files are still in place for a later onboard.
             self.install_tool_gate(ws, sb, enable=False)
+            self.resume_openclaw(ws, sb)
             # The sandbox still has to stay Ready after the installer exits.
             self.install_keepalive(ws, sb)
             return
@@ -3749,16 +3944,24 @@ class ProfileApplier:
             key_env = f'CUSTOM_API_KEY="${key_var}" '
         onboarded = self.cli(*exec_cmd, "sh", "-c",
                  f"{oc_env} {key_env}openclaw onboard --non-interactive "
-                 f"--accept-risk --mode local {auth_args} --skip-channels --skip-health", check=False)
-        # Re-onboarding an existing sandbox with a different provider or model
-        # (e.g. after switching to a custom endpoint) makes OpenClaw save the
-        # new credential but keep the old connection; activate the new one.
+                 f"--accept-risk --mode local {auth_args} --secret-input-mode ref "
+                 f"--skip-channels --skip-health", check=False)
+        # Activation can temporarily put CUSTOM_API_KEY back into config.
+        # Keep its current runtime value available through native migration and
+        # gateway launch; only the reference is persisted, never this value.
+        if key_env:
+            oc_env = f"{oc_env} {key_env.strip()}"
+        # Keep native onboarding's saved connection metadata intact. A custom
+        # replacement's temporary alias is also needed during native activation.
         profile_id = openclaw_replacement_profile(onboarded.out + "\n" + onboarded.err)
         if profile_id:
             log(f"Activating the new OpenClaw credential '{profile_id}'")
             self.cli(*exec_cmd, "sh", "-c",
                      f"{oc_env} openclaw models auth activate {shlex.quote(profile_id)} --agent main",
                      check=False)
+        if not auth_choice:
+            self.cli(*exec_cmd, "sh", "-c",
+                     openclaw_credential_ref_script(provider.type, key_var, oc_env))
         model_id = model if model.startswith(f"{provider.type}/") else f"{provider.type}/{model}"
         if auth_choice:
             self.cli(*exec_cmd, "sh", "-c",
@@ -3802,7 +4005,9 @@ class ProfileApplier:
                      f"{oc_env} openclaw config set agents.defaults.models "
                      + shlex.quote(json.dumps(choices))
                      + f" && printf '%s\\n' {shlex.quote(json.dumps(list(desired)))} > {model_state}")
-        # Keep activation's credential binding: old profiles may hold stale placeholders.
+        # Native providers keep their selected credential. Custom routes use
+        # the explicit managed provider SecretRef; an old @profile can refer
+        # to a missing/stale auth-store entry after restart and override it.
         current = self.cli(*exec_cmd, "sh", "-c",
                            f"{oc_env} openclaw config get agents.entries.main.model --json",
                            check=False, quiet=True)
@@ -3812,7 +4017,11 @@ class ProfileApplier:
             selected = None
         self.cli(*exec_cmd, "sh", "-c",
                  f"{oc_env} openclaw config set agents.entries.main.model "
-                 f"{shlex.quote(json.dumps(openclaw_agent_model(model_id, selected)))}")
+                 f"{shlex.quote(json.dumps(openclaw_agent_model(model_id, selected, preserve_binding=bool(auth_choice))))}")
+        # Tool actions permit workspace writes and edits. Keep OpenClaw's
+        # filesystem tool confined to that workspace even if image defaults
+        # or a prior onboarding changed its broader filesystem setting.
+        self.ensure_workspace_confinement(ws, sb)
         # The request timeout: OpenClaw's per-provider HTTP timeout
         # (models.providers.<id>.timeoutSeconds; the custom provider's id is
         # the --custom-provider-id above, a native one's its type).
@@ -3832,6 +4041,9 @@ class ProfileApplier:
         # is running, or when its settings changed; the files are in place either way.
         self.install_tool_gate(ws, sb, enable=True)
         self.disable_provider_channels(ws, sb, exec_cmd, oc_env)
+        self.launch_openclaw(ws, sb, exec_cmd, oc_env)
+
+    def launch_openclaw(self, ws, sb, exec_cmd, oc_env):
         # One script: the gateway secret is made and kept inside the sandbox
         # (the installer never sees it). The gateway is restarted only when
         # the harness was refilled, none is running, or its settings (auth
@@ -3841,8 +4053,8 @@ class ProfileApplier:
         providers = [p for p in sb.providers if (ws.name, p) not in self.skipped]
         self.cli(*exec_cmd, "sh", "-c",
                  openclaw_gateway_script(self.cfg, ws.name, sb.name, oc_env, refilled=refilled,
-                                         providers=providers),
-                 check=False)
+                                         providers=providers))
+        self.clear_confinement_stop(ws, sb)
         self.install_keepalive(ws, sb)
 
     def disable_provider_channels(self, ws, sb, exec_cmd, oc_env):
@@ -4207,6 +4419,7 @@ class ProfileApplier:
             log(f"WARN: no usable provider for {sb.type} sandbox '{sb.name}'; "
                 "creating it without agent onboarding")
             self.create_sandbox(ws, sb)
+            self.resume_openclaw(ws, sb)
             return
         if sb.type == "nemoclaw" and sb.harness_ref:
             # A harness is a volume mounted when the sandbox is created, and

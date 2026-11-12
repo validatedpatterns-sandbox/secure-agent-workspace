@@ -1019,7 +1019,7 @@ def states(st):
 
 
 @pytest.mark.parametrize("webui_up", [False, True])
-def test_a_profile_without_sandbox_ui_waits_for_the_openshell_webui(
+def test_custom_inference_waits_for_the_webui_and_sandbox_ui(
         portal, world, catalog, webui_up):
     fake, signer = world
     fake.request("saw-req-custom", {"action": "create", "token": signer.token(),
@@ -1039,7 +1039,8 @@ def test_a_profile_without_sandbox_ui_waits_for_the_openshell_webui(
                                  "vp-gitops", "example.com", ping=ping)
     assert st["ready"] is webui_up
     assert st["phase"] == ("ready" if webui_up else "running")
-    assert checked == ["https://alice-webui-saw-alice.apps.example.com"]
+    assert checked == ["https://alice-webui-saw-alice.apps.example.com",
+                       "https://alice-default-notebook-ui.apps.example.com"]
 
 
 def test_sandbox_uis_do_not_hide_an_unavailable_openshell_webui(portal, world):

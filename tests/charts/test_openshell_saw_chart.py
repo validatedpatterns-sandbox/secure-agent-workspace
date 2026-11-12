@@ -1609,3 +1609,12 @@ def test_invalid_deployment_contract_rejected(deployment, skip_schema):
 def test_mode_guard_also_applies_when_schema_validation_is_disabled(mode):
     assert "deployment.mode" in render_error(
         "--skip-schema-validation", "--set", f"deployment.mode={mode}")
+
+
+@pytest.mark.ci_external
+@pytest.mark.parametrize("override,expected", [(None, 180), (360, 360)])
+def test_vm_shutdown_grace_exceeds_guest_service_stop_timeout(override, expected):
+    args = () if override is None else ("--set", f"vm.terminationGracePeriodSeconds={override}")
+    vm = render(*args)[("VirtualMachine", "saw-test")]
+    assert vm["spec"]["template"]["spec"]["terminationGracePeriodSeconds"] == expected
+    assert "terminationGracePeriodSeconds" not in vm["spec"]["template"]["spec"]["domain"]

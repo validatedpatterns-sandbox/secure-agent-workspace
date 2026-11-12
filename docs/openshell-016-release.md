@@ -70,7 +70,8 @@ Completed checks:
   publication jobs); the third requires an APF bundle. CI passed on this
   shipping source for Python 3.12 and 3.14.
 
-**Reboot acceptance is blocked.** On the first test VM's normal
+**Reboot acceptance is blocked by [runtime issue #161](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/161).**
+On the first test VM's normal
 `make saw-restart`, Podman `5.8.1-1.fc44` could not open its SQLite state
 catalog (`database disk image is malformed`). The gateway consequently never
 listened, and boot install/apply failed. Read-only integrity checks found
@@ -80,8 +81,9 @@ database was deleted, and both original workspace sentinel files remained
 intact. Retry services on that VM were stopped for diagnosis.
 
 The second VM's catalog passed its pre-restart integrity check, and a consistent
-private backup was taken before its own reboot test. Final reboot, repeated
-file-tool/inference and post-restart peer-network checks remain outstanding.
+private backup was taken before its own reboot test. Its independent result
+is recorded in the runtime issue. Overall reboot, repeated file-tool/inference
+and post-restart peer-network acceptance remain incomplete.
 A manual catalog recovery must not be counted as a passing clean reboot.
 
 Upstream [Podman PR #29733](https://github.com/podman-container-tools/podman/pull/29733)

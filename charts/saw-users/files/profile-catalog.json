@@ -106,7 +106,7 @@
               "harnessRequired": false,
               "name": "notebook",
               "type": "openclaw",
-              "uiRoute": false
+              "uiRoute": true
             }
           ]
         }

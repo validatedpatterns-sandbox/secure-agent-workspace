@@ -643,7 +643,8 @@ def test_only_the_profiles_secrets_are_synced_and_mounted(tmp_path):
     vm = helm_values(app(docs, "saw-dave"))
     assert vm["inference"]["secretName"] == "inference"
     assert vm["additionalProviderSecrets"] == ["web-search"]
-    assert vm["sandboxUi"] == []
+    assert vm["sandboxUi"] == [{"workspace": "default", "sandbox": "notebook",
+                                 "proxyPort": 4201, "forwardPort": 14201}]
 
 
 @pytest.mark.ci_external

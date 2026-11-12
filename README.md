@@ -2,6 +2,14 @@
 
 Deploy isolated, per-user AI agent sandboxes on OpenShift Virtualization with OIDC authentication and policy-controlled access.
 
+> **OpenShell 0.1.6 rollout:** merging PR #156 triggers the upstream interceptor
+> publication workflow. A [follow-up issue](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157) tracks pinning
+> the public 0.1.6 image and completing clean-install validation. The current
+> default still uses the 0.1.2 interceptor; preliminary tests used a matching
+> local 0.1.6 build. Wait for the follow-up to merge and clean-install acceptance
+> to pass before deploying this upgrade from `main`. See the
+> [release plan](docs/openshell-016-release.md).
+
 ## Upgrade: stage network isolation per user
 
 This release adds default-deny NetworkPolicy to each SAW. The `openshell-saw`
@@ -181,7 +189,7 @@ interceptor is the default. The two diagrams that follow also illustrate the
 3. `helm` 3.x installed
 4. An API key for at least one inference provider (Gemini, Anthropic, OpenAI, NVIDIA, OpenRouter)
 5. The `openshell` CLI installed at the API version pinned by the gateway BOM
-   (`0.1.2` for the current `0.1.2-rhaiv.6` image;
+   (`0.1.6` for the current `0.1.6-rhaiv.4` image;
    [releases](https://github.com/NVIDIA/OpenShell/releases))
 
 Verify prerequisites:
@@ -485,7 +493,7 @@ CI namespace is refused. For `saw-create`, set `PROVIDER`, `MODEL`, and
 
 `IMAGE_TAG=latest` selects the CI-built gateway disk used by `images-mirror`;
 `IMAGE_TAG=sha-<commit>` selects a particular CI build. The chart's in-VM BOM
-separately pins OpenShell `0.1.2-rhaiv.6` by digest. See
+separately pins OpenShell `0.1.6-rhaiv.4` by digest. See
 [the deployment guide](docs/deployment-guide.md#golden-image-tag).
 
 If a prerequisite fails, inspect the reported CLI or operator and run
@@ -818,7 +826,7 @@ make test
 # Tool-action gate tests (needs node; also included in the CI suite)
 make test-tool-gate
 
-# Run offline template validation (48 checks)
+# Run offline template validation
 ./tests/test-oidc-templates.sh
 
 # NetworkPolicy chart checks run offline; name two test SAWs for live checks
@@ -826,6 +834,12 @@ SKIP_LIVE=1 ./tests/test-network-policy.sh
 SAW_NS=saw-nptest-a VM_NAME=nptest-a PEER_NS=saw-nptest-b \
   PEER_VM_NAME=nptest-b REQUIRE_PEER=1 ./tests/test-network-policy.sh
 ```
+
+When a sandbox has an owner-restricted UI route, its gateway uses trusted-proxy
+authentication. The localhost GUI forward authenticates with the gateway's
+loopback password: enter `gateway.auth.password` from the selected sandbox's
+`/sandbox/.openclaw/openclaw.json` in **Gateway secret** (or **Password (not
+stored)** in older clients) and click **Connect**. The `make sandbox-ui` routes use the owner's Keycloak sign-in.
 
 See the [test-writing and test-running guide](docs/testing.md) for local tools,
 selection commands, CI coverage, and fixture rules. `make test` and

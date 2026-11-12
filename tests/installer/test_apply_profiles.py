@@ -81,6 +81,7 @@ def test_shipped_profile_lifecycle(ab, fake_env, config, profiles, creds, capsys
     scripts = "\n".join(c[-1] for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "exec"])
     assert "base64 -d" not in scripts
     assert """openclaw config set plugins.load.paths '["/sandbox/harness", "/sandbox/harness/plugins", "/sandbox/.saw/trusted/plugin"]'""" in scripts
+    assert "openclaw config set tools.fs.workspaceOnly true --strict-json" in scripts
     # The bundle and its native plugin, each enabled (2026.9.x keeps them off).
     assert "openclaw plugins enable ds-default --accept-capabilities" in scripts
     assert "openclaw plugins enable saw-echo --accept-capabilities" in scripts
@@ -415,7 +416,7 @@ def test_the_gateway_waits_until_the_sandbox_accepts_exec(ab, fake_env, config, 
     calls = fake_env.openshell_calls()[before:]
     probes = [c for c in calls if c[:2] == ["sandbox", "exec"] and c[-1] == "true"]
     assert len(probes) >= 5
-    run = [i for i, c in enumerate(calls) if c[:2] == ["sandbox", "exec"] and "openclaw gateway run" in c[-1]]
+    run = [i for i, c in enumerate(calls) if c[:2] == ["sandbox", "exec"] and 'cat > "$SUP"' in c[-1]]
     assert run and run[-1] > calls.index(probes[-1])
     assert fake_env.openshell_state()["notReadyExecs"] == 0
 
@@ -752,3 +753,218 @@ def test_attaching_a_keyless_provider_marks_openclaw_for_restart(
     applier.cli("provider", "create", "--name", "local-mcp", "--type", "local-mcp")
     applier.attach_missing_providers(ws, sb)
     assert applier.harness_refilled[("default", "notebook")] is True
+
+
+@pytest.mark.parametrize("target", ["default/notebook", "cuda-dev/cuda-sandbox"])
+@pytest.mark.parametrize("fault", [
+    {"setFail": True}, {"getFail": True}, {"response": "false"},
+    {"response": '"true"'}, {"response": "1"}, {"response": "null"},
+    {"response": "not-json"}, {"response": '{"tools.fs.workspaceOnly": true}'},
+])
+def test_workspace_confinement_failure_stops_apply(
+        ab, fake_env, config, profiles, creds, target, fault):
+    (fake_env.state / "workspace-confinement.json").write_text(json.dumps({target: fault}))
+    with pytest.raises(ab.InstallerError):
+        applier_with_shipped_profiles(ab, config, creds).apply(profiles)
+    sandbox = fake_env.openshell_state()["sandboxes"][target]
+    assert sandbox["agentStopped"] is True
+    ws, name = target.split("/")
+    calls = [c for c in fake_env.openshell_calls()
+             if c[:2] == ["sandbox", "exec"] and name in c]
+    assert not any("openclaw plugins enable saw-tool-gate" in c[-1] for c in calls)
+    assert not any('cat > "$SUP"' in c[-1] for c in calls)
+
+
+@pytest.mark.parametrize("target", ["default/notebook", "cuda-dev/cuda-sandbox"])
+def test_existing_workspace_confinement_is_repaired_before_policy_update(
+        ab, fake_env, config, profiles, creds, target, monkeypatch):
+    applier = applier_with_shipped_profiles(ab, config, creds)
+    applier.apply(profiles)
+    state = fake_env.openshell_state()
+    state["sandboxes"][target]["openclawConfig"]["tools.fs.workspaceOnly"] = False
+    fake_env.set_openshell_state(state)
+    before = len(fake_env.openshell_calls())
+    applier.apply(profiles)
+    repaired = fake_env.openshell_state()["sandboxes"][target]
+    assert repaired["openclawConfig"]["tools.fs.workspaceOnly"] is True
+    assert repaired["agentStopped"] is False
+    calls = fake_env.openshell_calls()[before:]
+    name = target.split("/")[1]
+    scripts = [c[-1] for c in calls if c[:2] == ["sandbox", "exec"] and name in c]
+    assert any("# SAW: quiesce OpenClaw" in s for s in scripts)
+    before = len(fake_env.openshell_calls())
+    applier.apply(profiles)
+    assert not any("# SAW: quiesce OpenClaw" in c[-1]
+                   for c in fake_env.openshell_calls()[before:])
+
+    # Reapply failure leaves the old mounted policy intact and the agent stopped.
+    state = fake_env.openshell_state()
+    state["sandboxes"][target]["openclawConfig"].pop("tools.fs.workspaceOnly")
+    fake_env.set_openshell_state(state)
+    (fake_env.state / "workspace-confinement.json").write_text(json.dumps({target: {"setFail": True}}))
+    fills = []
+    original = applier.volumes.fill
+    def record_fill(*args, **kwargs):
+        fills.append(args[0])
+        return original(*args, **kwargs)
+    monkeypatch.setattr(applier.volumes, "fill", record_fill)
+    with pytest.raises(ab.InstallerError):
+        applier.apply(profiles)
+    ws, name = target.split("/")
+    assert ab.sandbox_volume_name(ab.GATE_VOLUME_PREFIX, ws, name) not in fills
+    assert fake_env.openshell_state()["sandboxes"][target]["agentStopped"] is True
+
+
+def test_gateway_get_failure_cannot_replace_a_running_agents_policy(
+        ab, fake_env, config, profiles, creds, monkeypatch):
+    applier = applier_with_shipped_profiles(ab, config, creds)
+    applier.apply(profiles)
+    fake_env.deny("sandbox get")
+    fills = []
+    original = applier.volumes.fill
+    def record_fill(*args, **kwargs):
+        fills.append(args[0])
+        return original(*args, **kwargs)
+    monkeypatch.setattr(applier.volumes, "fill", record_fill)
+    with pytest.raises(ab.InstallerError, match="refusing to replace its tool policy"):
+        applier.apply(profiles)
+    assert not fills
+    assert all(sb["agentStopped"] for sb in fake_env.openshell_state()["sandboxes"].values())
+
+
+@pytest.mark.parametrize("target", ["default/notebook", "cuda-dev/cuda-sandbox"])
+@pytest.mark.parametrize("use_ledger", [False, True])
+def test_confinement_host_stop_survives_later_applies_without_recreation(
+        ab, fake_env, config, profiles, creds, target, use_ledger, tmp_path, fake_clock):
+    if use_ledger:
+        config = {**config, "prune": {"ledgerPath": str(tmp_path / "managed.json")}}
+    applier = applier_with_shipped_profiles(ab, config, creds)
+    applier.apply(profiles)
+    state = fake_env.openshell_state()
+    state["sandboxes"][target].setdefault("files", {})["only-copy.txt"] = "must survive"
+    state["sandboxes"][target]["nativeId"] = "original-sandbox"
+    fake_env.set_openshell_state(state)
+    fault_file = fake_env.state / "workspace-confinement.json"
+    fault_file.write_text(json.dumps({target: {"getFail": True, "quiesceFail": True}}))
+    with pytest.raises(ab.InstallerError, match="cannot quiesce OpenClaw"):
+        applier.apply(profiles)
+    sb = fake_env.openshell_state()["sandboxes"][target]
+    assert sb["agentStopped"] is True and sb["phase"] == "Completed"
+    ws, name = target.split("/")
+    assert ["stop", "--time", "5", f"openshell-{ws}--{name}-0000"] in fake_env.podman_calls()
+    assert target in json.loads(applier.confinement_stops_path.read_text())
+
+    # Every retry is a new installer process. Even after the exec fault clears,
+    # Completed must not fall through the 90-second grace period to deletion.
+    fault_file.unlink()
+    before = len(fake_env.openshell_calls())
+    for _ in range(2):
+        retry = applier_with_shipped_profiles(ab, config, creds)
+        with pytest.raises(ab.InstallerError, match="held for workspace confinement repair"):
+            retry.apply(profiles)
+        sb = fake_env.openshell_state()["sandboxes"][target]
+        assert sb["files"]["only-copy.txt"] == "must survive"
+        assert sb["nativeId"] == "original-sandbox"
+        assert sb["phase"] == "Completed"
+    assert not any(c[:2] in (["sandbox", "delete"], ["sandbox", "create"])
+                   and name in c for c in fake_env.openshell_calls()[before:])
+
+    # An operator recovers the existing workload in place. Only a successful
+    # confinement check and agent startup release the durable hold.
+    state = fake_env.openshell_state()
+    state["sandboxes"][target]["phase"] = "Ready"
+    fake_env.set_openshell_state(state)
+    recovered = applier_with_shipped_profiles(ab, config, creds)
+    recovered.apply(profiles)
+    sb = fake_env.openshell_state()["sandboxes"][target]
+    assert sb["files"]["only-copy.txt"] == "must survive"
+    assert sb["nativeId"] == "original-sandbox"
+    assert sb["openclawConfig"]["tools.fs.workspaceOnly"] is True
+    assert sb["agentStopped"] is False
+    assert target not in json.loads(recovered.confinement_stops_path.read_text())
+
+
+@pytest.mark.parametrize("target", ["default/notebook", "cuda-dev/cuda-sandbox"])
+@pytest.mark.parametrize("failed_first", [False, True])
+@pytest.mark.parametrize("provider_mode", ["missing", "no-endpoint"])
+def test_confinement_repair_resumes_existing_agent_without_usable_provider(
+        ab, fake_env, config, profiles, creds, target, failed_first, provider_mode, monkeypatch):
+    applier_with_shipped_profiles(ab, config, creds).apply(profiles)
+    state = fake_env.openshell_state()
+    original_config = state["sandboxes"][target]["openclawConfig"].copy()
+    state["sandboxes"][target]["openclawConfig"]["tools.fs.workspaceOnly"] = False
+    fake_env.set_openshell_state(state)
+    if failed_first:
+        fault_file = fake_env.state / "workspace-confinement.json"
+        fault_file.write_text(json.dumps({target: {"setFail": True}}))
+        with pytest.raises(ab.InstallerError):
+            applier_with_shipped_profiles(ab, config, creds).apply(profiles)
+        assert fake_env.openshell_state()["sandboxes"][target]["agentStopped"] is True
+        fault_file.unlink()
+    retry = applier_with_shipped_profiles(ab, config, creds)
+    if provider_mode == "missing":
+        monkeypatch.setattr(retry, "find_provider", lambda *args: None)
+    else:
+        monkeypatch.setattr(ab, "sandbox_endpoint", lambda *args: "")
+        monkeypatch.setattr(ab, "NATIVE_BASE_URLS", {})
+        monkeypatch.setattr(ab, "PROTOCOL_NATIVE_BASE_URLS", {})
+        monkeypatch.setattr(ab, "OPENCLAW_AUTH_CHOICES", {})
+    before = len(fake_env.openshell_calls())
+    retry.apply(profiles)
+    sb = fake_env.openshell_state()["sandboxes"][target]
+    assert sb["agentStopped"] is False
+    assert sb["openclawConfig"]["tools.fs.workspaceOnly"] is True
+    assert sb["openclawConfig"]["agents.entries.main.model"] == original_config["agents.entries.main.model"]
+    assert target not in json.loads(retry.confinement_stops_path.read_text())
+    calls = fake_env.openshell_calls()[before:]
+    assert not any("openclaw onboard" in c[-1] for c in calls)
+    assert any('cat > "$SUP"' in c[-1] for c in calls)
+
+
+def test_no_provider_does_not_start_an_unonboarded_agent(
+        ab, fake_env, config, profiles, creds, monkeypatch):
+    for _ in range(2):
+        applier = applier_with_shipped_profiles(ab, config, creds)
+        monkeypatch.setattr(applier, "find_provider", lambda *args: None)
+        applier.apply(profiles)
+    assert not any('cat > "$SUP"' in c[-1] for c in fake_env.openshell_calls())
+
+
+def test_unreadable_confinement_stop_state_fails_closed(ab, fake_env, config, creds):
+    applier = applier_with_shipped_profiles(ab, config, creds)
+    applier.confinement_stops_path.parent.mkdir(parents=True, exist_ok=True)
+    applier.confinement_stops_path.write_text("not JSON")
+    before = len(fake_env.openshell_calls())
+    with pytest.raises(ab.InstallerError, match="cannot read confinement stop state"):
+        applier_with_shipped_profiles(ab, config, creds)
+    assert len(fake_env.openshell_calls()) == before
+
+
+@pytest.mark.parametrize("failed_step", ["saved-supervisor", "gateway-start"])
+def test_failed_providerless_resume_keeps_confinement_hold(
+        ab, fake_env, config, profiles, creds, monkeypatch, failed_step):
+    applier_with_shipped_profiles(ab, config, creds).apply(profiles)
+    state = fake_env.openshell_state()
+    state["sandboxes"]["default/notebook"]["openclawConfig"]["tools.fs.workspaceOnly"] = False
+    fake_env.set_openshell_state(state)
+    retry = applier_with_shipped_profiles(ab, config, creds)
+    monkeypatch.setattr(retry, "find_provider", lambda *args: None)
+    original_cli = retry.cli
+    marker = ("# SAW: check saved OpenClaw supervisor" if failed_step == "saved-supervisor"
+              else 'cat > "$SUP"')
+    def fail_resume(*args, **kwargs):
+        if args[:2] == ("sandbox", "exec") and "notebook" in args and marker in args[-1]:
+            raise ab.InstallerError("resume transport failed")
+        return original_cli(*args, **kwargs)
+    monkeypatch.setattr(retry, "cli", fail_resume)
+    with pytest.raises(ab.InstallerError, match="resume transport failed"):
+        retry.apply(profiles)
+    assert fake_env.openshell_state()["sandboxes"]["default/notebook"]["agentStopped"] is True
+    assert "default/notebook" in json.loads(retry.confinement_stops_path.read_text())
+    # Readback is already true on the next process, but the saved stop still
+    # requires an actual resume rather than an early return.
+    recovered = applier_with_shipped_profiles(ab, config, creds)
+    monkeypatch.setattr(recovered, "find_provider", lambda *args: None)
+    recovered.apply(profiles)
+    assert fake_env.openshell_state()["sandboxes"]["default/notebook"]["agentStopped"] is False
+    assert "default/notebook" not in json.loads(recovered.confinement_stops_path.read_text())

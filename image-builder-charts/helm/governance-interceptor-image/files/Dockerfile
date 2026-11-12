@@ -7,7 +7,7 @@ FROM ${BUILDER_IMAGE} AS builder
 RUN apt-get update && apt-get install -y protobuf-compiler pkg-config libssl-dev git make cmake g++ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-ARG OPENSHELL_REF=v0.1.2
+ARG OPENSHELL_REF=v0.1.6
 ARG OPENSHELL_URI=https://github.com/NVIDIA/OpenShell.git
 ARG CONTEXT_DIR=examples/governance-interceptor
 RUN git init . \
@@ -16,7 +16,7 @@ RUN git init . \
     && git checkout --detach FETCH_HEAD
 
 WORKDIR /build/${CONTEXT_DIR}
-# Workaround for NVIDIA/OpenShell#3929 (v0.1.2): the gateway hashes provider
+# Workaround for NVIDIA/OpenShell#3929 (verified against v0.1.6): the gateway hashes provider
 # profile annotations in map order, so a profile with more than one annotation
 # gives a different provider_env_revision on every call and no sandbox with a
 # provider becomes ready ("Startup configuration did not stabilize"). Keep only

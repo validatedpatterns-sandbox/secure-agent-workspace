@@ -24,6 +24,7 @@ import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 import yaml
@@ -1030,8 +1031,16 @@ def test_every_openclaw_sandbox_ends_up_with_a_gateway(
     script = next(c[-1] for c in fake_env.openshell_calls()
                   if c[:2] == ["sandbox", "exec"] and c[3] == sandbox
                   and 'cat > "$SUP"' in c[-1])
+    # sandbox exec supplies the attached provider's current placeholder. The
+    # real-shell fixture must model it, including replacement of an old alias.
+    gateway.env["NVIDIA_API_KEY"] = "runtime-issued-placeholder"
+    gateway.env["CUSTOM_API_KEY"] = "obsolete-onboarding-placeholder"
     assert gateway.run(script) == 0, "the script's shell must not kill itself"
     assert len(gateway.started()) == 1
+    alias = next((item.partition(b"=")[2] for item in
+                  (Path("/proc") / gateway.started()[0] / "environ").read_bytes().split(b"\0")
+                  if item.startswith(b"CUSTOM_API_KEY=")), None)
+    assert alias == b"runtime-issued-placeholder"
 
 
 def gateway_script(ab, home, refilled=False, cfg=None):

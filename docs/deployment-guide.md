@@ -300,6 +300,10 @@ attaches the new virtiofs ConfigMap. The root disk is retained. Run
 `saw-mount-inputs.sh` and `systemctl start saw-reconcile.service` after the
 restart, then verify membership. A new VM gets these files from cloud-init.
 
+For VM shutdown grace and the first transition from an older running instance,
+see [VM shutdown and restart](vm-shutdown.md). New instances receive a 180-second
+grace period so guest services can stop before KubeVirt force-terminates them.
+
 Restart an existing VM after an installer ConfigMap update, including a
 dashboard proxy fix. Argo CD can report Synced while the running VM still
 mounts the old installer script. The restart retains the root disk. After it

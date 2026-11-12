@@ -1562,3 +1562,14 @@ def test_the_vm_runs_on_arm64_too(default_docs):
     domain = default_docs[("VirtualMachine", "saw-test")]["spec"]["template"]["spec"]["domain"]
     assert domain["firmware"]["bootloader"]["efi"]["secureBoot"] is False
     assert "smm" not in domain["features"]
+
+
+@pytest.mark.ci_external
+@pytest.mark.parametrize("override,expected", [(None, 180), (360, 360)])
+def test_vm_shutdown_grace_exceeds_guest_service_stop_timeout(override, expected):
+    args = () if override is None else ("--set", f"vm.terminationGracePeriodSeconds={override}")
+    vm = render(*args)[("VirtualMachine", "saw-test")]
+    assert vm["spec"]["template"]["spec"]["terminationGracePeriodSeconds"] == expected
+    # The configurable grace belongs to the VM instance, rather than a pod
+    # annotation or domain field that KubeVirt would ignore.
+    assert "terminationGracePeriodSeconds" not in vm["spec"]["template"]["spec"]["domain"]

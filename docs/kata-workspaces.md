@@ -29,6 +29,41 @@ supervisor connection require live qualification. Configure eligible workers
 before installing OSC. Creating a KataConfig can reboot workers.
 [Red Hat OSC node eligibility checks](https://docs.redhat.com/en/documentation/openshift_sandboxed_containers/1.12/html/deploying_openshift_sandboxed_containers_on_bare-metal_servers/install-osc-overview_metal-osc#install-osc-node-eligibility-checks_metal-osc)
 
+## Prepare OpenShift sandboxed containers
+
+The qualification cluster installed the Red Hat OpenShift sandboxed containers
+Operator from OperatorHub in `openshift-sandboxed-containers-operator`. A GitOps
+installation uses a Namespace, an OperatorGroup scoped to that namespace, and a
+Subscription from `redhat-operators`. Select the channel supported by the
+cluster. Keep these platform resources outside the SAW workspace charts. Check
+that the Subscription has an installed CSV and that the CSV is `Succeeded`.
+See the [Red Hat installation procedure](https://docs.redhat.com/en/documentation/openshift_sandboxed_containers/1.12/html/deploying_openshift_sandboxed_containers_on_bare-metal_servers/install-osc-overview_metal-osc).
+
+Install the local Kata runtime on an approved worker pool with a platform-owned
+`KataConfig`. This example uses the same pool label as the preflight command.
+Use the selected cluster's supported OSC version and node eligibility rules.
+
+```yaml
+apiVersion: kataconfiguration.openshift.io/v1
+kind: KataConfig
+metadata:
+  name: saw-kata-pool
+spec:
+  enablePeerPods: false
+  checkNodeEligibility: true
+  kataConfigPoolSelector:
+    matchLabels:
+      saw.example.com/kata-pool: "true"
+```
+
+Wait for the selected nodes to complete their machine config updates and
+reboots. Check `oc get kataconfig`, `oc get mcp`, and
+`oc get runtimeclass kata -o yaml`. The operator creates the `kata` class. SAW
+uses a reviewed RuntimeClass YAML with the live handler, scheduling and overhead
+fields. Bind that class's name, UID and placement digest in the site YAML below.
+The class also needs `openshell.ai/sandbox-attachable=true`. Keep the class and
+the owner approval under platform control.
+
 ## Verify a deployed worker
 
 1. Check the OSC installation and pool. `oc get kataconfig -o yaml` must show

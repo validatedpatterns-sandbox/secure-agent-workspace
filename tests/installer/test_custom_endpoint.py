@@ -259,3 +259,51 @@ def test_under_governance_a_provider_is_named_after_its_type(ab):
     # Shipped profiles all satisfy it.
     for name in ("custom-inference", "data-science"):
         ab.validate_profiles(ab.parse_profiles(profile_files(name)), governed=True)
+
+
+def test_reapply_replaces_saved_runtime_placeholder_with_provider_env_reference(
+        ab, fake_env, config, profiles, custom_secrets, governed_catalog):
+    """A reboot issues a new opaque OpenShell credential revision (#161).
+
+    Persisting the old value in openclaw.json makes inference fail before it
+    reaches the credential proxy. Keep a reference to the actual provider env
+    name, including when repairing an existing sandbox in place.
+    """
+    creds = resolve(ab, profiles, custom_secrets)
+    applier = ab.ProfileApplier(ab.Shell(), config, creds)
+    applier.apply(profiles)
+    state = fake_env.openshell_state()
+    sb = state["sandboxes"]["default/notebook"]
+    key = "models.providers.custom-inference.apiKey"
+    sb["openclawConfig"][key] = "openshell:resolve:env:v111_CUSTOM_INFERENCE_API_KEY"
+    sb["openclawConfig"]["models.providers.user-choice.apiKey"] = "keep-user-choice"
+    sb.setdefault("files", {})["notes.md"] = "preserve across reapply"
+    fake_env.set_openshell_state(state)
+    before = len(fake_env.openshell_calls())
+    applier.apply(profiles)
+    actual = fake_env.openshell_state()["sandboxes"]["default/notebook"]
+    assert actual["openclawConfig"][key] == {
+        "source": "env", "provider": "default", "id": "CUSTOM_INFERENCE_API_KEY"}
+    assert actual["openclawConfig"]["models.providers.user-choice.apiKey"] == "keep-user-choice"
+    assert actual["files"]["notes.md"] == "preserve across reapply"
+    assert not any(c[:2] == ["sandbox", "delete"]
+                   for c in fake_env.openshell_calls()[before:])
+
+
+def test_failed_credential_reference_write_stops_apply_before_agent_launch(
+        ab, fake_env, config, profiles, custom_secrets, governed_catalog, monkeypatch):
+    creds = resolve(ab, profiles, custom_secrets)
+    applier = ab.ProfileApplier(ab.Shell(), config, creds)
+    original = applier.cli
+    launched = []
+
+    def reject_reference(*args, **kwargs):
+        if "models.providers.custom-inference.apiKey " in str(args[-1]):
+            raise ab.InstallerError("credential reference write failed")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(applier, "cli", reject_reference)
+    monkeypatch.setattr(applier, "launch_openclaw", lambda *a, **kw: launched.append(True))
+    with pytest.raises(ab.InstallerError, match="credential reference write failed"):
+        applier.apply(profiles)
+    assert not launched

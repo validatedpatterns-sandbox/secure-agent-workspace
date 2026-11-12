@@ -5008,7 +5008,19 @@ class ProfileApplier:
             key_env = f'CUSTOM_API_KEY="${key_var}" '
         onboarded = self.cli(*exec_cmd, "sh", "-c",
                  f"{oc_env} {key_env}openclaw onboard --non-interactive "
-                 f"--accept-risk --mode local {auth_args} --skip-channels --skip-health", check=False)
+                 f"--accept-risk --mode local {auth_args} --secret-input-mode ref "
+                 f"--skip-channels --skip-health", check=False)
+        if not auth_choice:
+            # OpenShell placeholders carry a runtime credential revision. Saving
+            # the value makes it stale after a VM/runtime restart (#161). The
+            # custom onboard command knows only the temporary CUSTOM_API_KEY
+            # alias; bind the saved reference to the real provider environment
+            # variable that every later OpenShell exec supplies instead.
+            credential_ref = {"source": "env", "provider": "default", "id": key_var}
+            self.cli(*exec_cmd, "sh", "-c",
+                     f"{oc_env} openclaw config set "
+                     f"models.providers.{shlex.quote(provider.type)}.apiKey "
+                     f"{shlex.quote(json.dumps(credential_ref))} --strict-json")
         # Re-onboarding an existing sandbox with a different provider or model
         # (e.g. after switching to a custom endpoint) makes OpenClaw save the
         # new credential but keep the old connection; activate the new one.

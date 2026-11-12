@@ -223,6 +223,7 @@ def test_onboarding_uses_the_provider_protocol(
     scripts = [c[-1] for c in calls if c[:2] == ["sandbox", "exec"]]
     onboard = next(s for s in scripts if "openclaw onboard " in s)
     assert f"--auth-choice {choice} " in onboard
+    assert "--secret-input-mode ref " in onboard
     if choice == "custom-api-key":
         assert f"--custom-model-id {model}" in onboard
         expected_endpoint = endpoint or "https://integrate.api.nvidia.com/v1"

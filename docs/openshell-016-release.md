@@ -85,17 +85,24 @@ established two defects during reboot acceptance:
   while a fresh runtime placeholder returned HTTP 200 through the same sandbox,
   endpoint and proxy. A supported environment SecretRef restored real gateway
   inference. [#162](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/pull/162)
-  requests reference persistence and binds the managed provider and any new
-  replacement auth profile to the actual provider environment variable before
-  activation, using OpenClaw's native secrets-plan API. It preserves credential
-  identity/endpoint checks and unrelated credentials.
+  requests reference persistence and binds the managed provider to the actual
+  provider environment variable through OpenClaw's native secrets-plan API.
+  Managed custom routes use that provider reference directly instead of retaining
+  an `@profile` ID absent from the current auth store. Native-provider bindings,
+  fallback models and unrelated credentials remain intact.
 - KubeVirt's implicit 30-second grace expired during documented normal restarts
   of both original VMs and a fresh minimal control; logs show forced teardown
-  with reason `Destroyed`. [#164](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/pull/164)
-  sets a configurable 180-second grace. Existing instances must first adopt the
-  updated template through guest poweroff. Both controls completed that transition
-  naturally in about a minute, with filesystem unmount and console power-down
-  evidence. This adoption alone does not prove a subsequent normal restart.
+  with reason `Destroyed`. Raising it to 180 seconds alone was insufficient:
+  both controls again expired after reaching guest filesystem unmounting.
+  [#164](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/pull/164)
+  changes the documented and confirmed bulk restart commands to request guest
+  poweroff via existing SSH access and wait for a replacement VMI. They refuse
+  incompatible VM state and do not fall back to forced host termination.
+  Both controls completed the underlying guest-poweroff transition naturally in
+  about a minute, with filesystem unmount and console power-down evidence. The
+  configurable 180-second grace remains an upper bound for other termination
+  paths; the host-triggered shutdown stall's exact blocker remains unidentified.
+
 
 One original VM has confirmed Podman SQLite overflow/index damage. Its private
 original catalog and workspace volumes remain preserved; no database reset,
@@ -108,14 +115,14 @@ for that catalog.
 
 The two fresh control owners cover custom inference and the data-science
 profile's OpenClaw/NemoClaw sandboxes. The combined deployment is
-`282a744a4d17caf81a7d843d265f0284abc74953`, containing the shipped public pin,
-credential code from `e858679f36a7c9876654811d9bef4c6d897b8d97`, and shutdown code
-from `73432a3734f9343d77d6acb60eb8cf97bb903eb3`. Its ConfigMaps match the fixed
-installer SHA256 `d245d561929b8d02bf4c8494817b74e1f497b1674c057072b258d4796a98679c`.
+`0abf643dcd0de422bd69b91404ef373e8a1d5827`, containing the shipped public pin,
+credential code from `9ab9279f6db57f1366c001c8d103bca3a1ce940e`, and shutdown code
+from `8001cc7c6454bf5398a6ea83065174af0c087a06`. Its ConfigMaps match the fixed
+installer SHA256 `dc1ca5a6f090f0a0259cd87fdf9e92dbcd77bfa0969be804f8db5e98249bf393`.
 Cluster-specific inputs stay on the separate deployment branch.
 
-The remaining release gate is a documented normal restart of each corrected
-control, with completed guest shutdown, current boot install/apply, consistent
+The release gate requires a documented restart of each corrected
+control through the guest-poweroff command, with completed guest shutdown, current boot install/apply, consistent
 pre/post SQLite integrity, real inference/tools, preserved files/passwords/
 identity/policy/confinement, and healthy two-way peer isolation. Record the
 actual outcomes and final CI heads in #161/#157 and the PR descriptions. Reuse

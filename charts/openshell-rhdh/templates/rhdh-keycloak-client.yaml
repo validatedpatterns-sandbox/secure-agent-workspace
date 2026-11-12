@@ -4,6 +4,8 @@ kind: ServiceAccount
 metadata:
   name: saw-rhdh-keycloak
   namespace: {{ .Values.rhdh.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
   labels:
     {{- include "openshell-rhdh.labels" . | nindent 4 }}
 ---
@@ -12,6 +14,8 @@ kind: Role
 metadata:
   name: saw-rhdh-keycloak-admin
   namespace: {{ .Values.keycloak.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
   labels:
     {{- include "openshell-rhdh.labels" . | nindent 4 }}
 rules:
@@ -25,6 +29,8 @@ kind: RoleBinding
 metadata:
   name: saw-rhdh-keycloak-admin
   namespace: {{ .Values.keycloak.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
   labels:
     {{- include "openshell-rhdh.labels" . | nindent 4 }}
 roleRef:
@@ -41,9 +47,13 @@ kind: ConfigMap
 metadata:
   name: saw-rhdh-keycloak-client
   namespace: {{ .Values.rhdh.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
   labels:
     {{- include "openshell-rhdh.labels" . | nindent 4 }}
 data:
+  saw_keycloak_admin.py: |
+{{ .Files.Get "files/saw_keycloak_admin.py" | indent 4 }}
   keycloak-client.py: |
 {{ .Files.Get "files/keycloak-client.py" | indent 4 }}
 ---
@@ -55,9 +65,12 @@ metadata:
   labels:
     {{- include "openshell-rhdh.labels" . | nindent 4 }}
   annotations:
-    argocd.argoproj.io/hook: PostSync
+    # ESO, CA inputs and scoped RBAC precede this hook. Consumers follow at wave 0.
+    argocd.argoproj.io/sync-wave: "-1"
+    argocd.argoproj.io/hook: Sync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
 spec:
+  activeDeadlineSeconds: 900
   backoffLimit: 10
   template:
     metadata:

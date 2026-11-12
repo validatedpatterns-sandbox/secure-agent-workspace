@@ -14,7 +14,7 @@ Update both dependency declarations and run `uv lock` when you add a package.
 For the complete suite, use Ubuntu 24.04 with Python 3.12 or 3.14, GNU Make,
 Bash, Helm 3.17.3, Node 22, Go from `credential-proxy/go.mod`, OpenSSL, Git,
 OpenSSH tools, `jq`, `envsubst` (gettext), GNU coreutils (`shred`, `timeout`,
-`stat`, `install`), GNU tar, `flock`, and `pgrep`/`pkill`. Some unit checks also
+`stat`, `install`), GNU tar, `find`, `flock`, and `pgrep`/`pkill`. Some unit checks also
 use `systemd-analyze`.
 The Go binary check can download Go modules on its first run.
 Embedded Rust checks need Cargo and cached `serde_json` dependencies. They

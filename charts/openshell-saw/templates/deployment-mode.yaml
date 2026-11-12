@@ -1,0 +1,2 @@
+{{/* Validate even when Helm schema validation is disabled. Emit no resource. */}}
+{{- include "openshell-sandbox.validateDeploymentMode" . -}}

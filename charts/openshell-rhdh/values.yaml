@@ -96,10 +96,22 @@ rhdh:
 # The portal namespace: request Secrets, the Tekton pipelines, the workspace
 # registry (ConfigMaps saw-ws-<user>) and the ApplicationSet plugin generator.
 portal:
+  # Owner-visible catalog links for independently GitOps-managed workspaces.
+  linkedWorkspaces: []
+  # Administrator-owned request allowlist. Non-VM provisioning remains unavailable
+  # until its lifecycle/readiness adapter is implemented; this is not an enablement
+  # switch for an incomplete runtime. Existing workspace mode is immutable.
+  deploymentModes: [vm]
+  containerSites: {} # Administrator-owned, keyed by login; empty denies all container requests.
   namespace: saw-portal
   provisionerServiceAccount: saw-portal-provisioner
   # Python 3 with the standard library is all portal.py needs.
   image: registry.access.redhat.com/ubi9/python-311:latest
+  # Cold agent images on nested clusters may exceed the default. The portal
+  # still requires every expected UI route; this never marks a timeout Ready.
+  # Container registration also uses this budget (at least 10 minutes) to wait for its reviewed intent.
+  # Applies to newly created PipelineRuns, not a run already in progress.
+  sandboxReadyTimeoutMinutes: 30
   # A portal workspace is deleted with its VM when it is removed.
   pruneOnRemove: true
   # delete also removes the user's keys from Vault.
@@ -108,6 +120,8 @@ portal:
   # (the "... for a user" templates). Keycloak user names. Everyone else acts
   # only for themselves.
   admins: []
+  # Immutable Keycloak subjects for administrators acting for container owners.
+  adminSubjects: {}
   generator:
     port: 4355
     # Only RHDH (catalog) and Argo CD (ApplicationSet plugin) may reach the

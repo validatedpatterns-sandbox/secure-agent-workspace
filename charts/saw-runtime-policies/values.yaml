@@ -1,0 +1,24 @@
+# Platform-owned policy release; disabled until dependencies and site inputs exist.
+enabled: false
+targetNamespace: ""
+gatewayId: ""
+gatewayServiceAccount: ""
+sandboxServiceAccount: ""
+mode: container
+network:
+  # Required administrator allocation, unique among overlapping ANPs (0..99).
+  priority: null
+  # ANP egress peers/ports. The chart fixes each action to Pass, then denies
+  # all remaining IPv4/IPv6. Populate actual DNS, gateway, workload-boundary,
+  # credential-proxy and approved external destinations before enabling.
+  egress: []
+
+# Filled by the shared composition from the approved BOM and gateway configuration.
+sandboxControllerUsername: system:serviceaccount:agent-sandbox-system:agent-sandbox-controller
+slots: {}
+supervisorImage: ""
+runtimeImage: ""
+serverTLSSecret: ""
+supervisorCommand: []
+preparationImage: ""
+forwarderImage: ""

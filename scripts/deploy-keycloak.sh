@@ -17,6 +17,11 @@ DEMO_ENABLED="${DEMO_ENABLED:-false}"
   exit 2
 }
 
+wait_for_realm_import() {
+  oc wait -n "${NS}" --for=condition=Done \
+    keycloakrealmimport/openshell-keycloak-realm --timeout=5m
+}
+
 # Check RHBK operator access and location before any writes.
 csv_json="$(oc get csv -n "${NS}" -o json)"
 if ! jq -e '.items | any(.metadata.name | contains("rhbk"))' \
@@ -80,13 +85,7 @@ if [[ -n "${existing}" && -z "${ours}" ]]; then
   helm upgrade --install openshell-keycloak "${CHART}" --namespace "${NS}" \
     --set keycloak.existing="${existing}" --set keycloak.realm="${REALM}" \
     --set demo.enabled="${DEMO_ENABLED}" --timeout 10m
-  deadline=$((SECONDS + 300))
-  until [[ "$(oc get keycloakrealmimport -n "${NS}" -o json | jq -r \
-      'first(.items[] | select(.metadata.name == "openshell-keycloak-realm") |
-       .status.conditions[]? | select(.type == "Done") | .status) // empty')" == "True" ]]; do
-    if (( SECONDS > deadline )); then echo "Timed out waiting for the realm import." >&2; exit 1; fi
-    echo "  waiting for the realm import..."; sleep 10
-  done
+  wait_for_realm_import
   KEYCLOAK_NS="${NS}" KEYCLOAK_REALM="${REALM}" "${SCRIPT_DIR}/keycloak-check.sh"
   exit 0
 fi
@@ -106,7 +105,8 @@ while true; do
     .status.conditions[]? | select(.type == "Ready") | .status) // empty' \
     <<<"${keycloaks}")"
   if [[ "${ready}" == "True" ]]; then
-    echo "Keycloak is ready."
+    wait_for_realm_import
+    echo "Keycloak and its realm import are ready."
     KC_URL="$(jq -r 'first(.items[] | select(.metadata.name == "openshell-keycloak") |
       .status.externalURL) // empty' <<<"${keycloaks}")"
     if [[ -n "${KC_URL}" ]]; then

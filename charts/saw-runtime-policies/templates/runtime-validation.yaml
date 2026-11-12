@@ -1,0 +1,297 @@
+{{- if .Values.enabled }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "saw-runtime-policies.name" . }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+    argocd.argoproj.io/sync-options: Prune=false
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Values.targetNamespace | quote }}
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods]
+  variables:
+    - name: role
+      expression: >-
+        has(object.metadata.labels) && 'openshell.ai/boundary-role' in object.metadata.labels
+        ? object.metadata.labels['openshell.ai/boundary-role'] : ''
+    - name: sandboxAccount
+      expression: >-
+        has(object.spec.serviceAccountName) && object.spec.serviceAccountName == {{ .Values.sandboxServiceAccount | toJson }}
+    - name: previousRole
+      expression: >-
+        oldObject != null && has(oldObject.metadata.labels) && 'openshell.ai/boundary-role' in oldObject.metadata.labels
+        ? oldObject.metadata.labels['openshell.ai/boundary-role'] : ''
+    - name: previousSandboxAccount
+      expression: >-
+        oldObject != null && has(oldObject.spec.serviceAccountName) &&
+        oldObject.spec.serviceAccountName == {{ .Values.sandboxServiceAccount | toJson }}
+    - name: runtimePod
+      expression: >-
+        variables.sandboxAccount || variables.role in ['workload', 'supervisor'] ||
+        variables.previousSandboxAccount || variables.previousRole in ['workload', 'supervisor']
+    - name: gatewayClaim
+      expression: >-
+        (has(object.spec.serviceAccountName) && object.spec.serviceAccountName == {{ .Values.gatewayServiceAccount | toJson }}) ||
+        (has(object.metadata.labels) && 'openshell.pattern/role' in object.metadata.labels &&
+         object.metadata.labels['openshell.pattern/role'] == 'gateway')
+    - name: previousGatewayClaim
+      expression: >-
+        oldObject != null && ((has(oldObject.spec.serviceAccountName) &&
+        oldObject.spec.serviceAccountName == {{ .Values.gatewayServiceAccount | toJson }}) ||
+        (has(oldObject.metadata.labels) && 'openshell.pattern/role' in oldObject.metadata.labels &&
+         oldObject.metadata.labels['openshell.pattern/role'] == 'gateway'))
+    - name: owners
+      expression: "has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []"
+    - name: podLabels
+      expression: "has(object.metadata.labels) ? object.metadata.labels : {}"
+    - name: sandboxOwner
+      expression: >-
+        variables.owners.size() == 1 && variables.owners[0].kind == 'Sandbox' &&
+        variables.owners[0].apiVersion in ['agents.x-k8s.io/v1alpha1','agents.x-k8s.io/v1beta1']
+    - name: slot
+      expression: "variables.sandboxOwner ? variables.owners[0].name : ''"
+    - name: pair
+      expression: >-
+        'openshell.ai/boundary-pair' in variables.podLabels ? variables.podLabels['openshell.ai/boundary-pair'] : ''
+    - name: gatewayCaller
+      expression: request.userInfo.username == {{ printf "system:serviceaccount:%s:%s" .Values.targetNamespace .Values.gatewayServiceAccount | toJson }}
+    - name: preparation
+      expression: >-
+        object.spec.serviceAccountName == 'saw-gate-preparation' && variables.owners.size() == 1 &&
+        variables.owners[0].apiVersion == 'batch/v1' && variables.owners[0].kind == 'Job' &&
+        has(variables.owners[0].controller) && variables.owners[0].controller &&
+        'batch.kubernetes.io/job-name' in variables.podLabels &&
+        variables.podLabels['batch.kubernetes.io/job-name'] == variables.owners[0].name &&
+        variables.owners[0].name.matches('^(saw-gate-preparation|gate-[a-f0-9]{16})-')
+    - name: forwarder
+      expression: >-
+        object.spec.serviceAccountName == 'default' && variables.owners.size() == 1 &&
+        variables.owners[0].apiVersion == 'apps/v1' && variables.owners[0].kind == 'ReplicaSet' &&
+        has(variables.owners[0].controller) && variables.owners[0].controller &&
+        'saw-audit-forward' in variables.podLabels && 'pod-template-hash' in variables.podLabels &&
+        variables.owners[0].name == variables.podLabels['saw-audit-forward'] + '-forward-' + variables.podLabels['pod-template-hash']
+  validations:
+    - expression: >-
+        (variables.gatewayClaim && !variables.runtimePod && !variables.preparation && !variables.forwarder) ||
+        (variables.runtimePod && !variables.gatewayClaim && !variables.preparation && !variables.forwarder) ||
+        ((variables.preparation || variables.forwarder) && !variables.gatewayClaim && variables.role == '')
+      message: Only the registered gateway, sandbox, preparation Job and audit forwarder Pods are allowed.
+    - expression: >-
+        request.operation != 'CREATE' || !variables.preparation ||
+        request.userInfo.username in ['system:serviceaccount:kube-system:job-controller','system:kube-controller-manager']
+      message: Only the Job controller may create preparation Pods.
+    - expression: >-
+        request.operation != 'CREATE' || !variables.forwarder ||
+        request.userInfo.username in ['system:serviceaccount:kube-system:replicaset-controller','system:kube-controller-manager']
+      message: Only the ReplicaSet controller may create audit forwarders.
+    - expression: >-
+        !(variables.preparation || variables.forwarder) ||
+        (has(object.spec.automountServiceAccountToken) && !object.spec.automountServiceAccountToken &&
+         object.spec.containers.size() == 1 &&
+         (!has(object.spec.initContainers) || object.spec.initContainers.size() == 0) &&
+         object.spec.containers.all(c, !has(c.envFrom) && (!has(c.env) || c.env.all(e, !has(e.valueFrom))) &&
+         !has(c.lifecycle) && !has(c.volumeDevices)) &&
+         object.spec.volumes.all(v, has(v.configMap) || has(v.persistentVolumeClaim) ||
+           (variables.preparation && v.name == 'proof' && has(v.secret) &&
+            v.secret.secretName.matches('^ui-[a-f0-9]{16}-browser-proof$'))))
+      message: Helper Pods cannot project unrelated Secrets or access API credentials.
+    - expression: >-
+        !variables.preparation ||
+        (object.spec.containers[0].name == 'prep' && object.spec.containers[0].image == {{ .Values.preparationImage | toJson }} &&
+        object.spec.containers[0].command.size() >= 3 && object.spec.containers[0].command[0] == 'python3' &&
+        object.spec.containers[0].command[1] == '-m' && object.spec.containers[0].command[2] == 'saw_kubernetes.prepare_gate')
+      message: Gate preparation requires the pinned publisher executable.
+    - expression: >-
+        !variables.preparation || false
+        {{- range $slot := .Values.slots }}
+        || (variables.owners[0].name.startsWith({{ ternary "saw-gate-preparation-" (printf "gate-%s-" ($slot.relayID | default "missing")) (eq (len $.Values.slots) 1) | toJson }}) &&
+        object.spec.volumes.exists(v, v.name == 'gate') &&
+        object.spec.volumes.all(v,
+          (v.name == 'gate' && has(v.persistentVolumeClaim) && v.persistentVolumeClaim.claimName == {{ printf "saw-gate-%s" $slot.base | toJson }}) ||
+          (v.name == 'bom' && has(v.configMap) && v.configMap.name == 'saw-bom-profiles') ||
+          (v.name == 'proof' && has(v.secret) && v.secret.secretName == {{ printf "ui-%s-browser-proof" ($slot.relayID | default "missing") | toJson }})) &&
+        object.spec.containers[0].volumeMounts.all(m, !has(m.subPath) && !has(m.subPathExpr) &&
+          ((m.name == 'gate' && m.mountPath == '/volume') ||
+           (m.name == 'proof' && m.mountPath == '/proof' && m.readOnly) ||
+           (m.name == 'bom' && m.mountPath == '/bom' && m.readOnly))))
+        {{- end }}
+      message: Preparation inputs must belong to the registered slot.
+    - expression: >-
+        !variables.forwarder ||
+        (object.spec.containers[0].name == 'forward' && object.spec.containers[0].image == {{ .Values.forwarderImage | toJson }} &&
+        object.spec.containers[0].command == ['node','/code/main.mjs'] &&
+        object.spec.volumes.all(v, (v.name == 'data' && has(v.persistentVolumeClaim) &&
+         v.persistentVolumeClaim.claimName == 'saw-audit-' + variables.podLabels['saw-audit-forward']) ||
+         (v.name in ['code','trust'] && has(v.configMap) &&
+         v.configMap.name == variables.podLabels['saw-audit-forward'] + (v.name == 'code' ? '-forward' : '-ca'))))
+      message: Audit forwarders require their pinned script and slot-specific exchange.
+    - expression: >-
+        !variables.forwarder || false
+        {{- range $slot := .Values.slots }}
+        || variables.podLabels['saw-audit-forward'] == {{ $slot.base | toJson }}
+        {{- end }}
+      message: The audit forwarder must belong to a registered slot.
+    - expression: >-
+        !('saw-audit-forward' in variables.podLabels) || variables.forwarder
+      message: Audit forwarder network identity is reserved for its ReplicaSet.
+    - expression: >-
+        variables.role != 'workload' || (variables.sandboxOwner && has(variables.owners[0].controller) &&
+        variables.owners[0].controller && variables.slot == object.metadata.name &&
+        (request.operation != 'CREATE' || request.userInfo.username == {{ .Values.sandboxControllerUsername | toJson }}))
+      message: Only the Agent Sandbox controller may create its named workload Pod.
+    - expression: >-
+        request.operation != 'UPDATE' ||
+        (oldObject.metadata.ownerReferences == object.metadata.ownerReferences &&
+        oldObject.spec.containers == object.spec.containers &&
+        oldObject.spec.?initContainers == object.spec.?initContainers &&
+        oldObject.spec.?volumes == object.spec.?volumes &&
+        (!variables.gatewayCaller || (variables.runtimePod && oldObject.metadata.labels == object.metadata.labels &&
+        oldObject.metadata.?annotations == object.metadata.?annotations)))
+      message: Workspace Pod images, containers, volumes and ownership are immutable.
+    - expression: >-
+        !variables.runtimePod || (variables.sandboxOwner && variables.pair.matches('^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$') &&
+        has(object.spec.automountServiceAccountToken) && !object.spec.automountServiceAccountToken &&
+        object.spec.containers.size() == 1 && (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.size() == 0))
+      message: Runtime Pods require one stock container and an explicit token boundary.
+    - expression: >-
+        !variables.runtimePod || (variables.slot in {{ keys .Values.slots | sortAlpha | toJson }} &&
+        object.spec.containers.all(c, !has(c.envFrom) && (!has(c.env) || c.env.all(e, !has(e.valueFrom))) &&
+        !has(c.lifecycle) && !has(c.volumeDevices) && !has(c.args) && !has(c.startupProbe) &&
+        !has(c.livenessProbe) && (!has(c.readinessProbe) || has(c.readinessProbe.tcpSocket))))
+      message: Sandbox containers must use the approved slot and stock execution contract.
+    - expression: >-
+        variables.role != 'supervisor' || (!variables.owners[0].?controller.orValue(false) && object.metadata.name == 'os-supervisor-' + variables.pair &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.size() == 0) &&
+        object.spec.containers[0].name == 'supervisor' &&
+        object.spec.containers[0].image == {{ .Values.supervisorImage | toJson }} &&
+        object.spec.containers[0].command == {{ .Values.supervisorCommand | toJson }} &&
+        object.spec.containers[0].env.all(e, e.name in ['OPENSHELL_ADMITTED_ISOLATION_BACKEND','OPENSHELL_ENDPOINT',
+        'OPENSHELL_SANDBOX_ID','OPENSHELL_SANDBOX','OPENSHELL_MAIN_PROCESS_SPEC','OPENSHELL_K8S_SA_TOKEN_FILE',
+        'OPENSHELL_SSH_SOCKET_PATH','OPENSHELL_SSH_SOCKET_SHARED','OPENSHELL_PROXY_TLS_DIR','OPENSHELL_PROXY_CA_CERT',
+        'OPENSHELL_PROXY_CA_KEY','OPENSHELL_LOG_LEVEL','OPENSHELL_TELEMETRY_ENABLED','OPENSHELL_NETWORK_RUNTIME_CAPABILITIES',
+        'OPENSHELL_TLS_CA']) &&
+        object.spec.volumes.all(v, has(v.emptyDir) ||
+          (v.name == 'bootstrap' && has(v.secret) && v.secret.secretName.matches('^os-supervisor-' + variables.pair + '-[a-f0-9]{12}$')) ||
+          (v.name == 'client-tls' && has(v.secret) && v.secret.secretName == {{ .Values.serverTLSSecret | toJson }} &&
+           has(v.secret.items) && v.secret.items.size() == 1 && v.secret.items[0].key == 'ca.crt' && v.secret.items[0].path == 'ca.crt') ||
+          (v.name == 'sa-token' && has(v.projected) && v.projected.sources.size() == 1 &&
+           has(v.projected.sources[0].serviceAccountToken) && v.projected.sources[0].serviceAccountToken.audience == 'openshell-gateway' &&
+           v.projected.sources[0].serviceAccountToken.path == 'token' && v.projected.sources[0].serviceAccountToken.expirationSeconds <= 3600)))
+      message: Supervisor executable, TLS projection and token must match the stock contract.
+    - expression: >-
+        variables.role != 'workload' || (object.spec.containers[0].name == 'agent' &&
+        (!has(object.spec.containers[0].env) || object.spec.containers[0].env.all(e, e.name in ['TMPDIR',
+        'OPENSHELL_TELEMETRY_ENABLED','OPENSHELL_OCI_IMAGE_USER','OPENSHELL_SANDBOX_UID','OPENSHELL_SANDBOX_GID'])) &&
+        object.spec.containers[0].command == ['/.openshell/runtime/openshell-sandbox','--bootstrap','/.openshell/state/bootstrap/boundary.json'] &&
+        has(object.spec.initContainers) && object.spec.initContainers.size() == 1 &&
+        object.spec.initContainers.all(c, c.image == {{ .Values.runtimeImage | toJson }} && c.name == 'openshell-sandbox-bootstrap' &&
+        c.command == ['/openshell-sandbox','bootstrap'] && !has(c.args) && !has(c.env) && !has(c.envFrom) &&
+        !has(c.lifecycle) && !has(c.volumeDevices) && !has(c.startupProbe) && !has(c.livenessProbe) && !has(c.readinessProbe)))
+      message: Workloads must use the stock runtime bootstrap.
+{{- range $name, $slot := .Values.slots }}
+    - expression: >-
+        variables.role != 'workload' || variables.slot != {{ $name | toJson }} || (
+        object.spec.containers[0].image == {{ $slot.image | toJson }} && object.spec.containers[0].image.matches("@sha256:[a-f0-9]{64}$") &&
+        object.spec.volumes.all(v, (has(v.emptyDir) && v.name in ['openshell-runtime','openshell-runtime-state','openshell-run']) || (v.name == 'openshell-pod-identity' && has(v.downwardAPI)) ||
+          (v.name == 'openshell-sandbox-bootstrap' && has(v.secret) && v.secret.secretName.matches('^os-sandbox-' + variables.pair + '-[a-f0-9]{12}$')) ||
+          (has(v.persistentVolumeClaim) && (
+            {{ range $i, $m := $slot.dataMounts -}}
+            (v.name == 'data-{{ $i }}' && v.persistentVolumeClaim.claimName == {{ $m.claimName | toJson }} &&
+             v.persistentVolumeClaim.?readOnly.orValue(false) == {{ $m.readOnly }}) ||
+            {{ end -}}
+            (v.name == 'saw-workspace' && v.persistentVolumeClaim.claimName == {{ printf "workspace-%s" $slot.base | toJson }}) ||
+            (v.name == 'saw-gate' && v.persistentVolumeClaim.claimName == {{ printf "saw-gate-%s" $slot.base | toJson }} && v.persistentVolumeClaim.readOnly) ||
+            (v.name == 'saw-audit' && v.persistentVolumeClaim.claimName == {{ printf "saw-audit-%s" $slot.base | toJson }})))) &&
+        object.spec.containers[0].volumeMounts.all(m, !has(m.subPathExpr) && (
+          {{ range $i, $m := $slot.dataMounts -}}
+          (m.name == 'data-{{ $i }}' && m.mountPath == {{ $m.mountPath | toJson }} &&
+           !has(m.subPath) && m.?readOnly.orValue(false) == {{ $m.readOnly }}) ||
+          {{ end -}}
+          (m.name == 'saw-workspace' && ((m.mountPath == '/sandbox/workspace' && !has(m.subPath)) || (m.mountPath == '/sandbox/briefing' && m.subPath == 'briefing'))) ||
+          (m.name == 'saw-audit' && m.subPath == 'log' && m.mountPath == '/sandbox/.saw/audit') ||
+          (m.name == 'openshell-runtime' && m.mountPath == '/.openshell/runtime' && m.readOnly) ||
+          (m.name == 'openshell-runtime-state' && m.mountPath == '/.openshell/state') ||
+          (m.name == 'openshell-pod-identity' && m.mountPath == '/.openshell/pod-identity' && m.readOnly) ||
+          (m.name == 'openshell-run' && m.mountPath == '/run') || m.name == 'saw-gate')) &&
+        object.spec.containers[0].volumeMounts.all(m,
+          m.name != 'saw-gate' || (m.readOnly && has(m.subPath) && ((m.mountPath == '/sandbox/.saw/trusted' && m.subPath == 'bundle') || (m.mountPath == '/sandbox/harness' && m.subPath.matches('^harness-[a-f0-9]{64}$'))))) &&
+        object.spec.initContainers[0].volumeMounts.all(m, m.name in ['openshell-sandbox-bootstrap','openshell-runtime','openshell-runtime-state']))
+      message: Workload image and PVC attachments must match the approved sandbox slot.
+{{- end }}
+    - expression: >-
+        !variables.gatewayClaim || (has(object.spec.serviceAccountName) &&
+        object.spec.serviceAccountName == {{ .Values.gatewayServiceAccount | toJson }} &&
+        has(object.metadata.labels) && 'openshell.pattern/role' in object.metadata.labels &&
+        object.metadata.labels['openshell.pattern/role'] == 'gateway' &&
+        'app.kubernetes.io/instance' in object.metadata.labels &&
+        object.metadata.labels['app.kubernetes.io/instance'] == {{ .Values.gatewayId | toJson }} &&
+        has(object.metadata.ownerReferences) && object.metadata.ownerReferences.exists(r,
+          r.kind == 'StatefulSet' && r.apiVersion == 'apps/v1' && has(r.controller) && r.controller &&
+          r.name == {{ printf "%s-gateway" .Values.gatewayId | toJson }}))
+      message: Gateway identity requires the approved ServiceAccount, instance and controlling StatefulSet.
+      reason: Forbidden
+    - expression: >-
+        request.operation != 'UPDATE' || variables.previousGatewayClaim == variables.gatewayClaim
+      message: Pods cannot acquire or drop gateway identity after creation.
+      reason: Forbidden
+    - expression: >-
+        request.operation != 'CREATE' || !variables.gatewayClaim || request.userInfo.username in
+        ['system:serviceaccount:kube-system:statefulset-controller', 'system:kube-controller-manager']
+      message: Only the Kubernetes StatefulSet controller may create a gateway Pod.
+      reason: Forbidden
+    - expression: >-
+        !variables.runtimePod || (variables.sandboxAccount && variables.role in ['workload', 'supervisor'])
+      message: OpenShell runtime Pods must preserve the approved ServiceAccount and role labels.
+      reason: Forbidden
+    - expression: >-
+        !variables.runtimePod || variables.previousRole == '' || variables.previousRole == variables.role
+      message: OpenShell runtime Pod role labels cannot change after creation.
+      reason: Forbidden
+    - expression: >-
+        !variables.runtimePod || (has(object.metadata.ownerReferences) && object.metadata.ownerReferences.exists(r,
+          r.kind == 'Sandbox' && r.apiVersion in ['agents.x-k8s.io/v1alpha1', 'agents.x-k8s.io/v1beta1']))
+      message: OpenShell runtime Pods must retain their Sandbox owner reference.
+      reason: Forbidden
+    - expression: >-
+        variables.role != 'supervisor' || (has(object.metadata.labels) &&
+          'openshell.ai/gateway-id' in object.metadata.labels &&
+          object.metadata.labels['openshell.ai/gateway-id'] == {{ .Values.gatewayId | toJson }})
+      message: Supervisor Pods must retain their approved gateway identity.
+      reason: Forbidden
+    - expression: >-
+        request.operation != 'CREATE' || variables.role != 'supervisor' ||
+        request.userInfo.username == {{ printf "system:serviceaccount:%s:%s" .Values.targetNamespace .Values.gatewayServiceAccount | toJson }}
+      message: Only this workspace gateway may create supervisor Pods.
+      reason: Forbidden
+    - expression: >-
+        variables.role != 'supervisor' || !has(object.spec.runtimeClassName) || object.spec.runtimeClassName == ''
+      message: Stock supervisor Pods must use the default container runtime.
+      reason: Forbidden
+    - expression: >-
+        variables.role != 'workload' || !has(object.spec.runtimeClassName) || object.spec.runtimeClassName == ''
+      message: Container-mode workload Pods must use the default container runtime.
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "saw-runtime-policies.name" . }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-9"
+    argocd.argoproj.io/sync-options: Prune=false
+spec:
+  policyName: {{ include "saw-runtime-policies.name" . }}
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Values.targetNamespace | quote }}
+{{- end }}

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Create or update RHDH's confidential OIDC client in the openshell realm.
 
-Runs as an Argo CD PostSync hook, so it also fixes a realm that existed
+Runs as an Argo CD Sync hook, so it also fixes a realm that existed
 before the portal (a realm import only runs once). The client secret comes
 from the rhdh-oidc Secret (from Vault); the Keycloak admin credentials from
 the operator's <keycloak>-initial-admin Secret, read through the Kubernetes
@@ -25,6 +25,8 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from saw_keycloak_admin import ensure_admin_api_scope
 
 SA = "/var/run/secrets/kubernetes.io/serviceaccount"
 
@@ -108,15 +110,10 @@ def grant_catalog_reader(admin, client_uuid, token, ctx):
     roles = [call(f"{admin}/clients/{rm['id']}/roles/{name}", token=token, ctx=ctx) for name in READER_ROLES]
     call(f"{admin}/users/{sa['id']}/role-mappings/clients/{rm['id']}", method="POST", body=roles,
          token=token, ctx=ctx)
-    # Updated Keycloak versions require this scope as well as the reader roles.
-    scopes = call(f"{admin}/client-scopes", token=token, ctx=ctx) or []
-    admin_scope = next((s for s in scopes if s.get("name") == "kc-admin-api"), None)
-    if admin_scope is not None:
-        defaults = call(f"{admin}/clients/{client_uuid}/default-client-scopes", token=token, ctx=ctx) or []
-        if not any(s.get("name") == "kc-admin-api" for s in defaults):
-            call(f"{admin}/clients/{client_uuid}/default-client-scopes/{admin_scope['id']}",
-                 method="PUT", token=token, ctx=ctx)
-    print(f"Service account {sa.get('username')} may read users and groups ({', '.join(READER_ROLES)})")
+    ensure_admin_api_scope(
+        lambda method, path, body=None: call(admin + path, method=method, body=body, token=token, ctx=ctx),
+        client_uuid)
+
 
 
 def everyone_in_group(admin, name, token, ctx):

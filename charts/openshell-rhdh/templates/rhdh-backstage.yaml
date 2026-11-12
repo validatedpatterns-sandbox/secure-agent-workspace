@@ -51,17 +51,50 @@ spec:
       {{- if .Values.rhdh.host }}
       host: {{ .Values.rhdh.host }}
       {{- end }}
-  {{- if not .Values.tls.insecureSkipVerify }}
-  # The CA bundle NODE_EXTRA_CA_CERTS names, written before RHDH starts.
+  # RHDH mounts individual template files with subPath. A new Pod must load changes.
   deployment:
     patch:
       spec:
+        # Cold plugin installation can exceed Kubernetes' default ten-minute rollout deadline.
+        progressDeadlineSeconds: 1800
         template:
+          metadata:
+            annotations:
+              saw.redhat.com/portal-templates: {{ include (print $.Template.BasePath "/rhdh-templates.yaml") . | sha256sum | quote }}
+              {{- if not .Values.tls.insecureSkipVerify }}
+              saw.redhat.com/oidc-startup-check: {{ .Files.Get "files/wait-oidc.py" | sha256sum | quote }}
           spec:
             initContainers:
               {{- include "openshell-rhdh.caInitContainer" . | nindent 14 }}
+              # Stock OIDC caches initial discovery, including a startup failure.
+              # Wait for the issuer before the backend initializes that provider.
+              - name: saw-oidc-discovery
+                image: {{ .Values.portal.image }}
+                command:
+                  - python3
+                  - /opt/saw-ca-sources/wait-oidc.py
+                  - {{ include "openshell-rhdh.issuer" . | quote }}
+                  - /opt/saw-ca/ca-bundle.crt
+                volumeMounts:
+                  - name: saw-ca
+                    mountPath: /opt/saw-ca
+                    readOnly: true
+                  - name: saw-ca-sources
+                    mountPath: /opt/saw-ca-sources
+                    readOnly: true
+                resources:
+                  requests: { cpu: 10m, memory: 32Mi }
+                  limits: { memory: 64Mi }
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  runAsNonRoot: true
+                  capabilities: { drop: [ALL] }
+                  seccompProfile: { type: RuntimeDefault }
             containers:
               - name: backstage-backend
+                # Preserve the operator's health endpoint and allow five minutes for backend initialization.
+                startupProbe:
+                  failureThreshold: 15
                 volumeMounts:
                   - name: saw-ca
                     mountPath: /opt/saw-ca

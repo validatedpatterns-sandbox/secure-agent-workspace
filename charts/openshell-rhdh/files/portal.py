@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Self-service workspaces for the Secure Agent Workspace pattern.
 
-Standard library only; one file:
+Standard library only; packaged with the shared workspace projector:
 
   portal.py create REQUEST        pipeline saw-workspace-create, task register
   portal.py wait-<stage> USER [S] its later tasks: wait for apps, vm, running,
@@ -42,6 +42,8 @@ workspace, which the create template waits on. create and delete always
 delete the request Secret.
 """
 import base64
+from concurrent.futures import ThreadPoolExecutor
+import threading
 import calendar
 import hashlib
 import http.server
@@ -80,6 +82,48 @@ RESERVED_SUFFIXES = ("-bom", "-secrets")
 
 class PortalError(Exception):
     """A request that must be refused; the message is shown in the PipelineRun."""
+
+
+# Packaged from charts/saw-users/files/workspace.py by make catalog.
+import importlib.util as _importlib
+from pathlib import Path as _Path
+_workspace_spec = _importlib.spec_from_file_location("saw_workspace", _Path(__file__).with_name("workspace.py"))
+_workspace = _importlib.module_from_spec(_workspace_spec)
+_workspace_spec.loader.exec_module(_workspace)
+
+
+def _project(function, *args, **kwargs):
+    try:
+        return function(*args, **kwargs)
+    except _workspace.WorkspaceError as exc:
+        raise PortalError(str(exc)) from exc
+
+
+def enabled_catalog_sandboxes(profile):
+    return _workspace.enabled_catalog_sandboxes(profile)
+
+
+def sandbox_targets(user, registration, profile, *, model_lifecycle=False):
+    return _workspace.sandbox_targets(user, registration, profile, model_lifecycle=model_lifecycle)
+
+
+def public_model_inputs(profile, secrets):
+    return _project(_workspace.public_model_inputs, profile, secrets)
+
+
+def approved_endpoint(profile, secrets, boundary):
+    return _project(_workspace.approved_endpoint, profile, secrets, boundary)
+
+
+def enrolled_site(site, workspace, read):
+    def observed(path):
+        try:
+            return read(path)
+        except HttpError as exc:
+            if exc.code == 403:  # first sync, before the named reader grant exists
+                return {}
+            raise
+    return _project(_workspace.enrolled_site, site, workspace, observed if read else None)
 
 
 class NotARequest(PortalError):
@@ -171,6 +215,11 @@ def verify_jwt(token, jwks, what, now=None, leeway=0):
     header, payload, signed, signature = decode_jwt(token)
     if header.get("alg") != "ES256":
         raise PortalError(f"{what}: unsupported algorithm {header.get('alg')!r} (expected ES256)")
+    kid = header.get("kid")
+    if not isinstance(kid, str) or not kid:
+        raise PortalError(f"{what}: missing signing key ID")
+    if callable(jwks):
+        jwks = jwks(kid)
     keys = [k for k in jwks.get("keys", []) if k.get("kid") == header.get("kid")
             and k.get("kty") == "EC" and k.get("crv") == "P-256"]
     if not keys:
@@ -265,8 +314,31 @@ def kube():
     return Http(f"https://{host}:{port}", token, cafile=f"{SA_DIR}/ca.crt")
 
 
-def fetch_json(url, insecure=False):
-    return Http(url, insecure=insecure).call("GET", "")
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args):
+        return None
+
+
+def fetch_json(url):
+    """Read RHDH signing keys over verified TLS without following redirects."""
+    endpoint = urllib.parse.urlsplit(url)
+    if (endpoint.scheme != "https" or not endpoint.hostname or endpoint.username is not None
+            or endpoint.password is not None or endpoint.query or endpoint.fragment):
+        raise PortalError("RHDH signing keys require a configured HTTPS endpoint")
+    opener = urllib.request.build_opener(NoRedirect(), urllib.request.HTTPSHandler(
+        context=ssl.create_default_context()))
+    try:
+        with opener.open(urllib.request.Request(url, headers={"Accept": "application/json"}), timeout=15) as response:
+            raw = response.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise PortalError("RHDH signing key response is too large")
+        data = json.loads(raw)
+    except (OSError, ValueError) as exc:
+        raise PortalError("could not fetch RHDH signing keys from the configured HTTPS endpoint") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("keys"), list) or not all(
+            isinstance(key, dict) for key in data["keys"]):
+        raise PortalError("invalid RHDH signing key response")
+    return data
 
 
 class Vault:
@@ -309,6 +381,98 @@ def check_user(user):
     return user
 
 
+# Request policy is operator-owned, never taken from a form or registry entry.
+DEPLOYMENT_MODES = ("vm", "container")
+# A renderable foundation is not a qualified provisioning/readiness adapter.
+# Expand only when runtime lifecycle, BOM and readiness are implemented.
+PROVISIONABLE_MODES = ("vm",)
+
+
+def container_site(user):
+    """Trusted site inventory, never names/URLs supplied by the request."""
+    sites = json.loads(os.environ.get("SAW_CONTAINER_SITES", "{}"))
+    site = sites.get(user)
+    if not isinstance(site, dict) or not re.fullmatch(
+            r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", str(site.get("subject", ""))):
+        return None
+    return site
+
+
+def container_profiles(site):
+    automatic = site.get("automaticEnrollment", {})
+    return automatic.get("approvedProfiles", {})
+
+
+def registered_links(entry, catalog, domain):
+    if entry_deployment_mode(entry) == "container":
+        if entry.get("desiredState") == "Stopped":
+            return []
+        return sandbox_ui_links(entry["name"], entry.get("profiles", []), catalog, domain) if domain else []
+    return ui_links(entry["name"], entry.get("profiles", []), catalog, domain)
+
+
+def container_status(k8s, user, entry, argo_ns, domain, ping, catalog=None):
+    reg = entry_generation(user, entry)
+    normalized = {**entry, "name": user, "registration": reg,
+                  "installationID": installation_id(user, reg) if reg else ""}
+    def read(path):
+        try:
+            return k8s.call("GET", path, ok404=True)
+        except HttpError as exc:
+            if exc.code == 403:
+                return {}
+            raise
+    return _workspace.container_status(read, normalized, container_site(user), argo_ns, domain, ping, catalog)
+
+
+def installation_id(user, registration):
+    import uuid
+    if not GENERATION_RE.fullmatch(registration):
+        raise PortalError("container requires a generation-scoped registration")
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, "urn:saw:portal:" + check_user(user) + ":" + registration))
+
+
+def deployment_modes():
+    try:
+        modes = json.loads(os.environ.get("SAW_DEPLOYMENT_MODES", '["vm"]'))
+    except ValueError:
+        raise PortalError("SAW_DEPLOYMENT_MODES must be a JSON list") from None
+    if (not isinstance(modes, list) or not modes or "vm" not in modes
+            or any(not isinstance(m, str) or m not in DEPLOYMENT_MODES for m in modes)
+            or len(set(modes)) != len(modes)):
+        raise PortalError("SAW_DEPLOYMENT_MODES must contain vm and unique supported modes: vm, container")
+    return tuple(modes)
+
+
+def validate_deployment_mode(mode):
+    if not isinstance(mode, str) or mode not in DEPLOYMENT_MODES:
+        raise PortalError("deploymentMode must be one of vm, container")
+    return mode
+
+
+def request_deployment_mode(data):
+    mode = validate_deployment_mode(data.get("deploymentMode", "vm"))
+    if mode not in deployment_modes():
+        raise PortalError(f"deploymentMode={mode} is not enabled by the administrator")
+    return mode
+
+
+def entry_deployment_mode(entry):
+    """Legacy registry entries are VMs, independently of later chart defaults."""
+    values = entry.get("values", {})
+    if not isinstance(values, dict):
+        raise PortalError("registry values must be an object")
+    deployment = values.get("deployment", {})
+    if not isinstance(deployment, dict) or set(deployment) - {"mode"}:
+        raise PortalError("registry deployment must be an object with only mode")
+    return validate_deployment_mode(deployment.get("mode", "vm"))
+
+
+def assert_mode_unchanged(entry, mode):
+    if entry_deployment_mode(entry) != mode:
+        raise PortalError("workspace deployment mode is immutable; an explicit migration is required")
+
+
 def parse_request(data, catalog):
     """The chosen profile and, for each Secret it reads, the field values.
 
@@ -319,7 +483,10 @@ def parse_request(data, catalog):
     if profile not in catalog:
         raise PortalError(f"unknown profile {profile!r}; available: {', '.join(sorted(catalog))}")
     secrets, missing = {}, []
+    allowed = catalog[profile].get("dedicatedEndpointSecrets") if request_deployment_mode(data) == "container" else None
     for name, spec in sorted(catalog[profile].get("secrets", {}).items()):
+        if allowed is not None and name not in allowed:
+            continue
         values = {}
         for field in spec.get("fields", []):
             value = (data.get(f"{name}.{field['key']}") or "").strip()
@@ -373,13 +540,15 @@ def token_user(token, jwks=None, leeway=0):
     published keys. `jwks(path)` fetches a JWKS (the generator caches)."""
     if jwks is None:
         rhdh = env("RHDH_INTERNAL_URL").rstrip("/")
-        insecure = os.environ.get("RHDH_SKIP_VERIFY") == "true"
-        jwks = lambda path: fetch_json(rhdh + path, insecure=insecure)  # noqa: E731
-    scaffolder_jwks = None
-    if decode_jwt(token)[0].get("typ") == PLUGIN_TYP:
-        scaffolder_jwks = jwks("/api/scaffolder/.backstage/auth/v1/jwks.json")
-    return check_user(verify_backstage_token(token, jwks("/api/auth/.well-known/jwks.json"),
-                                             scaffolder_jwks, leeway=leeway))
+        jwks = lambda path: fetch_json(rhdh + path)  # noqa: E731
+    def keys_for(path):
+        if isinstance(jwks, JwksCache):
+            return lambda kid: jwks(path, kid)
+        return lambda kid: jwks(path)
+
+    return check_user(verify_backstage_token(token, keys_for("/api/auth/.well-known/jwks.json"),
+                                             keys_for("/api/scaffolder/.backstage/auth/v1/jwks.json"),
+                                             leeway=leeway))
 
 
 def requester(data):
@@ -432,14 +601,16 @@ def read_entry(cm):
     return entry if isinstance(entry, dict) else {}
 
 
-def registry_entry(user, profile, generation=""):
+def registry_entry(user, profile, generation="", mode="vm"):
     """The saw-users list entry for a portal workspace."""
+    mode = validate_deployment_mode(mode)
     return {"name": user, "profiles": [profile], "ownerSubject": "",
+            "values": {"deployment": {"mode": mode}},
             "vaultPrefix": f"{env('VAULT_KV_MOUNT', 'secret')}/data/{vault_prefix(user, generation)}",
             "pruneOnRemove": os.environ.get("PRUNE_ON_REMOVE", "true") == "true"}
 
 
-def put_configmap(k8s, ns, name, data, labels=None, resource_version=None):
+def put_configmap(k8s, ns, name, data, labels=None, resource_version=None, deployment_mode=None):
     body = {"apiVersion": "v1", "kind": "ConfigMap",
             "metadata": {"name": name, "namespace": ns, "labels": labels or {}}, "data": data}
     path = f"/api/v1/namespaces/{ns}/configmaps"
@@ -467,7 +638,92 @@ def put_configmap(k8s, ns, name, data, labels=None, resource_version=None):
     current = k8s.call("GET", f"{path}/{name}", ok404=True)
     if current is None or is_deleting(current):
         raise PortalError(f"{name} changed while this request ran (a delete?); request it again")
-    put_configmap(k8s, ns, name, data, labels, current["metadata"]["resourceVersion"])
+    if deployment_mode is not None:
+        assert_mode_unchanged(read_entry(current), deployment_mode)
+        if deployment_mode == "container":
+            raise PortalError("concurrent container registration; refusing to replace its identity")
+    put_configmap(k8s, ns, name, data, labels, current["metadata"]["resourceVersion"], deployment_mode)
+
+
+CREDENTIAL_WRITER = "saw.redhat.com/credential-writer"
+WRITER_NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+
+def credential_writer_state(k8s, namespace, holder):
+    if not WRITER_NAME.fullmatch(holder):
+        raise PortalError("invalid registration credential writer")
+    run = k8s.call("GET", f"/apis/tekton.dev/v1/namespaces/{namespace}/pipelineruns/{holder}", ok404=True)
+    if not run:
+        return "missing"
+    terminal = any(c.get("type") == "Succeeded" and c.get("status") in ("True", "False")
+                       for c in run.get("status", {}).get("conditions", []))
+    return "incomplete" if terminal else "running"
+
+
+def check_credential_writer(k8s, namespace, cm):
+    """Serialize Vault changes with registration publication and deletion."""
+    holder = (cm or {}).get("metadata", {}).get("annotations", {}).get(CREDENTIAL_WRITER)
+    if not holder or holder == os.environ.get("PIPELINE_RUN"):
+        return
+    state = credential_writer_state(k8s, namespace, holder)
+    if state == "missing":
+        raise PortalError("credential writer PipelineRun is missing; operator recovery required")
+    if state == "running":
+        raise PortalError("another pipeline is publishing this registration's credentials")
+
+
+def committed_entry(cm):
+    """Legacy interrupted writers have no proven previous publication."""
+    if (cm or {}).get("metadata", {}).get("annotations", {}).get(CREDENTIAL_WRITER):
+        try:
+            data = json.loads(cm.get("data", {}).get("committed.json", "{}"))
+        except (TypeError, ValueError):
+            raise PortalError("invalid committed registration") from None
+        if not isinstance(data, dict):
+            raise PortalError("invalid committed registration")
+        return data
+    return read_entry(cm)
+
+
+def reserve_credentials(k8s, ns, name, previous, entry, user):
+    """A failed/crashed write always has a registered generation for recovery."""
+    writer = env("PIPELINE_RUN")
+    if not WRITER_NAME.fullmatch(writer):
+        raise PortalError("credential publication requires a named PipelineRun")
+    path = f"/api/v1/namespaces/{ns}/configmaps"
+    body = {"apiVersion": "v1", "kind": "ConfigMap",
+            "metadata": {"name": name, "namespace": ns,
+                         "labels": {WORKSPACE_LABEL: "true", "openshell.pattern/owner": user},
+                         "annotations": {CREDENTIAL_WRITER: writer}},
+            "data": {"user.json": json.dumps(entry, sort_keys=True)}}
+    if previous:
+        committed = committed_entry(previous)
+        if committed:
+            body["data"]["committed.json"] = json.dumps(committed, sort_keys=True)
+        meta = body["metadata"] = dict(previous["metadata"])
+        meta["annotations"] = {**meta.get("annotations", {}), CREDENTIAL_WRITER: writer}
+    try:
+        return k8s.call("PUT" if previous else "POST", path + ("/"+name if previous else ""), body)
+    except HttpError as exc:
+        if exc.code != 409:
+            raise
+        raise PortalError("concurrent registration changed before credential publication") from None
+
+
+def check_container_identity(user, site):
+    """Resolve the authenticated catalog login in the configured issuer before any write."""
+    if not site or not site.get("subject"):
+        raise PortalError("missing enrolled container owner")
+    issuer = env("KEYCLOAK_URL").rstrip("/") + "/realms/" + env("KEYCLOAK_REALM")
+    relay_issuer = site.get("automaticEnrollment", {}).get("relay", {}).get("issuer")
+    if relay_issuer and relay_issuer.rstrip("/") != issuer:
+        raise PortalError("workspace relay and owner directory must use the same issuer")
+    path = env("KEYCLOAK_SECRET_FILE")
+    with open(path, encoding="utf-8") as credential:
+        ids = keycloak_user_ids(env("KEYCLOAK_URL"), env("KEYCLOAK_REALM"), env("KEYCLOAK_CLIENT_ID"),
+                                credential.read().strip(), [user], insecure=False)
+    if ids.get(user) != site["subject"]:
+        raise PortalError("current identity does not match the enrolled container owner")
 
 
 def is_deleting(cm):
@@ -504,7 +760,24 @@ def list_workspaces(k8s, ns, deleting=False):
             log(f"ERROR: registry entry {name} is malformed (no valid user.json); skipped")
             bad.append(name)
             continue
+        if cm["metadata"].get("annotations", {}).get(CREDENTIAL_WRITER) and not deleting:
+            try:
+                entry = committed_entry(cm)
+                if entry and name != f"saw-ws-{entry.get('name')}":
+                    raise PortalError("committed registration has a different owner")
+            except PortalError:
+                log(f"ERROR: registry entry {name} has an invalid committed registration; skipped")
+                bad.append(name)
+                continue
+            if not entry:
+                continue
         if (cm["metadata"].get("labels") or {}).get(DELETING_LABEL) == "true" and not deleting:
+            continue
+        try:
+            entry_deployment_mode(entry)
+        except PortalError:
+            log(f"ERROR: registry entry {name} has an invalid deployment mode; skipped")
+            bad.append(name)
             continue
         out.append(entry)
     BAD_ENTRIES[:] = sorted(bad)
@@ -520,14 +793,7 @@ def ui_links(user, profiles, catalog, domain):
 
 
 def sandbox_ui_links(user, profiles, catalog, domain):
-    out = []
-    for profile in profiles:
-        for w in catalog.get(profile, {}).get("workspaces", []):
-            for sb in w.get("sandboxes", []):
-                if w.get("enabled") and sb.get("enabled") and sb.get("uiRoute"):
-                    out.append((f"{sb['name']} UI ({w['name']})",
-                                f"https://{user}-{w['name']}-{sb['name']}-ui.apps.{domain}"))
-    return out
+    return _workspace.sandbox_ui_links(user, profiles, catalog, domain)
 
 
 # Groups for RHDH RBAC, so a user sees only the action that applies to them:
@@ -553,7 +819,41 @@ def audience_groups(owners, users):
     return docs
 
 
-def entities_yaml(workspaces, catalog, domain, rhdh_url, statuses=None, portal_ns="saw-portal", users=None):
+def linked_runtime_phase(k8s, link):
+    """Read only the installation's two named objects; a stale generation cannot be Ready."""
+    ref = link["runtime"]
+    ns = ref["namespace"]
+    if not all(re.fullmatch(r"[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?", ref[key])
+               for key in ("namespace", "intent", "status")):
+        raise PortalError("invalid runtime status reference")
+    def read(name, key):
+        cm = k8s.call("GET", f"/api/v1/namespaces/{ns}/configmaps/{name}", ok404=True)
+        if not cm or cm.get("metadata", {}).get("deletionTimestamp"):
+            return {}, {}
+        return json.loads(cm.get("data", {}).get(key, "{}")), cm["metadata"].get("labels", {})
+    try:
+        intent, il = read(ref["intent"], "intent.json")
+        status, sl = read(ref["status"], "status.json")
+        owner_label = "saw.redhat.com/runtime-owner"
+        binding = intent.get("bindings", {})
+        if (il.get(owner_label) != ref["installationID"] or sl.get(owner_label) != ref["installationID"]
+                or sl.get("saw.redhat.com/managed-by") != "kubernetes-runtime-controller"
+                or binding.get("ownerID") != ref["installationID"] or binding.get("ownerSubject") != ref["ownerSubject"]
+                or binding.get("namespace") != ns or binding.get("mode") != ref["mode"]):
+            return "Unknown"
+        if type(intent.get("generation")) is not int or status.get("observedGeneration") != intent["generation"]:
+            return "Reconciling"
+        phase = status.get("phase")
+        if phase == "GenericReady" and intent.get("desiredState") == "Running":
+            return "Running"
+        if phase == "Stopped" and intent.get("desiredState") == "Stopped":
+            return "Stopped"
+        return "Blocked" if phase == "Blocked" else "Reconciling"
+    except (PortalError, ValueError, TypeError, AttributeError):
+        return "Unknown"
+
+
+def entities_yaml(workspaces, catalog, domain, rhdh_url, statuses=None, portal_ns="saw-portal", users=None, runtime_reader=None):
     """RHDH catalog entities: one Component per workspace (the kind RHDH's
     catalog lists first, and the one its CI tab is made for), owned by its user,
     linking the OpenShell web UI and each sandbox UI route, with the
@@ -563,7 +863,7 @@ def entities_yaml(workspaces, catalog, domain, rhdh_url, statuses=None, portal_n
     for ws in workspaces:
         user = ws["name"]
         links = [{"url": url, "title": title, "icon": "dashboard" if i == 0 else "web"}
-                 for i, (title, url) in enumerate(ui_links(user, ws.get("profiles", []), catalog, domain))]
+                 for i, (title, url) in enumerate(registered_links(ws, catalog, domain))]
         if rhdh_url:
             # The delete form, with this workspace already chosen.
             form = urllib.parse.quote(json.dumps({"workspace": f"component:default/saw-{user}"},
@@ -572,6 +872,7 @@ def entities_yaml(workspaces, catalog, domain, rhdh_url, statuses=None, portal_n
                           "title": "Delete workspace", "icon": "delete"})
         description = "Secure Agent Workspace (profiles: " + ", ".join(ws.get("profiles", [])) + ")"
         annotations = {"openshell.pattern/namespace": f"saw-{user}",
+                       "openshell.pattern/deployment-mode": entry_deployment_mode(ws),
                        # The Tekton tab: the create and delete pipeline runs
                        # labelled with this id in the portal namespace.
                        "backstage.io/kubernetes-id": f"saw-{user}",
@@ -589,6 +890,25 @@ def entities_yaml(workspaces, catalog, domain, rhdh_url, statuses=None, portal_n
                                   "links": links},
                      "spec": {"type": "agent-workspace", "owner": f"user:default/{user}",
                               "lifecycle": "production"}})
+    # Operator-linked workspaces have their own lifecycle outside the portal registry.
+    # Publish only a catalog link. Existing create/delete templates still own VM entries.
+    for linked in json.loads(os.environ.get("SAW_LINKED_WORKSPACES", "[]")):
+        owner, slug = linked["owner"], linked["routeLabel"]
+        check_user(owner)
+        if not re.fullmatch(r"[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?", slug) or not domain:
+            raise PortalError("linked workspace requires an ingress DNS label and cluster domain")
+        runtime_metadata = {}
+        if "runtime" in linked:
+            mode = linked["runtime"]["mode"]
+            phase = linked_runtime_phase(runtime_reader, linked) if runtime_reader else "Unknown"
+            runtime_metadata = {"annotations": {"openshell.pattern/deployment-mode": mode, "openshell.pattern/status": phase},
+                                "description": f"OpenShell {mode} workspace. Runtime status: {phase}."}
+        docs.append({"apiVersion": "backstage.io/v1alpha1", "kind": "Component",
+                     "metadata": {"name": f"linked-{slug}", "title": linked["title"], **runtime_metadata,
+                                  "links": [{"url": f"https://{slug}.apps.{domain}",
+                                             "title": "OpenClaw UI", "icon": "web"}]},
+                     "spec": {"type": "agent-workspace", "owner": f"user:default/{owner}",
+                              "lifecycle": "experimental"}})
     docs += audience_groups([ws["name"] for ws in workspaces], users)
     docs.append(get_started(rhdh_url))
     return "\n---\n".join(json.dumps(d, indent=2, sort_keys=True) for d in docs) + "\n"
@@ -696,7 +1016,7 @@ class OwnerSubjects:
     Without Keycloak settings (RBAC off) entries stay as they are."""
 
     def __init__(self, ttl=60):
-        self.ttl, self.ids, self.tried = ttl, {}, {}
+        self.ttl, self.ids, self.tried, self.failed = ttl, {}, {}, set()
 
     def fill(self, workspaces):
         url = os.environ.get("KEYCLOAK_URL", "")
@@ -716,10 +1036,17 @@ class OwnerSubjects:
                 for name in missing:
                     self.ids.pop(name, None)
                 self.ids.update(found)
+                self.failed.difference_update(missing)
             except (PortalError, OSError, ValueError, KeyError) as exc:
-                log(f"WARN: Keycloak ids not read ({exc}); {', '.join(missing)} not members yet")
+                log(f"WARN: Keycloak owner lookup failed ({exc}); projection held")
                 for name in missing:
                     self.ids.pop(name, None)
+                self.failed.update(missing)
+        # An unavailable identity service is not an empty or disabled owner.
+        # Hold the entire VM/container projection, including during the retry
+        # backoff, rather than silently omitting entries or clearing membership.
+        if any(not w.get("ownerSubject") and w["name"] in self.failed for w in workspaces):
+            raise PortalError("Keycloak owner lookup unavailable; workspace projection held")
         return [{**w, "ownerSubject": self.ids[w["name"]]}
                 if not w.get("ownerSubject") and w["name"] in self.ids else w for w in workspaces]
 
@@ -769,6 +1096,14 @@ def ping_url(url, timeout=3):
         return False
 
 
+def owner_route_available(url, timeout=3):
+    issuer = os.environ.get("KEYCLOAK_URL", "").rstrip("/")
+    if not issuer:
+        return False
+    issuer += "/realms/" + os.environ.get("KEYCLOAK_REALM", "openshell")
+    return _workspace.owner_route_available(url, issuer, urllib.request.build_opener(NoRedirect()), timeout)
+
+
 def app_summary(app):
     st = app.get("status") or {}
     sync = (st.get("sync") or {}).get("status") or "Unknown"
@@ -782,7 +1117,7 @@ def workspace_status(k8s, user, catalog, ns, argo_ns, domain, ping=None):
     `phase` is the last stage reached in order ("none" before the registry
     entry exists, "failed" when a stage failed); `text` is a short report
     for the template's log and output."""
-    ping = ping or ping_url
+    vm_ping = ping or ping_url
     reached, details, failure = {}, {}, ""
     cm = k8s.call("GET", f"/api/v1/namespaces/{ns}/configmaps/saw-ws-{user}", ok404=True)
     try:
@@ -791,10 +1126,34 @@ def workspace_status(k8s, user, catalog, ns, argo_ns, domain, ping=None):
         entry = {}
     profiles = entry.get("profiles", []) if isinstance(entry, dict) else []
     if cm is not None and (cm["metadata"].get("labels") or {}).get(DELETING_LABEL) == "true":
-        gone, detail = removal_status(k8s, user, argo_ns)
+        try:
+            _, detail = removal_status(k8s, user, argo_ns, entry)
+        except HttpError as exc:
+            if exc.code != 403:
+                raise
+            # The read-only catalog has no cluster namespace inventory. Only
+            # wait-gone, running as the provisioner, can attest full removal.
+            detail = "The deletion pipeline is verifying workspace removal"
         return {"user": user, "phase": "deleting", "title": PHASE_TITLES["deleting"],
                 "message": detail, "ready": False, "failed": False, "steps": [], "links": [],
                 "text": f"Deleting: {detail}"}
+    holder = (cm or {}).get("metadata", {}).get("annotations", {}).get(CREDENTIAL_WRITER)
+    if holder:
+        state = credential_writer_state(k8s, ns, holder)
+        message = {"running": "Publishing credentials",
+                   "incomplete": "Credential publication incomplete. Retry the create form or delete the workspace.",
+                   "missing": "Credential writer is missing. Ask the operator to recover the registration."}[state]
+        return {"user": user, "deploymentMode": entry_deployment_mode(entry), "phase": "publishing" if state == "running" else "failed",
+                "title": message, "text": message, "message": message, "ready": False,
+                "failed": state != "running", "steps": [], "links": []}
+    mode = entry_deployment_mode(entry)
+    if mode == "container" and container_site(user):
+        return container_status(k8s, user, entry, argo_ns, domain, ping or owner_route_available, catalog)
+    if mode not in PROVISIONABLE_MODES:
+        message = f"{mode} workspace lifecycle and readiness are not qualified in this release"
+        return {"user": user, "deploymentMode": mode, "phase": "runtime-not-qualified",
+                "title": "Runtime not available", "message": message, "ready": False,
+                "failed": True, "steps": [], "links": [], "text": message}
     reached["registered"] = cm is not None
     details["registered"] = (f"ConfigMap saw-ws-{user}, profile {', '.join(profiles)}" if cm
                              else f"no registry entry saw-ws-{user} yet")
@@ -832,7 +1191,7 @@ def workspace_status(k8s, user, catalog, ns, argo_ns, domain, ping=None):
         reached["ready"] = False
         details["ready"] = "installing; waiting for workspace routes"
     else:
-        down = [title for title, url in uis if not ping(url)]
+        down = [title for title, url in uis if not vm_ping(url)]
         reached["ready"] = not down
         details["ready"] = ("UIs answer: " + ", ".join(t for t, _ in uis) if not down else
                             "installing; waiting for " + ", ".join(down))
@@ -865,7 +1224,7 @@ def workspace_status(k8s, user, catalog, ns, argo_ns, domain, ping=None):
             "text": "\n".join(lines)}
 
 
-def removal_status(k8s, user, argo_ns):
+def removal_status(k8s, user, argo_ns, entry=None):
     """(gone, what is left) of a workspace being deleted: its Argo CD
     applications and, with pruneOnRemove, namespace saw-<user> (without it
     the namespace and the VM stay on purpose)."""
@@ -876,6 +1235,16 @@ def removal_status(k8s, user, argo_ns):
     ns = k8s.call("GET", f"/api/v1/namespaces/saw-{user}", ok404=True) if prune else None
     if ns is not None:
         left.append(f"namespace saw-{user} ({(ns.get('status') or {}).get('phase', 'Active')})")
+    if entry and entry_deployment_mode(entry) == "container":
+        reg = entry_generation(user, entry)
+        if not reg:
+            raise PortalError("refusing container cleanup without a registration")
+        ui_names=entry.get("uiNamespaces",[f"saw-ui-{reg}"])
+        if any(not re.fullmatch("saw-ui-[a-f0-9]{16}", n) for n in ui_names):
+            raise PortalError("invalid portal UI namespace reference")
+        for scoped in [f"saw-ctl-{reg}", *ui_names]:
+            if k8s.call("GET", "/api/v1/namespaces/" + scoped, ok404=True) is not None:
+                left.append("namespace " + scoped)
     return not left, ("removed" if not left else "Argo CD is removing " + ", ".join(left))
 
 
@@ -944,20 +1313,31 @@ def wait_for(check, done, seconds, sleep=time.sleep, clock=time.monotonic):
 
 
 class JwksCache:
-    """RHDH's JWKS documents, refetched every few minutes."""
+    """Cache RHDH keys, with bounded on-demand refetches for rotating key IDs."""
 
     def __init__(self, ttl=300):
         self.ttl, self.docs = ttl, {}
+        self.next_miss_refresh = {}
+        self.lock = threading.Lock()
 
-    def __call__(self, path):
-        now = time.time()
-        hit = self.docs.get(path)
-        if hit and now - hit[0] < self.ttl:
-            return hit[1]
-        rhdh = env("RHDH_INTERNAL_URL").rstrip("/")
-        doc = fetch_json(rhdh + path, insecure=os.environ.get("RHDH_SKIP_VERIFY") == "true")
-        self.docs[path] = (now, doc)
-        return doc
+    def __call__(self, path, kid=None):
+        # The verifier chooses one of two fixed paths. No token field selects
+        # the issuer or URL. Coalesce misses per issuer, not per untrusted kid.
+        with self.lock:
+            now = time.monotonic()
+            hit = self.docs.get(path)
+            if hit and now - hit[0] < self.ttl:
+                if kid is None or any(k.get("kid") == kid for k in hit[1].get("keys", [])):
+                    return hit[1]
+                if now < self.next_miss_refresh.get(path, 0):
+                    return hit[1]
+                self.next_miss_refresh[path] = now + 5
+            rhdh = env("RHDH_INTERNAL_URL").rstrip("/")
+            doc = fetch_json(rhdh + path)
+            self.docs[path] = (time.monotonic(), doc)
+            if kid is not None and not any(k.get("kid") == kid for k in doc.get("keys", [])):
+                self.next_miss_refresh[path] = time.monotonic() + 5
+            return doc
 
 
 PORTAL_NS_LABEL = "saw.redhat.com/portal"
@@ -1072,25 +1452,95 @@ def handle(action, request_name):
         name = f"saw-ws-{user}"
         cm = k8s.call("GET", f"/api/v1/namespaces/{ns}/configmaps/{name}", ok404=True)
         deleting = cm is not None and is_deleting(cm)
-        if action == "create":
+        mode = entry_deployment_mode(read_entry(cm)) if cm else None
+        if mode == "container" or (action == "create" and data.get("deploymentMode") == "container"):
+            check_container_identity(user, container_site(user))
+            if caller != user:
+                pins = json.loads(os.environ.get("SAW_PORTAL_ADMIN_SUBJECTS", "{}"))
+                check_container_identity(caller, {"subject": pins.get(caller)})
+        check_credential_writer(k8s, ns, cm)
+        if action == "create" and "runtimeAction" in data:
+            if (cm or {}).get("metadata", {}).get("annotations", {}).get(CREDENTIAL_WRITER):
+                raise PortalError("finish credential publication before changing the runtime state")
+            entry = read_entry(cm)
+            operation = data["runtimeAction"]
+            if (operation not in ("start", "stop") or caller != user or deleting or not cm
+                    or entry_deployment_mode(entry) != "container" or entry.get("lifecycleVersion") != 1
+                    or entry_generation(user, entry) != data.get("registration")
+                    or f"g-{entry.get('intentGeneration')}" != data.get("expectedGeneration")):
+                raise PortalError("lifecycle request does not match the current owner registration and generation")
+            desired = "Running" if operation == "start" else "Stopped"
+            if entry["desiredState"] != desired:
+                entry["desiredState"] = desired
+                entry["intentGeneration"] += 1
+                cm["data"]["user.json"] = json.dumps(entry, sort_keys=True)
+                k8s.call("PUT", f"/api/v1/namespaces/{ns}/configmaps/{name}", cm)
+            log(f"workspace {user} requested {desired}")
+        elif action == "create":
             if deleting:
                 raise PortalError(f"workspace saw-{user} is being deleted; request it again when "
                                   "the delete pipeline has finished")
+            mode = request_deployment_mode(data)
+            if cm is not None:
+                assert_mode_unchanged(read_entry(cm), mode)
+            if mode == "container" and container_site(user):
+                approved = container_profiles(container_site(user))
+                if data.get("profile") not in approved:
+                    raise PortalError("selected profile is not approved for your container workspace; "
+                                      "approved profiles: " + (", ".join(sorted(approved)) or "none") +
+                                      ". Ask the site administrator to enable another profile")
+                if os.environ.get("PRUNE_ON_REMOVE", "true") != "true":
+                    raise PortalError("container provisioning requires foreground cleanup; "
+                                      "the site administrator must enable portal.pruneOnRemove")
+            elif mode not in PROVISIONABLE_MODES:
+                raise PortalError(f"{mode} workspace provisioning is not available in this release")
             profile, secrets = parse_request(data, catalog)
+            if mode == "container":
+                if cm and read_entry(cm)["profiles"] != [profile]:
+                    raise PortalError("changing the profile requires a new container registration")
+                endpoint = approved_endpoint(catalog[profile], secrets,
+                                             container_site(user).get("profileBoundaries", {}).get(profile, {}))
+                if cm and endpoint != read_entry(cm).get("customInferenceURL"):
+                    raise PortalError("changing the endpoint requires a new registration")
+                models = public_model_inputs(catalog[profile], secrets)
+                previous = committed_entry(cm)
+                lifecycle = previous.get("lifecycleVersion") == 1 if previous else container_site(user).get("modelLifecycle") is True
+                if previous and not lifecycle and previous.get("modelInputs", {}) != models:
+                    raise PortalError("changing model selection requires a new container registration")
             check_namespace_is_ours(k8s, user)
             check_applications_are_ours(k8s, user)
             # An update keeps the entry's keys where they are; a new
             # registration gets its own generation (see vault_prefix).
             generation = entry_generation(user, read_entry(cm)) if cm else new_generation()
             prefix = vault_prefix(user, generation)
+            entry = registry_entry(user, profile, generation, mode)
+            if mode == "container":
+                if lifecycle:
+                    entry["lifecycleVersion"] = 1
+                    entry["initialModelInputs"] = previous.get("initialModelInputs", models)
+                    entry["desiredState"] = previous.get("desiredState", "Running")
+                    changed = bool(previous and previous.get("modelInputs", {}) != models)
+                    entry["restartGeneration"] = (previous["intentGeneration"] + 1 if changed
+                                                  else previous.get("restartGeneration", 0))
+                if endpoint:
+                    entry["customInferenceURL"] = endpoint
+                if "dedicatedEndpointSecrets" in catalog[profile]:
+                    entry["webSearch"] = {"enabled": False}
+                if models:
+                    entry["modelInputs"] = models
+                if "approvedProfiles" in container_site(user).get("automaticEnrollment",{}):
+                    slots=sandbox_targets(user,generation,catalog[profile])
+                    entry["uiNamespaces"]=sorted({"saw-ui-"+slot["relayID"] for slot in slots.values() if slot["ui"]})
+                entry["intentGeneration"] = previous.get("intentGeneration", 0) + 1
+            cm = reserve_credentials(k8s, ns, name, cm, entry, user)
             vault = vault_client()
             for secret, values in secrets.items():
                 vault.write(f"{prefix}/{secret}", values)
                 log(f"Vault: {prefix}/{secret} ({', '.join(sorted(values))})")
-            entry = registry_entry(user, profile, generation)
             put_configmap(k8s, ns, name, {"user.json": json.dumps(entry, sort_keys=True)},
                           {WORKSPACE_LABEL: "true", "openshell.pattern/owner": user},
-                          resource_version=cm["metadata"].get("resourceVersion") if cm else None)
+                          resource_version=cm["metadata"].get("resourceVersion") if cm else None,
+                          deployment_mode=mode)
             log(f"workspace saw-{user} registered with profile {profile}; Argo CD builds it next")
         else:
             argo_app = f"/apis/argoproj.io/v1alpha1/namespaces/{env('ARGO_NAMESPACE')}/applications/portal-ws-{user}"
@@ -1197,13 +1647,18 @@ def wait_stage(stage, user, timeout, sleep=time.sleep, clock=time.monotonic, pin
     domain = os.environ.get("CLUSTER_DOMAIN", "")
     if stage != "gone" and stage not in STAGE_IDS:
         raise PortalError(f"unknown stage {stage}; one of {', '.join(STAGE_IDS)}, gone")
-    deadline, last = clock() + timeout, None
+    started, last = clock(), None
     while True:
+        budget = timeout
         if stage == "gone":
-            done, detail = removal_status(k8s, user, argo_ns)
+            marker = k8s.call("GET", f"/api/v1/namespaces/{ns}/configmaps/saw-ws-{user}", ok404=True)
+            done, detail = removal_status(k8s, user, argo_ns, read_entry(marker))
             failed = False
         else:
             st = workspace_status(k8s, user, catalog, ns, argo_ns, domain, ping)
+            if stage == "vm" and st.get("deploymentMode") == "container":
+                # The initial intent can only be published after the new registration is reviewed.
+                budget = max(timeout, int(os.environ.get("SAW_CONTAINER_ENROLLMENT_SECONDS", timeout)))
             current = next((x for x in st["steps"] if x["id"] == stage), {})
             detail = current.get("detail") or st["message"]
             done = current.get("state") == "done"
@@ -1218,8 +1673,8 @@ def wait_stage(stage, user, timeout, sleep=time.sleep, clock=time.monotonic, pin
             return
         if failed:
             raise PortalError(detail)
-        if clock() >= deadline:
-            raise PortalError(f"not done after {timeout // 60} minutes: {detail}")
+        if clock() >= started + budget:
+            raise PortalError(f"not done after {budget // 60} minutes: {detail}")
         sleep(POLL_SECONDS * 2)
 
 
@@ -1243,14 +1698,70 @@ def cleanup(max_age=REQUEST_MAX_AGE):
 
 # -- ApplicationSet plugin generator --------------------------------------------
 
-def generator_params(workspaces, defaults):
-    """One parameter set per workspace: `name`, and `values`, the saw-users
-    chart values for that user alone (JSON, which is YAML)."""
+
+def generator_params(workspaces, defaults, read=None, catalog=None, previous=None):
+    """Adapt authenticated registry entries to the common workspace projector."""
     out = []
-    for ws in workspaces:
-        values = {**defaults, "users": [ws]}
-        out.append({"name": ws["name"], "values": json.dumps(values, sort_keys=True)})
+    for entry in workspaces:
+        ws = {**entry, "values": {**entry.get("values", {}),
+                                  "deployment": {"mode": entry_deployment_mode(entry)}}}
+        site = container_site(ws["name"]) if entry_deployment_mode(ws) == "container" else {}
+        if site:
+            if not ws.get("ownerSubject") or ws["ownerSubject"] != site["subject"]:
+                continue
+            reg = entry_generation(ws["name"], ws)
+            ws.update(registration=reg, installationID=installation_id(ws["name"], reg))
+        def observed(path):
+            try:
+                return read(path)
+            except HttpError as exc:
+                if exc.code == 403:  # named reader grant is not installed yet
+                    return {}
+                raise
+        try:
+            values = _workspace.project_workspace(ws, defaults, site, catalog or {},
+                                                  observed if read else None, previous)
+        except _workspace.WorkspaceError as exc:
+            raise PortalError(str(exc)) from exc
+        out.append({"name": ws["name"], "revision": values.get("global", {}).get("targetRevision", ""),
+                    "values": json.dumps(values, sort_keys=True)})
     return out
+
+
+class CatalogRouteCache:
+    """A catalog read never waits for an endpoint. Explicit owner checks bypass this cache."""
+    def __init__(self, workers=4, capacity=512, ttl=30):
+        self.pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="catalog-route")
+        self.capacity, self.ttl = capacity, ttl
+        self.lock = threading.Lock()
+        self.entries = {}
+
+    def probe(self, scope, url, check):
+        key = (*scope, url)
+        now = time.monotonic()
+        with self.lock:
+            current = self.entries.get(key)
+            if current:
+                if not current.done():
+                    return False
+                finished, ready = current.result()
+                if now - finished < self.ttl:
+                    return ready
+            self.entries = {k: f for k, f in self.entries.items()
+                            if not f.done() or now - f.result()[0] < self.ttl}
+            if len(self.entries) >= self.capacity:
+                return False
+            future = self.pool.submit(self._check, check, url)
+            self.entries[key] = future
+        return False
+
+    @staticmethod
+    def _check(check, url):
+        try:
+            ready = check(url)
+        except (ValueError, OSError):
+            ready = False
+        return time.monotonic(), ready
 
 
 def serve():
@@ -1263,6 +1774,7 @@ def serve():
     jwks = JwksCache()
     realm_users = RealmUsers()
     owner_subjects = OwnerSubjects()
+    route_cache = CatalogRouteCache()
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def _send(self, code, body):
@@ -1300,11 +1812,17 @@ def serve():
                 statuses = {}
                 for ws in workspaces:
                     try:
-                        statuses[ws["name"]] = workspace_status(k8s, ws["name"], catalog, ns, argo_ns, domain)
+                        mode = entry_deployment_mode(ws)
+                        scope = (ws["name"], mode, entry_generation(ws["name"], ws),
+                                 ws.get("intentGeneration", 0), os.environ.get("KEYCLOAK_URL"),
+                                 os.environ.get("KEYCLOAK_REALM"))
+                        check = owner_route_available if mode == "container" else ping_url
+                        statuses[ws["name"]] = workspace_status(k8s, ws["name"], catalog, ns, argo_ns, domain,
+                            ping=lambda url: route_cache.probe(scope, url, check))
                     except PortalError as exc:
                         log(f"WARN: status of saw-{ws['name']}: {exc}")
                 text = entities_yaml(workspaces, catalog, domain,
-                                     os.environ.get("RHDH_BASE_URL", ""), statuses, ns, realm_users())
+                                     os.environ.get("RHDH_BASE_URL", ""), statuses, ns, realm_users(), runtime_reader=k8s)
             except PortalError as exc:
                 log(f"ERROR: {exc}")
                 return self._send(500, {"error": str(exc)})
@@ -1375,7 +1893,11 @@ def serve():
             if self.headers.get("Authorization", "") != f"Bearer {token}":
                 return self._send(403, {"error": "forbidden"})
             try:
-                params = generator_params(owner_subjects.fill(list_workspaces(kube(), ns)), defaults)
+                params = generator_params(owner_subjects.fill(list_workspaces(kube(), ns)), defaults,
+                                          lambda path:kube().call("GET",path,ok404=True),catalog,
+                                          lambda owner: _workspace.previous_child(kube().call("GET",
+                                              f"/apis/argoproj.io/v1alpha1/namespaces/{argo_ns}/applications/portal-ws-{owner['name']}",
+                                              ok404=True), "saw-portal-workspaces", owner))
             except PortalError as exc:
                 log(f"ERROR: {exc}")
                 return self._send(500, {"error": str(exc)})

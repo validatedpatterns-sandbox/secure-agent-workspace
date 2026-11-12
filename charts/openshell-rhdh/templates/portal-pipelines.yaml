@@ -2,6 +2,15 @@
 first task of each verifies the request and hands the user to the others as
 the result `user`; each later task is one stage the workspace goes through,
 so RHDH's Tekton tab draws a workspace's create and delete as a pipeline. */ -}}
+{{- $readyMinutes := .Values.portal.sandboxReadyTimeoutMinutes -}}
+{{- if or (not (regexMatch "^[0-9]+$" (toString $readyMinutes))) (lt (int $readyMinutes) 1) (gt (int $readyMinutes) 60) -}}
+{{- fail "portal.sandboxReadyTimeoutMinutes must be an integer from 1 to 60" -}}
+{{- end -}}
+{{- $taskTimeout := include "openshell-rhdh.minutesDuration" (add (int $readyMinutes) 2) -}}
+{{- $intentMinutes := 10 -}}
+{{- if has "container" .Values.portal.deploymentModes -}}
+{{- $intentMinutes = max 10 (int $readyMinutes) -}}
+{{- end -}}
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -31,6 +40,10 @@ spec:
     - name: user
       description: The user the request was for.
   volumes:
+    {{- if .Values.portal.containerSites }}
+    - name: owner-directory
+      secret: {secretName: saw-generator-keycloak, items: [{key: client_secret, path: client_secret}]}
+    {{- end }}
     - name: scripts
       configMap:
         name: saw-portal-scripts
@@ -49,6 +62,9 @@ spec:
       # enabled on the Argo CD controller (off by default on a fresh install).
       computeResources: {}
       volumeMounts:
+        {{- if .Values.portal.containerSites }}
+        - {name: owner-directory, mountPath: /etc/saw-owner-directory, readOnly: true}
+        {{- end }}
         - name: scripts
           mountPath: /opt/saw
           readOnly: true
@@ -60,16 +76,37 @@ spec:
           value: /opt/saw-ca/ca-bundle.crt
         - name: NAMESPACE
           value: {{ .Values.portal.namespace }}
+        - name: SAW_CONTAINER_ENROLLMENT_SECONDS
+          value: {{ mul $intentMinutes 60 | quote }}
         - name: PIPELINE_RUN
-          value: $(context.pipelineRun.name)
+          valueFrom:
+            fieldRef: {fieldPath: "metadata.labels['tekton.dev/pipelineRun']"}
         - name: RESULT_PATH
           value: $(results.user.path)
         - name: CLUSTER_DOMAIN
           value: {{ .Values.global.clusterDomain | quote }}
+        - name: SAW_CONTAINER_SITES
+          value: {{ .Values.portal.containerSites | default dict | toJson | quote }}
+        - name: SAW_DEPLOYMENT_MODES
+          value: {{ include "openshell-rhdh.deploymentModes" . | quote }}
         - name: CATALOG_PATH
           value: /opt/saw/profile-catalog.json
         - name: RHDH_INTERNAL_URL
-          value: {{ include "openshell-rhdh.internalUrl" . }}
+          value: {{ include "openshell-rhdh.url" . }}
+        {{- if .Values.portal.containerSites }}
+        - name: SAW_PORTAL_ADMIN_SUBJECTS
+          value: {{ .Values.portal.adminSubjects | default dict | toJson | quote }}
+        - name: KEYCLOAK_REALM
+          value: {{ .Values.keycloak.realm | quote }}
+        - name: KEYCLOAK_CLIENT_ID
+          value: {{ .Values.keycloak.clientId | quote }}
+        - name: KEYCLOAK_SECRET_FILE
+          value: /etc/saw-owner-directory/client_secret
+        - name: KEYCLOAK_CA_FILE
+          value: /opt/saw-ca/ca-bundle.crt
+        {{- end }}
+        - name: KEYCLOAK_URL
+          value: https://{{ include "openshell-rhdh.keycloakHost" . }}
         - name: ARGO_NAMESPACE
           value: {{ include "openshell-rhdh.argoNamespace" . }}
         - name: PORTAL_ADMINS
@@ -104,9 +141,9 @@ spec:
   "create" (list
     (dict "name" "register" "action" "create" "timeout" "5m0s")
     (dict "name" "argo-cd-apps" "action" "wait-apps" "seconds" "600" "timeout" "12m0s")
-    (dict "name" "vm" "action" "wait-vm" "seconds" "600" "timeout" "12m0s")
+    (dict "name" "vm" "action" "wait-vm" "seconds" "600" "timeout" (include "openshell-rhdh.minutesDuration" (add $intentMinutes 2)))
     (dict "name" "vm-running" "action" "wait-running" "seconds" "900" "timeout" "17m0s")
-    (dict "name" "sandboxes" "action" "wait-ready" "seconds" "1800" "timeout" "32m0s"))
+    (dict "name" "sandboxes" "action" "wait-ready" "seconds" (printf "%d" (mul (int $readyMinutes) 60)) "timeout" $taskTimeout))
   "delete" (list
     (dict "name" "unregister" "action" "delete" "timeout" "5m0s")
     (dict "name" "argo-cd-removes" "action" "wait-gone" "seconds" "1200" "timeout" "22m0s")

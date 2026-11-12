@@ -9,3 +9,10 @@ include Makefile-quickstart
 # the VM disks (they set no storageClassName). Interactive on a TTY; offers to
 # reuse an existing class or enable HPP. See scripts/storage-class-check.sh.
 pattern-install: storage-class-check
+
+# Bootstrap stock GitOps before the framework selects its Argo CD namespace.
+.PHONY: prepare-gitops
+prepare-gitops:
+	@$(ANSIBLE_RUN) ansible/playbooks/saw-gitops-bootstrap.yaml
+
+pattern-install operator-deploy: prepare-gitops

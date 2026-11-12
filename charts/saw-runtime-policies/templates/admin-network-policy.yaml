@@ -1,0 +1,32 @@
+{{- include "saw-runtime-policies.validate" . -}}
+{{- if .Values.enabled }}
+apiVersion: policy.networking.k8s.io/v1alpha1
+kind: AdminNetworkPolicy
+metadata:
+  name: {{ include "saw-runtime-policies.name" . }}-egress
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+    argocd.argoproj.io/sync-options: Prune=false
+spec:
+  priority: {{ .Values.network.priority }}
+  subject:
+    pods:
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ .Values.targetNamespace | quote }}
+      podSelector:
+        matchLabels:
+          openshell.ai/boundary-role: supervisor
+          openshell.ai/gateway-id: {{ .Values.gatewayId | quote }}
+  egress:
+{{- range .Values.network.egress }}
+    - name: {{ .name | quote }}
+      action: Pass
+      to: {{ .to | toYaml | nindent 8 }}
+      ports: {{ .ports | toYaml | nindent 8 }}
+{{- end }}
+    - name: deny-other-egress
+      action: Deny
+      to:
+        - networks: ["0.0.0.0/0", "::/0"]
+{{- end }}

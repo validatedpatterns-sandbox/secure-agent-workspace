@@ -23,11 +23,6 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- printf "https://%s/realms/%s" (include "openshell-rhdh.keycloakHost" .) .Values.keycloak.realm -}}
 {{- end -}}
 
-{{/* The in-cluster RHDH service the pipeline fetches the JWKS from. */}}
-{{- define "openshell-rhdh.internalUrl" -}}
-{{- printf "http://backstage-%s.%s.svc:80" .Values.rhdh.name .Values.rhdh.namespace -}}
-{{- end -}}
-
 {{- /* The init container that writes the CA bundle (files/ca-bundle.py)
 to the saw-ca volume, and the volumes it needs; see tls in values.yaml.
 Each pod mounts saw-ca at /opt/saw-ca and reads /opt/saw-ca/ca-bundle.crt. */ -}}
@@ -127,6 +122,7 @@ from the release is enough and keeps renders stable.
 {{- /* The governance engine decides each gateway's bindings (docs/apf.md). */ -}}
 {{- if .Values.global.governance -}}{{- $_ := set $g "governance" (deepCopy .Values.global.governance) -}}{{- end -}}
 {{- $_ := set $v "global" $g -}}
+{{- $_ := set $v "containerSites" (.Values.portal.containerSites | default dict) -}}
 {{- $labels := deepCopy (index $v "namespaceLabels" | default dict) -}}
 {{- $_ := set $labels "saw.redhat.com/portal" "true" -}}
 {{- $_ := set $v "namespaceLabels" $labels -}}
@@ -146,4 +142,83 @@ from the release is enough and keeps renders stable.
 {{- end -}}
 {{- $found | default "rhdh.redhat.com/v1alpha5" -}}
 {{- end -}}
+{{- end -}}
+
+{{/* Operator-owned request policy; never derive it from a user request. */}}
+{{- define "openshell-rhdh.deploymentModes" -}}
+{{- $modes := .Values.portal.deploymentModes -}}
+{{- if not (kindIs "slice" $modes) -}}
+{{- fail "portal.deploymentModes must be a list containing vm" -}}
+{{- end -}}
+{{- $seen := dict -}}
+{{- range $mode := $modes -}}
+{{- if not (kindIs "string" $mode) -}}
+{{- fail "portal.deploymentModes must contain only strings" -}}
+{{- end -}}
+{{- if not (has $mode (list "vm" "container")) -}}
+{{- fail "portal.deploymentModes supports vm and container" -}}
+{{- end -}}
+{{- if hasKey $seen $mode -}}{{- fail "portal.deploymentModes must not contain duplicates" -}}{{- end -}}
+{{- $_ := set $seen $mode true -}}
+{{- end -}}
+{{- if not (hasKey $seen "vm") -}}{{- fail "portal.deploymentModes must include default vm" -}}{{- end -}}
+{{- toJson $modes -}}
+{{- end -}}
+
+{{/* Generated forms have vm as their safe default; project the administrator's
+allowlist into both forms without enabling privileged form parameters. */}}
+{{- define "openshell-rhdh.createTemplate" -}}
+{{- $root := .root -}}
+{{- $template := $root.Files.Get .path | fromYaml -}}
+{{- $step := last $template.spec.parameters -}}
+{{- $modes := include "openshell-rhdh.deploymentModes" $root | fromJsonArray -}}
+{{- /* The form can advertise a site-wide union, never an owner authorization.
+The server still verifies the authenticated owner's exact profile approval. */ -}}
+{{- $approved := dict -}}
+{{- range $site := $root.Values.portal.containerSites | default dict -}}
+{{- if and (kindIs "map" $site) (regexMatch "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$" (toString ($site.subject | default ""))) -}}
+{{- $automatic := $site.automaticEnrollment | default dict -}}
+{{- $profiles := dict -}}
+{{- if hasKey $automatic "approvedProfiles" -}}{{- $profiles = $automatic.approvedProfiles -}}{{- end -}}
+{{- range $id, $digest := $profiles -}}
+{{- if regexMatch "^[0-9a-f]{64}$" (toString $digest) -}}{{- $_ := set $approved $id true -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $containerIDs := list -}}{{- $containerNames := list -}}
+{{- range $i, $id := $step.properties.profile.enum -}}
+{{- if hasKey $approved $id -}}
+{{- $containerIDs = append $containerIDs $id -}}
+{{- $containerNames = append $containerNames (index $step.properties.profile.enumNames $i) -}}
+{{- end -}}
+{{- end -}}
+{{- if not $containerIDs -}}{{- $modes = without $modes "container" -}}{{- end -}}
+{{- $_ := set $step.properties.deploymentMode "enum" $modes -}}
+{{- $labels := dict "vm" "Virtual machine" "container" "Container" -}}
+{{- $names := list -}}
+{{- range $mode := $modes -}}{{- $names = append $names (index $labels $mode) -}}{{- end -}}
+{{- $_ := set $step.properties.deploymentMode "enumNames" $names -}}
+{{- /* Put the profile enum in each deployment branch rather than merging a
+restricted enum with the broad generated field. Keep the generated profile
+dependency and its credential fields shared by all deployment branches. */ -}}
+{{- $profileField := deepCopy $step.properties.profile -}}
+{{- $vmIDs := list -}}{{- $vmNames := list -}}
+{{- range $i, $id := $profileField.enum -}}
+{{- $vmIDs = append $vmIDs $id -}}{{- $vmNames = append $vmNames (index $profileField.enumNames $i) -}}
+{{- end -}}
+{{- $branches := list -}}
+{{- range $mode := $modes -}}
+{{- $field := deepCopy $profileField -}}
+{{- if eq $mode "container" -}}
+{{- $_ := set $field "enum" $containerIDs -}}{{- $_ := set $field "enumNames" $containerNames -}}
+{{- $_ := set $field "default" (first $containerIDs) -}}
+{{- $_ := set $field "description" "Container profiles configured at this site. Your administrator must also approve the selected profile for your account; existing container registrations keep their profile." -}}
+{{- else -}}
+{{- $_ := set $field "enum" $vmIDs -}}{{- $_ := set $field "enumNames" $vmNames -}}
+{{- end -}}
+{{- $branches = append $branches (dict "properties" (dict "deploymentMode" (dict "enum" (list $mode)) "profile" $field)) -}}
+{{- end -}}
+{{- $_ := unset $step.properties "profile" -}}
+{{- $_ := set $step.dependencies "deploymentMode" (dict "oneOf" $branches) -}}
+{{- include "openshell-rhdh.readinessTemplate" (dict "root" $root "template" $template) -}}
 {{- end -}}

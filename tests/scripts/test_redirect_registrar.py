@@ -488,7 +488,7 @@ def test_bootstrap_admin_scope(world, existing_client, scope_state):
     if existing_client:
         reg.bootstrap()
     cid = "c-2"
-    scope = {"id": "admin-scope", "name": "kc-admin-api"}
+    scope = {"id": "admin-scope", "name": "kc-admin-api", "protocol": "openid-connect"}
     other = {"id": "profile-scope", "name": "profile"}
     kc.scopes = [other] if scope_state == "absent" else [other, scope]
     kc.default_scopes[cid] = [other] + ([scope] if scope_state == "assigned" else [])

@@ -16,13 +16,11 @@ enabled: true
 # The pattern sets global.governance.engine (values-global.yaml), which wins.
 engine: interceptor
 
-# This is the published v0.1.2 interceptor, not a validated v0.1.6 default.
-# Merging PR #156 triggers the main-only v0.1.6 publication workflow. The
-# follow-up will pin its verified public digest and complete clean-install
-# acceptance: https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157
-# Wait for that follow-up to merge and acceptance to pass before deploying
-# the v0.1.6 upgrade. See docs/openshell-016-release.md.
-image: "ghcr.io/validatedpatterns-sandbox/governance-interceptor@sha256:253b58d070d3ed341287fcbab44684d84a437fcb9f26be5834ebf554a40ec22f"
+# Public NVIDIA/OpenShell v0.1.6 interceptor, built at repository fe19b46.
+# Multi-arch index: linux/amd64 and linux/arm64. See the release record for
+# build/source commits, architecture manifests and clean-install acceptance.
+# Deployment acceptance is tracked in issue #157 until the follow-up passes.
+image: "ghcr.io/validatedpatterns-sandbox/governance-interceptor@sha256:19f145ac163822bca6d406898975b5b770b75b196fa0bee0bc86b108fad213b3"
 # gRPC listen port
 port: 18081
 # Provider profiles a deployment adds to the shipped catalog: a ConfigMap of

@@ -11,13 +11,21 @@ Publication and final deployment acceptance are follow-up work, rather than
 prerequisites for merging #156. Track that work in
 [the 0.1.6 release follow-up issue](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157).
 
-**Deployment hold:** the current chart digest
-(`253b58d070d3ed341287fcbab44684d84a437fcb9f26be5834ebf554a40ec22f`)
-is the published **0.1.2** interceptor. Preliminary testing used a matching local
-0.1.6 build and did not validate the shipped old-interceptor/new-gateway pair.
-Wait for the follow-up to merge and clean-install acceptance to pass before
-deploying the 0.1.6 upgrade from `main`. Relabeling the old digest as 0.1.6
-does not satisfy the release requirements.
+**Deployment hold:** the follow-up now pins the verified public 0.1.6
+interceptor. Clean-install acceptance on the fresh cluster is still required
+before this follow-up is ready to merge and the hold can be removed. The
+earlier 0.1.2 digest (`253b58d070d3ed341287fcbab44684d84a437fcb9f26be5834ebf554a40ec22f`)
+and preliminary internal-registry build do not satisfy that acceptance.
+
+## Published artifact
+
+- Repository build: `fe19b46c29928e5d7bd6ad62440e591bb4907d3f`, the merge of #156.
+- OpenShell source: `v0.1.6` at `ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47`.
+- [Upstream publication run](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/actions/runs/43196073756): both native architecture builds and the multi-platform merge/public-pull job passed. Each native build passed all six driver-config admission tests. The source includes the provider-annotation workaround.
+- Anonymous verification on November 12, 2026: `v0.1.6` and `sha-fe19b46c29928e5d7bd6ad62440e591bb4907d3f` resolve to the same index.
+- Public index: `sha256:19f145ac163822bca6d406898975b5b770b75b196fa0bee0bc86b108fad213b3`.
+- `linux/amd64` manifest: `sha256:118827092bfa9074c1fd1a2ca9fa60d9711025a24e574414295f463213f6f5a4`.
+- `linux/arm64` manifest: `sha256:309f0381e45d47efdc4579d5ddb18312709896f2b75888c56c453bacafeb86f4`.
 
 ## Publication and digest-pinning sequence
 

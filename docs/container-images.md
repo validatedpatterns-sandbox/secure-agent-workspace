@@ -36,12 +36,10 @@ complete clean-install acceptance in a follow-up. Track it in
 [the release issue](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157) and the
 [0.1.6 release plan](openshell-016-release.md).
 
-**Deployment hold:** the current interceptor chart digest is the published
-0.1.2 artifact. Preliminary testing used a matching local 0.1.6 build; the
-shipped old-interceptor/new-gateway pair is unvalidated. Wait for the follow-up
-to merge and clean-install acceptance to pass before deploying the 0.1.6
-upgrade from `main`. Preliminary tests must supply a matching build by digest
-in deployment overrides.
+**Deployment hold:** the follow-up now pins the verified public 0.1.6
+interceptor index. Clean-install acceptance and the follow-up merge are still
+required before deploying the upgrade from `main`. The earlier 0.1.2 image
+and preliminary internal-registry override do not satisfy those gates.
 
 Pull requests build without registry credentials or pushing. Publishing is
 restricted to `main`, including manual workflow dispatches. Every push verifies

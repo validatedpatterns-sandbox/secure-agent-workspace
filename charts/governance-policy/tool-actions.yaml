@@ -31,17 +31,45 @@ rules:
     action: allow
     whenCommandMatches:
       - git show
-  - id: exec-briefing-cron-list
+  # OpenClaw 2026.9.2: automations is an alias of cron. Only explicit
+  # inspections are allowed; command jobs execute inside the Gateway.
+  - id: exec-openclaw-automation-inspect
     tool: exec
     action: allow
     whenCommandMatches:
       - openclaw cron list
-  - id: exec-briefing-cron-change
+      - openclaw cron status
+      - openclaw cron get
+      - openclaw cron show
+      - openclaw cron runs
+      - openclaw automations list
+      - openclaw automations status
+      - openclaw automations get
+      - openclaw automations show
+      - openclaw automations runs
+  - id: exec-openclaw-automation-change
     tool: exec
     action: approval
     whenCommandMatches:
       - openclaw cron add
+      - openclaw cron edit
       - openclaw cron rm
+      - openclaw cron enable
+      - openclaw cron disable
+      - openclaw cron run
+      - openclaw automations add
+      - openclaw automations edit
+      - openclaw automations rm
+      - openclaw automations enable
+      - openclaw automations disable
+      - openclaw automations run
+  # This command rewrites openclaw.json and can read arbitrary identity
+  # files or fetch avatars. Filesystem-tool confinement does not constrain it.
+  - id: exec-openclaw-set-identity
+    tool: exec
+    action: approval
+    whenCommandMatches:
+      - openclaw agents set-identity
   # OpenClaw 2026.9.2 runs the hook again for each dispatched target.
   # These discovery rules never replace the target's own named rule.
   - id: tool-search
@@ -86,3 +114,9 @@ rules:
   - id: saw-denied-tool
     tool: saw-denied-tool
     action: deny
+  - id: workspace-write
+    tool: write
+    action: allow
+  - id: workspace-edit
+    tool: edit
+    action: allow

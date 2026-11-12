@@ -101,27 +101,27 @@ bom:
   apiVersion: saw.redhat.com/v1alpha1
   kind: InstallerBOM
   metadata:
-    name: openshell-0-1-2-rhaiv-6
+    name: openshell-0-1-6-rhaiv-4
   spec:
     installerVersion: 0.1.0
     # OpenShell 0.1.x. Moving from 0.0.x recreates the gateway state and
     # every sandbox (the installer does it; see docs/versioned-bom-installer.md).
     openshell:
       cli:
-        version: 0.1.2-rhaiv.6
-        image: quay.io/opendatahub/odh-openshell-cli@sha256:2b6d420543ce93825092704a52127318fa90fd00df4a07d739efcd6c9f20ea57
+        version: 0.1.6-rhaiv.4
+        image: quay.io/opendatahub/odh-openshell-cli@sha256:9128f07cbb29b87472a71e09a4b164ec35ea0484712cc31028209f8d1e5291c4
       gateway:
-        version: 0.1.2-rhaiv.6
-        image: quay.io/opendatahub/odh-openshell-gateway@sha256:7bd1357f8b4c293ea6527dee2035e26dcca02fb9a87fb1521a0cd9255ec7d9fc
+        version: 0.1.6-rhaiv.4
+        image: quay.io/opendatahub/odh-openshell-gateway@sha256:bd2d7c9084b80b8d3d8ef92d00a27b963b35168fad84cd862b7f91fd9c488c3e
       supervisor:
-        version: 0.1.2-rhaiv.6
-        image: quay.io/opendatahub/odh-openshell-supervisor@sha256:f2178e5ef0948c145b7cc3a7ab3b3238aaf36d2c13a2826aae39b601e987bd7b
+        version: 0.1.6-rhaiv.4
+        image: quay.io/opendatahub/odh-openshell-supervisor@sha256:626b91a0f53393dac0d591c142b81100916aa66b4e65444b5527672b5533fe86
       # Sandbox runtime image: the podman driver mounts the supervisor from it
       # into every sandbox (gateway.toml sandbox_runtime_image). Pulled, not
       # extracted.
       sandbox:
-        version: 0.1.2-rhaiv.6
-        image: quay.io/opendatahub/odh-openshell-sandbox@sha256:acc2e36f4b05d494714aaa0a10392d2148bda3c26bbf75078f6b3c3cdf7c67ea
+        version: 0.1.6-rhaiv.4
+        image: quay.io/opendatahub/odh-openshell-sandbox@sha256:0cde11346e68485907c22d3c9b30802e52cf16e3853720a864ac8347bb68f6ef
     # NemoClaw CLI, needed by `type: nemoclaw` sandboxes (the default
     # data-science profile has one). Remove it if no profile needs it.
     # A tag is accepted here with a warning; pin a digest when one exists.

@@ -186,13 +186,13 @@ rpc = "openshell.v1.OpenShell/CreateProvider"
 phases = ["validate"]
 ```
 
-The interceptor must be built from the same OpenShell release as the gateways (0.1.x negotiates `PeerMetadata`), and for 0.1.2 it carries a two-line patch for [NVIDIA/OpenShell#3929](https://github.com/NVIDIA/OpenShell/issues/3929): it keeps only the profile-signature annotation, because the gateway hashes profiles with more than one annotation non-deterministically and no sandbox with a provider becomes ready. See `image-builder-charts/helm/governance-interceptor-image/files/Dockerfile`.
+The interceptor must be built from the same OpenShell release as the gateways (0.1.x negotiates `PeerMetadata`), and for 0.1.6 it carries a two-line patch for [NVIDIA/OpenShell#3929](https://github.com/NVIDIA/OpenShell/issues/3929): it keeps only the profile-signature annotation, because the gateway hashes profiles with more than one annotation non-deterministically and no sandbox with a provider becomes ready. See `image-builder-charts/helm/governance-interceptor-image/files/Dockerfile`.
 
 The `binding_policy = "allowlist"` means only the explicitly listed RPCs are intercepted. The `failure_policy = "fail_closed"` means if the interceptor is unreachable, all intercepted operations are denied.
 
 ## Tool actions
 
-The interceptor above does not see a tool call. OpenShell 0.1.2 only forwards allowlisted control-plane RPCs (`CreateSandbox`, `CreateProvider`, `UpdateConfig`, `SubmitPolicyAnalysis`), and its timeout is too short for a person to approve something. Agent tool calls run inside the sandbox.
+The interceptor above does not see a tool call. OpenShell 0.1.6 only forwards allowlisted control-plane RPCs (`CreateSandbox`, `CreateProvider`, `UpdateConfig`, `SubmitPolicyAnalysis`), and its timeout is too short for a person to approve something. Agent tool calls run inside the sandbox.
 
 `charts/governance-policy/tool-actions.yaml` is the tool policy (`allow`, `deny`, or `approval` per tool; `whenCommandMatches` narrows `exec`). The installer disk carries an identical copy. `saw-apply` fills a `saw-gate-*` podman volume on the host with this policy, the signed-in identity (`username` from `accessControl.owner`, `subject` from the resolved `ownerSubject`), and the plugin tree. Every OpenClaw and NemoClaw sandbox mounts it read-only at `/sandbox/.saw/trusted`. A generic toolbox sandbox gets no gate.
 
@@ -200,6 +200,7 @@ OpenClaw loads `saw-tool-gate` from `/sandbox/.saw/trusted/plugin` through `plug
 
 - The default action is `deny`. The explicit read-only allowlist covers `read`, memory reads, session inspection, and `exec` for `git status`, `git diff`, `git log`, and `git show`. `message`, `git push`, `gh pr merge`, `rm`, `kubectl delete`, and `oc delete` require approval. Unknown tools deny.
 - The daily briefing allows exactly `slack-reader__new_messages`, `slack-reader__channels`, `gmail-reader__new_messages`, and `briefing-writer__save_briefing`. The writer saves only today's briefing; generic `write` stays denied. `exec` for `openclaw cron list` is allowed, while `openclaw cron add` and `openclaw cron rm` require approval. Scheduled updates use only the allowed readers and writer.
+- `openclaw agents set-identity` always requires approval. Its identity-file and avatar arguments can read outside the workspace or fetch remote content, and it rewrites `openclaw.json`; `tools.fs.workspaceOnly` does not constrain this CLI command. Denial, cancellation and timeout block execution.
 - `tool_search` and `tool_call` are allowed for discovery and dispatch. Live testing on OpenClaw 2026.9.2 (`3928bad`) with only these dispatcher rules produced separate `default`/`deny` audit records for `slack-reader__new_messages` and `gmail-reader__new_messages`. Every dispatched target therefore still needs its own rule. Recheck that behavior when upgrading OpenClaw; do not allow a dispatcher that bypasses target hooks.
 - `exec` matches the command at its start after normalizing whitespace, leading assignments, and the executable basename. Empty commands deny as `exec-unreadable`; shell operators and opaque wrappers such as `sh -c` deny as `exec-opaque`.
 - Every call appends one JSON line to `/sandbox/.saw/audit/tool-actions.jsonl`, a separate `saw-audit-*` volume. The directory is not writable by the sandbox user, and the log file is append-only (`chattr +a`). The same line goes to gateway stderr for `podman logs`. Each line includes the user, OpenClaw session task id, `policyHash`, rule, and decision. An optional `/sandbox/.saw/current-task.json` `title` is copied onto that record.
@@ -207,6 +208,8 @@ OpenClaw loads `saw-tool-gate` from `/sandbox/.saw/trusted/plugin` through `plug
 - `deny` blocks it.
 - `approval` pauses the tool (`requireApproval`) until the signed-in user approves in the session. Timeout and cancel are recorded as rejected and the tool does not run.
 - A missing policy, either missing identity field, a missing session, or a failed audit append blocks the call. Missing owner or subject also fails the installer apply before the OpenClaw gateway starts.
+
+Confinement repair stops the agent before changing its mounted policy. If guest exec cannot confirm the stop, the installer stops the workload on the host and saves a durable confinement hold. Later applies preserve that sandbox and its files instead of treating `Completed` as a reason to delete it. Recover and start the existing sandbox in place, then reapply; successful verification and agent startup clear the hold. A repaired, previously configured agent is resumed even without a usable provider, keeping its existing model and credentials. See [the release guide](openshell-016-release.md#installer-and-tool-permissions) for the stop-record location.
 
 The mounted plugin and policy are read-only to the agent. The installer recreates an existing agent sandbox missing its gate or audit mount; OpenShell deletes that sandbox's `/sandbox` volume during recreation, so preserve needed files before applying. The writable `openclaw.json` can still be changed between applies; the next apply checks the loaded plugin again. This is not a cluster OCSF pipeline.
 
@@ -268,7 +271,7 @@ make governance-demo OPENSHELL_SAW_NAME=alice
 
 ### Applying profile changes
 
-`governance-add-profile`, `governance-remove-profile`, and `governance-create-profile` run `scripts/governance-profile.sh`, which edits `charts/governance-policy/profiles/`, commits, and runs `git push origin HEAD`, then waits for Argo CD to sync the `governance-policy` application. This is the GitOps (Option A) path.
+`governance-profile-add`, `governance-profile-remove`, and `governance-profile-create` run `scripts/governance-profile.sh`, which edits `charts/governance-policy/profiles/`, commits, and runs `git push origin HEAD`, then waits for Argo CD to sync the `governance-policy` application. This is the GitOps (Option A) path. For a reviewed policy change, edit the files on a branch and open a pull request instead; these helpers push directly. Argo CD must follow the branch containing the merged change.
 
 On the quickstart path (Option B), governance-policy is installed with Helm, not Argo CD, so a push does not change the cluster. Edit the profiles under `charts/governance-policy/profiles/` and re-apply the chart:
 

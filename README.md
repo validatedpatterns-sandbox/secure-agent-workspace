@@ -7,6 +7,14 @@ and [installation, inputs and enablement](docs/container-installation.md).
 The VM procedures below remain the default. Container Make installations use
 the shared GitOps services described in their installation guide.
 
+> **OpenShell 0.1.6 rollout:** merging PR #156 triggers the upstream interceptor
+> publication workflow. A [follow-up issue](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157) tracks pinning
+> the public 0.1.6 image and completing clean-install validation. The current
+> default still uses the 0.1.2 interceptor; preliminary tests used a matching
+> local 0.1.6 build. Wait for the follow-up to merge and clean-install acceptance
+> to pass before deploying this upgrade from `main`. See the
+> [release plan](docs/openshell-016-release.md).
+
 ## Upgrade: stage network isolation per user
 
 This release adds default-deny NetworkPolicy to each SAW. The `openshell-saw`
@@ -186,7 +194,7 @@ interceptor is the default. The two diagrams that follow also illustrate the
 3. `helm` 3.x installed
 4. An API key for at least one inference provider (Gemini, Anthropic, OpenAI, NVIDIA, OpenRouter)
 5. The `openshell` CLI installed at the API version pinned by the gateway BOM
-   (`0.1.2` for the current `0.1.2-rhaiv.6` image;
+   (`0.1.6` for the current `0.1.6-rhaiv.4` image;
    [releases](https://github.com/NVIDIA/OpenShell/releases))
 
 Verify prerequisites:
@@ -198,6 +206,18 @@ make prereqs-check
 ### Installation
 
 Two deployment paths are available:
+
+**Video walkthrough: from cluster installation to a working workspace**
+
+Follow the Validated Pattern installation, inspect the applications deployed by
+Argo CD, and create a Keycloak user. The walkthrough then provisions a workspace
+through Red Hat Developer Hub, compares the GitOps and manual quickstart paths,
+and configures a custom inference endpoint. Follow the steps below for the
+current commands, or see the [Developer Hub user guide](docs/rhdh-user-guide.md)
+for the portal flow and [Custom inference provider](#custom-inference-provider)
+for endpoint configuration.
+
+https://github.com/user-attachments/assets/6858c0b1-239a-4a6a-b0e4-5872796dcc32
 
 #### Option A: Validated Pattern (automated, GitOps)
 
@@ -493,7 +513,7 @@ CI namespace is refused. For `saw-create`, set `PROVIDER`, `MODEL`, and
 
 `IMAGE_TAG=latest` selects the CI-built gateway disk used by `images-mirror`;
 `IMAGE_TAG=sha-<commit>` selects a particular CI build. The chart's in-VM BOM
-separately pins OpenShell `0.1.2-rhaiv.6` by digest. See
+separately pins OpenShell `0.1.6-rhaiv.4` by digest. See
 [the deployment guide](docs/deployment-guide.md#golden-image-tag).
 
 If a prerequisite fails, inspect the reported CLI or operator and run
@@ -776,6 +796,16 @@ For an MCP server running inside OpenShift, see [In-cluster MCP Services](docs/h
 
 ### Validating the deployment
 
+**Video walkthrough: sandbox UIs and the OpenShell CLI**
+
+Explore the data-science profile's notebook and CUDA workspaces, open the
+OpenClaw and NemoClaw sandbox UIs through Developer Hub, and connect from a
+laptop with the OpenShell CLI. The walkthrough covers signing in through
+Keycloak, selecting a workspace, and inspecting the running sandboxes. Use the
+commands below to check your deployment and open its UIs.
+
+https://github.com/user-attachments/assets/d1e93830-ce8b-47c0-9b78-761971ee6067
+
 ```bash
 # List sandboxes (default workspace, then cuda-dev)
 openshell sandbox list
@@ -816,7 +846,7 @@ make test
 # Tool-action gate tests (needs node; also included in the CI suite)
 make test-tool-gate
 
-# Run offline template validation (48 checks)
+# Run offline template validation
 ./tests/test-oidc-templates.sh
 
 # NetworkPolicy chart checks run offline; name two test SAWs for live checks
@@ -824,6 +854,12 @@ SKIP_LIVE=1 ./tests/test-network-policy.sh
 SAW_NS=saw-nptest-a VM_NAME=nptest-a PEER_NS=saw-nptest-b \
   PEER_VM_NAME=nptest-b REQUIRE_PEER=1 ./tests/test-network-policy.sh
 ```
+
+When a sandbox has an owner-restricted UI route, its gateway uses trusted-proxy
+authentication. The localhost GUI forward authenticates with the gateway's
+loopback password: enter `gateway.auth.password` from the selected sandbox's
+`/sandbox/.openclaw/openclaw.json` in **Gateway secret** (or **Password (not
+stored)** in older clients) and click **Connect**. The `make sandbox-ui` routes use the owner's Keycloak sign-in.
 
 See the [test-writing and test-running guide](docs/testing.md) for local tools,
 selection commands, CI coverage, and fixture rules. `make test` and
@@ -993,6 +1029,23 @@ The system implements layered isolation:
 5. **Secret management** — Provider keys stay in namespace Secrets mounted into the credential proxy. The VM stores markers and metadata, and its platform admin mTLS identity exists only during an installer apply in tmpfs. The user's SSH private key never touches the cluster. See [Credential isolation](docs/credential-isolation.md).
 6. **Network isolation** — Default-deny NetworkPolicy blocks cross-namespace and API/metadata traffic from the VM; EgressFirewall limits external destinations to exact allowed hostnames. CI checks shipped profile hosts and ports against both layers.
 7. **Governed gateways** — every gateway calls a fail-closed governance service: the OpenShell governance interceptor, or APF with a signed policy bundle ([docs/apf.md](docs/apf.md))
+
+**Video walkthrough: a personal assistant with governed access**
+
+See a personal assistant read Slack messages and Gmail under read-only provider
+profiles. The walkthrough demonstrates a denied Slack
+write, rejection of an unapproved provider type, and a reviewed policy change
+that grants read-only access to Notion through GitOps. Credentials stay outside
+the sandbox in default proxy mode; provider profiles define the allowed
+destinations and operations. The interceptor approves gateway operations such
+as provider creation; sandbox policy enforces API access and the agent tool
+gate can refuse a write before it reaches the network.
+See the [personal assistant guide](docs/personal-assistant.md) for setup,
+[Governance interceptor](docs/governance-interceptor.md) for policy rules, and
+[Credential isolation](docs/credential-isolation.md) for how credentials are
+handled.
+
+https://github.com/user-attachments/assets/fdbcb0f3-705c-4546-9d22-d86106c33538
 
 ### Keycloak production and demo users
 

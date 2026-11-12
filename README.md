@@ -212,7 +212,7 @@ current commands, or see the [Developer Hub user guide](docs/rhdh-user-guide.md)
 for the portal flow and [Custom inference provider](#custom-inference-provider)
 for endpoint configuration.
 
-<video src="https://github.com/user-attachments/assets/6858c0b1-239a-4a6a-b0e4-5872796dcc32" controls width="100%"></video>
+https://github.com/user-attachments/assets/6858c0b1-239a-4a6a-b0e4-5872796dcc32
 
 #### Option A: Validated Pattern (automated, GitOps)
 
@@ -784,7 +784,7 @@ laptop with the OpenShell CLI. The walkthrough covers signing in through
 Keycloak, selecting a workspace, and inspecting the running sandboxes. Use the
 commands below to check your deployment and open its UIs.
 
-<video src="https://github.com/user-attachments/assets/d1e93830-ce8b-47c0-9b78-761971ee6067" controls width="100%"></video>
+https://github.com/user-attachments/assets/d1e93830-ce8b-47c0-9b78-761971ee6067
 
 ```bash
 # List sandboxes (default workspace, then cuda-dev)
@@ -939,7 +939,7 @@ See the [personal assistant guide](docs/personal-assistant.md) for setup,
 [Credential isolation](docs/credential-isolation.md) for how credentials are
 handled.
 
-<video src="https://github.com/user-attachments/assets/fdbcb0f3-705c-4546-9d22-d86106c33538" controls width="100%"></video>
+https://github.com/user-attachments/assets/fdbcb0f3-705c-4546-9d22-d86106c33538
 
 ### Keycloak production and demo users
 

@@ -7,7 +7,7 @@ FROM ${BUILDER_IMAGE} AS builder
 RUN apt-get update && apt-get install -y protobuf-compiler pkg-config libssl-dev git make cmake g++ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-ARG OPENSHELL_REF=v0.1.2
+ARG OPENSHELL_REF=v0.1.6
 ARG OPENSHELL_URI=https://github.com/NVIDIA/OpenShell.git
 ARG CONTEXT_DIR=examples/governance-interceptor
 RUN git init . \
@@ -17,7 +17,7 @@ RUN git init . \
 
 WORKDIR /build/${CONTEXT_DIR}
 # The SAW extension is ordinary Rust source. The reviewed patch connects it
-# through the governance API and retains the v0.1.2 annotation-order workaround.
+# through the governance API and retains the annotation-order workaround for NVIDIA/OpenShell#3929.
 # A different upstream source must satisfy the patch exactly before compilation.
 COPY saw-extension/driver_config.rs src/saw_driver_config.rs
 COPY saw-extension/integration.patch /tmp/saw-integration.patch

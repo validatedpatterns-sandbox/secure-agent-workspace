@@ -146,8 +146,8 @@ def test_exact_embedded_guard_behavior(builder, tmp_path):
 @pytest.mark.ci_external
 def test_builder_pins_and_runs_embedded_tests():
     values = yaml.safe_load((CHART / "values.yaml").read_text())
-    assert values["source"]["git"]["ref"] == "v0.1.2"
-    assert "ARG OPENSHELL_REF=v0.1.2" in DOCKERFILE.read_text()
+    assert values["source"]["git"]["ref"] == "v0.1.6"
+    assert "ARG OPENSHELL_REF=v0.1.6" in DOCKERFILE.read_text()
     texts = [DOCKERFILE.read_text()]
     if HELM:
         texts.append(inline_dockerfile())
@@ -208,12 +208,12 @@ def test_shared_recipe_preserves_both_runtime_variants():
 def test_default_build_output_is_internal_and_push_requires_explicit_destination():
     rendered = subprocess.check_output([HELM, "template", "image", str(CHART)], text=True)
     build = next(d for d in yaml.safe_load_all(rendered) if d and d["kind"] == "BuildConfig")
-    assert build["spec"]["output"]["to"] == {"kind": "ImageStreamTag", "name": "governance-interceptor:v0.1.2"}
+    assert build["spec"]["output"]["to"] == {"kind": "ImageStreamTag", "name": "governance-interceptor:v0.1.6"}
     assert "pushSecret" not in build["spec"]["output"]
     rendered = subprocess.check_output([HELM, "template", "image", str(CHART),
-        "--set", "output.imageStreamTag=", "--set", "output.externalImage=ghcr.io/example/governance-interceptor:v0.1.2"], text=True)
+        "--set", "output.imageStreamTag=", "--set", "output.externalImage=ghcr.io/example/governance-interceptor:v0.1.6"], text=True)
     build = next(d for d in yaml.safe_load_all(rendered) if d and d["kind"] == "BuildConfig")
-    assert build["spec"]["output"]["to"]["name"] == "ghcr.io/example/governance-interceptor:v0.1.2"
+    assert build["spec"]["output"]["to"]["name"] == "ghcr.io/example/governance-interceptor:v0.1.6"
 
 
 @pytest.mark.parametrize("filename", ["build-governance-interceptor.yml", "build-kubernetes-runtime.yml"])

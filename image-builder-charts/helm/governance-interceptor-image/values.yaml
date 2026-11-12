@@ -1,7 +1,7 @@
 source:
   git:
     uri: "https://github.com/NVIDIA/OpenShell.git"
-    ref: "v0.1.2"
+    ref: "v0.1.6"
 
 build:
   # For GitOps, give each new build recipe its own BuildConfig name.
@@ -23,4 +23,4 @@ output:
   pushSecretName: "ghcr-push-secret"
   # Build into the internal registry by default. To publish elsewhere, clear
   # this and explicitly set externalImage plus pushSecretName.
-  imageStreamTag: "governance-interceptor:v0.1.2"
+  imageStreamTag: "governance-interceptor:v0.1.6"

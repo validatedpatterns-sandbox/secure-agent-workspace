@@ -53,6 +53,8 @@ spec:
           required: [inference__api_key]
         - properties:
             profile: {const: custom-inference}
+            uiRoutes: {title: Sandbox web UIs, type: 'null', description: 'Published on their own route,
+                signed in with Keycloak, for you only: notebook (default)'}
             inference__api_key: {title: 'inference: API key', type: string, 'ui:field': Secret, description: Stored
                 in Vault for your workspace only (provider custom-inference)}
             inference__url: {title: 'inference: Endpoint base URL (OpenAI-compatible, ending in /v1)',

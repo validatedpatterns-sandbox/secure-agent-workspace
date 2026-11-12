@@ -76,6 +76,17 @@ if cmd == "pull":
     images[image]["pulled"] = True      # so `image exists` sees it afterwards
     (state / "images.json").write_text(json.dumps(images))
     print("sha256:" + "0" * 64)
+elif cmd == "stop":
+    path = state / "openshell.json"
+    data = json.loads(path.read_text())
+    for key, sandbox in data["sandboxes"].items():
+        if container_name(key) == args[-1]:
+            sandbox.update(agentStopped=True, phase="Completed")
+            path.write_text(json.dumps(data))
+            print(args[-1])
+            sys.exit(0)
+    print("Error: no such container", file=sys.stderr)
+    sys.exit(125)
 elif cmd == "create":
     positional = [a for a in args[1:] if not a.startswith("-")]
     image = positional[0]

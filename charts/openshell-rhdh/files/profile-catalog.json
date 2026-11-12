@@ -115,7 +115,7 @@
               "modelInput": "inference.model",
               "name": "notebook",
               "type": "openclaw",
-              "uiRoute": false
+              "uiRoute": true
             }
           ]
         }

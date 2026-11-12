@@ -25,8 +25,8 @@ public_key_path = "/home/cloud-user/.local/state/openshell/tls/jwt/public.pem"
 kid_path = "/home/cloud-user/.local/state/openshell/tls/jwt/kid"
 
 [openshell.drivers.podman]
-supervisor_image = "quay.io/opendatahub/odh-openshell-supervisor@sha256:f2178e5ef0948c145b7cc3a7ab3b3238aaf36d2c13a2826aae39b601e987bd7b"
-sandbox_runtime_image = "quay.io/opendatahub/odh-openshell-sandbox@sha256:acc2e36f4b05d494714aaa0a10392d2148bda3c26bbf75078f6b3c3cdf7c67ea"
+supervisor_image = "quay.io/opendatahub/odh-openshell-supervisor@sha256:626b91a0f53393dac0d591c142b81100916aa66b4e65444b5527672b5533fe86"
+sandbox_runtime_image = "quay.io/opendatahub/odh-openshell-sandbox@sha256:0cde11346e68485907c22d3c9b30802e52cf16e3853720a864ac8347bb68f6ef"
 # Agent sandboxes mount their trusted gate and audit volumes through caller
 # driver config; an OpenClaw harness adds a third mount. Admission is limited
 # to the installer's admin identity and exact volume targets.

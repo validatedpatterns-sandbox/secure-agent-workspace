@@ -53,10 +53,11 @@ test("the consequential set is the policy file, not the gate source", () => {
   const policy = parsePolicy(policyText);
   assert.deepEqual(policy.rules.map((rule) => rule.id), [
     "exec-consequential", "exec-git-status", "exec-git-diff", "exec-git-log", "exec-git-show",
-    "exec-briefing-cron-list", "exec-briefing-cron-change", "tool-search", "tool-call",
+    "exec-openclaw-automation-inspect", "exec-openclaw-automation-change", "exec-openclaw-set-identity",
+    "tool-search", "tool-call",
     "slack-new-messages", "slack-channels", "gmail-new-messages", "briefing-save",
     "read", "memory-search", "memory-get", "session-status", "sessions-list", "sessions-history",
-    "message-send", "saw-denied-tool",
+    "message-send", "saw-denied-tool", "workspace-write", "workspace-edit",
   ]);
   assert.equal(policy.defaultAction, "deny");
   const installerCopy = readFileSync(path.join(here, "tool-actions.yaml"), "utf8");
@@ -118,7 +119,7 @@ test("briefing discovery and exact read/write targets have named allows", () => 
   }
   // Runtime evidence verifies OpenClaw re-enters the hook for the target;
   // that second decision still denies every target without a named allow.
-  for (const toolName of ["write", "slack-reader__post_message", "gmail-reader__send_message",
+  for (const toolName of ["slack-reader__post_message", "gmail-reader__send_message",
     "briefing-writer__write_file", "tool_search_code", "unknown-tool"]) {
     const result = call({ toolName, params: {} });
     assert.equal(result.effect.kind, "deny", toolName);
@@ -126,28 +127,65 @@ test("briefing discovery and exact read/write targets have named allows", () => 
   }
 });
 
-test("briefing cron inspection is allowed but schedule changes require approval", () => {
-  assert.equal(call({ params: { command: "openclaw cron list --json" } }).record.rule,
-    "exec-briefing-cron-list");
-  for (const command of [
-    "openclaw cron add --name daily-briefing --every 5m --session isolated --message 'Update my daily briefing.'",
-    "openclaw cron rm job-id",
+test("identity configuration always requires approval, including file and avatar inputs", () => {
+  for (const flags of [
+    "--agent main --workspace /sandbox/.openclaw/workspace --name Sushi",
+    "--identity-file /etc/passwd",
+    "--identity-file /sandbox/.openclaw/openclaw.json",
+    "--workspace /tmp/outside --from-identity",
+    "--avatar https://example.com/avatar.png",
+    "--avatar http://127.0.0.1/avatar.png",
+    "--avatar data:image/png,avatar",
   ]) {
-    const result = call({ params: { command } });
-    assert.equal(result.effect.kind, "approval", command);
-    assert.equal(result.record.rule, "exec-briefing-cron-change", command);
+    const result = call({ params: { command: `openclaw agents set-identity ${flags}` } });
+    assert.equal(result.effect.kind, "approval", flags);
+    assert.equal(result.record.rule, "exec-openclaw-set-identity");
+    for (const resolution of ["deny", "cancelled", "timeout"]) {
+      const checked = resolutionRecord(result.record, resolution);
+      assert.equal(checked.decision, "rejected");
+      assert.equal(checked.rule, "exec-openclaw-set-identity");
+    }
   }
-  for (const command of ["openclaw cron run job-id", "openclaw cron listx", "openclaw cron rm-all"]) {
-    assert.equal(call({ params: { command } }).effect.kind, "deny", command);
-  }
-  for (const command of [
-    "openclaw cron add --name daily-briefing; rm -rf /",
-    "openclaw cron list --json && rm -rf /",
-    "sh -c 'openclaw cron add --name daily-briefing'",
+  for (const unsafe of [
+    "openclaw agents set-identity --agent main; rm -rf /",
+    "sh -c 'openclaw agents set-identity --agent main'",
+    "openclaw agents set-identity --name $(cat /etc/passwd)",
+    "openclaw agents set-identity --avatar data:image/svg+xml;base64,PHN2Zy8+",
+    "openclaw agents set-identity --avatar 'data:image/svg+xml;base64,PHN2Zy8+'",
   ]) {
-    const result = call({ params: { command } });
-    assert.equal(result.effect.kind, "deny", command);
-    assert.equal(result.record.rule, "exec-opaque", command);
+    assert.equal(call({ params: { command: unsafe } }).effect.kind, "deny", unsafe);
+  }
+});
+
+test("both automation aliases allow only inspection and hold mutations for approval", () => {
+  for (const group of ["cron", "automations"]) {
+    for (const verb of ["list", "status", "get", "show", "runs"]) {
+      const result = call({ params: { command: `openclaw ${group} ${verb} --json` } });
+      assert.equal(result.effect.kind, "allow");
+      assert.equal(result.record.rule, "exec-openclaw-automation-inspect");
+    }
+    for (const verb of ["add", "edit", "rm", "enable", "disable", "run"]) {
+      const result = call({ params: { command: `openclaw ${group} ${verb} job-id` } });
+      assert.equal(result.effect.kind, "approval");
+      assert.equal(result.record.rule, "exec-openclaw-automation-change");
+      for (const resolution of ["deny", "cancelled", "timeout"]) {
+        const checked = resolutionRecord(result.record, resolution);
+        assert.equal(checked.decision, "rejected");
+        assert.equal(checked.rule, "exec-openclaw-automation-change");
+      }
+    }
+    // Unsupported aliases, mixed read/write surfaces and unknown verbs stay denied.
+    for (const verb of ["", "create", "remove", "delete", "scratch", "listx", "runsx", "run-all"]) {
+      assert.equal(call({ params: { command: `openclaw ${group} ${verb}` } }).effect.kind, "deny");
+    }
+    for (const command of [
+      `openclaw ${group} list --all; rm -rf /`,
+      `openclaw ${group} list && openclaw ${group} run job-id`,
+      `sh -c 'openclaw ${group} list'`,
+      `openclaw ${group} get $(id)`,
+      `openclaw ${group} get ` + "`id`",
+    ]) assert.equal(call({ params: { command } }).effect.kind, "deny", command);
+    assert.equal(call({ params: {command: `openclaw ${group} list`, cmd: `openclaw ${group} run x`} }).effect.kind, "deny");
   }
 });
 
@@ -280,7 +318,7 @@ test("read is explicitly allowed; an unknown tool is denied", () => {
   assert.equal(decided.record.tool, "read");
   assertAuditShape(decided.record);
   assert.equal(call({ toolName: "unknown" }).record.rule, "default");
-  assert.equal(call({ toolName: "write" }).effect.kind, "deny");
+  assert.equal(call({ toolName: "write" }).effect.kind, "allow");
 });
 
 test("a missing or invalid policy file is denied and written to the audit log", () => {
@@ -416,12 +454,12 @@ test("the audit line carries the user and task and not the raw credential", () =
   assert.equal(JSON.stringify(line).includes("nvapi-super-secret"), false);
 });
 
-test("only the listed read-only tools are allowed", () => {
+test("only the listed read and workspace filesystem tools are allowed", () => {
   for (const toolName of ["read", "memory_search", "memory_get", "session_status",
-    "sessions_list", "sessions_history"]) {
+    "sessions_list", "sessions_history", "write", "edit"]) {
     assert.equal(call({ toolName, params: {} }).effect.kind, "allow", toolName);
   }
-  for (const toolName of ["web_fetch", "web_search", "write", "edit", "browser", "cron",
+  for (const toolName of ["web_fetch", "web_search", "browser", "cron",
     "gateway", "mcp__unknown", "unknown"]) {
     assert.equal(call({ toolName, params: {} }).effect.kind, "deny", toolName);
   }

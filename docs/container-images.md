@@ -18,7 +18,7 @@ those deployment overrides local when preparing changes for upstream.
 | `openshell-gateway-docker` | `latest`, `sha-<commit>` | x86_64-only Docker VM disk, `make gateway-build-docker` |
 | `nemoclaw-cli` | `latest`, `sha-<commit>` | Installer BOM `spec.nemoclaw.cliImage` |
 | `nemoclaw-sandbox` | `latest`, `sha-<commit>` | Data-science default and CUDA profiles |
-| `governance-interceptor` | `latest`, `sha-<commit>`, OpenShell ref (currently `v0.1.2`) | Interceptor deployment and image builder |
+| `governance-interceptor` | `latest`, `sha-<commit>`, OpenShell ref (currently `v0.1.6`) | Interceptor deployment and image builder |
 | `saw-credential-proxy` | `latest`, `sha-<commit>` (multi-arch) | Chart default `credentialProxy.image` (digest pinned in `charts/openshell-saw/values.yaml`) |
 | `saw-kubernetes-runtime` | `latest`, `sha-<commit>` (multi-arch) | Container reconciler, preparation/enrollment helpers, standalone projector and relay membership Job; operator site values pin the manifest digest. |
 | `saw-harness-<bundle>` | Bundle version, `sha-<commit>` | Optional digest-pinned `harnessRef.image` |
@@ -30,6 +30,19 @@ builds natively and pushes by digest, and the merge job joins the digests with
 the arm64 Podman disk ([arm64 guide](arm64.md)). The legacy
 `openshell-gateway-docker` disk is x86_64 only and publishes its tags directly;
 ARM clusters use the default Podman runtime.
+
+The OpenShell 0.1.6 rollout is split across two PRs: merge #156 to trigger
+upstream publication, then pin the verified public interceptor digest and
+complete clean-install acceptance in a follow-up. Track it in
+[the release issue](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157) and the
+[0.1.6 release plan](openshell-016-release.md).
+
+**Deployment hold:** the current interceptor chart digest is the published
+0.1.2 artifact. Preliminary testing used a matching local 0.1.6 build; the
+shipped old-interceptor/new-gateway pair is unvalidated. Wait for the follow-up
+to merge and clean-install acceptance to pass before deploying the 0.1.6
+upgrade from `main`. Preliminary tests must supply a matching build by digest
+in deployment overrides.
 
 Pull requests build without registry credentials or pushing. Publishing is
 restricted to `main`, including manual workflow dispatches. Every push verifies

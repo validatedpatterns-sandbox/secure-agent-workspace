@@ -6,9 +6,9 @@ containerRuntime: podman
 openshell:
   # Informational: the in-VM installer installs OpenShell from the SAW's
   # InstallerBOM (charts/openshell-saw values `bom:`), not from these.
-  version: "0.1.2"
-  gatewayImage: "quay.io/opendatahub/odh-openshell-gateway:v0.1.2-rhaiv.6"
-  supervisorImage: "quay.io/opendatahub/odh-openshell-supervisor:v0.1.2-rhaiv.6"
+  version: "0.1.6"
+  gatewayImage: "quay.io/opendatahub/odh-openshell-gateway:v0.1.6-rhaiv.4"
+  supervisorImage: "quay.io/opendatahub/odh-openshell-supervisor:v0.1.6-rhaiv.4"
   pipIndexUrl: "https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6-EA1/cpu-ubi9-test/simple/"
 
 # Pinned cosign used only to verify the installer bundle. The OpenShell

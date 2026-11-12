@@ -1019,7 +1019,7 @@ def states(st):
 
 
 @pytest.mark.parametrize("webui_up", [False, True])
-def test_a_profile_without_sandbox_ui_waits_for_the_openshell_webui(
+def test_custom_inference_waits_for_the_webui_and_sandbox_ui(
         portal, world, catalog, webui_up):
     fake, signer = world
     fake.request("saw-req-custom", {"action": "create", "token": signer.token(),
@@ -1039,7 +1039,8 @@ def test_a_profile_without_sandbox_ui_waits_for_the_openshell_webui(
                                  "vp-gitops", "example.com", ping=ping)
     assert st["ready"] is webui_up
     assert st["phase"] == ("ready" if webui_up else "running")
-    assert checked == ["https://alice-webui-saw-alice.apps.example.com"]
+    assert checked == ["https://alice-webui-saw-alice.apps.example.com",
+                       "https://alice-default-notebook-ui.apps.example.com"]
 
 
 def test_sandbox_uis_do_not_hide_an_unavailable_openshell_webui(portal, world):
@@ -1905,8 +1906,8 @@ def test_headless_container_requires_current_runtime_and_healthy_argo(portal, mo
     import hashlib
     reg="0123456789abcdef"
     subject="478fdd1f-8db9-41e8-97ad-b563215c89e9"
-    monkeypatch.setenv("SAW_CONTAINER_SITES",json.dumps({"alice":{"subject":subject,"automaticEnrollment":{"approvedProfiles":{"audited-openclaw":"a"*64}}}}))
-    entry=portal.registry_entry("alice","custom-inference",reg,"container")
+    monkeypatch.setenv("SAW_CONTAINER_SITES",json.dumps({"alice":{"subject":subject,"automaticEnrollment":{"approvedProfiles":{"headless-test":"a"*64}}}}))
+    entry=portal.registry_entry("alice","headless-test",reg,"container")
     entry["intentGeneration"]=1
     install=portal.installation_id("alice",reg)
     digest=lambda value: hashlib.sha256(json.dumps(value,sort_keys=True,separators=(",",":")).encode()).hexdigest()
@@ -1924,7 +1925,10 @@ def test_headless_container_requires_current_runtime_and_healthy_argo(portal, mo
     class Reader:
         def call(self,method,path,ok404):
             return objects[path.rsplit("/",1)[1]]
-    profile=json.loads((ROOT/"charts/saw-users/files/profile-catalog.json").read_text())["profiles"]
+    profile = {"headless-test": {"workspaces": [{
+        "name": "default", "enabled": True,
+        "sandboxes": [{"name": "worker", "enabled": True, "uiRoute": False}],
+    }]}}
     def status():
         return portal.container_status(Reader(),"alice",entry,"argo","example.test",
                                        lambda _: pytest.fail("headless registration has no route"),profile)

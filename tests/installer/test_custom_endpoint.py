@@ -339,6 +339,10 @@ def test_custom_route_uses_provider_ref_instead_of_stale_auth_profile(
     scripts = [str(c[-1]) for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "exec"]]
     activation = next(text for text in scripts if f"openclaw models auth activate {profile_id}" in text)
     assert 'CUSTOM_API_KEY="$CUSTOM_INFERENCE_API_KEY" openclaw models auth activate' in activation
+    migration = next(text for text in scripts if "# SAW: bind runtime credential references" in text)
+    assert 'CUSTOM_API_KEY="$CUSTOM_INFERENCE_API_KEY" openclaw secrets apply' in migration
+    gateway = next(text for text in scripts if "# providers: custom-inference" in text)
+    assert f'export {ab.OPENCLAW_EXEC_ENV} CUSTOM_API_KEY="$CUSTOM_INFERENCE_API_KEY"' in gateway
 
 
 @pytest.mark.parametrize("preflight_fails", [False, True])
@@ -354,6 +358,7 @@ def test_reference_plan_shell_validates_regular_file_and_cleans_up(ab, tmp_path,
         #!/usr/bin/env python3
         import json, os, pathlib, stat, sys
         assert sys.argv[1:3] == ['secrets', 'apply']
+        assert os.environ.get('CUSTOM_API_KEY') == 'current-issued-placeholder'
         path = pathlib.Path(sys.argv[sys.argv.index('--from') + 1])
         assert path.is_file()
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
@@ -366,11 +371,13 @@ def test_reference_plan_shell_validates_regular_file_and_cleans_up(ab, tmp_path,
         """))
     executable.chmod(0o755)
     script = ab.openclaw_credential_ref_script(
-        "custom-inference", "CUSTOM_INFERENCE_API_KEY", "")
+        "custom-inference", "CUSTOM_INFERENCE_API_KEY", 'CUSTOM_API_KEY="$CUSTOM_INFERENCE_API_KEY"')
     script = script.replace("/sandbox/.openclaw/state", str(tmp_path))
     result = subprocess.run(['sh', '-c', script], capture_output=True, text=True,
                             env={**os.environ, 'PATH': str(tmp_path) + os.pathsep + os.environ['PATH'],
                                  'ISSUE161_TEST_CAPTURE': str(capture),
+                                 'CUSTOM_INFERENCE_API_KEY': 'current-issued-placeholder',
+                                 'CUSTOM_API_KEY': '',
                                  'ISSUE161_PREFLIGHT_FAIL': '1' if preflight_fails else '0'})
     assert (result.returncode != 0) == preflight_fails, result.stderr
     calls = [json.loads(line) for line in capture.read_text().splitlines()]

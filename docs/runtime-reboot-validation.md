@@ -31,8 +31,10 @@ selects the managed custom model without that binding, preserving fallback model
 and unrelated configuration. Native providers continue preserving their selected
 credentials. Native onboarding/activation retains its own saved connection
 metadata; when a custom replacement needs activation, its temporary onboarding
-alias is provided for that command. The running custom route then uses the
-managed provider reference directly. OpenShell's endpoint and credential-identity
+alias remains available during native configuration migration and gateway
+launch, since activation can temporarily write it back into configuration. Its
+value is taken from the current exec environment. The running custom route uses
+the managed provider reference directly. OpenShell's endpoint and credential-identity
 enforcement remains in effect.
 
 Reapply repairs the managed provider configuration in place. Validate the

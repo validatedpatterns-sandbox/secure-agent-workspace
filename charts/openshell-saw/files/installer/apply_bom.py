@@ -5030,13 +5030,18 @@ class ProfileApplier:
                  f"{oc_env} {key_env}openclaw onboard --non-interactive "
                  f"--accept-risk --mode local {auth_args} --secret-input-mode ref "
                  f"--skip-channels --skip-health", check=False)
+        # Activation can temporarily put CUSTOM_API_KEY back into config.
+        # Keep its current runtime value available through native migration and
+        # gateway launch; only the reference is persisted, never this value.
+        if key_env:
+            oc_env = f"{oc_env} {key_env.strip()}"
         # Keep native onboarding's saved connection metadata intact. A custom
         # replacement's temporary alias is also needed during native activation.
         profile_id = openclaw_replacement_profile(onboarded.out + "\n" + onboarded.err)
         if profile_id:
             log(f"Activating the new OpenClaw credential '{profile_id}'")
             self.cli(*exec_cmd, "sh", "-c",
-                     f"{oc_env} {key_env}openclaw models auth activate {shlex.quote(profile_id)} --agent main",
+                     f"{oc_env} openclaw models auth activate {shlex.quote(profile_id)} --agent main",
                      check=False)
         if not auth_choice:
             self.cli(*exec_cmd, "sh", "-c",

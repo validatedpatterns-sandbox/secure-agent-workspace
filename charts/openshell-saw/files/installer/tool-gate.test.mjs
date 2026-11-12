@@ -127,14 +127,31 @@ test("briefing discovery and exact read/write targets have named allows", () => 
   }
 });
 
-test("identity configuration is allowed without granting general shell access", () => {
-  const command = "openclaw agents set-identity --agent main --workspace /sandbox/.openclaw/workspace --name Sushi";
-  const result = call({ params: { command } });
-  assert.equal(result.effect.kind, "allow");
-  assert.equal(result.record.rule, "exec-openclaw-set-identity");
+test("identity configuration always requires approval, including file and avatar inputs", () => {
+  for (const flags of [
+    "--agent main --workspace /sandbox/.openclaw/workspace --name Sushi",
+    "--identity-file /etc/passwd",
+    "--identity-file /sandbox/.openclaw/openclaw.json",
+    "--workspace /tmp/outside --from-identity",
+    "--avatar https://example.com/avatar.png",
+    "--avatar http://127.0.0.1/avatar.png",
+    "--avatar data:image/png,avatar",
+  ]) {
+    const result = call({ params: { command: `openclaw agents set-identity ${flags}` } });
+    assert.equal(result.effect.kind, "approval", flags);
+    assert.equal(result.record.rule, "exec-openclaw-set-identity");
+    for (const resolution of ["deny", "cancelled", "timeout"]) {
+      const checked = resolutionRecord(result.record, resolution);
+      assert.equal(checked.decision, "rejected");
+      assert.equal(checked.rule, "exec-openclaw-set-identity");
+    }
+  }
   for (const unsafe of [
     "openclaw agents set-identity --agent main; rm -rf /",
     "sh -c 'openclaw agents set-identity --agent main'",
+    "openclaw agents set-identity --name $(cat /etc/passwd)",
+    "openclaw agents set-identity --avatar data:image/svg+xml;base64,PHN2Zy8+",
+    "openclaw agents set-identity --avatar 'data:image/svg+xml;base64,PHN2Zy8+'",
   ]) {
     assert.equal(call({ params: { command: unsafe } }).effect.kind, "deny", unsafe);
   }

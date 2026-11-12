@@ -407,6 +407,9 @@ elif op == "sandbox delete":
     else:
         state["sandboxes"].pop(key, None)
 elif op == "sandbox exec":
+    sb = state["sandboxes"].get(f"{ws}/{opt('-n')}") or {}
+    if sb.get("phase") in ("Completed", "Stopped"):
+        fail("Error: sandbox workload is stopped")
     if (state["sandboxes"].get(f"{ws}/{opt('-n')}") or {}).get("execBroken"):
         fail("Error: supervisor transport unavailable after gateway CA rotation")
     script = args[-1] if args[-3:-1] == ["sh", "-c"] else ""
@@ -520,7 +523,11 @@ elif op == "sandbox exec":
         return {}
 
     script = args[-1] if args else ""
+    if "# SAW: check saved OpenClaw supervisor" in script:
+        print("present" if sb.get("gatewayConfigured") else "absent")
+        sys.exit(0)
     if "cat > \"$SUP\"" in script:
+        sb["gatewayConfigured"] = True
         sb["agentStopped"] = False
         save()
         sys.exit(0)

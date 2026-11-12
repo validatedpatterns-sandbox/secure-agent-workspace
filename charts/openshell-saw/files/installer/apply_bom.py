@@ -3619,6 +3619,23 @@ class ProfileApplier:
         # old /sandbox and its checksum, kept until the restore is verified.
         self.migrations_path = (Path(prune["ledgerPath"]).with_name("sandbox-migrations.json")
                                 if prune.get("ledgerPath") else None)
+        # A confinement stop must survive a new installer process. In
+        # particular, a host-stopped workload must never enter broken-sandbox
+        # deletion while its /sandbox is the only copy of the user's files.
+        self.confinement_stops_path = (
+            Path(prune["ledgerPath"]).with_name("confinement-stops.json")
+            if prune.get("ledgerPath") else
+            Path.home() / ".local/state/openshell/confinement-stops.json")
+        self.confinement_stops = {}
+        if not shell.dry_run:
+            try:
+                self.confinement_stops = json.loads(self.confinement_stops_path.read_text())
+            except FileNotFoundError:
+                pass
+            except (OSError, ValueError) as exc:
+                raise InstallerError(f"cannot read confinement stop state: {exc}") from exc
+            if not isinstance(self.confinement_stops, dict):
+                raise InstallerError("confinement stop state is not an object")
         self.refresh_state = (Path(prune["ledgerPath"]).with_name("refresh.json")
                               if prune.get("ledgerPath") else None)
         self.migrations = (read_json(self.migrations_path, {})
@@ -4091,9 +4108,16 @@ class ProfileApplier:
     def sandbox_state(self, ws, sb):
         """'running', 'broken' (Error/Completed), 'deleting' or 'missing'."""
         state = self.cli("sandbox", "get", sb.name, *ws_args(ws.name), check=False, quiet=True)
+        clean = re.sub(r"\x1b\[[0-9;]*m", "", state.out)
+        if (self.migration_key(ws, sb) in self.confinement_stops and
+                (not state.ok or re.search(r"Phase:\s*(Completed|Error|Stopped|Stopping|Deleting)\b", clean)
+                 or "Error" in clean)):
+            raise InstallerError(
+                f"sandbox '{sb.name}' is held for workspace confinement repair; "
+                "its workload is stopped or unavailable and will not be recreated. "
+                "Recover and start the existing sandbox, then retry apply")
         if not state.ok:
             return "missing"
-        clean = re.sub(r"\x1b\[[0-9;]*m", "", state.out)
         if re.search(r"Phase:\s*Deleting", clean):
             return "deleting"
         return "broken" if ("Error" in clean or "Phase: Completed" in clean) else "running"
@@ -4825,6 +4849,11 @@ class ProfileApplier:
         If exec cannot prove they stopped, stop the workload from the host and
         fail apply. Never replace its permissive policy in that case.
         """
+        # Persist before either stop: a crash or failed readback must retain
+        # both the no-delete guard and the obligation to resume after repair.
+        if not self.sh.dry_run:
+            self.confinement_stops[self.migration_key(ws, sb)] = True
+            write_json_atomic(self.confinement_stops_path, self.confinement_stops, mode=0o600)
         script = "\n".join([
             "# SAW: quiesce OpenClaw for workspace confinement",
             _GATEWAY_PIDS_SH, _SUP_PIDS_SH,
@@ -4873,6 +4902,41 @@ class ProfileApplier:
                 self.quiesce_openclaw(ws, sb)
             raise
 
+    def clear_confinement_stop(self, ws, sb):
+        key = self.migration_key(ws, sb)
+        if not self.sh.dry_run and key in self.confinement_stops:
+            self.confinement_stops.pop(key)
+            write_json_atomic(self.confinement_stops_path, self.confinement_stops, mode=0o600)
+
+    def resume_openclaw(self, ws, sb):
+        """Resume a previously configured agent without changing its provider.
+
+        A fresh sandbox with no provider has no saved gateway supervisor and
+        remains unonboarded. A repaired existing agent keeps its current model
+        and credential configuration, even when no provider is usable now.
+        """
+        if self.migration_key(ws, sb) not in self.confinement_stops:
+            return
+        if not self.wait_exec_ready(ws, sb):
+            raise InstallerError(f"sandbox '{sb.name}': cannot resume confinement repair")
+        self.ensure_workspace_confinement(ws, sb)
+        exec_cmd = ("sandbox", "exec", "-n", sb.name, *ws_args(ws.name), "--no-tty", "--")
+        configured = self.cli(*exec_cmd, "sh", "-c",
+                              "# SAW: check saved OpenClaw supervisor\n"
+                              "if test -f /sandbox/.openclaw/state/saw-gateway-supervise.sh; "
+                              "then printf present; else printf absent; fi", quiet=True)
+        if configured.out.strip() not in ("present", "absent"):
+            raise InstallerError(f"sandbox '{sb.name}': cannot read saved OpenClaw supervisor")
+        if configured.out.strip() == "absent":
+            # No installer-started agent to resume. The repair is complete.
+            self.clear_confinement_stop(ws, sb)
+            return
+        self.finalize_tool_audit(ws, sb)
+        self.configure_harness(ws, sb, exec_cmd, OPENCLAW_EXEC_ENV)
+        self.install_tool_gate(ws, sb, enable=True)
+        self.disable_provider_channels(ws, sb, exec_cmd, OPENCLAW_EXEC_ENV)
+        self.launch_openclaw(ws, sb, exec_cmd, OPENCLAW_EXEC_ENV)
+
     def start_openclaw(self, ws, sb, provider):
         """Onboard openclaw inside the sandbox and start its web gateway.
         Onboarding is best effort; workspace confinement is mandatory."""
@@ -4915,6 +4979,7 @@ class ProfileApplier:
             # No openclaw.json yet, so the plugin entry is not enabled. The
             # files are still in place for a later onboard.
             self.install_tool_gate(ws, sb, enable=False)
+            self.resume_openclaw(ws, sb)
             # The sandbox still has to stay Ready after the installer exits.
             self.install_keepalive(ws, sb)
             return
@@ -5030,6 +5095,9 @@ class ProfileApplier:
         # is running, or when its settings changed; the files are in place either way.
         self.install_tool_gate(ws, sb, enable=True)
         self.disable_provider_channels(ws, sb, exec_cmd, oc_env)
+        self.launch_openclaw(ws, sb, exec_cmd, oc_env)
+
+    def launch_openclaw(self, ws, sb, exec_cmd, oc_env):
         # One script: the gateway secret is made and kept inside the sandbox
         # (the installer never sees it). The gateway is restarted only when
         # the harness was refilled, none is running, or its settings (auth
@@ -5039,8 +5107,8 @@ class ProfileApplier:
         providers = [p for p in sb.providers if (ws.name, p) not in self.skipped]
         self.cli(*exec_cmd, "sh", "-c",
                  openclaw_gateway_script(self.cfg, ws.name, sb.name, oc_env, refilled=refilled,
-                                         providers=providers),
-                 check=False)
+                                         providers=providers))
+        self.clear_confinement_stop(ws, sb)
         self.install_keepalive(ws, sb)
 
     def disable_provider_channels(self, ws, sb, exec_cmd, oc_env):
@@ -5406,6 +5474,7 @@ class ProfileApplier:
             log(f"WARN: no usable provider for {sb.type} sandbox '{sb.name}'; "
                 "creating it without agent onboarding")
             self.create_sandbox(ws, sb)
+            self.resume_openclaw(ws, sb)
             return
         if sb.type == "nemoclaw" and sb.harness_ref:
             # A harness is a volume mounted when the sandbox is created, and

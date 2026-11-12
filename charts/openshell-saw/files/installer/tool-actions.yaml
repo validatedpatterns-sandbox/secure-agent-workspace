@@ -63,11 +63,11 @@ rules:
       - openclaw automations enable
       - openclaw automations disable
       - openclaw automations run
-  # Lets an agent persist the identity it has written to its own workspace
-  # without granting general shell access.
+  # This command rewrites openclaw.json and can read arbitrary identity
+  # files or fetch avatars. Filesystem-tool confinement does not constrain it.
   - id: exec-openclaw-set-identity
     tool: exec
-    action: allow
+    action: approval
     whenCommandMatches:
       - openclaw agents set-identity
   # OpenClaw 2026.9.2 runs the hook again for each dispatched target.

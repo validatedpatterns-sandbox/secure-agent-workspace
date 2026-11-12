@@ -56,8 +56,19 @@ public upstream publication or final fresh-install acceptance requirements.
 For OpenClaw and NemoClaw, apply now fails unless setting
 `tools.fs.workspaceOnly` succeeds and reads back as the JSON boolean `true`.
 An existing agent with an invalid or unreadable setting is stopped before its
-mounted tool policy changes. A failed repair leaves it stopped. Successful,
-unchanged reapply does not stop the agent merely to check confinement.
+mounted tool policy changes. A failed repair leaves it stopped. A durable host-side
+`confinement-stops.json` record prevents a host-stopped workload (`Completed`)
+from being deleted as a broken sandbox on any later apply, including after an
+installer or VM restart. Apply reports the hold until an operator recovers and
+starts the existing sandbox in place; it does not recreate it. Keep the stop
+record until apply verifies confinement and successfully resumes the agent.
+The record lives beside the managed-resource ledger (normally
+`/var/lib/saw/user/confinement-stops.json`), or in
+`~/.local/state/openshell/` when no ledger is configured. Do not remove the
+record to work around the hold: that would re-enable broken-sandbox deletion.
+If no provider is usable, apply resumes an already configured agent with its
+existing model and credentials after a successful repair; a fresh sandbox
+remains unonboarded. Successful, unchanged reapply does not stop the agent merely to check confinement.
 
 OpenClaw `automations` aliases `cron` in the pinned 2026.9.6 release. Both
 allow only `list`, `status`, `get`, `show`, and `runs` without approval.
@@ -70,3 +81,10 @@ was verified against the upstream release's
 [`register.cron-add.ts`](https://github.com/openclaw/openclaw/blob/v2026.9.6/src/cli/cron-cli/register.cron-add.ts),
 [`register.cron-simple.ts`](https://github.com/openclaw/openclaw/blob/v2026.9.6/src/cli/cron-cli/register.cron-simple.ts)
 and [`register.cron-edit.ts`](https://github.com/openclaw/openclaw/blob/v2026.9.6/src/cli/cron-cli/register.cron-edit.ts).
+
+`openclaw agents set-identity` requires approval for every invocation, including
+ordinary name changes. In the pinned OpenClaw version, `--identity-file` can
+read arbitrary paths and `--avatar` accepts HTTP(S) and data URIs; the command
+also rewrites `openclaw.json`. Filesystem-tool workspace confinement does not
+limit this CLI command. Cancelled, denied or timed-out approvals do not run it;
+shell wrappers, chaining and substitutions remain denied.

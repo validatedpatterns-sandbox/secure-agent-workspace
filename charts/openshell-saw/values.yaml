@@ -58,6 +58,11 @@ vm:
   cores: 4
   memory: 8Gi
   diskSize: 40Gi
+  # Allow guest services to stop and filesystems to sync before KubeVirt
+  # force-terminates the VM. Guest service stop timeouts alone are 45s;
+  # KubeVirt's implicit 30s grace expired during reboot acceptance (#161).
+  # Applies to a newly started VMI; see docs/vm-shutdown.md for existing VMs.
+  terminationGracePeriodSeconds: 180
   # Grace/NUMA passthrough requires dedicated CPUs and the arm64 virt machine.
   dedicatedCpuPlacement: false
   machineType: ""

@@ -603,6 +603,23 @@ elif op == "sandbox exec":
         if operation == "get" and "response" in fault:
             print(fault["response"])
             sys.exit(0)
+    if "# SAW: bind runtime credential references" in script:
+        line = next(line for line in script.splitlines() if line.startswith("printf "))
+        plan = json.loads(shlex.split(line)[2])
+        for target in plan["targets"]:
+            segments = target["pathSegments"]
+            if target["type"] == "models.providers.apiKey":
+                assert segments == ["models", "providers", target["providerId"], "apiKey"]
+                sb.setdefault("openclawConfig", {})[target["path"]] = target["ref"]
+            elif target["type"] == "auth-profiles.api_key.key":
+                assert segments[0] == "profiles" and segments[2] == "key"
+                assert target["agentId"] == "main"
+                sb.setdefault("openclawAuthRefs", {})[segments[1]] = target["ref"]
+            else:
+                fail("unsupported secret plan target")
+        sb.setdefault("credentialRefPlans", []).append(plan)
+        save()
+        sys.exit(0)
     if "openclaw config set " in script:
         m = re.search(r"openclaw config set (\S+)\s+(.*)", script)
         if m:

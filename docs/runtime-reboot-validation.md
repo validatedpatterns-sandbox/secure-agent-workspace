@@ -21,8 +21,12 @@ The installer now requests OpenClaw's reference credential-persistence mode.
 For custom providers, it also replaces the temporary onboarding alias
 `CUSTOM_API_KEY` with a reference to the governance profile's actual variable
 (for example, `CUSTOM_INFERENCE_API_KEY` or `NVIDIA_API_KEY`). Later processes
-therefore use the placeholder issued to their current runtime. OpenShell's
-endpoint and credential-identity enforcement remains in effect.
+therefore use the placeholder issued to their current runtime. Reapply can
+also save an inactive replacement credential in OpenClaw's auth store. The
+installer binds that new profile through OpenClaw's supported `secrets apply`
+plan API before activating it, with a preflight and the broad scrub passes
+disabled so unrelated credentials remain intact. OpenShell's endpoint and
+credential-identity enforcement remains in effect.
 
 Reapply repairs the managed provider configuration in place. Validate the
 shipped ConfigMap/installer path on new workspaces and existing data: perform

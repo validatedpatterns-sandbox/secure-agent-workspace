@@ -298,7 +298,7 @@ def test_failed_credential_reference_write_stops_apply_before_agent_launch(
     launched = []
 
     def reject_reference(*args, **kwargs):
-        if "models.providers.custom-inference.apiKey " in str(args[-1]):
+        if "# SAW: bind runtime credential references" in str(args[-1]):
             raise ab.InstallerError("credential reference write failed")
         return original(*args, **kwargs)
 
@@ -307,3 +307,63 @@ def test_failed_credential_reference_write_stops_apply_before_agent_launch(
     with pytest.raises(ab.InstallerError, match="credential reference write failed"):
         applier.apply(profiles)
     assert not launched
+
+
+def test_replacement_auth_profile_uses_real_env_ref_before_activation(
+        ab, fake_env, config, profiles, custom_secrets, governed_catalog):
+    profile_id = "custom-inference:setup-00000000-0000-0000-0000-000000000001"
+    output = ("Replacement credential saved but inactive.\n"
+              f"openclaw models auth activate {profile_id} --agent main")
+    (fake_env.state / "exec-output.json").write_text(json.dumps({"openclaw onboard": output}))
+    creds = resolve(ab, profiles, custom_secrets)
+    ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
+    saved = fake_env.openshell_state()["sandboxes"]["default/notebook"]
+    assert saved["openclawAuthRefs"][profile_id] == {
+        "source": "env", "provider": "default", "id": "CUSTOM_INFERENCE_API_KEY"}
+    plan = saved["credentialRefPlans"][-1]
+    assert plan["scrubEnv"] is False
+    assert plan["scrubAuthProfilesForProviderTargets"] is False
+    assert [t["type"] for t in plan["targets"]] == [
+        "models.providers.apiKey", "auth-profiles.api_key.key"]
+    scripts = [str(c[-1]) for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "exec"]]
+    binding = next(i for i, text in enumerate(scripts) if "# SAW: bind runtime credential references" in text)
+    activation = next(i for i, text in enumerate(scripts) if f"openclaw models auth activate {profile_id}" in text)
+    assert binding < activation
+
+
+@pytest.mark.parametrize("preflight_fails", [False, True])
+def test_reference_plan_shell_validates_regular_file_and_cleans_up(ab, tmp_path, preflight_fails):
+    """Run the generated shell against the native API's regular-JSON-file contract."""
+    import os
+    import subprocess
+    import textwrap
+
+    capture = tmp_path / "captured.jsonl"
+    executable = tmp_path / "openclaw"
+    executable.write_text(textwrap.dedent("""\
+        #!/usr/bin/env python3
+        import json, os, pathlib, stat, sys
+        assert sys.argv[1:3] == ['secrets', 'apply']
+        path = pathlib.Path(sys.argv[sys.argv.index('--from') + 1])
+        assert path.is_file()
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        plan = json.loads(path.read_text())
+        with open(os.environ['ISSUE161_TEST_CAPTURE'], 'a') as out:
+            out.write(json.dumps({'dryRun': '--dry-run' in sys.argv, 'plan': plan}) + '\\n')
+        if os.environ.get('ISSUE161_PREFLIGHT_FAIL') == '1' and '--dry-run' in sys.argv:
+            raise SystemExit(1)
+        """))
+    executable.chmod(0o755)
+    script = ab.openclaw_credential_ref_script(
+        "custom-inference", "CUSTOM_INFERENCE_API_KEY",
+        "custom-inference:setup-00000000-0000-0000-0000-000000000001", "")
+    script = script.replace("/sandbox/.openclaw/state", str(tmp_path))
+    result = subprocess.run(['sh', '-c', script], capture_output=True, text=True,
+                            env={**os.environ, 'PATH': str(tmp_path) + os.pathsep + os.environ['PATH'],
+                                 'ISSUE161_TEST_CAPTURE': str(capture),
+                                 'ISSUE161_PREFLIGHT_FAIL': '1' if preflight_fails else '0'})
+    assert (result.returncode != 0) == preflight_fails, result.stderr
+    calls = [json.loads(line) for line in capture.read_text().splitlines()]
+    assert [c['dryRun'] for c in calls] == ([True] if preflight_fails else [True, False])
+    assert all(t['ref']['id'] == 'CUSTOM_INFERENCE_API_KEY' for t in calls[0]['plan']['targets'])
+    assert not list(tmp_path.glob('saw-credential-ref.*'))

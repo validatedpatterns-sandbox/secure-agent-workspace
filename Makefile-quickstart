@@ -449,8 +449,9 @@ harness-bundle-push: ## Push harness-bundles/$(HARNESS_BUNDLE) to $(HARNESS_REPO
 	@test -n "$(HARNESS_REPO)" || { echo "set HARNESS_REPO, e.g. ghcr.io/<owner>/saw-harness-$(HARNESS_BUNDLE)"; exit 1; }
 	@$(SCRIPTS_DIR)/harness-bundle.sh push $(HARNESS_BUNDLE) $(HARNESS_REPO)
 
-saw-restart: .check-saw-name ## Restart the VM to apply a changed BOM or profile
-	virtctl -n $(SAW_NS) restart $(OPENSHELL_SAW_NAME)
+saw-restart: .check-saw-name .check-ssh-key ## Restart through guest poweroff to apply changed inputs
+	@VM_NAME="$(OPENSHELL_SAW_NAME)" \
+	$(SCRIPTS_DIR)/openshell-saw-restart.sh
 
 saw-restart-pending: ## Restart every SAW VM waiting for a restart (CONFIRM=yes; lists them otherwise)
 	@CONFIRM=$(CONFIRM) $(SCRIPTS_DIR)/saw-restart-pending.sh

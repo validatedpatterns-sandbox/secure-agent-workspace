@@ -7,6 +7,7 @@
 # guest keeps its old config until the next boot. This lists those VMs and,
 # with CONFIRM=yes, restarts them. Users' running sandboxes stop with the VM.
 set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 vms="$(oc get vm -A -l openshell.pattern/role=gateway -o json)"
 pending="$(jq -r '.items[]
@@ -29,5 +30,5 @@ if [[ "${CONFIRM:-}" != "yes" ]]; then
 fi
 
 while IFS=$'\t' read -r ns name; do
-  virtctl -n "${ns}" restart "${name}"
+  SAW_NS="${ns}" VM_NAME="${name}" "${SCRIPT_DIR}/openshell-saw-restart.sh"
 done <<<"${pending}"

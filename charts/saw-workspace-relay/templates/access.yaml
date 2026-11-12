@@ -1,0 +1,132 @@
+{{- if and .Values.enabled .Values.subject }}
+{{- $v := .Values }}{{- $n := .Release.Name }}{{- $ui := .Release.Namespace }}
+{{- $revision := dict "values" $v "script" (.Files.Get "files/bind.py") | toJson | sha256sum | trunc 10 }}
+{{- $script := printf "%s-bind-%s" $n $revision }}
+{{- if or (eq $v.subject $v.ownerSubject) (and (not $v.workspaceID) (not $v.publishSubject)) (not $v.ownerSubject) (not $v.gatewayNamespace) }}{{ fail "distinct relay subject, owner and explicit gateway/workspace identities required" }}{{ end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: {{ $n }}, namespace: {{ $v.trustedNamespace }}}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: {{ $n }}-admin-session, namespace: {{ $v.gatewayNamespace }}}
+rules: [{apiGroups: [""], resources: [secrets], resourceNames: [{{ $v.gateway }}-client-ca], verbs: [get, update]}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ $n }}-admin-session, namespace: {{ $v.gatewayNamespace }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $n }}-admin-session}
+subjects: [{kind: ServiceAccount, name: {{ $n }}, namespace: {{ $v.trustedNamespace }}}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: {{ $n }}-session-holders, namespace: {{ $v.trustedNamespace }}}
+rules: [{apiGroups: [""], resources: [pods], verbs: [get]}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ $n }}-session-holders, namespace: {{ $v.trustedNamespace }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $n }}-session-holders}
+subjects: [{kind: ServiceAccount, name: {{ $n }}, namespace: {{ $v.trustedNamespace }}}]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: {{ $n }}}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ $n }}-pull, namespace: {{ $v.imageBuildNamespace }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: system:image-puller}
+subjects:
+- {kind: ServiceAccount, name: {{ $n }}, namespace: {{ $ui }}}
+- {kind: ServiceAccount, name: {{ $n }}, namespace: {{ $v.trustedNamespace }}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: {{ $n }}-ingress, namespace: {{ $v.gatewayNamespace }}}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/instance: {{ $v.gateway }}, openshell.pattern/role: gateway}}
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ $ui }}}}
+      podSelector: {matchLabels: {app: {{ $n }}, role: relay}}
+    - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ $v.trustedNamespace }}}}
+      podSelector: {matchLabels: {app: {{ $n }}, role: bind}}
+    ports: [{protocol: TCP, port: 17670}]
+{{- range $ns := list $ui $v.trustedNamespace }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: {{ $n }}-egress, namespace: {{ $ns }}}
+spec:
+  podSelector: {matchLabels: {app: {{ $n }}, role: {{ ternary "relay" "bind" (eq $ns $ui) }} }}
+  policyTypes: [Egress]
+  egress:
+  - to:
+    - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ $v.gatewayNamespace }}}}
+      podSelector: {matchLabels: {app.kubernetes.io/instance: {{ $v.gateway }}, openshell.pattern/role: gateway}}
+    ports: [{protocol: TCP, port: 17670}]
+{{ toYaml (required "issuer and DNS egress required" $v.egress) | indent 2 }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: {{ $script }}, namespace: {{ $v.trustedNamespace }}}
+immutable: true
+data:
+  bind.py: |
+{{ .Files.Get "files/bind.py" | indent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $script }}
+  namespace: {{ $v.trustedNamespace }}
+  annotations: {argocd.argoproj.io/sync-wave: '2'}
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 510
+  template:
+    metadata: {labels: {app: {{ $n }}, role: bind}}
+    spec:
+      serviceAccountName: {{ $n }}
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+      - name: bind
+        image: {{ $v.sdkImage }}
+        command: [python3, /scripts/bind.py]
+        env:
+        - {name: WORKSPACE, value: {{ $v.workspace }}}
+        - {name: WORKSPACE_ID, value: {{ $v.workspaceID | default "" | quote }}}
+        - {name: DISCOVER_ID, value: {{ ternary "true" "false" ($v.publishSubject | default false) | quote }}}
+        - {name: OWNER, value: {{ $v.ownerSubject }}}
+        - {name: SUBJECT, value: {{ $v.subject }}}
+        - {name: INSTALLATION, value: {{ $v.installationID }}}
+        - {name: ENDPOINT, value: {{ $v.gatewayEndpoint }}}
+        - {name: GATEWAY, value: {{ $v.gateway }}}
+        - {name: GATEWAY_NAMESPACE, value: {{ $v.gatewayNamespace }}}
+        - {name: TRUSTED_NAMESPACE, value: {{ $v.trustedNamespace }}}
+        - {name: POD_NAME, valueFrom: {fieldRef: {fieldPath: metadata.name}}}
+        - {name: POD_UID, valueFrom: {fieldRef: {fieldPath: metadata.uid}}}
+        securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+        volumeMounts:
+        - {name: script, mountPath: /scripts, readOnly: true}
+        - {name: identity, mountPath: /identity, readOnly: true}
+        - {name: admin-session, mountPath: /run/saw-admin}
+        - {name: api, mountPath: /var/run/secrets/kubernetes.io/serviceaccount, readOnly: true}
+      volumes:
+      - {name: script, configMap: {name: {{ $script }}}}
+      - {name: identity, configMap: {name: {{ $v.gateway }}-gateway-ca, defaultMode: 0440}}
+      - {name: admin-session, emptyDir: {medium: Memory, sizeLimit: 4Mi}}
+      - name: api
+        projected:
+          defaultMode: 0440
+          sources:
+          - serviceAccountToken: {path: token, expirationSeconds: 600}
+          - configMap: {name: kube-root-ca.crt, items: [{key: ca.crt, path: ca.crt}]}
+{{- end }}

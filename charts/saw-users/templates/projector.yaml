@@ -1,0 +1,283 @@
+{{- if .Values.projection.enabled }}
+{{- $users := list }}
+{{- range $user := .Values.users }}
+{{- if has (dig "deployment" "mode" "vm" ($user.values | default dict)) (list "container" "kata") }}
+{{- $users = append $users $user }}
+{{- end }}{{- end }}
+{{- $owner := printf "%s/%s" .Release.Namespace .Release.Name | sha256sum | trunc 20 }}
+{{- $name := printf "saw-projector-%s" $owner }}
+{{- $config := dict }}
+{{- if $users }}{{- $config = deepCopy .Values }}{{- end }}
+{{- $_ := set $config "users" $users }}
+{{- range $user := $users }}
+{{- $site := index $config.containerSites $user.name }}
+{{- if not $site }}{{ fail (printf "user %q: deployment.mode=container requires a containerSites entry" $user.name) }}{{ end }}
+{{- $_ := set $site "observer" (dict "namespace" $.Release.Namespace "serviceAccount" $name) }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: {{ $name }}-configuration}
+data:
+  workspaces.json: {{ $config | toJson | quote }}
+{{- if $users }}
+{{- $argo := include "saw-users.argoNamespace" . }}
+{{- if eq .Release.Namespace $argo }}{{ fail "workspace projection requires a dedicated namespace outside Argo CD" }}{{ end }}
+{{- if or (not .Values.projection.egress) (not (regexMatch "^.+@sha256:[a-f0-9]{64}$" .Values.projection.image)) }}{{ fail "projection requires a pinned helper image and explicit API/DNS egress" }}{{ end }}
+{{- if not .Values.projection.applicationSetControllerLabels }}{{ fail "projection requires the actual ApplicationSet controller Pod labels" }}{{ end }}
+{{- $identity := dict "namespace" .Release.Namespace "argoNamespace" $argo "name" $name "owner" $owner }}
+{{- $identityCode := .Files.Get "files/projector_identity.py" }}
+{{- $bootstrapRevision := dict "config" $identity "source" $identityCode "image" .Values.projection.image | toJson | sha256sum | trunc 12 }}
+{{- $bootstrap := printf "%s-%s" $name $bootstrapRevision }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: {{ $name }}}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: {{ $name }}-identity}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: {{ $name }}-source}
+data:
+  projector.py: |
+{{ .Files.Get "files/projector.py" | indent 4 }}
+  workspace.py: |
+{{ .Files.Get "files/workspace.py" | indent 4 }}
+  profile-catalog.json: |
+{{ .Files.Get "files/profile-catalog.json" | indent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: {{ $bootstrap }}}
+immutable: true
+data:
+  identity.json: {{ $identity | toJson | quote }}
+  projector_identity.py: |
+{{ $identityCode | indent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: {{ $name }}, namespace: {{ $argo }}}
+rules:
+- apiGroups: [argoproj.io]
+  resources: [applications]
+  verbs: [get]
+  resourceNames:
+{{- range $user := $users }}
+  - {{ $name }}-{{ $user.name }}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ $name }}, namespace: {{ $argo }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $name }}}
+subjects: [{kind: ServiceAccount, name: {{ $name }}, namespace: {{ .Release.Namespace }}}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: {{ $name }}-identity}
+rules: [{apiGroups: [""], resources: [namespaces], resourceNames: [{{ .Release.Namespace }}, {{ $argo }}], verbs: [get]}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: {{ $name }}-identity}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ $name }}-identity}
+subjects: [{kind: ServiceAccount, name: {{ $name }}-identity, namespace: {{ .Release.Namespace }}}]
+---
+# Kubernetes RBAC cannot limit CREATE by resourceNames. Fence the bootstrap
+# identity before granting it create in either namespace, especially Argo CD.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ $name }}-credentials
+  annotations: {argocd.argoproj.io/sync-wave: "-12"}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - {apiGroups: [""], apiVersions: [v1], resources: [secrets], operations: [CREATE]}
+  matchConditions:
+    - name: projector-bootstrap
+      expression: request.userInfo.username == {{ printf "system:serviceaccount:%s:%s-identity" .Release.Namespace $name | toJson }}
+  validations:
+    - expression: >-
+        request.namespace in [{{ .Release.Namespace | toJson }}, {{ $argo | toJson }}] &&
+        object.metadata.name == {{ $name | toJson }} && object.type == 'Opaque' &&
+        has(object.immutable) && object.immutable && has(object.data) &&
+        object.data.size() == 1 && 'token' in object.data &&
+        has(object.metadata.labels) && object.metadata.labels.size() == 2 &&
+        object.metadata.labels['saw.redhat.com/projector-owner'] == {{ $owner | toJson }} &&
+        object.metadata.labels['app.kubernetes.io/part-of'] == 'argocd' &&
+        has(object.metadata.annotations) && object.metadata.annotations.size() == 1 &&
+        object.metadata.annotations['saw.redhat.com/identity-sha256'].matches('^[a-f0-9]{64}$') &&
+        has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() == 1 &&
+        object.metadata.ownerReferences[0].name == {{ $name | toJson }} &&
+        (request.namespace == {{ $argo | toJson }} ?
+         (object.metadata.ownerReferences[0].kind == 'ApplicationSet' && object.metadata.ownerReferences[0].apiVersion == 'argoproj.io/v1alpha1') :
+         (object.metadata.ownerReferences[0].kind == 'Deployment' && object.metadata.ownerReferences[0].apiVersion == 'apps/v1'))
+      message: Only the named immutable Opaque plugin credential may be created.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ $name }}-credentials
+  annotations: {argocd.argoproj.io/sync-wave: "-11"}
+spec: {policyName: {{ $name }}-credentials, validationActions: [Deny]}
+{{- range $ns := list .Release.Namespace $argo }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: {{ $name }}-identity, namespace: {{ $ns }}}
+rules:
+- {apiGroups: [""], resources: [secrets], resourceNames: [{{ $name }}], verbs: [get]}
+# Create is namespace-scoped in Kubernetes RBAC; the short-lived bootstrap is trusted.
+- {apiGroups: [""], resources: [secrets], verbs: [create]}
+{{- if eq $ns $.Release.Namespace }}
+- {apiGroups: [apps], resources: [deployments], resourceNames: [{{ $name }}], verbs: [get]}
+{{- else }}
+- {apiGroups: [argoproj.io], resources: [applicationsets], resourceNames: [{{ $name }}], verbs: [get]}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ $name }}-identity, namespace: {{ $ns }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $name }}-identity}
+subjects: [{kind: ServiceAccount, name: {{ $name }}-identity, namespace: {{ $.Release.Namespace }}}]
+{{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata: {name: {{ $bootstrap }}}
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 300
+  template:
+    metadata: {labels: {app.kubernetes.io/name: {{ $name }}}}
+    spec:
+      serviceAccountName: {{ $name }}-identity
+      automountServiceAccountToken: true
+      restartPolicy: Never
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+      - name: initialize
+        image: {{ .Values.projection.image }}
+        command: [python3, /source/projector_identity.py]
+        securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+        env: [{name: PYTHONDONTWRITEBYTECODE, value: '1'}]
+        resources: {requests: {cpu: 10m, memory: 32Mi}, limits: {memory: 128Mi}}
+        volumeMounts: [{name: source, mountPath: /source, readOnly: true}]
+      volumes: [{name: source, configMap: {name: {{ $bootstrap }}}}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels: {saw.redhat.com/projector-owner: {{ $owner | quote }}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: projector}}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: projector}
+      annotations:
+        checksum/source: {{ printf "%s%s%s" (.Files.Get "files/projector.py") (.Files.Get "files/workspace.py") (.Files.Get "files/profile-catalog.json") | sha256sum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: true
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+      - name: projector
+        image: {{ .Values.projection.image }}
+        command: [python3, /source/projector.py]
+        env:
+        - {name: PROJECTOR_NAME, value: {{ $name }}}
+        - {name: ARGO_NAMESPACE, value: {{ $argo }}}
+        - {name: PYTHONDONTWRITEBYTECODE, value: '1'}
+        ports: [{name: http, containerPort: 4355}]
+        readinessProbe: {httpGet: {path: /healthz, port: http}}
+        resources: {requests: {cpu: 10m, memory: 64Mi}, limits: {memory: 128Mi}}
+        securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+        volumeMounts:
+        - {name: source, mountPath: /source, readOnly: true}
+        - {name: configuration, mountPath: /config, readOnly: true}
+        - {name: identity, mountPath: /identity, readOnly: true}
+      volumes:
+      - {name: source, configMap: {name: {{ $name }}-source}}
+      - {name: configuration, configMap: {name: {{ $name }}-configuration}}
+      - {name: identity, secret: {secretName: {{ $name }}}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: {{ $name }}}
+spec:
+  selector: {app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: projector}
+  ports: [{name: http, port: 4355, targetPort: http}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: {{ $name }}}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: {{ $name }}}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+  - from:
+    - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ $argo }}}}
+      podSelector: {matchLabels: {{ .Values.projection.applicationSetControllerLabels | toJson }}}
+    ports: [{protocol: TCP, port: 4355}]
+  egress: {{ .Values.projection.egress | toJson }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: {{ $name }}, namespace: {{ $argo }}}
+data:
+  token: {{ printf "$%s:token" $name | quote }}
+  baseUrl: http://{{ $name }}.{{ .Release.Namespace }}.svc:4355
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: {{ $name }}
+  namespace: {{ $argo }}
+  labels: {saw.redhat.com/projector-owner: {{ $owner | quote }}}
+spec:
+  goTemplate: true
+  goTemplateOptions: [missingkey=error]
+  syncPolicy:
+    applicationsSync: sync
+    preserveResourcesOnDeletion: false
+  generators:
+  - plugin:
+      configMapRef: {name: {{ $name }}}
+      requeueAfterSeconds: 30
+  template:
+    metadata:
+      name: '{{ $name }}-{{ "{{" }} .name {{ "}}" }}'
+      labels: {saw.redhat.com/projector-owner: {{ $owner | quote }}, openshell.pattern/owner: '{{ "{{" }} .name {{ "}}" }}'}
+      finalizers: [resources-finalizer.argocd.argoproj.io/foreground]
+    spec:
+      project: {{ .Values.argo.project }}
+      destination: {server: 'https://kubernetes.default.svc', namespace: {{ .Release.Namespace }}}
+      source:
+        repoURL: {{ .Values.global.repoURL | quote }}
+        targetRevision: '{{ "{{" }} .revision {{ "}}" }}'
+        path: charts/saw-users
+        helm:
+          releaseName: 'workspace-{{ "{{" }} .name {{ "}}" }}'
+          values: '{{ "{{" }} .workspaceValues {{ "}}" }}'
+      # Argo owns these two hook-state finalizers. Preserve them during sync;
+      # keep detecting changes to the resource-deletion finalizer and app spec.
+      ignoreDifferences:
+        - group: argoproj.io
+          kind: Application
+          jqPathExpressions:
+            - '.metadata.finalizers[]? | select(. == "pre-delete-finalizer.argocd.argoproj.io" or . == "pre-delete-finalizer.argocd.argoproj.io/cleanup")'
+      syncPolicy:
+        automated: {prune: true, selfHeal: true}
+        retry: {limit: 20, refresh: true}
+        syncOptions: [PrunePropagationPolicy=foreground, RespectIgnoreDifferences=true]
+{{- end }}{{- end }}

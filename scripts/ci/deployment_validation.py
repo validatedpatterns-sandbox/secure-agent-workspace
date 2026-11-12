@@ -29,8 +29,20 @@ OWN_IMAGES = {
     "openshell-gateway-docker",
     "governance-interceptor",
     "saw-credential-proxy",
+    "saw-kubernetes-runtime",
 }
+CONTAINER_CHILD_CHARTS = {
+    "openshell-saw-kubernetes", "saw-audit-writer", "saw-kubernetes-identity",
+    "saw-kubernetes-proxy", "saw-runtime-policies",
+}
+CONTAINER_APIS = (
+    "agents.x-k8s.io/v1beta1/Sandbox",
+    "policy.networking.k8s.io/v1alpha1/AdminNetworkPolicy",
+    "admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy",
+)
 SCHEMA_LOCATIONS = (
+    # The local CRD envelope uses pinned recursive definitions: the upstream
+    # standalone schema set omits recursive CustomResourceDefinition schemas.
     str(ROOT / "scripts/ci/schemas/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"),
     "default",
     "https://raw.githubusercontent.com/melmorabity/openshift-json-schemas/"
@@ -88,6 +100,21 @@ def chart_args(chart: Path, mode="proxy") -> list[str]:
                 "openshell-agents/nemoclaw-discovery-runtime@sha256:" + "0" * 64]
     if name == "openshell-gateway-image":
         return ["--set", "goldenImage.enabled=false"]
+    if name == "saw-image-cache":
+        image = yaml.safe_load((chart / "values.yaml").read_text())["holderImage"]
+        return ["--set", "enabled=true", "--set-string", f"images[0]={image}"]
+    if name == "agent-sandbox":
+        return ["--namespace", "agent-sandbox-system", "--set", "enabled=true"]
+    if name == "saw-kubernetes-controller":
+        return ["--namespace", "saw-ci-trusted", "-f",
+                str(ROOT / "tests/fixtures/saw-kubernetes-controller-values.yaml")]
+    if name == "saw-workspace-relay":
+        return ["--namespace", "saw-ci-ui", "-f",
+                str(ROOT / "tests/fixtures/saw-workspace-relay-values.yaml")]
+    if name == "openshift-home-access":
+        image = read_yaml(ROOT / "charts/openshell-saw/values.yaml")["bom"]["spec"]["openshell"]["sandbox"]["image"]
+        return ["--set-json", "images=" + json.dumps([
+            {"name": "sandbox-home", "from": image, "imageUser": "1000"}])]
     return []
 
 
@@ -97,17 +124,37 @@ def charts() -> list[Path]:
 
 
 def render_charts(result: Validation, output_dir: Path) -> None:
+    # Validate the enabled component graph with the values actually projected by
+    # the composition chart, rather than maintaining a second set of child inputs.
+    site = read_yaml(ROOT / "tests/fixtures/container-site.yaml")["portal"]["containerSites"]["alice"]
+    portal_values = dict(
+        owner="alice", ownerSubject=site["subject"], registration="a8cb6cbd0eb62f31",
+        installationID="802fe583-9329-54b6-b5b4-7be58ec171f3", intentGeneration=1,
+        vaultPrefix="secret/data/hub/saw-alice/a8cb6cbd0eb62f31", site=site,
+        **{"global": {"repoURL": "https://github.com/example/secure-agent-workspace",
+                      "targetRevision": "main", "vpArgoNamespace": "vp-gitops",
+                      "clusterDomain": "cluster.example.test"}})
+    portal_input = output_dir / "container-inputs.json"
+    portal_input.write_text(json.dumps(portal_values), encoding="utf-8")
     variants = [(path, mode) for path in charts()
+                if path.parent.name not in CONTAINER_CHILD_CHARTS
                 for mode in (["proxy", "direct"] if path.parent.name == "openshell-saw" else ["proxy"])]
+    pending = []
     for chart_file, mode in variants:
         chart = chart_file.parent
         label = chart.relative_to(ROOT).as_posix()
         args = chart_args(chart, mode)
+        if chart.name == "saw-portal-container":
+            args = ["--namespace", "saw-alice", "-f", str(portal_input)]
         if mode == "direct":
             label += "-direct"
+        pending.append((chart, chart.name, label, args))
+    covered = set()
+    for chart, release, label, args in pending:
         for command in (
             ["helm", "lint", str(chart), *args],
-            ["helm", "template", chart.name, str(chart), "--debug", *args],
+            ["helm", "template", release, str(chart), "--debug", *args,
+             *[arg for api in CONTAINER_APIS for arg in ("--api-versions", api)]],
         ):
             run = subprocess.run(command, cwd=ROOT, text=True, capture_output=True,
                                  timeout=90, check=False)
@@ -120,7 +167,26 @@ def render_charts(result: Validation, output_dir: Path) -> None:
                 documents = list(yaml.safe_load_all(run.stdout))
                 if not any(isinstance(item, dict) and item.get("kind") for item in documents):
                     result.error(label, "helm template", "no Kubernetes resources rendered")
+                covered.add(chart.name)
                 result.count("charts")
+                if chart.name == "saw-portal-container":
+                    for item in documents:
+                        if not isinstance(item, dict) or item.get("kind") != "Application":
+                            continue
+                        source = item["spec"]["source"]
+                        child = ROOT / source["path"]
+                        if child.parent != ROOT / "charts" or child.name not in CONTAINER_CHILD_CHARTS:
+                            result.error(label, "Application", f"unexpected child chart {source['path']}")
+                            continue
+                        helm = source["helm"]
+                        values = helm.get("valuesObject") or yaml.safe_load(helm["values"])
+                        inputs = output_dir / (item["metadata"]["name"] + "-inputs.json")
+                        inputs.write_text(json.dumps(values), encoding="utf-8")
+                        pending.append((child, helm["releaseName"], source["path"],
+                                        ["--namespace", item["spec"]["destination"]["namespace"],
+                                         "-f", str(inputs)]))
+    for name in sorted(CONTAINER_CHILD_CHARTS - covered):
+        result.error(name, "composition", "enabled child chart was not rendered")
 
 
 def validate_schemas(result: Validation, output_dir: Path) -> None:
@@ -128,8 +194,9 @@ def validate_schemas(result: Validation, output_dir: Path) -> None:
     if not rendered:
         result.error("charts", "schema", "no rendered resources to validate")
         return
+    # OpenShift 4.22, the minimum supported release, uses Kubernetes 1.35.
     command = ["kubeconform", "-strict", "-summary", "-output", "json",
-               "-kubernetes-version", "1.30.0"]
+               "-kubernetes-version", "1.35.0"]
     for location in SCHEMA_LOCATIONS:
         command.extend(("-schema-location", location))
     run = subprocess.run([*command, *map(str, rendered)], cwd=ROOT, text=True,

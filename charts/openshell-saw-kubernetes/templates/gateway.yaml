@@ -1,0 +1,125 @@
+{{- $k := .Values.kubernetes -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-gateway
+  labels:
+    {{- include "saw-kubernetes.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: {{ .Release.Name }}-gateway-peer
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      openshell.pattern/role: gateway
+  template:
+    metadata:
+      labels:
+        {{- include "saw-kubernetes.labels" . | nindent 8 }}
+        openshell.pattern/role: gateway
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/gateway-config.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ .Release.Name }}-gateway
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      {{- if $k.imagePullSecrets }}
+      imagePullSecrets:
+        {{- range $k.imagePullSecrets }}
+        - name: {{ . | quote }}
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: gateway
+          image: {{ $k.gateway.image | quote }}
+          args: [--config, /etc/openshell/gateway.toml, --db-url, "sqlite:///var/openshell/gateway.db"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          env:
+            - name: OPENSHELL_REPLICA_ID
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - name: OPENSHELL_POD_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - name: OPENSHELL_POD_NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+            - {name: OPENSHELL_SERVICE_ACCOUNT_NAME, value: {{ printf "%s-gateway" .Release.Name | quote }}}
+            - {name: OPENSHELL_PEER_SERVICE_NAME, value: {{ printf "%s-gateway-peer" .Release.Name | quote }}}
+            - {name: OPENSHELL_PEER_TOKEN_AUDIENCE, value: openshell-gateway-peer}
+            - {name: OPENSHELL_PEER_SERVICE_ACCOUNT_TOKEN_FILE, value: /var/run/secrets/openshell-peer/token}
+            - {name: OPENSHELL_PEER_POD_LABELS, value: {{ printf "app.kubernetes.io/instance=%s,openshell.pattern/role=gateway" .Release.Name | quote }}}
+            - {name: OPENSHELL_PEER_TLS_SERVER_NAME, value: {{ printf "%s-gateway.%s.svc.cluster.local" .Release.Name .Release.Namespace | quote }}}
+            - {name: OPENSHELL_PEER_TLS_CA_FILE, value: /etc/openshell-tls/server/ca.crt}
+            - {name: OPENSHELL_TELEMETRY_ENABLED, value: "false"}
+            - name: OPENSHELL_GATEWAY_CREDENTIAL_KEY_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef: {name: {{ $k.identity.credentialKeySecret | quote }}, key: key-encryption-key}
+            {{- if .Values.oidc.caConfigMap }}
+            - {name: SSL_CERT_FILE, value: /etc/openshell-tls/oidc-ca/ca.crt}
+            {{- end }}
+          ports:
+            - {name: gateway, containerPort: 17670}
+            - {name: health, containerPort: 8081}
+          startupProbe:
+            httpGet: {path: /healthz, port: health}
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet: {path: /readyz, port: health}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: health}
+            periodSeconds: 15
+          resources:
+            {{- toYaml $k.gateway.resources | nindent 12 }}
+          volumeMounts:
+            - {name: data, mountPath: /var/openshell}
+            # Stock gateway refuses symlinked config: subPath plus checksum rollout.
+            - {name: config, mountPath: /etc/openshell/gateway.toml, subPath: gateway.toml, readOnly: true}
+            - {name: server-tls, mountPath: /etc/openshell-tls/server, readOnly: true}
+            - {name: client-ca, mountPath: /etc/openshell-tls/client-ca, readOnly: true}
+            - {name: jwt, mountPath: /etc/openshell-jwt, readOnly: true}
+            - {name: peer-token, mountPath: /var/run/secrets/openshell-peer, readOnly: true}
+            - {name: proxy-ca, mountPath: /etc/openshell-tls/proxy-ca, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+            {{- if .Values.oidc.caConfigMap }}
+            - {name: oidc-ca, mountPath: /etc/openshell-tls/oidc-ca, readOnly: true}
+            {{- end }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ $k.storage.existingGatewayClaim | default (printf "%s-gateway-data" .Release.Name) | quote }}
+        - {name: config, configMap: {name: {{ .Release.Name }}-gateway-config}}
+        - {name: server-tls, secret: {secretName: {{ $k.identity.serverTlsSecret | quote }}}}
+        - name: client-ca
+          secret:
+            secretName: {{ $k.identity.clientCaSecret | quote }}
+            items: [{key: ca.crt, path: ca.crt}]
+        - {name: jwt, secret: {secretName: {{ $k.identity.jwtSecret | quote }}, defaultMode: 0440}}
+        - {name: proxy-ca, configMap: {name: {{ $k.proxy.caConfigMap | quote }}}}
+        - {name: tmp, emptyDir: {}}
+        {{- if .Values.oidc.caConfigMap }}
+        - {name: oidc-ca, configMap: {name: {{ .Values.oidc.caConfigMap | quote }}}}
+        {{- end }}
+        - name: peer-token
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken: {path: token, audience: openshell-gateway-peer, expirationSeconds: 3600}
+{{- if not $k.storage.existingGatewayClaim }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-gateway-data
+  annotations:
+    helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: {{ $k.storage.className | quote }}
+  resources:
+    requests: {storage: {{ $k.storage.gatewaySize | quote }}}
+{{- end }}

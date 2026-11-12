@@ -369,9 +369,10 @@ export function evaluateToolCall(input) {
     sessionId: input.sessionId,
     now: input.now,
   });
-  if (input.auditFile) {
+  const append = input.appendRecord || (input.auditFile && (record => appendAudit(input.auditFile, record)));
+  if (append) {
     try {
-      appendAudit(input.auditFile, decided.record);
+      append(decided.record);
     } catch {
       const record = { ...decided.record, rule: "audit-unwritable", decision: "deny" };
       process.stderr.write(`${JSON.stringify(record)}\n`);
@@ -382,12 +383,15 @@ export function evaluateToolCall(input) {
     }
   }
   const hook = hookResult(decided, (resolution) => {
-    if (!input.auditFile) return;
+    if (!append) return;
     try {
-      appendAudit(input.auditFile, resolutionRecord(decided.record, resolution));
+      append(resolutionRecord(decided.record, resolution));
     } catch {
       const record = { ...resolutionRecord(decided.record, resolution), auditWriteFailed: true };
       process.stderr.write(`${JSON.stringify(record)}\n`);
+      if (record.decision === "approved" && input.unacknowledgedApproval) {
+        input.unacknowledgedApproval();
+      }
     }
   });
   return { record: decided.record, hook };

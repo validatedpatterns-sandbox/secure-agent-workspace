@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": [
+    "deployment"
+  ],
+  "properties": {
+    "deployment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "vm",
+            "container"
+          ],
+          "description": "Backend selection; only vm is currently implemented. Other modes fail rendering."
+        }
+      }
+    }
+  }
+}

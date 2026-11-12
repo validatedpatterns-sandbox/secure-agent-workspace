@@ -12,6 +12,10 @@ import pytest
 SCRIPT = Path(__file__).resolve().parents[2] / "charts" / "openshell-rhdh" / "files" / "keycloak-client.py"
 
 
+import sys
+sys.path.insert(0, str(SCRIPT.parent))
+
+
 class FakeKeycloak:
     def __init__(self, clients=None, users=(), groups=()):
         self.clients = list(clients or [])
@@ -226,7 +230,7 @@ def test_administrators_are_kept_out_of_the_users_group(client, monkeypatch):
 def test_admin_scope_for_catalog_reader(client, monkeypatch, existing_client, scope_state):
     monkeypatch.setenv("USERS_GROUP", "saw-users")
     kc = FakeKeycloak([{"id": "rhdh-id", "clientId": "rhdh"}] if existing_client else [])
-    scope = {"id": "admin-scope", "name": "kc-admin-api"}
+    scope = {"id": "admin-scope", "name": "kc-admin-api", "protocol": "openid-connect"}
     other = {"id": "profile-scope", "name": "profile"}
     kc.scopes = [other] if scope_state == "absent" else [other, scope]
     kc.default_scopes = [other] + ([scope] if scope_state == "assigned" else [])
@@ -244,7 +248,7 @@ def test_admin_scope_for_catalog_reader(client, monkeypatch, existing_client, sc
 def test_login_only_client_does_not_get_admin_scope(client, monkeypatch):
     monkeypatch.delenv("USERS_GROUP", raising=False)
     kc = FakeKeycloak()
-    kc.scopes = [{"id": "admin-scope", "name": "kc-admin-api"}]
+    kc.scopes = [{"id": "admin-scope", "name": "kc-admin-api", "protocol": "openid-connect"}]
     assert client(kc) == 0
     assert kc.default_scopes == [] and kc.scope_puts == []
     assert kc.role_mappings == []

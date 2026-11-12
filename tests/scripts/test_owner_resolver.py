@@ -31,7 +31,7 @@ def bootstrap_api(monkeypatch, tmp_path):
                    "publicClient": False, "clientAuthenticatorType": "client-secret",
                    "serviceAccountsEnabled": True, "standardFlowEnabled": False,
                    "directAccessGrantsEnabled": False, "implicitFlowEnabled": False},
-        "scopes": [{"id": "admin-scope", "name": "kc-admin-api"}],
+        "scopes": [{"id": "admin-scope", "name": "kc-admin-api", "protocol": "openid-connect"}],
         "default_scopes": [],
         "roles": [{"name": "view-users"}],
         "calls": [],

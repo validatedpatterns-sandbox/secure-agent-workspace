@@ -1,0 +1,141 @@
+{{- if .Values.enabled }}
+{{- $c := .Values.configuration -}}
+{{- $t := .Release.Namespace -}}
+{{- $n := $c.namespace -}}
+{{- $g := $c.gateway -}}
+{{- $gov := $c.governanceNamespace -}}
+{{- $name := printf "%s-reconciler" $g -}}
+{{- $policy := printf "saw-%s-runtime" $n -}}
+{{- if or (eq $t $n) (ne $c.trustedNamespace $t) (not .Values.claimNames) (not .Values.trustedEgress) (not $c.approved) (not .Values.stateClaim) }}{{ fail "dedicated namespaces, approved boundary, retained claims and explicit egress required" }}{{ end -}}
+{{- if not (regexMatch "^.+@sha256:[0-9a-f]{64}$" .Values.image) }}{{ fail "controller image digest required" }}{{ end -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: {{ $name }}}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: {{ $name }}}
+data:
+  controller.json: {{ $c | toJson | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $c.status }}
+  namespace: {{ $n }}
+  labels: {saw.redhat.com/runtime-owner: {{ $c.ownerID }}, saw.redhat.com/managed-by: kubernetes-runtime-controller}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: {{ $t }}-{{ $name }}}
+rules:
+  - {apiGroups: [""], resources: [namespaces], resourceNames: [{{ $n }}], verbs: [get]}
+  - {apiGroups: [""], resources: [nodes], verbs: [list]}
+  {{- if eq $c.mode "kata" }}
+  - {apiGroups: [node.k8s.io], resources: [runtimeclasses], resourceNames: [{{ required "approved RuntimeClass name required" $c.workloadRuntimeClass | quote }}], verbs: [get]}
+  - {apiGroups: [admissionregistration.k8s.io], resources: [validatingadmissionpolicies, validatingadmissionpolicybindings], resourceNames: [{{ $policy }}-kata], verbs: [get]}
+  {{- end }}
+  - {apiGroups: [policy.networking.k8s.io], resources: [adminnetworkpolicies], verbs: [list]}
+  - {apiGroups: [policy.networking.k8s.io], resources: [adminnetworkpolicies], resourceNames: [{{ $policy }}-egress], verbs: [get]}
+  - {apiGroups: [admissionregistration.k8s.io], resources: [validatingadmissionpolicies, validatingadmissionpolicybindings], resourceNames: [{{ $policy }}, {{ $n }}-pods-driver, {{ $n }}-secrets-driver, {{ $n }}-services-driver], verbs: [get]}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: {{ $t }}-{{ $name }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ $t }}-{{ $name }}}
+subjects: [{kind: ServiceAccount, name: {{ $name }}, namespace: {{ $t }}}]
+{{- range $ns := list $n $t $gov }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: {{ $name }}, namespace: {{ $ns }}}
+rules:
+{{- if eq $ns $n }}
+  - {apiGroups: [rbac.authorization.k8s.io], resources: [roles], resourceNames: [{{ $g }}-gateway], verbs: [get]}
+  # Public trust only; no private administrator identity is stored in this Secret.
+  - {apiGroups: [""], resources: [secrets], resourceNames: [{{ $g }}-client-ca], verbs: [get, update]}
+  - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $c.profile }}, {{ $c.intent }}, {{ $g }}-gateway-config, {{ $g }}-proxy-ca], verbs: [get]}
+  - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $c.intent }}], verbs: [watch]}
+  - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $c.status }}], verbs: [get, update]}
+  - {apiGroups: [""], resources: [persistentvolumeclaims], resourceNames: {{ $.Values.claimNames | toJson }}, verbs: [get]}
+  - {apiGroups: [apps], resources: [statefulsets], resourceNames: [{{ $g }}-gateway], verbs: [get]}
+  - {apiGroups: [""], resources: [services], resourceNames: [{{ $g }}-gateway], verbs: [get]}
+  - {apiGroups: [networking.k8s.io], resources: [networkpolicies], resourceNames: [{{ $g }}-gateway, {{ $g }}-default-deny, openshell-sandbox-workloads, openshell-sandbox-supervisors], verbs: [get]}
+{{- else if eq $ns $t }}
+  - {apiGroups: [""], resources: [pods], verbs: [get]}
+  - {apiGroups: [apps], resources: [deployments], resourceNames: [{{ $g }}-credential-proxy], verbs: [get]}
+  - {apiGroups: [networking.k8s.io], resources: [networkpolicies], resourceNames: [{{ $g }}-credential-proxy], verbs: [get]}
+  - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $c.proxyPolicy }}], verbs: [get]}
+{{- else }}
+  - {apiGroups: [apps], resources: [deployments], resourceNames: [governance-interceptor], verbs: [get]}
+  - {apiGroups: [""], resources: [services], resourceNames: [governance-interceptor], verbs: [get]}
+  - {apiGroups: [""], resources: [configmaps], resourceNames: [governance-interceptor-policy, governance-interceptor-profiles], verbs: [get]}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ $name }}, namespace: {{ $ns }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $name }}}
+subjects: [{kind: ServiceAccount, name: {{ $name }}, namespace: {{ $t }}}]
+{{- end }}
+{{- if $.Values.imageBuildNamespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ $name }}-image-pull, namespace: {{ $.Values.imageBuildNamespace }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: system:image-puller}
+subjects: [{kind: ServiceAccount, name: {{ $name }}, namespace: {{ $t }}}]
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: {{ $name }}}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/instance: {{ $g }}, openshell.pattern/role: reconciler}}
+  policyTypes: [Ingress,Egress]
+  ingress: []
+  egress:
+{{ toYaml $.Values.trustedEgress | indent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: {{ $name }}}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app.kubernetes.io/instance: {{ $g }}, openshell.pattern/role: reconciler}}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/instance: {{ $g }}, openshell.pattern/role: reconciler}
+      annotations: {checksum/config: {{ $c | toJson | sha256sum | quote }}}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+      - name: reconciler
+        image: {{ $.Values.image | quote }}
+        securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+        resources: {requests: {cpu: 50m, memory: 96Mi}, limits: {memory: 256Mi}}
+        env:
+          - {name: POD_NAME, valueFrom: {fieldRef: {fieldPath: metadata.name}}}
+          - {name: POD_UID, valueFrom: {fieldRef: {fieldPath: metadata.uid}}}
+        volumeMounts:
+          - {name: config, mountPath: /config, readOnly: true}
+          - {name: identity, mountPath: /identity, readOnly: true}
+          - {name: api, mountPath: /var/run/secrets/kubernetes.io/serviceaccount, readOnly: true}
+          - {name: state, mountPath: /state}
+          - {name: admin-session, mountPath: /run/saw-admin}
+      volumes:
+        - {name: config, configMap: {name: {{ $name }}}}
+        - {name: identity, configMap: {name: {{ $g }}-gateway-ca, defaultMode: 0440}}
+        - {name: admin-session, emptyDir: {medium: Memory, sizeLimit: 4Mi}}
+        - {name: state, persistentVolumeClaim: {claimName: {{ $.Values.stateClaim }}}}
+        - name: api
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken: {path: token, expirationSeconds: 600}
+              - configMap: {name: kube-root-ca.crt, items: [{key: ca.crt, path: ca.crt}]}
+{{- end }}

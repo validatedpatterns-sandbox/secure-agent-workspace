@@ -111,7 +111,10 @@ if [[ -n "${SAW_VALUES_FILE}" ]]; then
 fi
 additional_provider_secrets=()
 if [[ -n "${SAW_VALUES_FILE}" ]]; then
-  mapfile -t additional_provider_secrets < <(python3 -c 'import sys,yaml; d=yaml.safe_load(open(sys.argv[1])) or {}; print("\n".join(d.get("additionalProviderSecrets") or []))' "${SAW_VALUES_FILE}")
+  provider_names="$(python3 -c 'import sys,yaml; d=yaml.safe_load(open(sys.argv[1])) or {}; print("\n".join(d.get("additionalProviderSecrets") or []))' "${SAW_VALUES_FILE}")"
+  while IFS= read -r name; do
+    [[ -z "$name" ]] || additional_provider_secrets+=("$name")
+  done <<< "$provider_names"
 fi
 python3 - "${SAW_VALUES_FILE}" "${GPU_ENABLED_OVERRIDE}" "${GPU_ENABLED}" \
   "${GPU_COUNT_OVERRIDE}" "${GPU_COUNT}" "${GPU_DEVICE_NAME_OVERRIDE}" "${GPU_DEVICE_NAME}" <<'PY'
@@ -374,7 +377,7 @@ if [[ "${CREDENTIAL_PROXY_ENABLED}" == true ]]; then
 if [[ -n "$(oc get secret inference -n "${DEPLOY_NS}" -o name --ignore-not-found)" ]]; then
   sync_provider_metadata inference
 fi
-for name in "${additional_provider_secrets[@]}"; do
+for name in ${additional_provider_secrets[@]+"${additional_provider_secrets[@]}"}; do
   [[ -n "${name}" && "${name}" != web-search ]] || continue
   if [[ -n "$(oc get secret "${name}" -n "${DEPLOY_NS}" -o name --ignore-not-found)" ]]; then
     sync_provider_metadata "${name}"
@@ -408,7 +411,7 @@ if ! grep -qx 'secret/inference' <<<"${secret_names}"; then
   SECRET_SET+=(--set "inference.secretName=")
 fi
 if ! grep -qx 'secret/web-search' <<<"${secret_names}"; then
-  extra_secrets="$(printf '%s\n' "${additional_provider_secrets[@]}" | jq -Rsc 'split("\n") | map(select(length > 0 and . != "web-search"))')"
+  extra_secrets="$(printf '%s\n' ${additional_provider_secrets[@]+"${additional_provider_secrets[@]}"} | jq -Rsc 'split("\n") | map(select(length > 0 and . != "web-search"))')"
   SECRET_SET+=(--set-json "additionalProviderSecrets=${extra_secrets}")
   web_search_enabled=false
 fi
@@ -495,7 +498,7 @@ fi
 if grep -qx 'secret/web-search' <<<"${secret_names}"; then
   proxy_bindings="$(jq -c 'if any(.[]; .name == "web-search" and .key == "api_key") then . else . + [{name:"web-search",key:"api_key",providers:["brave"]}] end' <<<"${proxy_bindings}")"
 fi
-for name in "${additional_provider_secrets[@]}"; do
+for name in ${additional_provider_secrets[@]+"${additional_provider_secrets[@]}"}; do
   [[ -n "${name}" && "${name}" != web-search ]] || continue
   if grep -qx "secret/${name}" <<<"${secret_names}"; then
     if jq -e --arg name "${name}" 'any(.[]; .name == $name)' <<<"${proxy_bindings}" >/dev/null; then continue; fi
@@ -514,7 +517,7 @@ if [[ "${CREDENTIAL_PROXY_ENABLED}" == false ]]; then
   while IFS= read -r name; do
     [[ -z "${name}" ]] || stale_meta+=("${name}-meta")
   done < <(jq -r '.data["config.json"] // "{}" | fromjson | .credentialProxy.secrets[]?.name' <<<"${previous_installer}")
-  for name in "${additional_provider_secrets[@]}"; do
+  for name in ${additional_provider_secrets[@]+"${additional_provider_secrets[@]}"}; do
     [[ -z "${name}" ]] || stale_meta+=("${name}-meta")
   done
   oc delete secret "${stale_meta[@]}" saw-credential-proxy-ca -n "${DEPLOY_NS}" --ignore-not-found

@@ -905,10 +905,10 @@ def test_confinement_repair_resumes_existing_agent_without_usable_provider(
     if provider_mode == "missing":
         monkeypatch.setattr(retry, "find_provider", lambda *args: None)
     else:
-        monkeypatch.setattr(ab, "sandbox_endpoint", lambda *args: "")
-        monkeypatch.setattr(ab, "NATIVE_BASE_URLS", {})
-        monkeypatch.setattr(ab, "PROTOCOL_NATIVE_BASE_URLS", {})
-        monkeypatch.setattr(ab, "OPENCLAW_AUTH_CHOICES", {})
+        monkeypatch.setattr(ab._saw_core, "sandbox_endpoint", lambda *args: "")
+        monkeypatch.setattr(ab._saw_core, "NATIVE_BASE_URLS", {})
+        monkeypatch.setattr(ab._saw_core, "PROTOCOL_NATIVE_BASE_URLS", {})
+        monkeypatch.setattr(ab._saw_core, "OPENCLAW_AUTH_CHOICES", {})
     before = len(fake_env.openshell_calls())
     retry.apply(profiles)
     sb = fake_env.openshell_state()["sandboxes"][target]

@@ -1,0 +1,74 @@
+{{- if .Values.enabled -}}
+{{- if not .Values.images -}}{{ fail "saw-image-cache requires a nonempty list of site-approved image digests" }}{{- end -}}
+{{- $images := uniq .Values.images -}}
+{{- range $image := append $images .Values.holderImage -}}
+{{- if not (regexMatch "^[^[:space:]@]+@sha256:[0-9a-f]{64}$" $image) -}}
+{{- fail "saw-image-cache images must be pinned by sha256 digest" -}}
+{{- end -}}
+{{- end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      serviceAccountName: {{ .Release.Name }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{ . | toJson }}
+      {{- end }}
+      nodeSelector: {{ .Values.nodeSelector | toJson }}
+      {{- with .Values.tolerations }}
+      tolerations: {{ . | toJson }}
+      {{- end }}
+      containers:
+        - name: holder
+          image: {{ .Values.holderImage | quote }}
+          command: [/usr/bin/sleep, infinity]
+          resources:
+            requests: {cpu: 5m, memory: 12Mi}
+            limits: {cpu: 50m, memory: 32Mi}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            {{- range $i, $_ := $images }}
+            - name: image-{{ $i }}
+              mountPath: /images/{{ $i }}
+              readOnly: true
+            {{- end }}
+      volumes:
+        {{- range $i, $image := $images }}
+        - name: image-{{ $i }}
+          image:
+            reference: {{ $image | quote }}
+            pullPolicy: IfNotPresent
+        {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: [Ingress, Egress]
+{{- end }}

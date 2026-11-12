@@ -20,9 +20,10 @@ those deployment overrides local when preparing changes for upstream.
 | `nemoclaw-sandbox` | `latest`, `sha-<commit>` | Data-science default and CUDA profiles |
 | `governance-interceptor` | `latest`, `sha-<commit>`, OpenShell ref (currently `v0.1.6`) | Interceptor deployment and image builder |
 | `saw-credential-proxy` | `latest`, `sha-<commit>` (multi-arch) | Chart default `credentialProxy.image` (digest pinned in `charts/openshell-saw/values.yaml`) |
+| `saw-kubernetes-runtime` | `latest`, `sha-<commit>` (multi-arch) | Container reconciler, preparation/enrollment helpers, standalone projector and relay membership Job; operator site values pin the manifest digest. |
 | `saw-harness-<bundle>` | Bundle version, `sha-<commit>` | Optional digest-pinned `harnessRef.image` |
 
-`openshell-gateway`, `nemoclaw-cli`, `nemoclaw-sandbox`, `saw-credential-proxy` and `governance-interceptor` tags are
+`openshell-gateway`, `nemoclaw-cli`, `nemoclaw-sandbox`, `saw-credential-proxy`, `saw-kubernetes-runtime` and `governance-interceptor` tags are
 multi-architecture indexes (`linux/amd64`, `linux/arm64`): each architecture
 builds natively and pushes by digest, and the merge job joins the digests with
 `.github/actions/merge-image`. `make images-mirror` on an arm64 cluster gets
@@ -52,6 +53,14 @@ repository. GHCR can create packages as private initially: a package administrat
 must set each package's visibility to **Public** in its GitHub package settings,
 including newly added harness bundles. Public pulls need no registry Secret.
 Publishing uses `GITHUB_TOKEN` with `packages: write`.
+The Kubernetes runtime recipe is `kubernetes-runtime/Containerfile`; it packages
+the canonical BOM and temporary admin-session modules, the workspace projector,
+and protobuf stubs generated from the pinned OpenShell source. Its build context
+allowlist excludes unrelated repository and local files. The
+[operator build procedure](#building-a-container-backend-candidate) below
+publishes a candidate to an OpenShift internal registry; the
+[installation guide](container-installation.md#pin-the-built-components)
+maps its digests into the site inputs.
 The first publication of a new package can therefore fail its public-pull
 check after the image is pushed. Set it to Public, then rerun the workflow.
 GitHub's documented [package REST API](https://docs.github.com/en/rest/packages/packages)
@@ -114,8 +123,13 @@ skopeo inspect --no-creds docker://ghcr.io/validatedpatterns-sandbox/nemoclaw-cl
 
 Registry tooling verifies TLS. Route-based mirroring and publishing discover the
 ingress CA through the authenticated `oc` session. In-cluster mirror Jobs and the
-golden-image import use the OpenShift service CA for the internal registry. Local
-registry commands also accept `REGISTRY_CA_BUNDLE=/path/to/ca.pem` for private
+golden-image import use the OpenShift service CA for the internal registry.
+
+Local Linux mirroring uses `oc registry login`, which needs a bearer token. On a
+bastion, check `oc whoami --show-token >/dev/null` first. A certificate-based
+kubeconfig can access the Kubernetes API but cannot supply that token. Use the
+documented `oc login` step for the target cluster before `make images-mirror`.
+Local registry commands also accept `REGISTRY_CA_BUNDLE=/path/to/ca.pem` for private
 registries; the bundle supplements system trust. CA lookup or certificate failures
 never enable an insecure retry.
 
@@ -139,6 +153,129 @@ create a Docker registry Secret named `ghcr-push-secret` in `BUILD_NS`, or overr
 `output.pushSecretName`. `governance-interceptor-build-local` remains available as a local-only build
 and needs no GHCR push credentials. A fork interceptor build also needs
 `charts/governance-interceptor`'s `image` override.
+
+## Building a container backend candidate
+
+PR CI builds images but does not publish them. For an unmerged candidate, use
+the following from a clean checkout of the reviewed commit, already pushed to
+`SAW_REPO`. The runtime BuildConfig fetches that exact commit; the governance
+chart embeds this checkout's canonical Dockerfile and extension into its build
+inputs. Its OpenShell source reference remains the one in the chart values.
+No local credential files enter either build context.
+
+Use an operator-owned build namespace and an explicitly selected cluster
+context. These builds push to the internal registry with the build service
+account; no external registry credential is required. Each build produces one
+architecture. Use a matching cluster architecture, or constrain both BuildConfigs'
+`spec.nodeSelector` to the intended `kubernetes.io/arch` before starting them.
+
+```sh
+set -eu
+SAW_REPO='https://github.com/<your-org>/secure-agent-workspace.git'
+SAW_REV=$(git rev-parse HEAD)
+test -z "$(git status --porcelain)"
+BUILD_NS=saw-component-builds
+BUILD_ID=$(printf '%s' "$SAW_REV" | cut -c1-12)
+oc create namespace "$BUILD_NS" --dry-run=client -o yaml | oc apply -f -
+
+cat > runtime-build.yaml <<EOF
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: saw-kubernetes-runtime
+  namespace: ${BUILD_NS}
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: runtime-${BUILD_ID}
+  namespace: ${BUILD_NS}
+spec:
+  source:
+    type: Git
+    git:
+      uri: ${SAW_REPO}
+      ref: ${SAW_REV}
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: kubernetes-runtime/Containerfile
+  output:
+    to:
+      kind: ImageStreamTag
+      name: saw-kubernetes-runtime:sha-${SAW_REV}
+  triggers: []
+  successfulBuildsHistoryLimit: 1
+  failedBuildsHistoryLimit: 1
+EOF
+oc apply -f runtime-build.yaml
+
+helm template governance-build \
+  image-builder-charts/helm/governance-interceptor-image \
+  --namespace "$BUILD_NS" \
+  --set-string build.name="governance-${BUILD_ID}" \
+  --set build.configChangeTrigger=false \
+  --set-string output.externalImage= \
+  --set-string output.imageStreamTag="governance-interceptor:sha-${SAW_REV}" \
+  > governance-build.yaml
+oc -n "$BUILD_NS" apply -f governance-build.yaml
+
+RUNTIME_BUILD=$(oc -n "$BUILD_NS" start-build "runtime-${BUILD_ID}" -o name)
+GOVERNANCE_BUILD=$(oc -n "$BUILD_NS" start-build "governance-${BUILD_ID}" -o name)
+oc -n "$BUILD_NS" wait "$RUNTIME_BUILD" \
+  --for=jsonpath='{.status.phase}'=Complete --timeout=30m
+oc -n "$BUILD_NS" wait "$GOVERNANCE_BUILD" \
+  --for=jsonpath='{.status.phase}'=Complete --timeout=30m
+
+RUNTIME_DIGEST=$(oc -n "$BUILD_NS" get "$RUNTIME_BUILD" \
+  -o jsonpath='{.status.output.to.imageDigest}')
+GOVERNANCE_DIGEST=$(oc -n "$BUILD_NS" get "$GOVERNANCE_BUILD" \
+  -o jsonpath='{.status.output.to.imageDigest}')
+test "$(printf '%s\n' "$RUNTIME_DIGEST" "$GOVERNANCE_DIGEST" \
+  | grep -Ec '^sha256:[a-f0-9]{64}$')" = 2
+RUNTIME_IMAGE="image-registry.openshift-image-registry.svc:5000/${BUILD_NS}/saw-kubernetes-runtime@${RUNTIME_DIGEST}"
+GOVERNANCE_IMAGE="image-registry.openshift-image-registry.svc:5000/${BUILD_NS}/governance-interceptor@${GOVERNANCE_DIGEST}"
+printf '%s\n' "$SAW_REV" "$RUNTIME_IMAGE" "$GOVERNANCE_IMAGE"
+```
+
+Expected: both Builds are `Complete`, followed by two digest-pinned image
+references. A failed build does not qualify a tag left by an earlier build.
+Inspect that exact Build with `oc -n "$BUILD_NS" logs "$RUNTIME_BUILD"`
+(or `"$GOVERNANCE_BUILD"`); fix its source and build the new reviewed revision.
+These commands build artifacts only; they do not update running workspaces.
+
+Keep the generated build manifests in the operator's configuration repository
+when GitOps owns builds. Give each recipe revision its own BuildConfig and source
+ConfigMap names, as above. Consumers use the captured digests, never a moving tag.
+Record the Build names, source SHA and output digests outside the product PR.
+After recording them, remove the two local generated YAML files. Retain the
+published image blobs while any site references their digests.
+
+## Prepare the data-science notebook for container workspaces
+
+The shipped notebook image sets `WORKDIR /sandbox` with mode `0770` and
+ownership `1000:0`. Container workspaces run with the OpenShift namespace UID
+and group. They need search permission on this directory to start the sandbox
+entrypoint. Prepare the image once in the same build namespace as the runtime:
+
+```sh
+make container-notebook-image BUILD_NS="$BUILD_NS" BUILD_ARCH=amd64 > notebook-site.yaml
+cat notebook-site.yaml
+```
+
+Use `arm64` for ARM workers. The target reads the pinned notebook image from
+the BOM, builds on the selected architecture, adds only directory traversal
+(`chmod o+x /sandbox`), and restores the source image's declared non-root
+`USER`. It prints the digest from the completed Build and the ImageStream
+name used for scoped pull access. Each output supplies one architecture.
+
+Merge the emitted `profileImageOverrides.data-science.notebook` and
+`imagePull` fields into each container owner's site before rendering or
+approving the BOM. Preserve other named sandbox overrides and ImageStream
+entries. Use the same notebook digest in the image-cache values if enabled,
+and grant its service account pull access to the emitted ImageStream as
+described in the installation guide. A changed notebook digest requires a
+new profile approval. VM installations retain their regular image selection.
 
 ## Releasing a credential proxy change
 

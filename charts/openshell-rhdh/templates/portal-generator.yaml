@@ -31,7 +31,7 @@ spec:
       labels:
         app.kubernetes.io/name: saw-workspaces-generator
       annotations:
-        checksum/scripts: {{ .Files.Get "files/portal.py" | sha256sum | trunc 16 }}
+        checksum/scripts: {{ printf "%s%s" (.Files.Get "files/portal.py") (.Files.Get "files/workspace.py") | sha256sum | trunc 16 }}
         checksum/catalog: {{ .Files.Get "files/profile-catalog.json" | sha256sum | trunc 16 }}
     spec:
       serviceAccountName: saw-workspaces-generator
@@ -51,6 +51,13 @@ spec:
               value: {{ $ns }}
             - name: PORT
               value: {{ $port | quote }}
+            {{- include "openshell-rhdh.containerSitesEnv" . | nindent 12 }}
+            - name: SAW_DEPLOYMENT_MODES
+              value: {{ include "openshell-rhdh.deploymentModes" . | quote }}
+            {{- with .Values.portal.linkedWorkspaces }}
+            - name: SAW_LINKED_WORKSPACES
+              value: {{ . | toJson | quote }}
+            {{- end }}
             - name: CATALOG_PATH
               value: /opt/saw/profile-catalog.json
             - name: GENERATOR_TOKEN_FILE
@@ -61,7 +68,7 @@ spec:
               value: {{ include "openshell-rhdh.url" . }}
             # /status checks the caller's Backstage token against RHDH's keys.
             - name: RHDH_INTERNAL_URL
-              value: {{ include "openshell-rhdh.internalUrl" . }}
+              value: {{ include "openshell-rhdh.url" . }}
             - name: ARGO_NAMESPACE
               value: {{ include "openshell-rhdh.argoNamespace" . }}
             {{- if .Values.rhdh.rbac.enabled }}

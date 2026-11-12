@@ -1,0 +1,87 @@
+{{- $u := required "verified registration owner required" .Values.owner -}}
+{{- $id := required "registration required" .Values.registration -}}
+{{- if or (gt (len $u) 19) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $u)) (not (regexMatch "^[0-9a-f]{16}$" $id)) }}{{ fail "invalid portal owner or registration" }}{{ end }}
+{{- $subject := required "resolved ownerSubject required" .Values.ownerSubject }}
+{{- if not (regexMatch "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$" $subject) }}{{ fail "invalid ownerSubject" }}{{ end }}
+{{- $runtime := printf "saw-%s" $u }}
+{{- $trusted := printf "saw-ctl-%s" $id }}
+{{- if ne .Release.Namespace $runtime }}{{ fail "release namespace must match workspace owner" }}{{ end }}
+{{- $prefix := required "owner-scoped vaultPrefix required" .Values.vaultPrefix }}
+{{- if not (regexMatch (printf "^[a-zA-Z0-9_-]+/data/([a-zA-Z0-9_-]+/)*saw-%s/%s$" $u $id) $prefix) }}{{ fail "vaultPrefix must match the owner and registration" }}{{ end }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $trusted }}
+  labels:
+    saw.redhat.com/runtime-owner: {{ required "installationID required" .Values.installationID | quote }}
+    saw.redhat.com/portal-owner: {{ $u | quote }}
+    saw.redhat.com/registration: {{ $id | quote }}
+    pod-security.kubernetes.io/enforce: restricted
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny, namespace: {{ $trusted }}, annotations: {argocd.argoproj.io/sync-wave: "-1"}}
+spec: {podSelector: {}, policyTypes: [Ingress, Egress], ingress: [], egress: []}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny, namespace: {{ $runtime }}, annotations: {argocd.argoproj.io/sync-wave: "-1"}}
+spec: {podSelector: {}, policyTypes: [Ingress, Egress], ingress: [], egress: []}
+{{- $customSecret := "" }}
+{{- $sources := dict }}
+{{- with required "explicit governed provider policy required" (.Values.site | default dict).providerPolicy }}
+{{- $sources = dict }}
+{{- range .bindings }}
+{{- $fields := get $sources .secret | default list }}
+{{- if .refresh }}
+{{- range .refresh.material }}{{- $fields = append $fields . }}{{- end }}
+{{- else }}{{- $fields = append $fields .key }}{{- end }}
+{{- if has "custom-inference" .providers }}{{- $customSecret = .secret }}{{- end }}
+{{- $_ := set $sources .secret ($fields | uniq | sortAlpha) }}
+{{- end }}
+{{- end }}
+{{- range $secret, $fields := $sources }}
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: {{ $secret }}
+  namespace: {{ $trusted }}
+spec:
+  refreshInterval: 1m
+  secretStoreRef: {kind: ClusterSecretStore, name: {{ $.Values.secretStore | quote }}}
+  {{- if eq $customSecret $secret }}
+  target:
+    name: {{ $secret }}
+    creationPolicy: Owner
+    template:
+      engineVersion: v2
+      mergePolicy: Merge
+      data:
+        url: {{ required "custom inference requires the enrolled site URL" $.Values.site.customInferenceURL | quote }}
+  {{- else }}
+  target: {name: {{ $secret }}, creationPolicy: Owner}
+  {{- end }}
+  data:
+    {{- range $fields }}
+    - secretKey: {{ . }}
+      remoteRef: {key: {{ printf "%s/%s" $prefix $secret | quote }}, property: {{ . }}}
+    {{- end }}
+{{- end }}
+
+{{- $pull := (.Values.site | default dict).imagePull | default dict }}
+{{- if $pull }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: portal-image-{{ $id }}, namespace: {{ $pull.namespace }}}
+rules: [{apiGroups: [image.openshift.io], resources: [imagestreams/layers], resourceNames: {{ $pull.streams | toJson }}, verbs: [get]}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: portal-image-{{ $id }}, namespace: {{ $pull.namespace }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: portal-image-{{ $id }}}
+subjects: [{kind: ServiceAccount, name: {{ $u }}-sandbox, namespace: {{ $runtime }}}]
+{{- end }}

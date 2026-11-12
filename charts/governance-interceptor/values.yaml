@@ -50,6 +50,11 @@ sawNamespaceLabel:
   key: openshell.pattern/saw
   value: "true"
 
+# Explicit administrator-approved Kubernetes gateways. Empty preserves VM-only
+# ingress. Each entry requires an exact namespace and Helm release/gateway ID.
+# This enables network reachability, not policy or driver-config authorization.
+kubernetesGateways: []
+
 # --- engine: apf -------------------------------------------------------------
 apf:
   # The APF chart (private OCI chart on GHCR).

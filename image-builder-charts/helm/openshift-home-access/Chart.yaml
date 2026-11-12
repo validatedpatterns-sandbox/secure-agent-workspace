@@ -1,0 +1,4 @@
+apiVersion: v2
+name: openshift-home-access
+version: 0.1.0
+description: Add directory traversal for an OpenShift-assigned UID to an existing pinned workspace image.

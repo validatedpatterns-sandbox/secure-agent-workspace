@@ -1,0 +1,60 @@
+# Render-only fixture. Replace destinations and priority before cluster use.
+enabled: true
+targetNamespace: saw-alice
+gatewayId: saw-alice-gateway
+gatewayServiceAccount: saw-alice-gateway
+sandboxServiceAccount: saw-sandbox
+mode: container
+network:
+  priority: 70
+  egress:
+    - name: dns
+      to:
+        - pods:
+            namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: openshift-dns
+            podSelector:
+              matchLabels:
+                dns.operator.openshift.io/daemonset-dns: default
+      ports:
+        - portNumber: {protocol: UDP, port: 5353}
+        - portNumber: {protocol: TCP, port: 5353}
+    - name: gateway
+      to:
+        - pods:
+            namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: saw-alice
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/component: gateway
+      ports:
+        - portNumber: {protocol: TCP, port: 8080}
+    - name: workload-boundary
+      to:
+        - pods:
+            namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: saw-alice
+            podSelector:
+              matchLabels:
+                openshell.ai/boundary-role: workload
+      ports:
+        - portNumber: {protocol: TCP, port: 5500}
+    - name: credential-proxy
+      to:
+        - pods:
+            namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: saw-alice
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/component: credential-proxy
+      ports:
+        - portNumber: {protocol: TCP, port: 3128}
+    - name: approved-endpoint
+      to:
+        - networks: ["192.0.2.10/32", "2001:db8::10/128"]
+      ports:
+        - portNumber: {protocol: TCP, port: 443}

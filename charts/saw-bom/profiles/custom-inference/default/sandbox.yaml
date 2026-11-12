@@ -31,3 +31,5 @@ spec:
           title: Model
         # Self-hosted models can take longer than the agent's default.
         timeoutSeconds: "300"
+      ui:
+        route: true

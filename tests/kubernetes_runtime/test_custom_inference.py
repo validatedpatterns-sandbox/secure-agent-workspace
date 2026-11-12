@@ -17,6 +17,17 @@ def test_custom_bom_uses_bound_model_endpoint_timeout_and_marker():
     assert plan["customInferenceURL"] in spec["command"][2] and "timeoutSeconds: 300" in spec["command"][2]
 
 
+@pytest.mark.parametrize(("binding", "error"), [
+    ("browser", "matching approved OpenClaw browser binding"),
+    ("toolGate", "read-only tool gate"),
+])
+def test_custom_browser_requires_approved_bindings(binding, error):
+    files, cfg = fixture_inputs()
+    del cfg["bindings"]["default/notebook"][binding]
+    with pytest.raises(ContractError, match=error):
+        compile_profile_files(files, cfg)
+
+
 @pytest.mark.parametrize("bad",["https://other.example/v1","http://models.fixture.test/v1",
     "https://models.fixture.test:8443/v1","https://models.fixture.test/v1?token=private",
     "https://someone@models.fixture.test/v1"])

@@ -159,7 +159,12 @@ def test_shipped_tool_actions_yaml_parses_in_node():
         "exec", "exec", "exec", "exec", "exec", "tool_search", "tool_call",
         "slack-reader__new_messages", "slack-reader__channels", "gmail-reader__new_messages",
         "briefing-writer__save_briefing", "read", "memory_search", "memory_get",
-        "session_status", "sessions_list", "sessions_history"]
+        "session_status", "sessions_list", "sessions_history", "write", "edit"]
+    identity_rule = next(rule for rule in doc["rules"]
+                         if rule["id"] == "exec-openclaw-set-identity")
+    assert identity_rule["tool"] == "exec"
+    assert identity_rule["action"] == "approval"
+    assert identity_rule["whenCommandMatches"] == ["openclaw agents set-identity"]
     script = r"""
 import { parsePolicy } from "./tool-gate.mjs";
 import { readFileSync } from "node:fs";

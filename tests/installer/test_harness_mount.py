@@ -24,6 +24,7 @@ import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 import yaml
@@ -897,7 +898,7 @@ def test_a_stdio_server_gets_its_key_only_through_the_provider(ab, fake_env, con
     assert "brave" in notebook(fake_env)["providers"]
     scripts = [c[-1] for c in fake_env.openshell_calls()
                if c[:2] == ["sandbox", "exec"] and c[3] == "notebook"]
-    gateway_run = next(s for s in scripts if "saw-gateway-supervise.sh" in s)
+    gateway_run = next(s for s in scripts if 'cat > "$SUP"' in s)
     assert gateway_run.count("export ") == 1, "only the gateway token is exported"
     # The server is re-declared in openclaw.json with ${VAR} references only:
     # OpenClaw fills in the placeholder there, never a key.
@@ -941,7 +942,7 @@ def test_the_gateway_secret_is_never_rotated_by_the_installer(ab, fake_env, conf
     fake_env.set_images({IMAGE_V1: {"__tree__": V1}})
     make_applier(ab, config, creds).apply(use_ref(profiles, {"image": IMAGE_V1}))
     scripts = [c[-1] for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "exec"]]
-    restart_script = next(s for s in scripts if "saw-gateway-supervise.sh" in s)
+    restart_script = next(s for s in scripts if 'cat > "$SUP"' in s)
     assert 'openclaw config set gateway.auth.token "\\"$secret\\""' in restart_script
     assert not any("gateway.auth.token" in s and "saw-gateway-supervise.sh" not in s
                    for s in scripts)
@@ -1029,9 +1030,17 @@ def test_every_openclaw_sandbox_ends_up_with_a_gateway(
     make_applier(ab, config, shipped_creds).apply(use_ref(shipped_profiles, {"image": IMAGE_V1}))
     script = next(c[-1] for c in fake_env.openshell_calls()
                   if c[:2] == ["sandbox", "exec"] and c[3] == sandbox
-                  and "saw-gateway-supervise.sh" in c[-1])
+                  and 'cat > "$SUP"' in c[-1])
+    # sandbox exec supplies the attached provider's current placeholder. The
+    # real-shell fixture must model it, including replacement of an old alias.
+    gateway.env["NVIDIA_API_KEY"] = "runtime-issued-placeholder"
+    gateway.env["CUSTOM_API_KEY"] = "obsolete-onboarding-placeholder"
     assert gateway.run(script) == 0, "the script's shell must not kill itself"
     assert len(gateway.started()) == 1
+    alias = next((item.partition(b"=")[2] for item in
+                  (Path("/proc") / gateway.started()[0] / "environ").read_bytes().split(b"\0")
+                  if item.startswith(b"CUSTOM_API_KEY=")), None)
+    assert alias == b"runtime-issued-placeholder"
 
 
 def gateway_script(ab, home, refilled=False, cfg=None):

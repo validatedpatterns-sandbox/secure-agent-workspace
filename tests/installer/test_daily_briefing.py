@@ -106,7 +106,9 @@ def test_openclaws_own_slack_channel_stays_off(
     scripts = "\n".join(execs)
     assert "openclaw config set channels.slack.enabled false" in scripts
     assert "channels.gmail" not in scripts
-    gateway = next(i for i, s in enumerate(execs) if "openclaw gateway run" in s)
+    # The confinement stop script also recognizes gateway processes; select
+    # the script that actually installs and launches the supervisor.
+    gateway = next(i for i, s in enumerate(execs) if 'cat > "$SUP"' in s)
     channel = next(i for i, s in enumerate(execs) if "channels.slack.enabled" in s)
     assert channel < gateway
 

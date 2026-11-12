@@ -58,6 +58,7 @@ spec:
         {{- end }}
         openshell.pattern/cloudinit-checksum: {{ include (print $.Template.BasePath "/secret-cloudinit.yaml") . | sha256sum | trunc 16 | quote }}
     spec:
+      terminationGracePeriodSeconds: {{ .Values.vm.terminationGracePeriodSeconds }}
       {{- if .Values.vm.architecture }}
       architecture: {{ .Values.vm.architecture | quote }}
       {{- end }}

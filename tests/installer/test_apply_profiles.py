@@ -115,6 +115,11 @@ def test_shipped_profile_lifecycle(ab, fake_env, config, profiles, creds, capsys
     before = fake_env.openshell_state()
     make_applier(ab, config, creds).apply(profiles)
     after = fake_env.openshell_state()
+    # The fake records each secrets-apply plan as call history. Compare all
+    # persisted configuration (including credential refs), excluding that trace.
+    for state in (before, after):
+        for sandbox in state["sandboxes"].values():
+            sandbox.pop("credentialRefPlans", None)
     for field in ("workspaces", "providers", "sandboxes"):
         assert after[field] == before[field]
     creates = [c for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "create"]]

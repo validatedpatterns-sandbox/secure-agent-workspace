@@ -10,7 +10,7 @@ import yaml
 from .core import shared
 
 PROFILES = Path(shared.__file__).resolve().parents[1] / "provider-profiles"
-SUPPORTED = {"openai", "anthropic", "nvidia", "slack", "gmail"}
+SUPPORTED = {"openai", "anthropic", "nvidia", "slack", "gmail", "brave"}
 
 
 @lru_cache(maxsize=5)

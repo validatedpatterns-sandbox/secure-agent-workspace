@@ -24,8 +24,9 @@ For custom providers, it also replaces the temporary onboarding alias
 therefore use the placeholder issued to their current runtime. Reapply can
 also save an inactive replacement credential in OpenClaw's auth store. The
 installer binds that new profile through OpenClaw's supported `secrets apply`
-plan API before activating it, with a preflight and the broad scrub passes
-disabled so unrelated credentials remain intact. OpenShell's endpoint and
+plan API before activating it, including provider metadata when the agent-local
+auth-profile mapping must be created. The preflight runs before writes and the
+broad scrub passes are disabled so unrelated credentials remain intact. OpenShell's endpoint and
 credential-identity enforcement remains in effect.
 
 Reapply repairs the managed provider configuration in place. Validate the

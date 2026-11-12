@@ -325,6 +325,7 @@ def test_replacement_auth_profile_uses_real_env_ref_before_activation(
     assert plan["scrubAuthProfilesForProviderTargets"] is False
     assert [t["type"] for t in plan["targets"]] == [
         "models.providers.apiKey", "auth-profiles.api_key.key"]
+    assert plan["targets"][1]["authProfileProvider"] == "custom-inference"
     scripts = [str(c[-1]) for c in fake_env.openshell_calls() if c[:2] == ["sandbox", "exec"]]
     binding = next(i for i, text in enumerate(scripts) if "# SAW: bind runtime credential references" in text)
     activation = next(i for i, text in enumerate(scripts) if f"openclaw models auth activate {profile_id}" in text)
@@ -348,6 +349,9 @@ def test_reference_plan_shell_validates_regular_file_and_cleans_up(ab, tmp_path,
         assert path.is_file()
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
         plan = json.loads(path.read_text())
+        for target in plan['targets']:
+            if target['type'] == 'auth-profiles.api_key.key':
+                assert target['authProfileProvider'] == 'custom-inference'
         with open(os.environ['ISSUE161_TEST_CAPTURE'], 'a') as out:
             out.write(json.dumps({'dryRun': '--dry-run' in sys.argv, 'plan': plan}) + '\\n')
         if os.environ.get('ISSUE161_PREFLIGHT_FAIL') == '1' and '--dry-run' in sys.argv:

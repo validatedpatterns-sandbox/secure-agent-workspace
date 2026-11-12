@@ -3243,7 +3243,8 @@ def openclaw_credential_ref_script(provider_type, key_var, profile_id, oc_env):
         targets.append({"type": "auth-profiles.api_key.key",
                         "path": f"profiles.{profile_id}.key",
                         "pathSegments": ["profiles", profile_id, "key"],
-                        "agentId": "main", "ref": ref})
+                        "agentId": "main", "authProfileProvider": provider_type,
+                        "ref": ref})
     plan = {"version": 1, "protocolVersion": 1, "targets": targets,
             "scrubEnv": False, "scrubAuthProfilesForProviderTargets": False}
     return "\n".join([

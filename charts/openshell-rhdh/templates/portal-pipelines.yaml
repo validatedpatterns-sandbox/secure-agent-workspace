@@ -3,6 +3,7 @@ first task of each verifies the request and hands the user to the others as
 the result `user`; each later task is one stage the workspace goes through,
 so RHDH's Tekton tab draws a workspace's create and delete as a pipeline. */ -}}
 {{- $readyMinutes := .Values.portal.sandboxReadyTimeoutMinutes -}}
+{{- $sitesConfigured := eq (include "openshell-rhdh.containerSitesConfigured" .) "true" -}}
 {{- if or (not (regexMatch "^[0-9]+$" (toString $readyMinutes))) (lt (int $readyMinutes) 1) (gt (int $readyMinutes) 60) -}}
 {{- fail "portal.sandboxReadyTimeoutMinutes must be an integer from 1 to 60" -}}
 {{- end -}}
@@ -40,7 +41,7 @@ spec:
     - name: user
       description: The user the request was for.
   volumes:
-    {{- if .Values.portal.containerSites }}
+    {{- if $sitesConfigured }}
     - name: owner-directory
       secret: {secretName: saw-generator-keycloak, items: [{key: client_secret, path: client_secret}]}
     {{- end }}
@@ -62,7 +63,7 @@ spec:
       # enabled on the Argo CD controller (off by default on a fresh install).
       computeResources: {}
       volumeMounts:
-        {{- if .Values.portal.containerSites }}
+        {{- if $sitesConfigured }}
         - {name: owner-directory, mountPath: /etc/saw-owner-directory, readOnly: true}
         {{- end }}
         - name: scripts
@@ -85,15 +86,14 @@ spec:
           value: $(results.user.path)
         - name: CLUSTER_DOMAIN
           value: {{ .Values.global.clusterDomain | quote }}
-        - name: SAW_CONTAINER_SITES
-          value: {{ .Values.portal.containerSites | default dict | toJson | quote }}
+        {{- include "openshell-rhdh.containerSitesEnv" . | nindent 8 }}
         - name: SAW_DEPLOYMENT_MODES
           value: {{ include "openshell-rhdh.deploymentModes" . | quote }}
         - name: CATALOG_PATH
           value: /opt/saw/profile-catalog.json
         - name: RHDH_INTERNAL_URL
           value: {{ include "openshell-rhdh.url" . }}
-        {{- if .Values.portal.containerSites }}
+        {{- if $sitesConfigured }}
         - name: SAW_PORTAL_ADMIN_SUBJECTS
           value: {{ .Values.portal.adminSubjects | default dict | toJson | quote }}
         - name: KEYCLOAK_REALM

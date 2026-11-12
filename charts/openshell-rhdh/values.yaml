@@ -102,6 +102,11 @@ portal:
   # reviewed RuntimeClass and an approved profile. Existing workspace mode is immutable.
   deploymentModes: [vm, kata]
   containerSites: {} # Administrator-owned, keyed by login; empty denies all container requests.
+  # Use an existing Secret in portal.namespace for owner approvals that must
+  # stay out of Git. Its container-sites.json key has the same JSON shape as
+  # containerSites. When set, the form shows enabled modes and profiles; the
+  # provisioner still checks the exact owner and profile against the Secret.
+  containerSitesSecretName: ""
   namespace: saw-portal
   provisionerServiceAccount: saw-portal-provisioner
   # Python 3 with the standard library is all portal.py needs.

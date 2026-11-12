@@ -165,6 +165,26 @@ from the release is enough and keeps renders stable.
 {{- toJson $modes -}}
 {{- end -}}
 
+{{/* Owner approvals can be rendered from values or read from a cluster Secret. */}}
+{{- define "openshell-rhdh.containerSitesConfigured" -}}
+{{- if and .Values.portal.containerSites .Values.portal.containerSitesSecretName -}}
+{{- fail "set only one of portal.containerSites and portal.containerSitesSecretName" -}}
+{{- end -}}
+{{- if or .Values.portal.containerSites .Values.portal.containerSitesSecretName -}}true{{- else -}}false{{- end -}}
+{{- end -}}
+
+{{- define "openshell-rhdh.containerSitesEnv" -}}
+- name: SAW_CONTAINER_SITES
+  {{- if .Values.portal.containerSitesSecretName }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.portal.containerSitesSecretName | quote }}
+      key: container-sites.json
+  {{- else }}
+  value: {{ .Values.portal.containerSites | default dict | toJson | quote }}
+  {{- end }}
+{{- end -}}
+
 {{/* Generated forms have vm as their safe default; project the administrator's
 allowlist into both forms without enabling privileged form parameters. */}}
 {{- define "openshell-rhdh.createTemplate" -}}
@@ -175,6 +195,17 @@ allowlist into both forms without enabling privileged form parameters. */}}
 {{- /* The form can advertise a site-wide union, never an owner authorization.
 The server still verifies the authenticated owner's exact profile approval. */ -}}
 {{- $approved := dict "container" (dict) "kata" (dict) -}}
+{{- if $root.Values.portal.containerSitesSecretName -}}
+{{- /* Secret contents are runtime-only. The pipeline performs owner-specific
+      checks; the form can show the enabled site modes and catalog profiles. */ -}}
+{{- range $mode := list "container" "kata" -}}
+{{- if has $mode $modes -}}
+{{- range $id := $step.properties.profile.enum -}}
+{{- $_ := set (index $approved $mode) $id true -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- else -}}
 {{- range $site := $root.Values.portal.containerSites | default dict -}}
 {{- if and (kindIs "map" $site) (regexMatch "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$" (toString ($site.subject | default ""))) -}}
 {{- $mode := "container" -}}
@@ -186,6 +217,7 @@ The server still verifies the authenticated owner's exact profile approval. */ -
 {{- end -}}
 {{- range $id, $digest := ($site.automaticEnrollment | default dict).approvedProfiles | default dict -}}
 {{- if regexMatch "^[0-9a-f]{64}$" (toString $digest) -}}{{- $_ := set (index $approved $mode) $id true -}}{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

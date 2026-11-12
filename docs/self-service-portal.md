@@ -6,11 +6,20 @@ get namespace `saw-<user>` with the profile's OpenShell sandboxes and
 routes to the sandbox web UIs. Nothing goes into Git: the keys go to Vault,
 and the workspace is an entry in an in-cluster registry that Argo CD builds.
 
-VM remains the default. Container mode uses the same forms, registration,
-provider inputs and lifecycle pipelines, with a Kubernetes runtime adapter.
-An operator enables `portal.deploymentModes: [vm, container]` and supplies an
-approved `portal.containerSites.<owner>` entry. Backend selection is recorded
-in the registration and cannot silently migrate an existing workspace.
+VM remains the default. Container and Kata modes use the same forms,
+registration, provider inputs and lifecycle pipelines. Container mode uses a
+Kubernetes runtime adapter. Kata mode applies an approved RuntimeClass to the
+OpenShell workers. An operator enables the deployment mode and supplies an
+approved owner site. Backend selection is recorded in the registration and
+cannot silently migrate an existing workspace.
+
+Owner sites can come from chart values or from a Kubernetes Secret. Use
+`portal.containerSitesSecretName` when the pattern repository is public or the
+site includes owner or cluster identifiers. The Secret must be in
+`portal.namespace` and contain the JSON map under the `container-sites.json`
+key. Git stores only the Secret name. With this source, the form shows catalog
+profiles for enabled modes; the create pipeline still checks the signed-in
+owner, RuntimeClass and approved profile against the Secret.
 See [container installation](container-installation.md#pattern-and-rhdh-enablement)
 and [architecture](container-workspaces.md). The VM-specific flow below describes
 the default backend; container component ownership and data paths are in those guides.

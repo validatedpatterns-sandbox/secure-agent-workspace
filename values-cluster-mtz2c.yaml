@@ -1,0 +1,9 @@
+# Keep owner subjects and runtime identifiers in the cluster Secret. This
+# public Pattern values file only names the Secret consumed by RHDH.
+clusterGroup:
+  applications:
+    openshell-rhdh:
+      overrides:
+        - name: portal.containerSitesSecretName
+          value: saw-portal-container-sites
+          forceString: true

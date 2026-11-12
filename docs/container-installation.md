@@ -502,6 +502,25 @@ reconcile. Its namespace must be separate from Argo CD. VM users keep their
 existing Applications and owner-resolution behavior. A container user's
 resolved `ownerSubject` does not enable an owner override for VM users.
 
+For RHDH, use `portal.containerSitesSecretName` when the site includes owner
+subjects or cluster resource identifiers and the pattern repository is public.
+Create a Secret in `saw-portal` with a `container-sites.json` key. Its JSON
+value is the same owner-to-site map used by `portal.containerSites`. Set only
+the Secret name in the cluster's values file. The create pipeline checks the
+owner and selected profile against this map. The form shows catalog profiles
+for each enabled site mode, so an unapproved owner can see a choice but cannot
+register it.
+
+```yaml
+clusterGroup:
+  applications:
+    openshell-rhdh:
+      overrides:
+        - name: portal.containerSitesSecretName
+          value: saw-portal-container-sites
+          forceString: true
+```
+
 ### Approve the first RHDH container profile
 
 1. **Review the profile before offering it.** From the reviewed chart revision,

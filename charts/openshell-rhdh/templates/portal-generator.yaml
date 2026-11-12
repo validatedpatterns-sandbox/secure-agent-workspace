@@ -51,8 +51,7 @@ spec:
               value: {{ $ns }}
             - name: PORT
               value: {{ $port | quote }}
-            - name: SAW_CONTAINER_SITES
-              value: {{ .Values.portal.containerSites | default dict | toJson | quote }}
+            {{- include "openshell-rhdh.containerSitesEnv" . | nindent 12 }}
             - name: SAW_DEPLOYMENT_MODES
               value: {{ include "openshell-rhdh.deploymentModes" . | quote }}
             {{- with .Values.portal.linkedWorkspaces }}

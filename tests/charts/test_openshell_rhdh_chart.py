@@ -754,6 +754,41 @@ def test_container_choices_are_approved_catalog_profiles_in_both_forms():
 
 
 @pytest.mark.ci_external
+def test_secret_backed_site_approvals_feed_runtime_and_kata_form():
+    docs = render("--set-string", "portal.containerSitesSecretName=site-approvals",
+                  "--set-json", 'portal.admins=["admin"]')
+    secret_ref = {"secretKeyRef": {"name": "site-approvals", "key": "container-sites.json"}}
+
+    task = one(docs, "Task", "saw-workspace")
+    task_step = next(s for s in task["spec"]["steps"] if s["name"] == "run")
+    generator = one(docs, "Deployment", "saw-workspaces-generator")
+    generator_container = generator["spec"]["template"]["spec"]["containers"][0]
+    for container in (task_step, generator_container):
+        env = {entry["name"]: entry for entry in container["env"]}
+        assert env["SAW_CONTAINER_SITES"]["valueFrom"] == secret_ref
+        assert "value" not in env["SAW_CONTAINER_SITES"]
+    assert any(volume["name"] == "owner-directory" for volume in task["spec"]["volumes"])
+
+    templates = one(docs, "ConfigMap", "saw-rhdh-templates")["data"]
+    for name in ("create-workspace.yaml", "create-workspace-for-user.yaml"):
+        form = yaml.safe_load(templates[name])
+        step, profiles = _deployment_profiles(form)
+        assert step["properties"]["deploymentMode"]["enum"] == ["vm", "kata"]
+        assert "data-science" in profiles["kata"]["enum"]
+        assert profiles["kata"]["default"] in profiles["kata"]["enum"]
+
+
+@pytest.mark.ci_external
+def test_site_approval_values_cannot_mix_inline_data_and_secret_reference():
+    result = run_helm([HELM, "template", "openshell-rhdh", str(CHART), "-n", "rhdh",
+                       "--set-json", 'portal.containerSites={"alice":{"subject":"11111111-1111-1111-1111-111111111111"}}',
+                       "--set-string", "portal.containerSitesSecretName=site-approvals"],
+                      capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "set only one of portal.containerSites and portal.containerSitesSecretName" in result.stderr
+
+
+@pytest.mark.ci_external
 @pytest.mark.parametrize("automatic,expected", [
     ({"profileSHA256": "a" * 64}, []),
     ({"profileSHA256": "a" * 64, "approvedProfiles": {}}, []),

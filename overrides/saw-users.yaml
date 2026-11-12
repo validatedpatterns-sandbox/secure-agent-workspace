@@ -1,11 +1,15 @@
 # Add real account names here after creating them with keycloak-add-users.
 # Each entry creates saw-<name>. Demo entries are in saw-users-demo.yaml.
-users: []
+users:
+  - name: alice
+    profiles:
+      - custom-inference
+
 
 # Opt in only for users of a configured custom-inference endpoint. Match
 # the hostname in overrides/governance-profiles/custom-inference.yaml.
-# defaults:
-#   openshellSaw:
-#     egress:
-#       extraAllow:
-#         - api.inference.example.com
+defaults:
+  openshellSaw:
+    egress:
+      extraAllow:
+        - api.inference.example.com

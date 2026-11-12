@@ -268,7 +268,7 @@ make governance-demo OPENSHELL_SAW_NAME=alice
 
 ### Applying profile changes
 
-`governance-add-profile`, `governance-remove-profile`, and `governance-create-profile` run `scripts/governance-profile.sh`, which edits `charts/governance-policy/profiles/`, commits, and runs `git push origin HEAD`, then waits for Argo CD to sync the `governance-policy` application. This is the GitOps (Option A) path.
+`governance-profile-add`, `governance-profile-remove`, and `governance-profile-create` run `scripts/governance-profile.sh`, which edits `charts/governance-policy/profiles/`, commits, and runs `git push origin HEAD`, then waits for Argo CD to sync the `governance-policy` application. This is the GitOps (Option A) path. For a reviewed policy change, edit the files on a branch and open a pull request instead; these helpers push directly. Argo CD must follow the branch containing the merged change.
 
 On the quickstart path (Option B), governance-policy is installed with Helm, not Argo CD, so a push does not change the cluster. Edit the profiles under `charts/governance-policy/profiles/` and re-apply the chart:
 

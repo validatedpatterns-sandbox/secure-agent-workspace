@@ -11,11 +11,15 @@ Publication and final deployment acceptance are follow-up work, rather than
 prerequisites for merging #156. Track that work in
 [the 0.1.6 release follow-up issue](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157).
 
-**Deployment hold:** the follow-up now pins the verified public 0.1.6
-interceptor. Clean-install acceptance on the fresh cluster is still required
-before this follow-up is ready to merge and the hold can be removed. The
-earlier 0.1.2 digest (`253b58d070d3ed341287fcbab44684d84a437fcb9f26be5834ebf554a40ec22f`)
-and preliminary internal-registry build do not satisfy that acceptance.
+**Deployment hold:** the public interceptor pin is published and its initial
+clean installation passed. Deploy the upgrade only after the runtime corrections
+in [#162](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/pull/162)
+and [#164](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/pull/164)
+are merged and the reboot acceptance record in
+[#161](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/161)
+is complete. Review/merge those corrections before this digest-pinning follow-up.
+The earlier 0.1.2 digest and preliminary internal-registry build do not satisfy
+the public-artifact acceptance requirement.
 
 ## Published artifact
 
@@ -70,29 +74,55 @@ Completed checks:
   publication jobs); the third requires an APF bundle. CI passed on this
   shipping source for Python 3.12 and 3.14.
 
-**Reboot acceptance is blocked by [runtime issue #161](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/161).**
-On the first test VM's normal
-`make saw-restart`, Podman `5.8.1-1.fc44` could not open its SQLite state
-catalog (`database disk image is malformed`). The gateway consequently never
-listened, and boot install/apply failed. Read-only integrity checks found
-ContainerState overflow-page/index errors. No kernel storage errors were
-reported. The damaged catalog was preserved privately; no sandbox, volume or
-database was deleted, and both original workspace sentinel files remained
-intact. Retry services on that VM were stopped for diagnosis.
+## Runtime corrections and reboot gate
 
-The second VM's catalog passed its pre-restart integrity check, and a consistent
-private backup was taken before its own reboot test. Its independent result
-is recorded in the runtime issue. Overall reboot, repeated file-tool/inference
-and post-restart peer-network acceptance remain incomplete.
-A manual catalog recovery must not be counted as a passing clean reboot.
+The independent investigation in
+[#161](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/161)
+established two defects during reboot acceptance:
 
-Upstream [Podman PR #29733](https://github.com/podman-container-tools/podman/pull/29733)
-merged a change to use SQLite WAL on local filesystems on October 29. It
-addresses another reported corruption signature; its relationship to this
-failure is unproven. The official Fedora update available during diagnosis
-was Podman 5.8.9, which predates that merge. No runtime package was changed.
-Keep the deployment hold and PR #160 in draft until the runtime failure is
-resolved and the complete clean-install/reboot gates pass.
+- OpenClaw could retain a literal, revision-bound OpenShell credential
+  placeholder. The saved value returned HTTP 500 `credential_unavailable`,
+  while a fresh runtime placeholder returned HTTP 200 through the same sandbox,
+  endpoint and proxy. A supported environment SecretRef restored real gateway
+  inference. [#162](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/pull/162)
+  requests reference persistence and binds the managed provider and any new
+  replacement auth profile to the actual provider environment variable before
+  activation, using OpenClaw's native secrets-plan API. It preserves credential
+  identity/endpoint checks and unrelated credentials.
+- KubeVirt's implicit 30-second grace expired during documented normal restarts
+  of both original VMs and a fresh minimal control; logs show forced teardown
+  with reason `Destroyed`. [#164](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/pull/164)
+  sets a configurable 180-second grace. Existing instances must first adopt the
+  updated template through guest poweroff. Both controls completed that transition
+  naturally in about a minute, with filesystem unmount and console power-down
+  evidence. This adoption alone does not prove a subsequent normal restart.
+
+One original VM has confirmed Podman SQLite overflow/index damage. Its private
+original catalog and workspace volumes remain preserved; no database reset,
+repair, journal-mode change, package upgrade or sandbox recreation was used to
+clear it. The original had no pre-restart integrity measurement. Both the other
+original VM and the simple control retained healthy catalogs after 30-second
+forced teardown. The damage's onset and cause remain unproven, including any
+relationship to the interceptor pin; longer grace is not a demonstrated repair
+for that catalog.
+
+The two fresh control owners cover custom inference and the data-science
+profile's OpenClaw/NemoClaw sandboxes. The combined deployment is
+`0b32dbb611a191a6a87b696f78f42e0a547310e0`, containing the shipped public pin,
+credential code from `1fb48dcee50531928e2b9b277dcccabf101303d7`, and shutdown code
+from `73432a3734f9343d77d6acb60eb8cf97bb903eb3`. Its ConfigMaps match the fixed
+installer SHA256 `4c46d95e6ba6b1ca78939befd53968ab39f81b1da7e71a3875993f2f9e3db854`.
+Cluster-specific inputs stay on the separate deployment branch.
+
+The remaining release gate is a documented normal restart of each corrected
+control, with completed guest shutdown, current boot install/apply, consistent
+pre/post SQLite integrity, real inference/tools, preserved files/passwords/
+identity/policy/confinement, and healthy two-way peer isolation. Record the
+actual outcomes and final CI heads in #161/#157 and the PR descriptions. Reuse
+the completed initial security checks above; do not mistake a Ready VMI, manual
+catalog recovery or model-only claims for those receipts. Retain the deployment
+hold until these results and the runtime prerequisites are satisfied. The
+unresolved original catalog diagnosis remains explicitly tracked separately.
 
 ## Publication and digest-pinning sequence
 

@@ -108,10 +108,10 @@ for that catalog.
 
 The two fresh control owners cover custom inference and the data-science
 profile's OpenClaw/NemoClaw sandboxes. The combined deployment is
-`0b32dbb611a191a6a87b696f78f42e0a547310e0`, containing the shipped public pin,
-credential code from `1fb48dcee50531928e2b9b277dcccabf101303d7`, and shutdown code
+`282a744a4d17caf81a7d843d265f0284abc74953`, containing the shipped public pin,
+credential code from `e858679f36a7c9876654811d9bef4c6d897b8d97`, and shutdown code
 from `73432a3734f9343d77d6acb60eb8cf97bb903eb3`. Its ConfigMaps match the fixed
-installer SHA256 `4c46d95e6ba6b1ca78939befd53968ab39f81b1da7e71a3875993f2f9e3db854`.
+installer SHA256 `d245d561929b8d02bf4c8494817b74e1f497b1674c057072b258d4796a98679c`.
 Cluster-specific inputs stay on the separate deployment branch.
 
 The remaining release gate is a documented normal restart of each corrected

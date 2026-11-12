@@ -89,7 +89,10 @@ established two defects during reboot acceptance:
   provider environment variable through OpenClaw's native secrets-plan API.
   Managed custom routes use that provider reference directly instead of retaining
   an `@profile` ID absent from the current auth store. Native-provider bindings,
-  fallback models and unrelated credentials remain intact.
+  fallback models and unrelated credentials remain intact. The temporary custom
+  alias is supplied from each current exec environment through native migration
+  and gateway launch, so replacement activation cannot leave reapply with an
+  unresolved `CUSTOM_API_KEY` reference.
 - KubeVirt's implicit 30-second grace expired during documented normal restarts
   of both original VMs and a fresh minimal control; logs show forced teardown
   with reason `Destroyed`. Raising it to 180 seconds alone was insufficient:
@@ -115,15 +118,18 @@ for that catalog.
 
 The two fresh control owners cover custom inference and the data-science
 profile's OpenClaw/NemoClaw sandboxes. The combined deployment is
-`0abf643dcd0de422bd69b91404ef373e8a1d5827`, containing the shipped public pin,
-credential code from `9ab9279f6db57f1366c001c8d103bca3a1ce940e`, and shutdown code
+`cbccc0f9a0c316cdf4316c2f9f1d7bee9c07a33f`, containing the shipped public pin,
+credential code from `ab114e6980382f2e8e5d963880e247a5e0994873`, and shutdown code
 from `8001cc7c6454bf5398a6ea83065174af0c087a06`. Its ConfigMaps match the fixed
-installer SHA256 `dc1ca5a6f090f0a0259cd87fdf9e92dbcd77bfa0969be804f8db5e98249bf393`.
-Cluster-specific inputs stay on the separate deployment branch.
+installer SHA256 `e34a7401e4036c0bdb2ca4efce184c28fae837e32fd919b98fb129e7349c143c`.
+Cluster-specific inputs stay on the separate deployment branch. The narrowed
+follow-up uses these existing workspaces; no additional corrected-first-boot VM
+or fresh-cluster installation has been performed.
 
-The release gate requires a documented restart of each corrected
-control through the guest-poweroff command, with completed guest shutdown, current boot install/apply, consistent
-pre/post SQLite integrity, real inference/tools, preserved files/passwords/
+The release gate requires a documented restart of each corrected control through
+the guest-poweroff command, with completed guest shutdown, current boot
+install/automatic reapply, consistent pre/post SQLite integrity, real
+inference/tools, preserved files/passwords/
 identity/policy/confinement, and healthy two-way peer isolation. Record the
 actual outcomes and final CI heads in #161/#157 and the PR descriptions. Reuse
 the completed initial security checks above; do not mistake a Ready VMI, manual

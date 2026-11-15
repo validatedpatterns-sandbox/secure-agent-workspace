@@ -50,17 +50,34 @@ spec:
       message: The driver may manage only its immutable Pod-owned bootstrap Secrets.
 {{- else }}
     - expression: >-
-        variables.obj.metadata.name == 'os-boundary-' + variables.id &&
-        variables.obj.metadata.ownerReferences[0].kind == 'Sandbox' &&
-        variables.obj.metadata.ownerReferences[0].apiVersion in ['agents.x-k8s.io/v1beta1','agents.x-k8s.io/v1alpha1'] &&
-        variables.obj.spec.type == 'ClusterIP' && !has(variables.obj.spec.externalIPs) &&
-        !has(variables.obj.spec.externalName) && variables.obj.spec.selector.size() == 2 &&
-        variables.obj.spec.selector['openshell.ai/boundary-role'] == 'workload' &&
-        variables.obj.spec.selector['openshell.ai/boundary-pair'] == variables.id &&
-        variables.obj.spec.ports.size() == 1 && variables.obj.spec.ports[0].name == 'boundary' &&
-        variables.obj.spec.ports[0].protocol == 'TCP' && variables.obj.spec.ports[0].port == 5500 &&
-        variables.obj.spec.ports[0].targetPort == 5500
-      message: The driver may create only internal per-sandbox boundary Services.
+        (
+          variables.obj.metadata.name == 'os-boundary-' + variables.id &&
+          variables.obj.metadata.ownerReferences[0].kind == 'Sandbox' &&
+          variables.obj.metadata.ownerReferences[0].apiVersion in ['agents.x-k8s.io/v1beta1','agents.x-k8s.io/v1alpha1'] &&
+          variables.obj.spec.type == 'ClusterIP' && !has(variables.obj.spec.externalIPs) &&
+          !has(variables.obj.spec.externalName) && variables.obj.spec.selector.size() == 2 &&
+          variables.obj.spec.selector['openshell.ai/boundary-role'] == 'workload' &&
+          variables.obj.spec.selector['openshell.ai/boundary-pair'] == variables.id &&
+          variables.obj.spec.ports.size() == 1 && variables.obj.spec.ports[0].name == 'boundary' &&
+          variables.obj.spec.ports[0].protocol == 'TCP' && variables.obj.spec.ports[0].port == 5500 &&
+          variables.obj.spec.ports[0].targetPort == 5500
+        ) ||
+        (
+          variables.obj.metadata.name == 'os-supervisor-' + variables.id &&
+          variables.obj.metadata.ownerReferences[0].kind == 'Sandbox' &&
+          variables.obj.metadata.ownerReferences[0].apiVersion in ['agents.x-k8s.io/v1beta1','agents.x-k8s.io/v1alpha1'] &&
+          variables.obj.spec.type == 'ClusterIP' && !has(variables.obj.spec.externalIPs) &&
+          !has(variables.obj.spec.externalName) && variables.obj.spec.selector.size() >= 2 &&
+          variables.obj.spec.selector['openshell.ai/boundary-role'] == 'supervisor' &&
+          (('openshell.ai/boundary-pair' in variables.obj.spec.selector &&
+            variables.obj.spec.selector['openshell.ai/boundary-pair'] == variables.id) ||
+           ('openshell.ai/sandbox-id' in variables.obj.spec.selector &&
+            variables.obj.spec.selector['openshell.ai/sandbox-id'] == variables.id)) &&
+          variables.obj.spec.ports.size() == 1 && variables.obj.spec.ports[0].protocol == 'TCP' &&
+          variables.obj.spec.ports[0].port == 5500 && variables.obj.spec.ports[0].targetPort == 5500 &&
+          has(variables.obj.spec.publishNotReadyAddresses) && variables.obj.spec.publishNotReadyAddresses
+        )
+      message: The driver may create only internal per-sandbox boundary and supervisor Services.
 {{- end }}
 {{- end }}
 ---

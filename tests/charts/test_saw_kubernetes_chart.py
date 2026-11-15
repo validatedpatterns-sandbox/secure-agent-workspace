@@ -108,6 +108,29 @@ def test_rbac_cannot_read_provider_secrets_or_control_other_namespaces():
     assert docs['ServiceAccount', 'saw-test-sandbox']['automountServiceAccountToken'] is False
 
 
+def test_gateway_service_policy_allows_only_paired_internal_services():
+    docs = render()
+    validations = docs['ValidatingAdmissionPolicy', 'saw-test-services-driver']['spec']['validations']
+    assert len(validations) == 2
+    service_rule = validations[1]['expression']
+    for fragment in (
+        "'os-boundary-' + variables.id",
+        "'os-supervisor-' + variables.id",
+        "variables.obj.metadata.ownerReferences[0].kind == 'Sandbox'",
+        "variables.obj.spec.type == 'ClusterIP'",
+        "!has(variables.obj.spec.externalIPs)",
+        "!has(variables.obj.spec.externalName)",
+        "variables.obj.spec.selector.size() >= 2",
+        "variables.obj.spec.selector['openshell.ai/boundary-role'] == 'supervisor'",
+        "variables.obj.spec.selector['openshell.ai/boundary-pair'] == variables.id",
+        "variables.obj.spec.selector['openshell.ai/sandbox-id'] == variables.id",
+        "variables.obj.spec.ports[0].port == 5500",
+        "variables.obj.spec.publishNotReadyAddresses",
+    ):
+        assert fragment in service_rule
+    assert 'NodePort' not in service_rule and 'LoadBalancer' not in service_rule
+
+
 def test_network_does_not_grant_workload_or_namespace_wide_egress():
     docs = render()
     policies = [d for (kind, _), d in docs.items() if kind == 'NetworkPolicy']

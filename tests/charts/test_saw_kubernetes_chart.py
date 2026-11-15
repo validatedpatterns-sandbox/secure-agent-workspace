@@ -222,25 +222,39 @@ def test_kata_uses_stock_workload_runtime_default_and_named_read():
 
 
 def test_container_keeps_stock_openshell_startup_timeouts():
-    cfg = config(render())
+    docs = render()
+    cfg = config(docs)
     assert 'provisioning_repair_window_seconds' not in cfg['gateway']
     driver = cfg['drivers']['kubernetes']
     assert 'runtime_bootstrap_grace_seconds' not in driver
     assert 'sandbox_attach_request_timeout_seconds' not in driver
+    container = docs['StatefulSet', 'saw-test-gateway']['spec']['template']['spec']['containers'][0]
+    env = {item['name']: item.get('value') for item in container['env']}
+    assert not {
+        'OPENSHELL_PROVISIONING_REPAIR_WINDOW_SECONDS',
+        'OPENSHELL_RUNTIME_BOOTSTRAP_GRACE_SECONDS',
+        'OPENSHELL_ATTACH_REQUEST_TIMEOUT_SECONDS',
+    } & set(env)
 
 
 def test_kata_uses_configurable_longer_openshell_startup_timeouts():
-    cfg = config(render(
+    docs = render(
         '--set', 'deployment.mode=kata',
         '--set', 'kubernetes.workload.runtimeClassName=saw-kata',
         '--set', 'kubernetes.startupTimeouts.provisioningRepairWindowSeconds=1200',
         '--set', 'kubernetes.startupTimeouts.runtimeBootstrapGraceSeconds=1200',
         '--set', 'kubernetes.startupTimeouts.sandboxAttachRequestTimeoutSeconds=1200',
-    ))
-    assert cfg['gateway']['provisioning_repair_window_seconds'] == 1200
+    )
+    cfg = config(docs)
+    assert 'provisioning_repair_window_seconds' not in cfg['gateway']
     driver = cfg['drivers']['kubernetes']
-    assert driver['runtime_bootstrap_grace_seconds'] == 1200
-    assert driver['sandbox_attach_request_timeout_seconds'] == 1200
+    assert 'runtime_bootstrap_grace_seconds' not in driver
+    assert 'sandbox_attach_request_timeout_seconds' not in driver
+    container = docs['StatefulSet', 'saw-test-gateway']['spec']['template']['spec']['containers'][0]
+    env = {item['name']: item.get('value') for item in container['env']}
+    assert env['OPENSHELL_PROVISIONING_REPAIR_WINDOW_SECONDS'] == '1200'
+    assert env['OPENSHELL_RUNTIME_BOOTSTRAP_GRACE_SECONDS'] == '1200'
+    assert env['OPENSHELL_ATTACH_REQUEST_TIMEOUT_SECONDS'] == '1200'
 
 
 @pytest.mark.parametrize('assignment', [

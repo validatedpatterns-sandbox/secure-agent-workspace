@@ -28,7 +28,7 @@ flowchart TD
   Core --> VM
   Core --> Reconciler[Kubernetes reconciler]
   Container --> Reconciler
-  Reconciler -->|admin mTLS RPC| Gateway[Stock OpenShell gateway]
+  Reconciler -->|operator mTLS RPC| Gateway[Stock OpenShell gateway]
   Gateway -->|Kubernetes driver| Supervisor[Supervisor Pod]
   Gateway --> Sandbox[agent-sandbox resource]
   Sandbox --> Agent[Application Pod]
@@ -49,10 +49,10 @@ flowchart TD
 | Kubernetes reconciler | Reads BOM + intent, checks the approved boundary and attachment identities, compiles stock OpenShell RPCs, and reconciles owned objects using a retained ledger. It does not create application Pods directly. |
 | Stock gateway / driver | Implements workspace/provider/sandbox APIs and creates supervisor Pods and agent-sandbox resources. Gateway state has its own PVC. |
 | Stock agent-sandbox controller | Reconciles the workload resource into the application Pod. Its CRD/controller is a separate prerequisite, not a SAW API. |
-| Governance interceptor | Supplies signed provider profiles and policy. SAW's existing interceptor extension additionally restricts Kubernetes driver configuration to an approved PVC/resource envelope submitted by an admin mTLS identity. |
+| Governance interceptor | Supplies signed provider profiles and policy. SAW's extension restricts Kubernetes driver configuration to an approved PVC/resource envelope submitted by a platform mTLS operator. |
 | Credential proxy | Resolves opaque credential markers using trusted-namespace Secrets and the shared provider policy. It supplies credentials only for approved destinations. |
 | Audit writer | Owns retained history outside the application namespace and signs acknowledgements after append. The application mounts an exchange volume, not the history PVC. |
-| Browser relay | Combines owner-only login, a dedicated nonadmin Keycloak client, shared connection limiter and stock OpenShell forwarding. Its membership is scoped to the intended workspace. Only its membership Job opens a temporary gateway administrator session; the UI has no administrator identity or trust-write permission. |
+| Browser relay | Combines owner-only login, a dedicated nonadmin Keycloak client, shared connection limiter and stock OpenShell forwarding. Its membership is scoped to the intended workspace. Only its membership Job opens a temporary gateway operator session; the UI has no operator identity or trust-write permission. |
 
 The implementation lives in `kubernetes-runtime/` and the `saw-kubernetes-*`,
 `openshell-saw-kubernetes`, `saw-runtime-policies`, `saw-audit-writer`,
@@ -128,9 +128,9 @@ sequenceDiagram
   Project->>Argo: Intent, preparation, controller, relay values
   Argo->>Runtime: BOM + intent + public gateway CA + ledger
   Runtime->>Runtime: Compile shared BOM; verify current boundary
-  Runtime->>Gateway: Establish temporary admin mTLS trust
+  Runtime->>Gateway: Establish temporary operator mTLS trust
   Runtime->>Gateway: Reconcile owned workspace/providers/sandboxes
-  Runtime->>Gateway: Withdraw temporary admin trust
+  Runtime->>Gateway: Withdraw temporary operator trust
   Gateway->>Pod: Stock Kubernetes driver and agent-sandbox controller
 ```
 
@@ -152,12 +152,14 @@ Policies protect different boundaries:
 
 ### Administrator sessions and retained identity
 
-The controller and relay membership Job reuse the VM installer's per-operation
-identity mechanism. There is no retained administrator certificate to renew and
-no new certificate service. Each operation creates a one-day P-256 CA and
-`OU=openshell-admin` client certificate in a memory-backed `emptyDir`. The CA
-private key is destroyed immediately after signing; the client key is removed
-when the operation exits.
+The controller and relay membership Job use a per-operation mTLS operator
+identity. There is no retained administrator certificate to renew and no new
+certificate service. Each operation creates a one-day P-256 CA and an
+`OU=operator` client certificate in a memory-backed `emptyDir`. The Kubernetes
+gateway enables OpenShell operator authentication and disables ordinary mTLS
+user authentication. OIDC remains the user login path. The CA private key is
+destroyed immediately after signing; the client key is removed when the
+operation exits.
 
 ```mermaid
 sequenceDiagram
@@ -167,11 +169,11 @@ sequenceDiagram
   participant Gateway as Stock gateway
   Client->>API: Wait for this exact Pod UID to become Running
   Client->>Shared: Create temporary identity in tmpfs
-  Shared-->>Client: Client key/certificate + public session CA
+  Shared-->>Client: Operator key/certificate + public session CA
   Client->>API: CAS update named client-ca Secret: add public CA
   API-->>Gateway: Project updated ca.crt volume
   Gateway->>Gateway: Reload TLS trust
-  Client->>Gateway: Wait for authenticated RPC; perform operation
+  Client->>Gateway: Wait for authenticated operator RPC; perform operation
   Client->>Gateway: Close client channel
   Client->>API: CAS update: remove this session CA
   Client->>Shared: Remove private session files
@@ -198,8 +200,8 @@ revocation of connections already held by another process.
 
 Only the controller and membership Job can read/update the named public
 `<gateway>-client-ca` Secret. They can read Pod metadata in their trusted namespace
-to verify session holders. These permissions confer gateway administrative
-authority and are not granted to application or browser service accounts. The
+to verify session holders. These permissions confer gateway operator authority
+and are not granted to application or browser service accounts. The
 bootstrap Job preserves active sessions when rechecking identity projections.
 
 Gateway server TLS, JWT signing keys and the credential-encryption key remain in

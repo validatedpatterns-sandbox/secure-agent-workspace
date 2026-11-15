@@ -30,11 +30,15 @@ fn validate_driver_config(
         return deny("driver config must be an object");
     };
     if drivers.is_empty() { return allow(); }
-    let is_admin = principal.get("kind").map(String::as_str) == Some("user")
-        && principal.get("provider").map(String::as_str) == Some("mtls")
+    let provider = principal.get("provider").map(String::as_str);
+    let is_operator = principal.get("kind").map(String::as_str) == Some("operator")
+        && provider == Some("mtls");
+    let is_admin_user = principal.get("kind").map(String::as_str) == Some("user")
+        && provider == Some("mtls")
         && principal.get("roles").is_some_and(|roles| {
             roles.split(",").any(|role| role.trim() == SAW_ADMIN_ROLE)
         });
+    let is_admin = is_operator || is_admin_user;
     if !is_admin {
         return deny("driver config may only be submitted by a platform admin mTLS identity");
     }
@@ -160,6 +164,9 @@ mod agent_driver_tests {
         HashMap::from([("kind".into(), "user".into()), ("provider".into(), "mtls".into()),
             ("roles".into(), "viewer, openshell-admin".into())])
     }
+    fn operator() -> HashMap<String, String> {
+        HashMap::from([("kind".into(), "operator".into()), ("provider".into(), "mtls".into())])
+    }
     fn gate_and_audit() -> Value {
         json!({"podman":{"mounts":[
             {"type":"volume", "source":"saw-gate-default-notebook-12345678",
@@ -195,6 +202,7 @@ mod agent_driver_tests {
     fn accepts_exact_installer_combinations_and_empty_config() {
         assert!(validate_driver_config(Some(&gate_and_audit()), &admin()).allowed);
         assert!(validate_driver_config(Some(&with_harness()), &admin()).allowed);
+        assert!(validate_driver_config(Some(&gate_and_audit()), &operator()).allowed);
         assert!(validate_driver_config(None, &HashMap::new()).allowed);
         assert!(validate_driver_config(Some(&json!({})), &HashMap::new()).allowed);
     }
@@ -208,6 +216,12 @@ mod agent_driver_tests {
         assert!(!validate_driver_config(Some(&gate_and_audit()), &principal).allowed);
         principal = admin();
         principal.insert("kind".into(), "service".into());
+        assert!(!validate_driver_config(Some(&gate_and_audit()), &principal).allowed);
+        principal = operator();
+        principal.insert("provider".into(), "oidc".into());
+        assert!(!validate_driver_config(Some(&gate_and_audit()), &principal).allowed);
+        principal = operator();
+        principal.insert("kind".into(), "user".into());
         assert!(!validate_driver_config(Some(&gate_and_audit()), &principal).allowed);
     }
     #[test]

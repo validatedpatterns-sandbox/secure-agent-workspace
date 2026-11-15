@@ -25,6 +25,7 @@ from .reconcile import RpcError
 SESSIONS = "saw.redhat.com/admin-sessions"
 OWNER = "saw.redhat.com/runtime-owner"
 NAME = re.compile(r"[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?\Z")
+OPERATOR_SUBJECT = "/O=openshell/OU=operator/CN=saw-installer"
 
 
 def encoded(raw):
@@ -182,7 +183,8 @@ class GatewaySessions:
 
     @contextmanager
     def open(self):
-        with self._exclusive(), admin.identity(self.trust.base, self.runtime) as identity:
+        with self._exclusive(), admin.identity(
+                self.trust.base, self.runtime, subject=OPERATOR_SUBJECT) as identity:
             gateway = None
             try:
                 # Cleanup also runs after an ambiguous API response: a write

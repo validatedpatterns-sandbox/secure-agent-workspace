@@ -62,14 +62,20 @@ def test_the_guard_runs_before_the_build():
 
 @pytest.mark.ci_external
 def test_the_guard_admin_role_is_the_role_the_saw_gateways_grant():
-    """The guard hardcodes the role name; the gateway takes it from values
-    (oidc.adminRole, and the OU of the installer's mTLS certificate). They
-    must not drift, or the installer loses the right to mount a harness."""
+    """The guard's OIDC admin role must match the VM installer configuration."""
     values = yaml.safe_load((ROOT / "charts" / "openshell-saw" / "values.yaml").read_text())
     role = values["oidc"]["adminRole"]
     assert f'const SAW_ADMIN_ROLE: &str = "{role}";' in (EXTENSION / "driver_config.rs").read_text()
     installer = (ROOT / "charts" / "openshell-saw" / "files" / "installer" / "apply_bom.py").read_text()
     assert f'ADMIN_CERT_SUBJECT = "/O=openshell/OU={role}/CN=saw-installer"' in installer
+
+
+def test_kubernetes_gateway_uses_mtls_operator_authority():
+    config = (ROOT / "charts" / "openshell-saw-kubernetes" / "templates" / "gateway-config.yaml").read_text()
+    sessions = (ROOT / "kubernetes-runtime" / "saw_kubernetes" / "admin_session.py").read_text()
+    assert "operator_enabled = true" in config
+    assert "enabled = false" in config
+    assert 'OPERATOR_SUBJECT = "/O=openshell/OU=operator/CN=saw-installer"' in sessions
 
 
 @pytest.mark.ci_external

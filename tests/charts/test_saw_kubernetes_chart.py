@@ -55,7 +55,7 @@ def test_stock_split_topology_and_server_trust():
 def test_user_oidc_and_trusted_reconciler_auth_fail_closed():
     cfg = config(render())['gateway']
     assert cfg['auth'] == {'allow_unauthenticated_users': False}
-    assert cfg['mtls_auth'] == {'enabled': True}
+    assert cfg['mtls_auth'] == {'enabled': False, 'operator_enabled': True}
     assert cfg['oidc']['dangerously_allow_insecure_http'] is False
     assert cfg['tls']['client_ca_path'] == '/etc/openshell-tls/client-ca/ca.crt'
     assert cfg['policy_validation_failure_mode'] == 'fail_closed'

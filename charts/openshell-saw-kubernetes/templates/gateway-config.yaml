@@ -21,7 +21,8 @@ data:
     [openshell.gateway.auth]
     allow_unauthenticated_users = false
     [openshell.gateway.mtls_auth]
-    enabled = true
+    enabled = false
+    operator_enabled = true
     [openshell.gateway.tls]
     cert_path = "/etc/openshell-tls/server/tls.crt"
     key_path = "/etc/openshell-tls/server/tls.key"

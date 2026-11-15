@@ -110,8 +110,11 @@ def test_starting_job_waits_for_its_own_running_phase_before_issuing_or_publishi
     wait = trust.wait_for_holder
     monkeypatch.setattr(trust, "wait_for_holder", lambda: wait(sleep=sleep, monotonic=lambda: elapsed[0]))
     identity = sessions.admin.identity
-    monkeypatch.setattr(sessions.admin, "identity", lambda ca, runtime:
-                        identity(ca, runtime, require_tmpfs=False, erase=lambda p: p.unlink()))
+    subjects = []
+    def issue_identity(ca, runtime, **kwargs):
+        subjects.append(kwargs.get("subject"))
+        return identity(ca, runtime, require_tmpfs=False, erase=lambda p: p.unlink(), **kwargs)
+    monkeypatch.setattr(sessions.admin, "identity", issue_identity)
     monkeypatch.setattr(sessions.admin, "require_memory", lambda _: None)
     calls = []
     class Gateway:
@@ -122,6 +125,7 @@ def test_starting_job_waits_for_its_own_running_phase_before_issuing_or_publishi
         def close(self): pass
     with sessions.GatewaySessions(trust, "https://gateway:17670", runtime, gateway_factory=Gateway).open():
         assert elapsed[0] == 1 and calls == ["GetGatewayInfo"]
+        assert subjects == [sessions.OPERATOR_SUBJECT]
         assert len(published(api)) == 1
     assert not published(api) and not list(runtime.rglob("*.key"))
 
@@ -173,8 +177,8 @@ def test_publication_rechecks_uid_after_successful_startup_wait(ca, tmp_path, mo
     monkeypatch.setattr(sessions.admin, "require_memory", lambda _: None)
     original = sessions.admin.identity
     @contextmanager
-    def identity(base, runtime):
-        with original(base, runtime, require_tmpfs=False, erase=lambda p: p.unlink()) as value:
+    def identity(base, runtime, **kwargs):
+        with original(base, runtime, require_tmpfs=False, erase=lambda p: p.unlink(), **kwargs) as value:
             api.pods["bind-job"]["metadata"]["uid"] = str(uuid.uuid4())
             yield value
     monkeypatch.setattr(sessions.admin, "identity", identity)
@@ -261,8 +265,8 @@ def test_pod_api_error_does_not_prune_trust(ca, tmp_path):
 def test_session_cleanup_on_every_failure(ca, tmp_path, monkeypatch, failure):
     api = Api(ca)
     identity_factory = sessions.admin.identity
-    def identity(base, runtime):
-        return identity_factory(base, runtime, require_tmpfs=False, erase=lambda p: p.unlink())
+    def identity(base, runtime, **kwargs):
+        return identity_factory(base, runtime, require_tmpfs=False, erase=lambda p: p.unlink(), **kwargs)
     monkeypatch.setattr(sessions.admin, "identity", identity)
     monkeypatch.setattr(sessions.admin, "require_memory", lambda _: None)
     clients = []

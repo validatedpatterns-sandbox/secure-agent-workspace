@@ -219,3 +219,36 @@ def test_kata_uses_stock_workload_runtime_default_and_named_read():
     assert [r for r in rules if 'runtimeclasses' in r['resources']] == [
         {'apiGroups': ['node.k8s.io'], 'resources': ['runtimeclasses'], 'verbs': ['get'],
          'resourceNames': ['saw-kata']}]
+
+
+def test_container_keeps_stock_openshell_startup_timeouts():
+    cfg = config(render())
+    assert 'provisioning_repair_window_seconds' not in cfg['gateway']
+    driver = cfg['drivers']['kubernetes']
+    assert 'runtime_bootstrap_grace_seconds' not in driver
+    assert 'sandbox_attach_request_timeout_seconds' not in driver
+
+
+def test_kata_uses_configurable_longer_openshell_startup_timeouts():
+    cfg = config(render(
+        '--set', 'deployment.mode=kata',
+        '--set', 'kubernetes.workload.runtimeClassName=saw-kata',
+        '--set', 'kubernetes.startupTimeouts.provisioningRepairWindowSeconds=1200',
+        '--set', 'kubernetes.startupTimeouts.runtimeBootstrapGraceSeconds=1200',
+        '--set', 'kubernetes.startupTimeouts.sandboxAttachRequestTimeoutSeconds=1200',
+    ))
+    assert cfg['gateway']['provisioning_repair_window_seconds'] == 1200
+    driver = cfg['drivers']['kubernetes']
+    assert driver['runtime_bootstrap_grace_seconds'] == 1200
+    assert driver['sandbox_attach_request_timeout_seconds'] == 1200
+
+
+@pytest.mark.parametrize('assignment', [
+    'kubernetes.startupTimeouts.provisioningRepairWindowSeconds=0',
+    'kubernetes.startupTimeouts.runtimeBootstrapGraceSeconds=86401',
+    'kubernetes.startupTimeouts.sandboxAttachRequestTimeoutSeconds=-1',
+])
+def test_openshell_startup_timeouts_must_be_in_supported_range(assignment):
+    result = template('--set', assignment)
+    assert result.returncode != 0
+    assert not result.stdout.strip()

@@ -4,6 +4,12 @@ deployment:
 # Explicit opt-in: chart readiness is gateway readiness, not SAW feature parity.
 kubernetes:
   experimental: false
+  # Kata VMs can need more time than the stock OpenShell startup windows.
+  # The chart applies these values only when deployment.mode is kata.
+  startupTimeouts:
+    provisioningRepairWindowSeconds: 900
+    runtimeBootstrapGraceSeconds: 900
+    sandboxAttachRequestTimeoutSeconds: 900
   gateway:
     version: 0.1.6-rhaiv.4
     image: quay.io/opendatahub/odh-openshell-gateway@sha256:bd2d7c9084b80b8d3d8ef92d00a27b963b35168fad84cd862b7f91fd9c488c3e

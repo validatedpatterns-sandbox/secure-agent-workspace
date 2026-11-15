@@ -17,6 +17,9 @@ data:
     policy_validation_failure_mode = "fail_closed"
     enable_loopback_service_http = false
     enable_websocket_tunnel = true
+    {{- if eq .Values.deployment.mode "kata" }}
+    provisioning_repair_window_seconds = {{ .Values.kubernetes.startupTimeouts.provisioningRepairWindowSeconds }}
+    {{- end }}
     provider_profile_sources = [{ type = "interceptor", name = "governance" }]
     [openshell.gateway.auth]
     allow_unauthenticated_users = false
@@ -48,6 +51,10 @@ data:
     workspace_mode = "shared"
     service_account_name = {{ printf "%s-sandbox" .Release.Name | quote }}
     grpc_endpoint = {{ printf "https://%s-gateway.%s.svc:17670" .Release.Name .Release.Namespace | quote }}
+    {{- if eq .Values.deployment.mode "kata" }}
+    runtime_bootstrap_grace_seconds = {{ .Values.kubernetes.startupTimeouts.runtimeBootstrapGraceSeconds }}
+    sandbox_attach_request_timeout_seconds = {{ .Values.kubernetes.startupTimeouts.sandboxAttachRequestTimeoutSeconds }}
+    {{- end }}
     default_image = {{ .Values.kubernetes.workload.image | quote }}
     supervisor_image = {{ .Values.kubernetes.supervisor.image | quote }}
     sandbox_runtime_image = {{ .Values.kubernetes.workload.runtimeImage | quote }}

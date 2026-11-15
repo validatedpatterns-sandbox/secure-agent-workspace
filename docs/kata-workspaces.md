@@ -103,6 +103,16 @@ Sandbox template and the workload Pod. The supervisor keeps the default
 runtime. The portal advertises Kata only when the platform administrator enables the
 mode and supplies a reviewed site class and approved profile.
 
+### Allow time for Kata startup
+
+OpenShell 0.1.6 uses 300-second startup windows by default. Kata VM startup can
+take longer. In Kata mode, the Kubernetes gateway chart sets the provisioning
+repair window, runtime bootstrap grace period and sandbox attach request timeout
+to 900 seconds. Set `kubernetes.startupTimeouts` to adjust these values. Each
+value must be from 1 to 86400 seconds. Container mode keeps the OpenShell
+defaults. These longer windows allow more startup time; they do not change the
+runtime readiness checks or make an unhealthy sandbox ready.
+
 ## Standalone workspace on an existing Kata pool
 
 Start with the [container installation](container-installation.md). Keep its

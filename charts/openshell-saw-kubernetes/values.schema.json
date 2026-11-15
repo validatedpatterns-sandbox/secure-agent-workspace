@@ -25,6 +25,32 @@
         "experimental": {
           "type": "boolean"
         },
+        "startupTimeouts": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "provisioningRepairWindowSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 86400
+            },
+            "runtimeBootstrapGraceSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 86400
+            },
+            "sandboxAttachRequestTimeoutSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 86400
+            }
+          },
+          "required": [
+            "provisioningRepairWindowSeconds",
+            "runtimeBootstrapGraceSeconds",
+            "sandboxAttachRequestTimeoutSeconds"
+          ]
+        },
         "gateway": {
           "type": "object",
           "additionalProperties": false,
@@ -191,6 +217,7 @@
       },
       "required": [
         "experimental",
+        "startupTimeouts",
         "gateway",
         "supervisor",
         "workload",

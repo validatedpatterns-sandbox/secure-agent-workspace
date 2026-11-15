@@ -85,6 +85,25 @@ def test_automatic_enrollment_cannot_read_secrets_or_mount_history():
     assert (files/"portal_contract.py").read_text()==(ROOT/"kubernetes-runtime/saw_kubernetes/portal_contract.py").read_text().replace("from .boundary import","from saw_kubernetes.boundary import")
 
 
+def test_status_reader_keeps_rhdh_and_provisioner_access_with_static_observer():
+    site = {**SITE, "observer": {"namespace": "saw-workspaces", "serviceAccount": "saw-projector-owner"}}
+    docs = render("saw-portal-container", U, "saw-"+U, dict(
+        site=site, owner=U, registration=REG, installationID=user()["installationID"],
+        ownerSubject=SITE["subject"], vaultPrefix=user()["vaultPrefix"], **{"global": GLOBAL}))
+    binding, = [o for o in docs if o["kind"] == "RoleBinding"
+                and o["metadata"]["name"] == "saw-portal-runtime-observer"]
+    assert {(s["namespace"], s["name"]) for s in binding["subjects"]} == {
+        ("saw-workspaces", "saw-projector-owner"),
+        ("saw-portal", "saw-workspaces-generator"),
+        ("saw-portal", "saw-portal-provisioner"),
+    }
+    role, = [o for o in docs if o["kind"] == "Role"
+             and o["metadata"]["name"] == "saw-portal-runtime-observer"]
+    assert role["rules"] == [{"apiGroups": [""], "resources": ["configmaps"],
+                              "resourceNames": ["saw-bom-profiles", "saw-runtime-intent", "saw-runtime-status"],
+                              "verbs": ["get"]}]
+
+
 def test_multiple_catalog_sandboxes_receive_distinct_storage_and_ui_namespaces():
     import importlib.util
     spec = importlib.util.spec_from_file_location("portal_topology",ROOT/"charts/openshell-rhdh/files/portal.py")

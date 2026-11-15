@@ -179,6 +179,14 @@ Pod events in the same namespace. A relay can subsequently exceed its
 Deployment progress deadline while waiting for the sandbox's UI port.
 Preserve the installer exit status and event timestamps for that run.
 
+If RHDH waits at `Intent for this registration and update`, check that both
+the RHDH workspace generator and portal provisioner can read
+`saw-runtime-intent`, `saw-runtime-status`, and `saw-bom-profiles` in the
+workspace namespace. A static projector may also need access to enrollment
+publications. Keep its ServiceAccount in the same RoleBinding; do not replace
+the portal readers with it. The runtime observer Role grants `get` on only
+those three ConfigMaps.
+
 ### Verify a replacement
 
 1. On a disposable registration, record each workload Pod UID and the UID and

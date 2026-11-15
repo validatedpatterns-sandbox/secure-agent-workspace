@@ -7,7 +7,8 @@
 {{- $targets := include "portal.targets" . | fromJson }}
 {{- $bases := list }}{{- range $slot := $targets }}{{- $bases = append $bases $slot.base }}{{- end }}
 {{- $gov := $s.governanceNamespace }}{{- $name := printf "enroll-%s" $r }}{{- $policy := printf "saw-%s-runtime" $n }}
-{{- $bootstrap := dict "registration" $r "installation" .Values.installationID "user" $g "subject" .Values.ownerSubject "governance" $gov "reference" $a.reference "profileSHA256" ($s.selectedDigest | default $a.profileSHA256) "targets" $targets "customInferenceURL" ($s.customInferenceURL | default "") "providerPolicy" ($s.providerPolicy | default dict) "lifecycleVersion" ($s.lifecycleVersion | default 0) "modelInputs" ($s.modelInputs | default dict) "resources" $a.resources "domain" .Values.global.clusterDomain -}}
+{{- $gatewayVersion := dig "stack" "gateway" "values" "kubernetes" "gateway" "version" .Values.driverDefaults.gatewayVersion $s -}}
+{{- $bootstrap := dict "registration" $r "installation" .Values.installationID "user" $g "subject" .Values.ownerSubject "governance" $gov "reference" $a.reference "profileSHA256" ($s.selectedDigest | default $a.profileSHA256) "targets" $targets "gatewayVersion" $gatewayVersion "customInferenceURL" ($s.customInferenceURL | default "") "providerPolicy" ($s.providerPolicy | default dict) "lifecycleVersion" ($s.lifecycleVersion | default 0) "modelInputs" ($s.modelInputs | default dict) "resources" $a.resources "domain" .Values.global.clusterDomain -}}
 {{- $scripts := (.Files.Glob "files/*.py").AsConfig -}}
 {{- with $s.kataRuntimeClass }}{{- $_ := set $bootstrap "kataRuntimeClass" . }}{{- end }}
 {{- $revision := dict "image" $a.image "config" $bootstrap "scripts" $scripts | toJson | sha256sum | trunc 12 -}}

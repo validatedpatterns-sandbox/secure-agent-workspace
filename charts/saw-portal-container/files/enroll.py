@@ -72,7 +72,7 @@ def once(x):
             slot["browser"]={"ownerLogin":u,"origin":"https://"+host+".apps."+x["domain"]}
         slots[key]=slot
     bindings=dict(ownerID=ident,namespace=ns,namespaceUID=nsobj["uid"],ownerSubject=sub,mode=mode,
-       gatewayVersion="0.1.2-rhaiv.6",approvedCredentialFreeProviders=[],bindings=slots)
+       gatewayVersion=x["gatewayVersion"],approvedCredentialFreeProviders=[],bindings=slots)
     if runtime:
         bindings.update(workloadRuntimeClass=runtime["name"],workloadRuntimeClassUID=runtime["uid"],
                         workloadRuntimeClassDigest=runtime["sha256"])

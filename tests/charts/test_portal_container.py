@@ -223,6 +223,37 @@ def test_enrollment_job_uses_immutable_revisioned_inputs():
     assert all(a != b for a, b in zip(changed, publication(values)))
 
 
+@pytest.mark.parametrize("override, expected", [
+    (None, "0.1.6-rhaiv.4"),
+    ("0.1.7-rhaiv.1", "0.1.7-rhaiv.1"),
+])
+def test_enrollment_compiles_the_selected_gateway_version(override, expected):
+    from copy import deepcopy
+    site = deepcopy(SITE)
+    if override:
+        site["stack"]["gateway"]["values"]["kubernetes"]["gateway"] = {"version": override}
+    values = dict(owner=U, ownerSubject=SITE["subject"], registration=REG,
+                  installationID=user()["installationID"], vaultPrefix=user()["vaultPrefix"],
+                  site=site, **{"global": GLOBAL})
+    resources = render("saw-portal-container", U, "saw-" + U, values)
+    job, = [o for o in resources if o["kind"] == "Job"]
+    script_volume, = [v for v in job["spec"]["template"]["spec"]["volumes"]
+                      if v["name"] == "scripts"]
+    config, = [o for o in resources if o["kind"] == "ConfigMap"
+               and o["metadata"]["name"] == script_volume["configMap"]["name"]]
+    bootstrap = json.loads(config["data"]["config.json"])
+    assert bootstrap["gatewayVersion"] == expected
+
+
+def test_enrollment_default_gateway_version_matches_gateway_chart():
+    portal_values = yaml.safe_load((ROOT / "charts/saw-portal-container/values.yaml").read_text())
+    gateway_values = yaml.safe_load((ROOT / "charts/openshell-saw-kubernetes/values.yaml").read_text())
+    gateway_chart = yaml.safe_load((ROOT / "charts/openshell-saw-kubernetes/Chart.yaml").read_text())
+    default = portal_values["driverDefaults"]["gatewayVersion"]
+    assert default == gateway_values["kubernetes"]["gateway"]["version"]
+    assert default == gateway_chart["appVersion"]
+
+
 def test_static_projection_owns_no_workload_and_generates_same_composition():
     site = dict(SITE)
     values = {"global": GLOBAL, "users": [user()], "containerSites": {U: site},

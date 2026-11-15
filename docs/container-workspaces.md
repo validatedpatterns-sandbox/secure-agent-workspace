@@ -161,6 +161,12 @@ user authentication. OIDC remains the user login path. The CA private key is
 destroyed immediately after signing; the client key is removed when the
 operation exits.
 
+Enrollment also records the selected gateway version in the approved profile
+plan. Set `site.stack.gateway.values.kubernetes.gateway.version` when the site
+overrides the gateway release. Keep it aligned with the gateway image. The
+portal chart default matches the pinned gateway chart version. A mismatch blocks
+runtime plan verification.
+
 ```mermaid
 sequenceDiagram
   participant Client as Controller / membership Job

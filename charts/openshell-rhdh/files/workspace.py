@@ -15,6 +15,20 @@ class WorkspaceError(ValueError):
     """Invalid workspace configuration or immutable publication."""
 
 
+SAFE_FAILURE_REASONS = frozenset({
+    "ProfileRejected", "InvalidPlan", "PlacementRejected", "IdentityConflict",
+    "InvalidIntent", "StaleIntent", "ReconcilerStateRejected", "GatewayMismatch",
+    "ProviderProfileMismatch", "WorkspaceRejected", "ProviderRejected",
+    "SandboxRejected", "SandboxStateMismatch", "SandboxDrift", "CoreRejected",
+    "CoreFailure",
+})
+SAFE_RPC_CODES = frozenset({
+    "NOT_FOUND", "ALREADY_EXISTS", "UNAVAILABLE", "DEADLINE_EXCEEDED", "ABORTED",
+    "RESOURCE_EXHAUSTED", "PERMISSION_DENIED", "UNAUTHENTICATED", "INVALID_ARGUMENT",
+    "FAILED_PRECONDITION", "UNKNOWN",
+})
+
+
 def enabled_catalog_sandboxes(profile):
     for workspace in profile.get("workspaces", []):
         if workspace.get("enabled"):
@@ -343,7 +357,17 @@ def container_status(read_resource, entry, site, argo_ns, domain, ping, catalog=
             waiting = True
         steps.append(dict(id=stage, title=title, detail=title, state=state))
     failed = bool(current and st.get("phase") == "Blocked" or app_ok and app_status.get("operationState", {}).get("phase") in ("Error", "Failed"))
-    message = "Container reconciliation failed" if failed else next((s["title"] for s in steps if s["state"] == "active"), "Workspace ready")
+    if failed:
+        reason = st.get("reason")
+        if isinstance(reason, str) and reason in SAFE_FAILURE_REASONS:
+            message = f"Container reconciliation failed ({reason})"
+        elif (reason == "CoreRpcRejected" and isinstance(st.get("rpcCode"), str)
+              and st["rpcCode"] in SAFE_RPC_CODES):
+            message = f"Container reconciliation failed (OpenShell {st['rpcCode']})"
+        else:
+            message = "Container reconciliation failed"
+    else:
+        message = next((s["title"] for s in steps if s["state"] == "active"), "Workspace ready")
     if stopped and not failed:
         message = "Workspace stopped"
         phase = "stopped"

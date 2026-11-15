@@ -146,6 +146,32 @@ def test_real_shared_compiler_and_reconciler_compose_with_restart_and_stop(setup
     assert sum(method == "CreateSandbox" for method, _ in gateway.calls) == 1
 
 
+def test_gateway_contract_rejection_reports_a_fixed_reason(setup, source):
+    from saw_kubernetes import Reconciler, compile_profile_files
+
+    c, api, _, _, _, _ = setup
+    files = flat_profile(source)
+    api.objects[c.scope.profile_name]["data"] = files
+    update_intent(setup, lambda i: i.update(bindings=source[1],
+                  profileRef={**i["profileRef"], "sha256": digest(files)}))
+    gateway = FakeGateway()
+    original_call = gateway.call
+
+    def wrong_gateway_version(method, request):
+        if method == "GetGatewayInfo":
+            return {"gateway_version": "unexpected", "compute_drivers": [{"name": "kubernetes"}]}
+        return original_call(method, request)
+
+    gateway.call = wrong_gateway_version
+    reconciler = Reconciler(gateway, c.store.directory.parent, lambda _: None)
+    c.compile_files, c.core_pass = compile_profile_files, reconciler.reconcile
+    status = c.reconcile_once()
+    saved = canonical(api.objects[c.scope.status_name])
+    assert status["reason"] == "GatewayMismatch"
+    assert status["phase"] == "Blocked"
+    assert "unexpected" not in saved
+
+
 def test_missing_boundary_verifier_fails_before_api_access(setup):
     c, api, *_ = setup
     with pytest.raises(ContractError, match="boundary verifier"):
@@ -243,6 +269,43 @@ def test_ambiguous_core_failure_retains_intent_and_does_not_publish_exception(se
     assert c.reconcile_once()["reason"] == "CoreFailure"
     assert c.store.load()["intent"]["generation"] == 1
     assert "private-request-body" not in canonical(api.objects[c.scope.status_name])
+
+
+@pytest.mark.parametrize("safe_reason,expected", [
+    ("GatewayMismatch", "GatewayMismatch"),
+    ("private-request-body", "CoreRejected"),
+])
+def test_core_contract_rejection_publishes_only_allowlisted_reason(setup, safe_reason, expected):
+    c, api, *_ = setup
+
+    def reject(*args, **kwargs):
+        raise ContractError("private-request-body", safe_reason=safe_reason)
+
+    c.core_pass = reject
+    status = c.reconcile_once()
+    serialized = canonical(api.objects[c.scope.status_name])
+    assert status["reason"] == expected
+    assert "private-request-body" not in serialized
+
+
+def test_core_rpc_rejection_publishes_only_allowlisted_code(setup):
+    c, api, *_ = setup
+    c.core_pass = lambda *a, **k: (_ for _ in ()).throw(RpcError("FAILED_PRECONDITION"))
+    status = c.reconcile_once()
+    serialized = canonical(api.objects[c.scope.status_name])
+    assert status["reason"] == "CoreRpcRejected"
+    assert status["rpcCode"] == "FAILED_PRECONDITION"
+    assert "FAILED_PRECONDITION" in serialized
+    assert "private" not in serialized
+
+
+def test_profile_contract_failure_has_a_fixed_reason(setup):
+    c, api, *_ = setup
+    c.compile_files = lambda *a, **k: (_ for _ in ()).throw(ContractError("private profile value"))
+    status = c.reconcile_once()
+    serialized = canonical(api.objects[c.scope.status_name])
+    assert status["reason"] == "ProfileRejected"
+    assert "private profile value" not in serialized
 
 
 def test_foreign_status_is_not_adopted_and_blocks_core(setup):

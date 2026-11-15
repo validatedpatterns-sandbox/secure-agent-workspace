@@ -46,7 +46,7 @@ class StateStore:
         self.directory = Path(directory)
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         if self.directory.is_symlink():
-            raise ContractError("state directory must not be a symlink")
+            raise ContractError("state directory must not be a symlink", safe_reason="ReconcilerStateRejected")
         self.path = self.directory / "state.json"
 
     @contextlib.contextmanager
@@ -65,13 +65,15 @@ class StateStore:
         if not self.path.exists():
             return {}
         if self.path.is_symlink():
-            raise ContractError("state must not be a symlink")
+            raise ContractError("state must not be a symlink", safe_reason="ReconcilerStateRejected")
         try:
             value = json.loads(self.path.read_text())
         except (ValueError, OSError):
-            raise ContractError("cannot read retained reconciler state") from None
+            raise ContractError("cannot read retained reconciler state",
+                                safe_reason="ReconcilerStateRejected") from None
         if not isinstance(value, dict):
-            raise ContractError("retained reconciler state must be an object")
+            raise ContractError("retained reconciler state must be an object",
+                                safe_reason="ReconcilerStateRejected")
         return value
 
     def save(self, value):
@@ -119,7 +121,7 @@ class Reconciler:
                 return None
             raise
         if not isinstance(response.get(field), dict):
-            raise ContractError("gateway returned an invalid object")
+            raise ContractError("gateway returned an invalid object", safe_reason="GatewayMismatch")
         return response[field]
 
     def _mutate(self, method, request, plan, generation):
@@ -138,17 +140,19 @@ class Reconciler:
         meta = obj.get("metadata", {})
         labels = meta.get("labels", {})
         if meta.get("deletion_time"):
-            raise ContractError("managed object is being deleted")
+            raise ContractError("managed object is being deleted", safe_reason="IdentityConflict")
         if meta.get("name") != name or not meta.get("id"):
-            raise ContractError("gateway object identity is missing or changed")
+            raise ContractError("gateway object identity is missing or changed", safe_reason="IdentityConflict")
         if kind != "workspace" and meta.get("workspace", "default") != workspace:
-            raise ContractError("gateway object is in the wrong workspace")
+            raise ContractError("gateway object is in the wrong workspace", safe_reason="IdentityConflict")
         if not default and (labels.get(OWNER) != plan["ownerID"] or labels.get(MANAGED) != "kubernetes-runtime"):
-            raise ContractError("refusing to adopt an object owned by another installation")
+            raise ContractError("refusing to adopt an object owned by another installation",
+                                safe_reason="IdentityConflict")
         key = f"{kind}/{workspace}/{name}"
         previous = state.setdefault("objectIDs", {}).get(key)
         if previous is not None and previous != meta["id"]:
-            raise ContractError("same-name replacement detected; explicit recovery is required")
+            raise ContractError("same-name replacement detected; explicit recovery is required",
+                                safe_reason="IdentityConflict")
         state["objectIDs"][key] = meta["id"]
         self.store.save(state)
 
@@ -175,22 +179,26 @@ class Reconciler:
 
     def reconcile(self, plan, *, generation, desired_state="Running"):
         if type(generation) is not int or generation < 1 or desired_state not in {"Running", "Stopped"}:
-            raise ContractError("a positive intent generation and Running/Stopped state are required")
+            raise ContractError("a positive intent generation and Running/Stopped state are required",
+                                safe_reason="InvalidIntent")
         body = {k: v for k, v in plan.items() if k != "revision"}
         if plan.get("sourceRevision") != SOURCE_REVISION or plan.get("schemaVersion") != 1 or digest(body) != plan.get("revision"):
-            raise ContractError("invalid or modified compiled plan")
+            raise ContractError("invalid or modified compiled plan", safe_reason="InvalidPlan")
         if plan.get("mode") not in ("container", "kata") or plan.get("requestedPlacement") != {
                 "supervisor": "container", "workload": plan["mode"]}:
-            raise ContractError("stock adapter requires an ordinary-container supervisor")
+            raise ContractError("stock adapter requires an ordinary-container supervisor",
+                                safe_reason="PlacementRejected")
         with self.store.locked():
             state = self.store.load()
             identity = {key: plan[key] for key in ["ownerID", "namespaceUID", "ownerSubject", "mode"]}
             if state and state.get("identity") != identity:
-                raise ContractError("workspace identity, owner and deployment mode are immutable")
+                raise ContractError("workspace identity, owner and deployment mode are immutable",
+                                    safe_reason="IdentityConflict")
             previous = state.get("intent", {})
             intent = {"generation": generation, "revision": plan["revision"], "desiredState": desired_state}
             if previous.get("generation", 0) > generation or (previous.get("generation") == generation and previous != intent):
-                raise ContractError("stale generation or conflicting intent at the same generation")
+                raise ContractError("stale generation or conflicting intent at the same generation",
+                                    safe_reason="StaleIntent")
             (self.verify_shutdown if desired_state == "Stopped" else self.verify_resources)(plan)
             state.update(identity=identity, intent=intent)
             self.store.save(state)
@@ -213,14 +221,16 @@ class Reconciler:
     def _pass(self, plan, state, generation, desired_state):
         info = self.rpc.call("GetGatewayInfo", {})
         if info.get("gateway_version") != plan["gatewayVersion"] or [d.get("name") for d in info.get("compute_drivers", [])] != ["kubernetes"]:
-            raise ContractError("gateway version or active compute driver differs from approved inputs")
+            raise ContractError("gateway version or active compute driver differs from approved inputs",
+                                safe_reason="GatewayMismatch")
         if desired_state == "Stopped":
             return self._stop_pass(plan, state, generation)
         retired = plan.get("retiredSandboxes", {})
         if retired:
             refs = {"sandbox/" + name for name in retired}
             if any(state.get("objectIDs", {}).get("sandbox/" + k) != v for k, v in retired.items()):
-                raise ContractError("refusing to stop a sandbox without its recorded identity")
+                raise ContractError("refusing to stop a sandbox without its recorded identity",
+                                    safe_reason="SandboxStateMismatch")
             pending = self._stop_references(refs, plan, state, generation)
             if pending:
                 return self._status(plan, generation, "Pending", pending=pending, retry_after_seconds=5)
@@ -239,11 +249,13 @@ class Reconciler:
                         or slots[0].get("env_vars") != slot["env_vars"] or slots[0].get("name") != slot["name"]
                         or sorted(e.get("host") for e in endpoints) != hosts
                         or any(e.get("port") != 443 or e.get("enforcement") != "NETWORK_ENFORCEMENT_MODE_ENFORCE" for e in endpoints)):
-                    raise ContractError(f"{provider_type} profile differs from the approved inference boundary")
+                    raise ContractError("provider profile differs from the approved inference boundary",
+                                        safe_reason="ProviderProfileMismatch")
                 continue
             if (profile.get("id") != provider_type or profile.get("credentials")
                     or not profile.get("source", "").startswith("interceptor/")):
-                raise ContractError("provider profile is not a governed credential-free platform profile")
+                raise ContractError("provider profile is not a governed credential-free platform profile",
+                                    safe_reason="ProviderProfileMismatch")
         pending = []
         adapter = SimpleNamespace(
             prepare_workspace=lambda ws: self._prepare_workspace(ws, plan, state, generation, pending),
@@ -287,11 +299,13 @@ class Reconciler:
             workspace_obj = self._get("GetWorkspace", {"name": workspace}, "workspace")
             workspace_ref = f"workspace//{workspace}"
             if ref not in ids and ref in state.get("pendingSandboxCreates", {}):
-                raise MissingSandboxReceipt("start to recover the sandbox creation receipt before stopping")
+                raise MissingSandboxReceipt("start to recover the sandbox creation receipt before stopping",
+                                            safe_reason="SandboxStateMismatch")
             if (ref not in ids or workspace_ref not in ids or workspace_obj is None
                     or sandbox.get("metadata", {}).get("id") != ids[ref]
                     or workspace_obj.get("metadata", {}).get("id") != ids[workspace_ref]):
-                raise ContractError("shutdown refuses unrecorded or replaced workspace/sandbox identity")
+                raise ContractError("shutdown refuses unrecorded or replaced workspace/sandbox identity",
+                                    safe_reason="IdentityConflict")
             self._identity("workspace", "", workspace, workspace_obj, plan, state, default=workspace == "default")
             self._identity("sandbox", workspace, name, sandbox, plan, state)
             phase = sandbox.get("status", {}).get("phase")
@@ -309,7 +323,7 @@ class Reconciler:
         obj = self._get("GetWorkspace", {"name": ws["name"]}, "workspace")
         if obj is None:
             if ws["name"] == "default":
-                raise ContractError("gateway default workspace is missing")
+                raise ContractError("gateway default workspace is missing", safe_reason="WorkspaceRejected")
             self._mutate("CreateWorkspace", {"name": ws["name"], "labels": {
                 MANAGED: "kubernetes-runtime", OWNER: plan["ownerID"]}}, plan, generation)
             pending.append(f"workspace/{ws['name']}")
@@ -326,7 +340,7 @@ class Reconciler:
             if not token:
                 break
             if token in tokens or len(tokens) >= 100:
-                raise ContractError("invalid membership pagination")
+                raise ContractError("invalid membership pagination", safe_reason="WorkspaceRejected")
             tokens.add(token)
         member = next((m for m in members if m.get("principal_subject") == plan["ownerSubject"]), None)
         if member is None:
@@ -335,7 +349,8 @@ class Reconciler:
             pending.append(f"membership/{ws['name']}")
             return False
         if member.get("role") != "WORKSPACE_ROLE_ADMIN":
-            raise ContractError("existing owner membership has unexpected role")
+            raise ContractError("existing owner membership has unexpected role",
+                                safe_reason="WorkspaceRejected")
         return True
 
     def _apply_provider(self, ws, provider, plan, state, generation, pending):
@@ -352,7 +367,8 @@ class Reconciler:
         if intent is not None and (not isinstance(intent, dict)
                 or intent.get("request") != digest(provider)
                 or type(intent.get("generation")) is not int or intent["generation"] < 1):
-            raise ContractError("pending provider creation changed; explicit recovery is required")
+            raise ContractError("pending provider creation changed; explicit recovery is required",
+                                safe_reason="ProviderRejected")
         if existing is None or intent is not None:
             if provider.get("credentials") and intent is None:
                 intent = {"request": digest(provider), "generation": generation}
@@ -366,13 +382,14 @@ class Reconciler:
                 meta = created["metadata"]
                 version = meta.get("resource_version")
                 if not version:
-                    raise ContractError("missing provider revision")
+                    raise ContractError("missing provider revision", safe_reason="ProviderRejected")
                 state.setdefault("proxyProviderRevisions", {})[reference] = {
                     "version": version, "request": digest(provider)}
                 creations.pop(reference, None)
                 self.store.save(state)
             elif existing is not None:
-                raise ContractError("provider creation receipt unavailable; explicit recovery is required")
+                raise ContractError("provider creation receipt unavailable; explicit recovery is required",
+                                    safe_reason="ProviderRejected")
             if existing is None:
                 pending.append(f"provider/{reference}")
                 return False
@@ -381,11 +398,13 @@ class Reconciler:
         if provider.get("credentials"):
             recorded = state.get("proxyProviderRevisions", {}).get(f"{ws['name']}/{pname}")
             if recorded != {"version": existing["metadata"].get("resource_version"), "request": digest(provider)}:
-                raise ContractError("proxy provider ownership or credential revision requires explicit recovery")
+                raise ContractError("proxy provider ownership or credential revision requires explicit recovery",
+                                    safe_reason="ProviderRejected")
             expected_credentials = dict.fromkeys(provider["credentials"], "REDACTED")
         if (existing.get("type") != provider["type"] or existing.get("config") or existing.get("profile_workspace")
                 or existing.get("credentials", {}) != expected_credentials or existing.get("credential_handles")):
-            raise ContractError("provider drift or unexpected credential state requires explicit recovery")
+            raise ContractError("provider drift or unexpected credential state requires explicit recovery",
+                                safe_reason="ProviderRejected")
         return True
 
     def _apply_sandbox(self, ws, sandbox, plan, state, generation, desired_state, pending):
@@ -397,7 +416,8 @@ class Reconciler:
         pending_create = creates.get(ref)
         if existing is None or pending_create is not None:
             if existing is None and ref in state.get("objectIDs", {}):
-                raise ContractError("managed sandbox disappeared; refuse implicit recreation")
+                raise ContractError("managed sandbox disappeared; refuse implicit recreation",
+                                    safe_reason="SandboxStateMismatch")
             if desired_state == "Stopped":
                 pending.append(ref)
                 return False
@@ -409,13 +429,16 @@ class Reconciler:
                 self.store.save(state)
             if (not isinstance(pending_create, dict) or pending_create.get("digest") != signature
                     or type(pending_create.get("generation")) is not int or pending_create["generation"] < 1):
-                raise ContractError("unacknowledged sandbox create changed; explicit recovery required")
+                raise ContractError("unacknowledged sandbox create changed; explicit recovery required",
+                                    safe_reason="SandboxStateMismatch")
             reply = self._mutate("CreateSandbox", body, plan, pending_create["generation"])
             created = (reply or {}).get("sandbox")
             if not isinstance(created, dict):
-                raise ContractError("sandbox creation receipt unavailable; explicit recovery required")
+                raise ContractError("sandbox creation receipt unavailable; explicit recovery required",
+                                    safe_reason="SandboxStateMismatch")
             if existing and existing["metadata"]["id"] != created.get("metadata", {}).get("id"):
-                raise ContractError("same-name replacement detected during create replay")
+                raise ContractError("same-name replacement detected during create replay",
+                                    safe_reason="IdentityConflict")
             self._verify_sandbox(created, sandbox)
             self._identity("sandbox", ws["name"], sname, created, plan, state)
             del creates[ref]
@@ -426,7 +449,8 @@ class Reconciler:
         self._identity("sandbox", ws["name"], sname, existing, plan, state)
         phase = existing.get("status", {}).get("phase")
         if phase == "SANDBOX_PHASE_ERROR":
-            raise ContractError("sandbox reports an error; inspect through authorized diagnostics")
+            raise ContractError("sandbox reports an error; inspect through authorized diagnostics",
+                                safe_reason="SandboxRejected")
         target = "SANDBOX_PHASE_READY" if desired_state == "Running" else "SANDBOX_PHASE_STOPPED"
         if phase == target:
             return True
@@ -439,6 +463,7 @@ class Reconciler:
 
     def _verify_sandbox(self, observed, desired):
         if not self._sandbox_spec_matches(observed.get("spec", {}), desired["spec"]):
-            raise ContractError("sandbox configuration drift; migration is not implemented")
+            raise ContractError("sandbox configuration drift; migration is not implemented",
+                                safe_reason="SandboxDrift")
         if observed.get("metadata", {}).get("annotations", {}).get(REVISION) != desired["annotations"][REVISION]:
-            raise ContractError("sandbox desired revision mismatch")
+            raise ContractError("sandbox desired revision mismatch", safe_reason="SandboxDrift")

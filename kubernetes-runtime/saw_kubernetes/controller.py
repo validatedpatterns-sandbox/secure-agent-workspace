@@ -349,7 +349,10 @@ class Controller:
             if (previous.get("generation", 0) > intent["generation"]
                     or previous.get("generation") == intent["generation"] and previous.get("revision") != revision):
                 raise InputError("StaleOrConflictingGeneration")
-            plan = self.compile_files(copy.deepcopy(files), copy.deepcopy(intent["bindings"]))
+            try:
+                plan = self.compile_files(copy.deepcopy(files), copy.deepcopy(intent["bindings"]))
+            except ContractError:
+                raise InputError("ProfileRejected") from None
             if "planSHA256" in intent["profileRef"] and plan["revision"] != intent["profileRef"]["planSHA256"]:
                 raise InputError("CompiledPlanMismatch")
             if intent["desiredState"] == "Running":
@@ -394,13 +397,13 @@ class Controller:
             status["reason"] = exc.reason
         except MissingSandboxReceipt:
             status["reason"] = "StartToRecoverSandboxReceipt"
-        except ContractError:
-            status["reason"] = "CoreRejected"
+        except ContractError as exc:
+            status["reason"] = exc.safe_reason or "CoreRejected"
         except RpcError as exc:
             if exc.code in {"UNAVAILABLE", "DEADLINE_EXCEEDED", "ABORTED", "RESOURCE_EXHAUSTED"}:
                 status.update(phase="Retry", reason="CoreUnavailable")
             else:
-                status["reason"] = "CoreRejected"
+                status.update(reason="CoreRpcRejected", rpcCode=exc.code)
         except ApiError:
             failures = min(state.get("apiFailures", 0) + 1, 5)
             state["apiFailures"] = failures

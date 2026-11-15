@@ -1043,6 +1043,74 @@ def test_custom_inference_waits_for_the_webui_and_sandbox_ui(
                        "https://alice-default-notebook-ui.apps.example.com"]
 
 
+@pytest.mark.parametrize("reason,rpc_code,expected", [
+    ("GatewayMismatch", None, "Container reconciliation failed (GatewayMismatch)"),
+    ("CoreRpcRejected", "FAILED_PRECONDITION",
+     "Container reconciliation failed (OpenShell FAILED_PRECONDITION)"),
+    ("private-token", None, "Container reconciliation failed"),
+    (["private-token"], None, "Container reconciliation failed"),
+])
+def test_container_failure_report_shows_only_safe_reason_codes(portal, reason, rpc_code, expected):
+    workspace = portal._workspace
+
+    def digest(value):
+        encoded = workspace.json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+        return workspace.hashlib.sha256(encoded).hexdigest()
+
+    files = {"profiles__data-science__default__workspace.yaml": "workspace source"}
+    profile_uid = "profile-uid"
+    intent = {
+        "schemaVersion": 1,
+        "generation": 1,
+        "desiredState": "Running",
+        "profileRef": {"name": "saw-bom-profiles", "uid": profile_uid,
+                       "sha256": digest(files)},
+        "bindings": {"ownerSubject": "owner-subject", "namespace": "saw-alice",
+                     "mode": "container", "ownerID": "installation-id"},
+    }
+    runtime_status = {
+        "schemaVersion": 1,
+        "observedGeneration": 1,
+        "inputRevision": digest({"intent": intent, "files": files}),
+        "phase": "Blocked",
+        "reason": reason,
+    }
+    if rpc_code:
+        runtime_status["rpcCode"] = rpc_code
+    app = {
+        "metadata": {"labels": {"openshell.pattern/owner": "alice"}},
+        "status": {"sync": {"status": "Synced"}, "health": {"status": "Healthy"},
+                   "operationState": {"phase": "Succeeded"}},
+    }
+    resources = {
+        "/apis/argoproj.io/v1alpha1/namespaces/vp-gitops/applications/saw-alice": app,
+        "/api/v1/namespaces/saw-alice/configmaps/saw-runtime-intent": {
+            "metadata": {"labels": {"saw.redhat.com/runtime-owner": "installation-id"}},
+            "data": {"intent.json": json.dumps(intent)},
+        },
+        "/api/v1/namespaces/saw-alice/configmaps/saw-runtime-status": {
+            "metadata": {"labels": {"saw.redhat.com/runtime-owner": "installation-id",
+                                      "saw.redhat.com/managed-by": "kubernetes-runtime-controller"}},
+            "data": {"status.json": json.dumps(runtime_status)},
+        },
+        "/api/v1/namespaces/saw-alice/configmaps/saw-bom-profiles": {
+            "metadata": {"uid": profile_uid}, "data": files,
+        },
+    }
+    entry = {"name": "alice", "registration": "generation-1", "installationID": "installation-id",
+             "intentGeneration": 1,
+             "profiles": ["data-science"], "desiredState": "Running",
+             "values": {"deployment": {"mode": "container"}}}
+
+    result = workspace.container_status(
+        lambda path: resources.get(path), entry, {"subject": "owner-subject"},
+        "vp-gitops", "example.com", lambda _url: False,
+    )
+    assert result["failed"] is True
+    assert result["message"] == expected
+    assert "private-token" not in result["message"]
+
+
 def test_sandbox_uis_do_not_hide_an_unavailable_openshell_webui(portal, world):
     fake = world[0]
     fake.objects[REGISTRY] = {"metadata": {"name": "saw-ws-alice"},

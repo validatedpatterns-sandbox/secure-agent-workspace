@@ -25,8 +25,26 @@ IMAGE = re.compile(r"[^\s@]+@sha256:[0-9a-f]{64}\Z")
 QUANTITY = re.compile(r"[1-9][0-9]*(?:m|Ki|Mi|Gi|Ti)?\Z")
 
 
+SAFE_FAILURE_REASONS = frozenset({
+    "ProfileRejected", "InvalidPlan", "PlacementRejected", "IdentityConflict",
+    "InvalidIntent", "StaleIntent", "ReconcilerStateRejected", "GatewayMismatch",
+    "ProviderProfileMismatch",
+    "WorkspaceRejected", "ProviderRejected", "SandboxRejected",
+    "SandboxStateMismatch", "SandboxDrift",
+})
+
+
 class ContractError(ValueError):
-    """An input is invalid or requires an unimplemented capability."""
+    """An input is invalid or requires an unimplemented capability.
+
+    ``safe_reason`` is an optional, fixed code for status reporting. Exception
+    text can contain private values, so callers must never publish it.
+    """
+
+    def __init__(self, message, *, safe_reason=None):
+        super().__init__(message)
+        self.safe_reason = (safe_reason if isinstance(safe_reason, str)
+                            and safe_reason in SAFE_FAILURE_REASONS else None)
 
 
 def canonical(value):

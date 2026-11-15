@@ -7,3 +7,8 @@ clusterGroup:
         - name: portal.containerSitesSecretName
           value: saw-portal-container-sites
           forceString: true
+    governance-interceptor:
+      overrides:
+        - name: image
+          value: image-registry.openshift-image-registry.svc:5000/saw-component-builds/governance-interceptor@sha256:0a55721b3753c8895bb695fc2b1895d790c9ce65f1d868e6859b772c620b8c03
+          forceString: true

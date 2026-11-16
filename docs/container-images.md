@@ -30,14 +30,15 @@ the arm64 Podman disk ([arm64 guide](arm64.md)). The legacy
 `openshell-gateway-docker` disk is x86_64 only and publishes its tags directly;
 ARM clusters use the default Podman runtime.
 
-The OpenShell 0.1.6 public interceptor is published and pinned by #160.
+The OpenShell 0.1.6 public interceptor is published and pinned in
+`charts/governance-interceptor/values.yaml`.
 The credential and guest-shutdown corrections in #162/#164 are merged.
 Build provenance and validation are in the [release record](openshell-016-release.md).
 
 **Deployment hold:** [#165](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/165)
 can discard workspace data during automatic recovery. Resolve it and record
 remaining acceptance in [#157](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157)
-before merging the pin or deploying the upgrade. The earlier 0.1.2 image and
+before deploying the upgrade. The earlier 0.1.2 image and
 preliminary internal-registry build do not satisfy public-artifact acceptance.
 
 Pull requests build without registry credentials or pushing. Publishing is

@@ -1,16 +1,16 @@
 # OpenShell 0.1.6 release record
 
 The CLI, gateway, supervisor and sandbox BOM uses `0.1.6-rhaiv.4`. The
-interceptor pin in #160 supplies the matching published OpenShell `v0.1.6`
-image, including the provider-annotation workaround and driver-config guard.
+interceptor pinned in `charts/governance-interceptor/values.yaml` supplies the
+matching published OpenShell `v0.1.6` image, including the provider-annotation
+workaround and driver-config guard.
 
-**Deployment hold:** [#165](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/165)
-can discard workspace files and passwords during automatic recovery. Keep #160
-on hold until its fix and the remaining acceptance below are recorded in
-[#157](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157).
-The credential fix [#162](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/pull/162)
-and guest-shutdown fix [#164](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/pull/164)
-are merged; they do not clear this preservation blocker.
+**Deployment hold:** don't deploy the upgrade until
+[#165](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/165)
+is fixed and [#157](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157)
+records the final acceptance. [#162](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/pull/162)
+and [#164](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/pull/164)
+are merged; they don't fix #165.
 
 ## Published artifact
 
@@ -25,41 +25,37 @@ Anonymous checks on November 12, 2026 confirmed `v0.1.6` and
 `sha-fe19b46c29928e5d7bd6ad62440e591bb4907d3f` resolve to this index. Publishing
 remains main-only; PR builds do not push images or use registry credentials.
 
-## Validation checkpoint
+## Validation so far
 
-The November 12 clean README Option A install on OpenShift 4.22.22/amd64 used
-shipping source `7d8c8440ac76381e277a56e05121c05317ef58aa` and deployment inputs
-`bd7ce216c1a436af51cab10422df571214e10f52`, with the public chart default and no
-interceptor override. NetworkPolicy was enabled from first boot; web search
-and GPU hardware were disabled. All sixteen applications became Synced/Healthy.
-
-Initial real inference/UI and owner isolation, all three sandboxes' file-tool
-confinement, approval/rejection audit, credential/admin cleanup and reapply
-passed. Peer-required NetworkPolicy passed **36/36**. Initial local tests passed
-**2097 with 3 skips**; native publication tests covered the two Rust skips, and
-the other needs an APF bundle. These are historical results, not CI results for
-the rebased PR head.
-
-Follow-up guest shutdown and boot/reapply completed on both controls; all three
-gateways answered inference.
-C and D's notebook retained their original files/passwords/policy/identity.
-D's CUDA sandbox was automatically replaced and lost its original sentinel
-and password (#165); inference on its replacement is not preservation acceptance.
-The final peer check and a fresh install of the corrected runtime were not run.
-Detailed receipts and the unresolved original catalog/shutdown investigation
-remain in [#161](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/161).
+- November 12 clean README Option A install on OpenShift 4.22.22 with this pin
+  and no overrides: all 16 applications healthy. Inference, owner isolation,
+  file-tool confinement, approval audit, credential cleanup, reapply and
+  two-way NetworkPolicy (36/36) passed.
+- Restart testing found three problems: stale credentials (fixed in #162),
+  forced VM shutdown through the documented restart command (fixed in #164),
+  and sandbox data loss during recovery (#165, open).
+- Not yet tested: first boot with the #162 code, and upgrading a 0.1.2
+  deployment. Both are part of the final acceptance.
 
 ## Remaining rollout gate
 
-1. Resolve #165 with workspace preservation or a recovery hold that retains the
-   existing data; verify original files and passwords survive recovery.
-2. Complete focused combined restart/reapply acceptance: current inputs, healthy
-   consistent catalogs, real inference/tools, preserved identity/policy/confinement
-   and healthy two-way peer isolation. Reuse completed initial security evidence;
-   record any unperformed checks explicitly in #157.
-3. Require CI on the final pin PR head and record the accepted source/evidence
-   in #157 before merging or deploying. Clear deployment-hold notices in README,
-   this guide, container-image docs and chart comments only after acceptance.
+1. Fix #165: a sandbox recreated during recovery keeps its `/sandbox` files
+   and password, or nothing is deleted.
+2. Final acceptance on a fresh cluster, recorded in #157: install the
+   pre-0.1.6 release, upgrade to main, restart every VM, then add a new user.
+3. Remove the hold notices from README, this record, `docs/container-images.md`
+   and the chart comment.
+
+## Upgrading an existing deployment
+
+After the deployment hold is lifted:
+
+1. After Argo CD syncs, `make saw-restart-pending` lists the VMs waiting for a
+   restart. VMs install the new BOM only at boot.
+2. `make saw-restart-pending CONFIRM=yes` restarts each VM from inside the guest
+   ([VM shutdown and restart](vm-shutdown.md)). Open agent sessions end.
+3. For each VM, `make saw-status OPENSHELL_SAW_NAME=<name>` shows when boot
+   install and apply finish.
 
 ## Installer and tool permissions
 

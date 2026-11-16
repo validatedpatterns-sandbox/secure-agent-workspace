@@ -1,4 +1,5 @@
 """Render the same owner request through both Helm levels and the stock component charts."""
+import importlib.util
 from pathlib import Path
 import json
 import subprocess
@@ -75,14 +76,34 @@ def test_automatic_enrollment_cannot_read_secrets_or_mount_history():
     spec=j["spec"]["template"]["spec"]
     assert not any("persistentVolumeClaim" in v for v in spec["volumes"])
     assert not any("secret" in v for v in spec["volumes"])
-    public_ca = next(v for v in spec["volumes"] if v["name"] == "gateway-ca")
-    assert public_ca["configMap"]["name"] == U+"-gateway-ca"
+    assert "gateway-ca" not in {v["name"] for v in spec["volumes"]}
+    assert all(mount["name"] != "gateway-ca"
+               for container in spec["containers"] for mount in container.get("volumeMounts", []))
+    workspace_role, = [r for r in resources if r["kind"] == "Role"
+                       and r["metadata"]["namespace"] == "saw-"+U
+                       and r["metadata"]["name"] == "enroll-"+REG]
+    ca_rule, = [rule for rule in workspace_role["rules"]
+                if "configmaps" in rule["resources"] and "get" in rule["verbs"]]
+    assert U+"-gateway-ca" in ca_rule["resourceNames"]
     grants=[rule for r in resources if r["kind"] in ("Role","ClusterRole") and "enroll" in r["metadata"]["name"] for rule in r["rules"]]
     assert all("secrets" not in x["resources"] and "*" not in x["verbs"] for x in grants)
     assert [x["resourceNames"] for x in grants if "patch" in x["verbs"]]==[["saw-portal-enrollment"]]
     files=ROOT/"charts/saw-portal-container/files"
     assert (files/"receipt.py").read_bytes()==(ROOT/"kubernetes-runtime/saw_kubernetes/receipt.py").read_bytes()
+    assert (files/"gateway_ca.py").read_bytes()==(ROOT/"kubernetes-runtime/saw_kubernetes/gateway_ca.py").read_bytes()
     assert (files/"portal_contract.py").read_text()==(ROOT/"kubernetes-runtime/saw_kubernetes/portal_contract.py").read_text().replace("from .boundary import","from saw_kubernetes.boundary import")
+
+
+def test_runtime_controller_reads_only_the_named_public_gateway_ca():
+    values = yaml.safe_load((ROOT / "tests/fixtures/saw-kubernetes-controller-values.yaml").read_text())
+    docs = render("saw-kubernetes-controller", "alice", "saw-ci-trusted", values)
+    role, = [r for r in docs if r["kind"] == "Role" and r["metadata"]["namespace"] == "saw-alice"]
+    ca_rule, = [r for r in role["rules"] if "configmaps" in r["resources"] and "alice-gateway-ca" in r["resourceNames"]]
+    assert ca_rule["verbs"] == ["get"]
+    deployment, = [r for r in docs if r["kind"] == "Deployment"]
+    pod = deployment["spec"]["template"]["spec"]
+    assert "identity" not in {v["name"] for v in pod["volumes"]}
+    assert all(m["name"] != "identity" for c in pod["containers"] for m in c["volumeMounts"])
 
 
 def test_status_reader_keeps_rhdh_and_provisioner_access_with_static_observer():

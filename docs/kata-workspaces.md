@@ -235,6 +235,21 @@ oc -n vp-gitops get applications -o json | jq -r --arg prefix "saw-c-$REGISTRATI
   '.items[] | select(.metadata.name | startswith($prefix)) | [.metadata.name, .status.sync.status, .status.health.status] | @tsv'
 ```
 
+The enrollment Job and runtime controller run in `saw-ctl-<registration>`.
+The public gateway CA ConfigMap lives in the owner workspace namespace,
+`saw-<owner>`. A Pod volume cannot mount a ConfigMap from another namespace.
+Both components read the named CA ConfigMap through the Kubernetes API. Grant
+each ServiceAccount `get` on that ConfigMap name in the workspace namespace.
+Do not grant broad ConfigMap access. If the Job reaches `BackoffLimitExceeded`,
+check its Pod events for `FailedMount` and `Evicted` before retrying. A low
+ephemeral-storage eviction is a separate cluster resource issue; record it with
+the Job failure.
+
+The runtime controller publishes the immutable enrollment binding only after
+the Job completes. If the Job failed, expect no relay binding or Kata worker
+Pods. The Argo applications for the gateway and policy can be healthy while the
+workspace remains unavailable.
+
 An enrollment or relay binding Job can succeed before OpenClaw serves the
 browser UI. If the stock gateway reports that its supervisor is unavailable
 and suspends the workload, inspect the supervisor Pod events and the workload

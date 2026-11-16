@@ -13,6 +13,7 @@ from saw_kubernetes.intent import build_intent
 from preflight import PreflightError, api_resources_available, crd_established, verify_kata_platform
 from portal_contract import verify_contract
 from receipt import receipt_key
+from gateway_ca import read_public_ca
 
 S=Path("/var/run/secrets/kubernetes.io/serviceaccount")
 class NoRedirect(h.HTTPRedirectHandler):
@@ -123,7 +124,7 @@ def once(x):
     plan=compile_profile_files(profile["data"],bindings)
     KubernetesResourceVerifier(obj,lambda _:None)(plan)  # same snapshot verified above
     intent=json.loads(build_intent(profile,bindings,name="saw-runtime-intent",generation=1,pin_plan=True)["data"]["intent.json"])
-    public_ca=Path("/gateway-ca/ca.crt").read_text()
+    public_ca=read_public_ca(ns,u,ident,get)
     ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(cadata=public_ca)
     result=json.dumps(dict(registration=r,approved=approved,intent=intent,gatewayCA=public_ca),sort_keys=True)
     path=f"/api/v1/namespaces/{t}/configmaps/saw-portal-enrollment"

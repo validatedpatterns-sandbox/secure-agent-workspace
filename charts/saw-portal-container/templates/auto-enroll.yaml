@@ -11,7 +11,7 @@
 {{- $bootstrap := dict "registration" $r "installation" .Values.installationID "user" $g "subject" .Values.ownerSubject "governance" $gov "reference" $a.reference "profileSHA256" ($s.selectedDigest | default $a.profileSHA256) "targets" $targets "gatewayVersion" $gatewayVersion "customInferenceURL" ($s.customInferenceURL | default "") "providerPolicy" ($s.providerPolicy | default dict) "lifecycleVersion" ($s.lifecycleVersion | default 0) "modelInputs" ($s.modelInputs | default dict) "resources" $a.resources "domain" .Values.global.clusterDomain -}}
 {{- $scripts := (.Files.Glob "files/*.py").AsConfig -}}
 {{- with $s.kataRuntimeClass }}{{- $_ := set $bootstrap "kataRuntimeClass" . }}{{- end }}
-{{- $revision := dict "image" $a.image "config" $bootstrap "scripts" $scripts | toJson | sha256sum | trunc 12 -}}
+{{- $revision := dict "chartVersion" .Chart.Version "image" $a.image "config" $bootstrap "scripts" $scripts | toJson | sha256sum | trunc 12 -}}
 {{- $scriptName := printf "bootstrap-%s" $revision -}}
 apiVersion: v1
 kind: ServiceAccount
@@ -48,7 +48,7 @@ metadata: {name: {{ $name }}, namespace: {{ $ns }}}
 rules:
 {{- if eq $ns $n }}
   - {apiGroups: [rbac.authorization.k8s.io], resources: [roles], resourceNames: [{{ $g }}-gateway], verbs: [get]}
-  - {apiGroups: [""], resources: [configmaps], resourceNames: [saw-bom-profiles, {{ $g }}-gateway-config, {{ $g }}-proxy-ca], verbs: [get]}
+  - {apiGroups: [""], resources: [configmaps], resourceNames: [saw-bom-profiles, {{ $g }}-gateway-config, {{ $g }}-gateway-ca, {{ $g }}-proxy-ca], verbs: [get]}
   - {apiGroups: [""], resources: [persistentvolumeclaims], resourceNames: {{ include "portal.claims" $ }}, verbs: [get]}
   - {apiGroups: [apps], resources: [statefulsets], resourceNames: [{{ $g }}-gateway], verbs: [get]}
   - {apiGroups: [""], resources: [services], resourceNames: [{{ $g }}-gateway], verbs: [get]}
@@ -133,9 +133,8 @@ spec:
         image: {{ $a.image | quote }}
         command: [python3, /bootstrap/enroll.py]
         securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
-        volumeMounts: [{name: scripts, mountPath: /bootstrap, readOnly: true},{name: ca, mountPath: /writer-ca, readOnly: true},{name: gateway-ca, mountPath: /gateway-ca, readOnly: true}]
+        volumeMounts: [{name: scripts, mountPath: /bootstrap, readOnly: true},{name: ca, mountPath: /writer-ca, readOnly: true}]
       volumes:
       - {name: scripts, configMap: {name: {{ $scriptName }}}}
       - {name: ca, configMap: {name: openshift-service-ca.crt}}
-      - {name: gateway-ca, configMap: {name: {{ $g }}-gateway-ca, items: [{key: ca.crt, path: ca.crt}]}}
 {{- end }}

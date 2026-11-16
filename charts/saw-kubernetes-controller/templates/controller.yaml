@@ -55,7 +55,7 @@ rules:
   - {apiGroups: [rbac.authorization.k8s.io], resources: [roles], resourceNames: [{{ $g }}-gateway], verbs: [get]}
   # Public trust only; no private administrator identity is stored in this Secret.
   - {apiGroups: [""], resources: [secrets], resourceNames: [{{ $g }}-client-ca], verbs: [get, update]}
-  - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $c.profile }}, {{ $c.intent }}, {{ $g }}-gateway-config, {{ $g }}-proxy-ca], verbs: [get]}
+  - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $c.profile }}, {{ $c.intent }}, {{ $g }}-gateway-config, {{ $g }}-gateway-ca, {{ $g }}-proxy-ca], verbs: [get]}
   - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $c.intent }}], verbs: [watch]}
   - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $c.status }}], verbs: [get, update]}
   - {apiGroups: [""], resources: [persistentvolumeclaims], resourceNames: {{ $.Values.claimNames | toJson }}, verbs: [get]}
@@ -123,13 +123,11 @@ spec:
           - {name: POD_UID, valueFrom: {fieldRef: {fieldPath: metadata.uid}}}
         volumeMounts:
           - {name: config, mountPath: /config, readOnly: true}
-          - {name: identity, mountPath: /identity, readOnly: true}
           - {name: api, mountPath: /var/run/secrets/kubernetes.io/serviceaccount, readOnly: true}
           - {name: state, mountPath: /state}
           - {name: admin-session, mountPath: /run/saw-admin}
       volumes:
         - {name: config, configMap: {name: {{ $name }}}}
-        - {name: identity, configMap: {name: {{ $g }}-gateway-ca, defaultMode: 0440}}
         - {name: admin-session, emptyDir: {medium: Memory, sizeLimit: 4Mi}}
         - {name: state, persistentVolumeClaim: {claimName: {{ $.Values.stateClaim }}}}
         - name: api

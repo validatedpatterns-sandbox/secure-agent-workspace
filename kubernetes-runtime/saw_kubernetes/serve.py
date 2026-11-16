@@ -9,6 +9,7 @@ from .admin_session import GatewaySessions, TrustBundle
 from .boundary import verify
 from .compiler import compile_profile_files, ContractError
 from .controller import ConfigMapClient, Controller, Scope, NAME
+from .gateway_ca import read_public_ca
 from .reconcile import Reconciler
 
 
@@ -38,8 +39,9 @@ def main():
         verify(config, plan, get)
     resources = KubernetesResourceVerifier(read, boundary)
     endpoint = f"https://{config['gateway']}-gateway.{scope.namespace}.svc:17670"
+    public_ca = read_public_ca(scope.namespace, config["gateway"], scope.owner_id, get)
     trust = TrustBundle(api.request, scope.namespace, config["trustedNamespace"], config["gateway"],
-                        scope.owner_id, Path("/identity/ca.crt").read_bytes(),
+                        scope.owner_id, public_ca.encode("ascii"),
                         os.environ["POD_NAME"], os.environ["POD_UID"])
     sessions = GatewaySessions(trust, endpoint)
     state = Path("/state")

@@ -15,6 +15,7 @@ from portal_contract import verify_contract
 from receipt import receipt_key
 from gateway_ca import read_public_ca
 from http_errors import format_http_error
+from kube_api import request_headers
 
 S=Path("/var/run/secrets/kubernetes.io/serviceaccount")
 class NoRedirect(h.HTTPRedirectHandler):
@@ -22,7 +23,7 @@ class NoRedirect(h.HTTPRedirectHandler):
 client=h.build_opener(h.ProxyHandler({}),NoRedirect(),h.HTTPSHandler(context=ssl.create_default_context(cafile=str(S/"ca.crt"))))
 def api(path, patch=None):
     req=h.Request("https://kubernetes.default.svc"+path,method="PATCH" if patch is not None else "GET",
-        headers={"Authorization":"Bearer "+(S/"token").read_text().strip(),"Content-Type":"application/merge-patch+json"},data=json.dumps(patch).encode() if patch is not None else None)
+        headers=request_headers((S/"token").read_text().strip(), patch is not None),data=json.dumps(patch).encode() if patch is not None else None)
     with client.open(req,timeout=9) as response:return json.load(response)
 
 def once(x):

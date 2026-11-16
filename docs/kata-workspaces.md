@@ -148,7 +148,9 @@ the immutable runtime binding. A failure stops the request with a fixed reason.
 When an API request fails, the enrollment log shows its HTTP status and
 Kubernetes API path. It does not show the response body, headers, or query
 parameters. Use that status and path to check the matching API permission or
-resource. Other errors keep the current type-only log.
+resource. GET requests send an `Accept` header only. PATCH requests also send
+the merge-patch `Content-Type`. A `415` on API discovery can point to a wrong
+request content type. Other errors keep the current type-only log.
 The read-only Make command also needs the Argo-managed installation namespace
 to exist so the API server can validate namespaced resources. On a first
 `make saw-create`, platform checks run first; the command then creates that

@@ -95,7 +95,7 @@ def test_automatic_enrollment_cannot_read_secrets_or_mount_history():
     script_config, = [resource for resource in resources
                        if resource["kind"] == "ConfigMap"
                        and resource["metadata"]["name"] == script_volume["configMap"]["name"]]
-    assert "http_errors.py" in script_config["data"]
+    assert {"http_errors.py", "kube_api.py"} <= set(script_config["data"])
     grants=[rule for r in resources if r["kind"] in ("Role","ClusterRole") and "enroll" in r["metadata"]["name"] for rule in r["rules"]]
     assert all("secrets" not in x["resources"] and "*" not in x["verbs"] for x in grants)
     assert [x["resourceNames"] for x in grants if "patch" in x["verbs"]]==[["saw-portal-enrollment"]]

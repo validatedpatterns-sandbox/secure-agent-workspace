@@ -266,6 +266,17 @@ def crd_established(obj):
         and condition.get("status") == "True" for condition in conditions)
 
 
+def api_resources_available(discovery, group_version, resource_names):
+    """Check served API resources from discovery, including built-in APIs."""
+    if not isinstance(discovery, dict) or discovery.get("groupVersion") != group_version:
+        return False
+    resources = discovery.get("resources")
+    if not isinstance(resources, list):
+        return False
+    available = {item.get("name") for item in resources if isinstance(item, dict)}
+    return set(resource_names).issubset(available)
+
+
 def cluster_version_ready(obj):
     try:
         verify_cluster_version(obj)
@@ -307,15 +318,15 @@ def _matches_selector(labels, selector):
     return bool(selector) and all(labels.get(key) == value for key, value in selector.items())
 
 
-def verify_kata_platform(site, runtime_class, kata_configs, nodes, required_crds,
+def verify_kata_platform(site, runtime_class, kata_configs, nodes, api_readiness,
                          cluster_version):
     """Check live Kata prerequisites from read-only Kubernetes API snapshots."""
     verify_cluster_version(cluster_version)
     approved = site.get("kataRuntimeClass") if isinstance(site, dict) else None
     check_runtime_class(approved, runtime_class)
-    if not isinstance(required_crds, dict):
+    if not isinstance(api_readiness, dict):
         raise PreflightError("AgentSandboxUnavailable")
-    if required_crds.get("kataconfigs.kataconfiguration.openshift.io") is not True:
+    if api_readiness.get("kataconfigs.kataconfiguration.openshift.io") is not True:
         raise PreflightError("SandboxedContainersUnavailable")
     if not isinstance(kata_configs, list):
         raise PreflightError("KataConfigNotReady")
@@ -354,10 +365,12 @@ def verify_kata_platform(site, runtime_class, kata_configs, nodes, required_crds
             eligible.append(metadata.get("name"))
     if not eligible or not set(eligible).intersection(installed_nodes):
         raise PreflightError("KataWorkersNotReady")
-    if any(required_crds.get(name) is not True for name in (
-            "sandboxes.agents.x-k8s.io",
-            "externalsecrets.external-secrets.io",
-            "adminnetworkpolicies.policy.networking.k8s.io",
-            "validatingadmissionpolicies.admissionregistration.k8s.io")):
+    if api_readiness.get("sandboxes.agents.x-k8s.io") is not True:
         raise PreflightError("AgentSandboxUnavailable")
+    if api_readiness.get("externalsecrets.external-secrets.io") is not True:
+        raise PreflightError("SecretServicesUnavailable")
+    if api_readiness.get("adminnetworkpolicies.policy.networking.k8s.io") is not True:
+        raise PreflightError("NetworkPolicyRejected")
+    if api_readiness.get("admissionregistration.k8s.io/v1") is not True:
+        raise PreflightError("AdmissionUnavailable")
     return tuple(sorted(eligible))

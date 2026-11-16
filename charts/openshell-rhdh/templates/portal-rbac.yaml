@@ -205,7 +205,6 @@ rules:
       - sandboxes.agents.x-k8s.io
       - externalsecrets.external-secrets.io
       - adminnetworkpolicies.policy.networking.k8s.io
-      - validatingadmissionpolicies.admissionregistration.k8s.io
     verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

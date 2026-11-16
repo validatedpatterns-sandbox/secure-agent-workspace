@@ -747,19 +747,24 @@ def check_workspace_preflight(k8s, user, site, mode):
         raise PortalError("Workspace preflight failed: " + exc.reason) from None
     crd_names = ("applications.argoproj.io", "applicationsets.argoproj.io",
                  "sandboxes.agents.x-k8s.io", "externalsecrets.external-secrets.io",
-                 "adminnetworkpolicies.policy.networking.k8s.io",
-                 "validatingadmissionpolicies.admissionregistration.k8s.io")
-    crds = {}
+                 "adminnetworkpolicies.policy.networking.k8s.io")
+    api_readiness = {}
     try:
         for crd_name in crd_names:
-            crds[crd_name] = _preflight.crd_established(k8s.call(
+            api_readiness[crd_name] = _preflight.crd_established(k8s.call(
                 "GET", "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/" + crd_name,
                 ok404=True))
+        admission_discovery = k8s.call("GET", "/apis/admissionregistration.k8s.io/v1", ok404=True)
+        api_readiness["admissionregistration.k8s.io/v1"] = (
+            _preflight.api_resources_available(
+                admission_discovery, "admissionregistration.k8s.io/v1",
+                ("validatingadmissionpolicies", "validatingadmissionpolicybindings")))
     except Exception:
         raise PortalError("Workspace preflight failed: PlatformApiUnavailable") from None
-    observations["agentSandbox"] = crds["sandboxes.agents.x-k8s.io"]
-    observations["admission"] = (crds["adminnetworkpolicies.policy.networking.k8s.io"]
-                                  and crds["validatingadmissionpolicies.admissionregistration.k8s.io"])
+    observations["agentSandbox"] = api_readiness["sandboxes.agents.x-k8s.io"]
+    observations["admission"] = api_readiness["admissionregistration.k8s.io/v1"]
+    observations["network"] = (observations.get("network") is True
+                                and api_readiness["adminnetworkpolicies.policy.networking.k8s.io"])
     try:
         storage = k8s.call("GET", "/apis/storage.k8s.io/v1/storageclasses").get("items", [])
         _preflight.verify_storage_classes(site, storage)
@@ -778,15 +783,15 @@ def check_workspace_preflight(k8s, user, site, mode):
                      insecure=os.environ.get("VAULT_SKIP_VERIFY") == "true")
         health = vault.call("GET", "/v1/sys/health?standbyok=true&perfstandbyok=true")
         observations["secrets"] = (observations.get("secrets") is not False
-                                     and crds["externalsecrets.external-secrets.io"]
+                                     and api_readiness["externalsecrets.external-secrets.io"]
                                      and _preflight.vault_health_ready(health))
     except Exception:
         observations["secrets"] = False
     try:
         argo = env("ARGO_NAMESPACE")
         k8s.call("GET", f"/apis/argoproj.io/v1alpha1/namespaces/{argo}/applications/saw-{user}", ok404=True)
-        observations["argo"] = (crds["applications.argoproj.io"]
-                                 and crds["applicationsets.argoproj.io"])
+        observations["argo"] = (api_readiness["applications.argoproj.io"]
+                                 and api_readiness["applicationsets.argoproj.io"])
     except Exception:
         observations["argo"] = False
     if mode == "kata":
@@ -798,10 +803,11 @@ def check_workspace_preflight(k8s, user, site, mode):
             configs = k8s.call("GET", "/apis/kataconfiguration.openshift.io/v1/kataconfigs").get("items", [])
             nodes = k8s.call("GET", "/api/v1/nodes").get("items", [])
             kata_crd = "kataconfigs.kataconfiguration.openshift.io"
-            crds[kata_crd] = _preflight.crd_established(k8s.call(
+            api_readiness[kata_crd] = _preflight.crd_established(k8s.call(
                 "GET", "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/" + kata_crd,
                 ok404=True))
-            _preflight.verify_kata_platform(site, runtime_class, configs, nodes, crds, cluster_version)
+            _preflight.verify_kata_platform(site, runtime_class, configs, nodes,
+                                            api_readiness, cluster_version)
             observations.update(osc=True, kataConfig=True, workers=True, runtimeClass=True)
         except _preflight.PreflightError as exc:
             raise PortalError("Kata preflight failed: " + exc.reason) from None

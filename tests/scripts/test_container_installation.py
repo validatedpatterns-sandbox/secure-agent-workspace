@@ -100,6 +100,12 @@ def test_preflight_fails_without_required_api_and_never_installs_dependency(monk
     run_calls = []
     def run(*args, **kwargs):
         run_calls.append(args)
+        if args == ("oc", "get", "--raw", "/apis/admissionregistration.k8s.io/v1"):
+            return json.dumps({
+                "groupVersion": "admissionregistration.k8s.io/v1",
+                "resources": [{"name": "validatingadmissionpolicies"},
+                              {"name": "validatingadmissionpolicybindings"}],
+            })
         if args[:3] == ("oc", "get", "storageclasses"):
             return json.dumps({"items": [
                 {"metadata": {"name": "block"}},

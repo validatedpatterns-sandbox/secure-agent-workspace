@@ -10,7 +10,7 @@ from saw_kubernetes.adapters import KubernetesResourceVerifier
 from saw_kubernetes.audit import capture
 from saw_kubernetes.compiler import compile_profile_files, digest
 from saw_kubernetes.intent import build_intent
-from preflight import PreflightError, crd_established, verify_kata_platform
+from preflight import PreflightError, api_resources_available, crd_established, verify_kata_platform
 from portal_contract import verify_contract
 from receipt import receipt_key
 
@@ -53,16 +53,23 @@ def once(x):
         except urllib.error.HTTPError as exc:
             if exc.code == 404:raise PreflightError("ClusterVersionUnavailable") from None
             raise
-        crds={}
+        api_readiness={}
         for name in ("kataconfigs.kataconfiguration.openshift.io", "sandboxes.agents.x-k8s.io",
-                     "externalsecrets.external-secrets.io", "adminnetworkpolicies.policy.networking.k8s.io",
-                     "validatingadmissionpolicies.admissionregistration.k8s.io"):
+                     "externalsecrets.external-secrets.io", "adminnetworkpolicies.policy.networking.k8s.io"):
             try:
-                crds[name]=crd_established(api("/apis/apiextensions.k8s.io/v1/customresourcedefinitions/"+name))
+                api_readiness[name]=crd_established(api("/apis/apiextensions.k8s.io/v1/customresourcedefinitions/"+name))
             except urllib.error.HTTPError as exc:
-                if exc.code == 404:crds[name]=False
+                if exc.code == 404:api_readiness[name]=False
                 else:raise
-        verify_kata_platform(x, runtime_class, configs, nodes, crds, cluster_version)
+        try:
+            admission_discovery=api("/apis/admissionregistration.k8s.io/v1")
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:admission_discovery={}
+            else:raise
+        api_readiness["admissionregistration.k8s.io/v1"] = api_resources_available(
+            admission_discovery, "admissionregistration.k8s.io/v1",
+            ("validatingadmissionpolicies", "validatingadmissionpolicybindings"))
+        verify_kata_platform(x, runtime_class, configs, nodes, api_readiness, cluster_version)
     cfg=dict(namespace=ns,namespaceUID=nsobj["uid"],ownerID=ident,mode=mode,trustedNamespace=t,
              governanceNamespace=x["governance"],gateway=u,proxyPolicy=u+"-proxy-policy",slotKeys=sorted(x["targets"]))
     if runtime: cfg["workloadRuntimeClass"]=runtime["name"]

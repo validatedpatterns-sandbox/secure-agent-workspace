@@ -126,21 +126,30 @@ def preflight(config, namespace, user):
         version = get("clusterversion", "version")
         preflight_checks.verify_cluster_version(version)
         observations["version"] = True
-        crds = {name: preflight_checks.crd_established(get("crd", name)) for name in (
+        api_readiness = {name: preflight_checks.crd_established(get("crd", name)) for name in (
             "applications.argoproj.io", "applicationsets.argoproj.io", "sandboxes.agents.x-k8s.io",
             "externalsecrets.external-secrets.io", "adminnetworkpolicies.policy.networking.k8s.io",
-            "validatingadmissionpolicies.admissionregistration.k8s.io")}
-        observations["agentSandbox"] = crds["sandboxes.agents.x-k8s.io"]
-        observations["admission"] = (crds["adminnetworkpolicies.policy.networking.k8s.io"]
-                                      and crds["validatingadmissionpolicies.admissionregistration.k8s.io"])
+        )}
+        try:
+            admission_discovery = json.loads(run("oc", "get", "--raw", "/apis/admissionregistration.k8s.io/v1"))
+        except (InstallError, json.JSONDecodeError):
+            admission_discovery = {}
+        api_readiness["admissionregistration.k8s.io/v1"] = (
+            preflight_checks.api_resources_available(
+                admission_discovery, "admissionregistration.k8s.io/v1",
+                ("validatingadmissionpolicies", "validatingadmissionpolicybindings")))
+        observations["agentSandbox"] = api_readiness["sandboxes.agents.x-k8s.io"]
+        observations["admission"] = api_readiness["admissionregistration.k8s.io/v1"]
+        observations["network"] = (observations.get("network") is True
+                                    and api_readiness["adminnetworkpolicies.policy.networking.k8s.io"])
         storage = json.loads(run("oc", "get", "storageclasses", "-o", "json"))["items"]
         preflight_checks.verify_storage_classes(site, storage)
         observations["storage"] = True
         store = get("clustersecretstore", preflight_checks.secret_store_name(site))
         preflight_checks.verify_secret_store(site, [store] if store else [])
-        observations["secrets"] = crds["externalsecrets.external-secrets.io"]
-        observations["argo"] = (crds["applications.argoproj.io"]
-                                and crds["applicationsets.argoproj.io"]
+        observations["secrets"] = api_readiness["externalsecrets.external-secrets.io"]
+        observations["argo"] = (api_readiness["applications.argoproj.io"]
+                                and api_readiness["applicationsets.argoproj.io"]
                                 and all(
             run("oc", "auth", "can-i", verb, resource, "-n", argo).strip() == "yes"
             for resource in ("applications.argoproj.io", "applicationsets.argoproj.io")
@@ -155,8 +164,9 @@ def preflight(config, namespace, user):
             configs = json.loads(run("oc", "get", "kataconfigs", "-o", "json"))["items"]
             nodes = json.loads(run("oc", "get", "nodes", "-o", "json"))["items"]
             kata_crd = "kataconfigs.kataconfiguration.openshift.io"
-            crds[kata_crd] = preflight_checks.crd_established(get("crd", kata_crd))
-            preflight_checks.verify_kata_platform(site, runtime, configs, nodes, crds, version)
+            api_readiness[kata_crd] = preflight_checks.crd_established(get("crd", kata_crd))
+            preflight_checks.verify_kata_platform(site, runtime, configs, nodes,
+                                                  api_readiness, version)
             placement = (runtime.get("scheduling") or {}).get("nodeSelector") or {}
             selector = ",".join(f"{key}={value}" for key, value in sorted(placement.items()))
             try:

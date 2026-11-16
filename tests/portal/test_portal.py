@@ -474,10 +474,14 @@ def world(portal, monkeypatch, tmp_path):
     for crd_name in ("applications.argoproj.io", "applicationsets.argoproj.io",
                      "sandboxes.agents.x-k8s.io", "externalsecrets.external-secrets.io",
                      "adminnetworkpolicies.policy.networking.k8s.io",
-                     "validatingadmissionpolicies.admissionregistration.k8s.io",
                      "kataconfigs.kataconfiguration.openshift.io"):
         fake.objects["/apis/apiextensions.k8s.io/v1/customresourcedefinitions/" + crd_name] = {
             "status": {"conditions": [{"type": "Established", "status": "True"}]}}
+    fake.objects["/apis/admissionregistration.k8s.io/v1"] = {
+        "groupVersion": "admissionregistration.k8s.io/v1",
+        "resources": [{"name": "validatingadmissionpolicies"},
+                      {"name": "validatingadmissionpolicybindings"}],
+    }
     fake.objects["/apis/storage.k8s.io/v1/storageclasses"] = {"items": [{
         "metadata": {"name": "test-default",
                      "annotations": {"storageclass.kubernetes.io/is-default-class": "true"}}}]}

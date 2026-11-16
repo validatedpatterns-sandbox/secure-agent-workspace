@@ -187,6 +187,27 @@ def test_portal_chart_uses_the_shared_preflight_source():
     assert portal_copy.read_bytes() == MODULE_PATH.read_bytes()
 
 
+@pytest.mark.parametrize(("discovery", "available"), [
+    ({"groupVersion": "admissionregistration.k8s.io/v1", "resources": [
+        {"name": "validatingadmissionpolicies"},
+        {"name": "validatingadmissionpolicybindings"},
+    ]}, True),
+    ({"groupVersion": "admissionregistration.k8s.io/v1", "resources": [
+        {"name": "validatingadmissionpolicies"},
+    ]}, False),
+    ({"groupVersion": "admissionregistration.k8s.io/v1beta1", "resources": [
+        {"name": "validatingadmissionpolicies"},
+        {"name": "validatingadmissionpolicybindings"},
+    ]}, False),
+    ({"resources": []}, False),
+])
+def test_admission_api_availability_uses_discovery(discovery, available):
+    assert preflight.api_resources_available(
+        discovery, "admissionregistration.k8s.io/v1",
+        ("validatingadmissionpolicies", "validatingadmissionpolicybindings"),
+    ) is available
+
+
 def test_kata_platform_requires_ready_cluster_kataconfig_workers_and_apis():
     observed, approved = runtime_class()
     site = {"kataRuntimeClass": approved}
@@ -201,14 +222,15 @@ def test_kata_platform_requires_ready_cluster_kataconfig_workers_and_apis():
         "status": {"conditions": [{"type": "Ready", "status": "True"}]},
         "spec": {},
     }]
-    crds = {name: True for name in (
+    api_readiness = {name: True for name in (
         "kataconfigs.kataconfiguration.openshift.io", "sandboxes.agents.x-k8s.io",
         "externalsecrets.external-secrets.io", "adminnetworkpolicies.policy.networking.k8s.io",
-        "validatingadmissionpolicies.admissionregistration.k8s.io",
+        "admissionregistration.k8s.io/v1",
     )}
     version = {"status": {"conditions": [{"type": "Available", "status": "True"}],
                           "desired": {"version": "4.22.22"}}}
-    assert preflight.verify_kata_platform(site, observed, configs, nodes, crds, version) == ("worker-a",)
+    assert preflight.verify_kata_platform(site, observed, configs, nodes,
+                                          api_readiness, version) == ("worker-a",)
 
 
 def test_kata_platform_rejects_no_ready_node_in_approved_placement():
@@ -233,7 +255,7 @@ def test_kata_platform_rejects_no_ready_node_in_approved_placement():
             {name: True for name in (
                 "kataconfigs.kataconfiguration.openshift.io", "sandboxes.agents.x-k8s.io",
                 "externalsecrets.external-secrets.io", "adminnetworkpolicies.policy.networking.k8s.io",
-                "validatingadmissionpolicies.admissionregistration.k8s.io",
+                "admissionregistration.k8s.io/v1",
             )},
             version,
         )

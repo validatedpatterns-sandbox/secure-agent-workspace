@@ -25,7 +25,7 @@ rules:
   - {apiGroups: [""], resources: [nodes], verbs: [list]}
   - {apiGroups: [config.openshift.io], resources: [clusterversions], resourceNames: [version], verbs: [get]}
   - {apiGroups: [kataconfiguration.openshift.io], resources: [kataconfigs], verbs: [list]}
-  - {apiGroups: [apiextensions.k8s.io], resources: [customresourcedefinitions], resourceNames: [kataconfigs.kataconfiguration.openshift.io, sandboxes.agents.x-k8s.io, externalsecrets.external-secrets.io, adminnetworkpolicies.policy.networking.k8s.io, validatingadmissionpolicies.admissionregistration.k8s.io], verbs: [get]}
+  - {apiGroups: [apiextensions.k8s.io], resources: [customresourcedefinitions], resourceNames: [kataconfigs.kataconfiguration.openshift.io, sandboxes.agents.x-k8s.io, externalsecrets.external-secrets.io, adminnetworkpolicies.policy.networking.k8s.io], verbs: [get]}
 {{- with $s.kataRuntimeClass }}
   - {apiGroups: [node.k8s.io], resources: [runtimeclasses], resourceNames: [{{ .name | quote }}], verbs: [get]}
   - {apiGroups: [admissionregistration.k8s.io], resources: [validatingadmissionpolicies, validatingadmissionpolicybindings], resourceNames: [{{ $policy }}-kata], verbs: [get]}

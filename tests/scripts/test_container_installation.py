@@ -78,14 +78,45 @@ def test_update_cannot_adopt_another_registration(field):
 
 
 def test_preflight_fails_without_required_api_and_never_installs_dependency(monkeypatch):
+    config = inputs()
+    user = install.select(config, "alice")[1]
     calls = []
     def get(kind, name, namespace=None):
         calls.append((kind, name))
-        return None if name == "sandboxes.agents.x-k8s.io" else {"metadata": {}}
+        if kind == "namespace":
+            return None
+        if kind == "clusterversion":
+            return {"status": {"conditions": [{"type": "Available", "status": "True"}],
+                               "desired": {"version": "4.22.18"}}}
+        if kind == "crd":
+            if name == "sandboxes.agents.x-k8s.io":
+                return None
+            return {"status": {"conditions": [{"type": "Established", "status": "True"}]}}
+        if kind == "clustersecretstore":
+            return {"metadata": {"name": name},
+                    "status": {"conditions": [{"type": "Ready", "status": "True"}]}}
+        raise AssertionError(f"unexpected read: {kind} {name}")
+
+    run_calls = []
+    def run(*args, **kwargs):
+        run_calls.append(args)
+        if args[:3] == ("oc", "get", "storageclasses"):
+            return json.dumps({"items": [
+                {"metadata": {"name": "block"}},
+                {"metadata": {"name": "block-immediate"}},
+                {"metadata": {"name": "shared-filesystem"}},
+            ]})
+        if args[:3] == ("oc", "auth", "can-i"):
+            return "yes"
+        raise AssertionError(f"unexpected command: {args}")
+
     monkeypatch.setattr(install, "get", get)
-    with pytest.raises(install.InstallError, match="sandboxes.agents.x-k8s.io"):
-        install.preflight(inputs(), "workspaces")
-    assert calls and all(kind == "crd" for kind, name in calls)
+    monkeypatch.setattr(install, "run", run)
+    with pytest.raises(install.InstallError, match="AgentSandboxUnavailable"):
+        install.preflight(config, "workspaces", user)
+    assert ("crd", "sandboxes.agents.x-k8s.io") in calls
+    assert all(args[:2] not in (("oc", "apply"), ("oc", "create"), ("oc", "delete"))
+               for args in run_calls)
 
 
 def test_namespace_create_is_explicit_and_never_patches_existing_namespace(monkeypatch):

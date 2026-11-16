@@ -55,7 +55,7 @@ rules:
   - {apiGroups: [rbac.authorization.k8s.io], resources: [roles], resourceNames: [{{ $g }}-gateway], verbs: [get]}
   # Public trust only; no private administrator identity is stored in this Secret.
   - {apiGroups: [""], resources: [secrets], resourceNames: [{{ $g }}-client-ca], verbs: [get, update]}
-  - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $c.profile }}, {{ $c.intent }}, {{ $g }}-gateway-config, {{ $g }}-gateway-ca, {{ $g }}-proxy-ca], verbs: [get]}
+  - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $c.profile }}, {{ $c.intent }}, {{ $g }}-gateway-config, {{ $g }}-proxy-ca], verbs: [get]}
   - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $c.intent }}], verbs: [watch]}
   - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $c.status }}], verbs: [get, update]}
   - {apiGroups: [""], resources: [persistentvolumeclaims], resourceNames: {{ $.Values.claimNames | toJson }}, verbs: [get]}
@@ -66,7 +66,7 @@ rules:
   - {apiGroups: [""], resources: [pods], verbs: [get]}
   - {apiGroups: [apps], resources: [deployments], resourceNames: [{{ $g }}-credential-proxy], verbs: [get]}
   - {apiGroups: [networking.k8s.io], resources: [networkpolicies], resourceNames: [{{ $g }}-credential-proxy], verbs: [get]}
-  - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $c.proxyPolicy }}], verbs: [get]}
+  - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $c.proxyPolicy }}, {{ $g }}-gateway-ca], verbs: [get]}
 {{- else }}
   - {apiGroups: [apps], resources: [deployments], resourceNames: [governance-interceptor], verbs: [get]}
   - {apiGroups: [""], resources: [services], resourceNames: [governance-interceptor], verbs: [get]}

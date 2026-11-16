@@ -39,7 +39,7 @@ def main():
         verify(config, plan, get)
     resources = KubernetesResourceVerifier(read, boundary)
     endpoint = f"https://{config['gateway']}-gateway.{scope.namespace}.svc:17670"
-    public_ca = read_public_ca(scope.namespace, config["gateway"], scope.owner_id, get)
+    public_ca = read_public_ca(config["trustedNamespace"], config["gateway"], scope.owner_id, get)
     trust = TrustBundle(api.request, scope.namespace, config["trustedNamespace"], config["gateway"],
                         scope.owner_id, public_ca.encode("ascii"),
                         os.environ["POD_NAME"], os.environ["POD_UID"])

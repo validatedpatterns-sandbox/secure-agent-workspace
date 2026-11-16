@@ -235,15 +235,16 @@ oc -n vp-gitops get applications -o json | jq -r --arg prefix "saw-c-$REGISTRATI
   '.items[] | select(.metadata.name | startswith($prefix)) | [.metadata.name, .status.sync.status, .status.health.status] | @tsv'
 ```
 
-The enrollment Job and runtime controller run in `saw-ctl-<registration>`.
-The public gateway CA ConfigMap lives in the owner workspace namespace,
-`saw-<owner>`. A Pod volume cannot mount a ConfigMap from another namespace.
-Both components read the named CA ConfigMap through the Kubernetes API. Grant
-each ServiceAccount `get` on that ConfigMap name in the workspace namespace.
-Do not grant broad ConfigMap access. If the Job reaches `BackoffLimitExceeded`,
-check its Pod events for `FailedMount` and `Evicted` before retrying. A low
-ephemeral-storage eviction is a separate cluster resource issue; record it with
-the Job failure.
+The identity bootstrap creates the public gateway CA ConfigMap in
+`saw-ctl-<registration>`. The enrollment Job and runtime controller also run
+there. Separate Argo applications can start these components at different
+times. A volume mount can fail before identity bootstrap creates the ConfigMap.
+Both components read the named CA through the Kubernetes API and retry if it is
+not ready. Grant each ServiceAccount `get` on that ConfigMap name in the
+control namespace. Do not grant broad ConfigMap access. If the Job reaches
+`BackoffLimitExceeded`, check its Pod events for `FailedMount` and `Evicted`
+before retrying. A low ephemeral-storage eviction is a separate cluster
+resource issue; record it with the Job failure.
 
 The runtime controller publishes the immutable enrollment binding only after
 the Job completes. If the Job failed, expect no relay binding or Kata worker

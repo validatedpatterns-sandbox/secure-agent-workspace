@@ -48,7 +48,7 @@ metadata: {name: {{ $name }}, namespace: {{ $ns }}}
 rules:
 {{- if eq $ns $n }}
   - {apiGroups: [rbac.authorization.k8s.io], resources: [roles], resourceNames: [{{ $g }}-gateway], verbs: [get]}
-  - {apiGroups: [""], resources: [configmaps], resourceNames: [saw-bom-profiles, {{ $g }}-gateway-config, {{ $g }}-gateway-ca, {{ $g }}-proxy-ca], verbs: [get]}
+  - {apiGroups: [""], resources: [configmaps], resourceNames: [saw-bom-profiles, {{ $g }}-gateway-config, {{ $g }}-proxy-ca], verbs: [get]}
   - {apiGroups: [""], resources: [persistentvolumeclaims], resourceNames: {{ include "portal.claims" $ }}, verbs: [get]}
   - {apiGroups: [apps], resources: [statefulsets], resourceNames: [{{ $g }}-gateway], verbs: [get]}
   - {apiGroups: [""], resources: [services], resourceNames: [{{ $g }}-gateway], verbs: [get]}
@@ -56,7 +56,7 @@ rules:
 {{- else if eq $ns $t }}
   - {apiGroups: [apps], resources: [deployments], resourceNames: [{{ $g }}-credential-proxy], verbs: [get]}
   - {apiGroups: [networking.k8s.io], resources: [networkpolicies], resourceNames: [{{ $g }}-credential-proxy], verbs: [get]}
-  - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $g }}-proxy-policy, {{ $g }}-proxy-ca], verbs: [get]}
+  - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $g }}-proxy-policy, {{ $g }}-proxy-ca, {{ $g }}-gateway-ca], verbs: [get]}
   - {apiGroups: [""], resources: [configmaps], resourceNames: [saw-portal-enrollment], verbs: [get, patch]}
 {{- else }}
   - {apiGroups: [apps], resources: [deployments], resourceNames: [governance-interceptor], verbs: [get]}

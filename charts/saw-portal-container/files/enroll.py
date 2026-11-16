@@ -124,7 +124,7 @@ def once(x):
     plan=compile_profile_files(profile["data"],bindings)
     KubernetesResourceVerifier(obj,lambda _:None)(plan)  # same snapshot verified above
     intent=json.loads(build_intent(profile,bindings,name="saw-runtime-intent",generation=1,pin_plan=True)["data"]["intent.json"])
-    public_ca=read_public_ca(ns,u,ident,get)
+    public_ca=read_public_ca(t,u,ident,get)
     ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(cadata=public_ca)
     result=json.dumps(dict(registration=r,approved=approved,intent=intent,gatewayCA=public_ca),sort_keys=True)
     path=f"/api/v1/namespaces/{t}/configmaps/saw-portal-enrollment"

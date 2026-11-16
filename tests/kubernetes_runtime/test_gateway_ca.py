@@ -10,7 +10,7 @@ import pytest
 from saw_kubernetes.gateway_ca import OWNER, configmap_path, read_public_ca
 
 
-NAMESPACE = "saw-alice"
+NAMESPACE = "saw-ctl-0123456789abcdef"
 GATEWAY = "alice"
 OWNER_ID = "802fe583-9329-54b6-b5b4-7be58ec171f3"
 

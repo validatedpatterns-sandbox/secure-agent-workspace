@@ -2,10 +2,11 @@
 
 Deploy isolated, per-user AI agent sandboxes on OpenShift Virtualization with OIDC authentication and policy-controlled access.
 
-> **OpenShell 0.1.6 rollout:** the follow-up now pins the published 0.1.6
-> interceptor. [Issue #157](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157)
-> tracks clean-install acceptance. Wait for that acceptance and the follow-up
-> merge before deploying the upgrade from `main`. See the
+> **OpenShell 0.1.6 deployment hold:** the public interceptor is pinned, but
+> [#165](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/165)
+> can discard workspace data during automatic recovery. Wait for its fix and
+> the remaining acceptance in [#157](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157)
+> before merging the pin or deploying the upgrade. See the
 > [release record](docs/openshell-016-release.md).
 
 ## Upgrade: stage network isolation per user

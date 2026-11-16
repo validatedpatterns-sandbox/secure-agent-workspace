@@ -19,7 +19,9 @@ engine: interceptor
 # Public NVIDIA/OpenShell v0.1.6 interceptor, built at repository fe19b46.
 # Multi-arch index: linux/amd64 and linux/arm64. See the release record for
 # build/source commits, architecture manifests and clean-install acceptance.
-# Deployment acceptance is tracked in issue #157 until the follow-up passes.
+# Deployment hold: automatic recovery can discard workspace data (#165).
+# https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/165
+# Resolve it and record remaining acceptance in #157 before merging/deploying.
 image: "ghcr.io/validatedpatterns-sandbox/governance-interceptor@sha256:19f145ac163822bca6d406898975b5b770b75b196fa0bee0bc86b108fad213b3"
 # gRPC listen port
 port: 18081

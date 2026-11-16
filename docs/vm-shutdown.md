@@ -25,6 +25,11 @@ archive before deleting anything. If archiving fails, nothing is deleted and
 the apply reports the error. A pending restore resumes on the next apply.
 Sandboxes held for confinement repair remain protected from recreation.
 
+If a workload exits while the installer is waiting for exec after an upgrade,
+the apply reports that startup failure and retries recovery on the next apply.
+It leaves the existing tool policy intact. A startup failure detected before
+checking confinement does not create a confinement-repair hold.
+
 ## If the guest is stuck without SSH
 
 First try the VM console to shut down from inside the guest. If the guest

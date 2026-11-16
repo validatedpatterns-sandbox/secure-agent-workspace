@@ -4240,6 +4240,15 @@ class ProfileApplier:
             # After a VM restart the gateway can report Ready before exec
             # works. Wait before reading config, without changing its policy.
             if not self.wait_exec_ready(ws, sb):
+                # An old workload can exit while reconnecting after a runtime
+                # upgrade, after our first lifecycle check. No
+                # confinement read or policy change has happened yet: leave
+                # lifecycle recovery to the next apply, which archives /sandbox
+                # before recreating it. A confinement hold here would prevent
+                # that recovery indefinitely.
+                if self.sandbox_state(ws, sb) in ("broken", "deleting"):
+                    raise InstallerError(f"sandbox '{sb.name}' stopped while waiting for exec; "
+                                         "retry apply to recover it before changing its tool policy")
                 self.quiesce_openclaw(ws, sb)
                 raise InstallerError(f"sandbox '{sb.name}': cannot verify workspace confinement")
             self.ensure_workspace_confinement(ws, sb)

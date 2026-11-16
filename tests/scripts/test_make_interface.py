@@ -661,9 +661,15 @@ def test_saw_restart_pending_lists_without_confirm(tmp_path):
 
 def test_saw_restart_pending_restarts_only_pending_vms(tmp_path):
     env = fake_cluster(tmp_path, PENDING_VMS)
-    result = run_make("saw-restart-pending", "CONFIRM=yes", env=env)
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    shutil.copy2(ROOT / "scripts/saw-restart-pending.sh", scripts)
+    executable(scripts / "openshell-saw-restart.sh",
+               'printf "%s %s\\n" "$SAW_NS" "$VM_NAME" >> "$RESTARTED"\n')
+    env["RESTARTED"] = str(tmp_path / "restarted")
+    result = run_make("saw-restart-pending", "CONFIRM=yes", f"SCRIPTS_DIR={scripts}", env=env)
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / "restarted").read_text() == "-n saw-alice restart alice\n"
+    assert (tmp_path / "restarted").read_text() == "saw-alice alice\n"
 
 
 def test_saw_restart_pending_with_nothing_pending(tmp_path):

@@ -211,7 +211,7 @@ OpenClaw loads `saw-tool-gate` from `/sandbox/.saw/trusted/plugin` through `plug
 
 Confinement repair stops the agent before changing its mounted policy. If guest exec cannot confirm the stop, the installer stops the workload on the host and saves a durable confinement hold. Later applies preserve that sandbox and its files instead of treating `Completed` as a reason to delete it. Recover and start the existing sandbox in place, then reapply; successful verification and agent startup clear the hold. A repaired, previously configured agent is resumed even without a usable provider, keeping its existing model and credentials. See [the release guide](openshell-016-release.md#installer-and-tool-permissions) for the stop-record location.
 
-The mounted plugin and policy are read-only to the agent. The installer recreates an existing agent sandbox missing its gate or audit mount; OpenShell deletes that sandbox's `/sandbox` volume during recreation, so preserve needed files before applying. The writable `openclaw.json` can still be changed between applies; the next apply checks the loaded plugin again. This is not a cluster OCSF pipeline.
+The mounted plugin and policy are read-only to the agent. The installer recreates an existing agent sandbox missing its gate or audit mount, archiving and verifying its `/sandbox` files before deletion and restoring them into the replacement. If archiving fails, it keeps the existing sandbox and reports the error. The writable `openclaw.json` can still be changed between applies; the next apply checks the loaded plugin again. This is not a cluster OCSF pipeline.
 
 The gate tests live in `charts/openshell-saw/files/installer/tool-gate.test.mjs`
 and `tests/installer/test_tool_gate.py`. They run in `make test` and CI.

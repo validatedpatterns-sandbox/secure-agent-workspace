@@ -68,13 +68,31 @@ def test_non_always_strategy_is_refused_before_guest_changes(restart_env):
     assert not Path(restart_env[1]["CALLS"]).exists()
 
 
-def test_failed_guest_command_does_not_claim_restart_or_force_it(restart_env):
-    result = run(restart_env, SSH_EXIT="255")
+@pytest.mark.parametrize("ssh_exit", ["1", "42"])
+def test_failed_guest_command_does_not_claim_restart_or_force_it(restart_env, ssh_exit):
+    result = run(restart_env, SSH_EXIT=ssh_exit)
     assert result.returncode != 0
     assert "Replacement VM" not in result.stdout
     assert not Path(restart_env[1]["HOST_CALLS"]).exists()
     assert Path(restart_env[1]["COUNTER"]).read_text() == "1"
     assert Path(restart_env[1]["CALLS"]).read_text() == "sudo systemctl poweroff\n"
+
+
+def test_ssh_disconnect_during_poweroff_still_verifies_replacement(restart_env):
+    result = run(restart_env, SSH_EXIT="255")
+    assert result.returncode == 0, result.stderr
+    assert "SSH disconnected during poweroff" in result.stderr
+    assert "Replacement VM saw-alice/alice is Running" in result.stdout
+    assert not Path(restart_env[1]["HOST_CALLS"]).exists()
+
+
+def test_ssh_disconnect_without_replacement_times_out_without_forcing(restart_env):
+    result = run(restart_env, SSH_EXIT="255", RESTART_TIMEOUT="1",
+                 VMI_STATES=json.dumps(["old Running"]))
+    assert result.returncode != 0
+    assert "No replacement Running VMI" in result.stderr
+    assert "Replacement VM" not in result.stdout
+    assert not Path(restart_env[1]["HOST_CALLS"]).exists()
 
 
 def test_nonrunning_instance_is_refused_before_guest_changes(restart_env):

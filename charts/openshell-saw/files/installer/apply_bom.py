@@ -4143,8 +4143,8 @@ class ProfileApplier:
         return "broken" if ("Error" in clean or "Phase: Completed" in clean) else "running"
 
     # Found live after a VM restart: a sandbox reports an error for a while
-    # as its supervisor reconnects, then recovers. Recreating it would lose
-    # /sandbox, so a broken sandbox gets this long to come back first.
+    # as its supervisor reconnects, then recovers. Recreation preserves
+    # /sandbox but ends open sessions, so give it this long to recover first.
     BROKEN_GRACE_SECONDS = 90
     # `sandbox delete` only accepts the deletion; creating the same name
     # before the cleanup finishes fails with "already exists".
@@ -4159,6 +4159,23 @@ class ProfileApplier:
             time.sleep(self.POLL_SECONDS)
             state = self.sandbox_state(ws, sb)
         return state
+
+    def log_broken_sandbox(self, ws, sb):
+        """Capture bounded, read-only diagnostics after the recovery grace."""
+        got = self.cli("sandbox", "get", sb.name, *ws_args(ws.name), check=False, quiet=True)
+        clean = re.sub(r"\x1b\[[0-9;]*m", "", got.out + "\n" + got.err)
+        lines = [line.strip() for line in clean.splitlines()
+                 if re.search(r"\b(Phase|Error|Reason|Message)\b", line, re.IGNORECASE)]
+        for line in lines[:10]:
+            log(f"Sandbox '{sb.name}': {self.sh.mask(line)}")
+        name = self.workload_container(ws, sb)
+        if name:
+            state = self._podman("inspect", "--format",
+                                 "{{.State.Status}} exit={{.State.ExitCode}} "
+                                 "oom={{.State.OOMKilled}} {{.State.Error}}",
+                                 name, check=False, quiet=True)
+            if state.ok:
+                log(f"Workload '{name}': {self.sh.mask(state.out)}")
 
     def harness_source(self, sb):
         """(source id, inline bundle) for a sandbox's harnessRef, or (None, None).
@@ -4660,18 +4677,31 @@ class ProfileApplier:
             state = self.wait_sandbox(ws, sb, lambda s: s != "broken", self.BROKEN_GRACE_SECONDS)
         if state == "broken":
             key = self.migration_key(ws, sb)
-            if not self.sh.dry_run and key not in self.migrations and not self.sandbox_gateway_ca_ok(ws, sb):
+            self.log_broken_sandbox(ws, sb)
+            if self.sh.dry_run or key in self.migrations:
+                # A record can outlive its archive between applies. Verify it
+                # again before deleting the remaining copy of the workspace.
+                if not self.sh.dry_run:
+                    record = self.migrations[key]
+                    try:
+                        verified = sha256_file(Path(record["archive"])) == record["sha256"]
+                    except (OSError, KeyError, TypeError):
+                        verified = False
+                    if not verified:
+                        raise InstallerError(f"saved /sandbox archive of '{sb.name}' is missing "
+                                             "or invalid; nothing was deleted")
+                log(f"Sandbox '{sb.name}' is not running; recreating it")
+                self.cli("sandbox", "delete", sb.name, *ws_args(ws.name), check=False)
+                state = "deleting"
+            else:
                 labels = self.sandbox_labels(ws, sb)
                 if labels is None:
                     raise InstallerError(f"sandbox '{sb.name}' labels cannot be read; "
                                          "nothing was changed, the apply is retried")
-                self.begin_migration(ws, sb, labels, reason="a stale or missing gateway CA",
-                                     via_volume=True)
+                reason = ("a stale or missing gateway CA" if not self.sandbox_gateway_ca_ok(ws, sb)
+                          else "a workload that did not recover")
+                self.begin_migration(ws, sb, labels, reason=reason, via_volume=True)
                 state = "missing"
-            else:
-                log(f"Sandbox '{sb.name}' is not running; recreating it")
-                self.cli("sandbox", "delete", sb.name, *ws_args(ws.name), check=False)
-                state = "deleting"
         if state == "deleting":
             # Also a deletion an earlier run started (found live: that run
             # failed on "already exists" and left the sandbox Deleting).

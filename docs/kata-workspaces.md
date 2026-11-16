@@ -139,6 +139,10 @@ Python tools through `uv`.
 The Make path needs an `oc` context whose API hostname resolves from the
 machine that runs Make. RHDH and GitOps run their checks inside the cluster.
 RHDH checks the owner and live platform before it writes credentials to Vault.
+The `saw-portal-kata-preflight` ClusterRoleBinding must grant read-only access
+to both the portal provisioner and the `saw-workspaces-generator` ServiceAccount.
+The RHDH create handler runs in the generator Pod. A missing `get` permission
+for RuntimeClasses returns `403` and blocks the preflight before enrollment.
 The enrollment job checks the approved Kata placement again before it publishes
 the immutable runtime binding. A failure stops the request with a fixed reason.
 The read-only Make command also needs the Argo-managed installation namespace
@@ -153,6 +157,12 @@ audit, persistence, restart, stop/start and deletion flows work. Verify those
 items on one canary only after the preflight passes. If a canary fails, collect
 the pipeline log, Argo sync and health state, controller status, Pod events,
 RuntimeClass UID and placement digest before another request.
+
+If RHDH reports `RuntimeClassRejected`, first check that the generator can read
+the live RuntimeClass. Then compare the approved name, UID, handler, and
+placement digest with the live object. Do not change an owner approval to match
+the live class until the RBAC check passes and the platform owner has reviewed
+the class placement.
 
 ## Standalone workspace on an existing Kata pool
 

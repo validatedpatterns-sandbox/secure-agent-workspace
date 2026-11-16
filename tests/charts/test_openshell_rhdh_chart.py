@@ -779,6 +779,24 @@ def test_secret_backed_site_approvals_feed_runtime_and_kata_form():
 
 
 @pytest.mark.ci_external
+def test_kata_preflight_read_access_includes_the_rhdh_generator():
+    docs = render("--set-json", 'portal.deploymentModes=["vm","kata"]')
+    role = one(docs, "ClusterRole", "saw-portal-kata-preflight")
+    runtime_rule = next(rule for rule in role["rules"]
+                        if rule.get("apiGroups") == ["node.k8s.io"]
+                        and rule.get("resources") == ["runtimeclasses"])
+    assert runtime_rule["verbs"] == ["get"]
+
+    binding = one(docs, "ClusterRoleBinding", "saw-portal-kata-preflight")
+    subjects = {(subject["kind"], subject["name"], subject["namespace"])
+                for subject in binding["subjects"]}
+    assert subjects == {
+        ("ServiceAccount", "saw-portal-provisioner", "saw-portal"),
+        ("ServiceAccount", "saw-workspaces-generator", "saw-portal"),
+    }
+
+
+@pytest.mark.ci_external
 def test_site_approval_values_cannot_mix_inline_data_and_secret_reference():
     result = run_helm([HELM, "template", "openshell-rhdh", str(CHART), "-n", "rhdh",
                        "--set-json", 'portal.containerSites={"alice":{"subject":"11111111-1111-1111-1111-111111111111"}}',

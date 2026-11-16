@@ -222,6 +222,11 @@ subjects:
   - kind: ServiceAccount
     name: {{ .Values.portal.provisionerServiceAccount }}
     namespace: {{ $ns }}
+  {{- if ne .Values.portal.provisionerServiceAccount "saw-workspaces-generator" }}
+  - kind: ServiceAccount
+    name: saw-workspaces-generator
+    namespace: {{ $ns }}
+  {{- end }}
 {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1

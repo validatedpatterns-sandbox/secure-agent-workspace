@@ -2,8 +2,6 @@
 
 Two independent failures were observed during the OpenShell 0.1.6 release
 acceptance tracked in [#157](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157).
-The public interceptor pin remains scoped to
-[#160](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/pull/160).
 
 ## Saved inference credential placeholders
 
@@ -64,7 +62,8 @@ guest shutdown. Use SQLite's backup API or a read transaction with the required
 journal/WAL state for live checks; immutable database reads are suitable only
 for verified frozen evidence.
 
-The credential-reference correction does not repair or establish the cause of
-catalog corruption. Keep [#161](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/161)
-and the release deployment hold open until their remaining acceptance gates
-have actual evidence.
+The deployment hold is tracked in
+[#165](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/165)
+and [#157](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157).
+[#161](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/161)
+tracks the open catalog and shutdown investigations; it doesn't block the rollout.

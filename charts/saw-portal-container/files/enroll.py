@@ -40,7 +40,7 @@ def once(x):
         try:
             runtime_class=obj("runtimeclass",runtime["name"])
         except urllib.error.HTTPError as exc:
-            if exc.code == 404:raise PreflightError("RuntimeClassRejected") from None
+            if exc.code == 404:raise PreflightError("RuntimeClassUnavailable") from None
             raise
         try:
             configs=api("/apis/kataconfiguration.openshift.io/v1/kataconfigs")["items"]

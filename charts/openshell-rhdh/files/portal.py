@@ -792,7 +792,7 @@ def check_workspace_preflight(k8s, user, site, mode):
     if mode == "kata":
         approval = site.get("kataRuntimeClass") if isinstance(site, dict) else None
         if not isinstance(approval, dict) or not approval.get("name"):
-            raise PortalError("Kata preflight failed: RuntimeClassRejected")
+            raise PortalError("Kata preflight failed: RuntimeClassApprovalMissing")
         try:
             runtime_class = k8s.call("GET", "/apis/node.k8s.io/v1/runtimeclasses/" + approval["name"])
             configs = k8s.call("GET", "/apis/kataconfiguration.openshift.io/v1/kataconfigs").get("items", [])

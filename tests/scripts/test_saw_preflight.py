@@ -35,21 +35,42 @@ def test_runtime_approval_passes_for_the_same_uid_handler_and_placement():
     assert preflight.check_runtime_class(approved, observed)
 
 
-@pytest.mark.parametrize("change", ["missing", "uid", "handler", "placement", "label"])
-def test_runtime_approval_rejects_missing_or_changed_boundary(change):
+@pytest.mark.parametrize(("change", "reason"), [
+    ("missing", "RuntimeClassUnavailable"),
+    ("name", "RuntimeClassNameMismatch"),
+    ("uid", "RuntimeClassIdentityMismatch"),
+    ("handler", "RuntimeClassHandlerMismatch"),
+    ("placement", "RuntimeClassPlacementChanged"),
+    ("label", "RuntimeClassNotAttachable"),
+    ("scheduling", "RuntimeClassSchedulingInvalid"),
+    ("approval", "RuntimeClassApprovalInvalid"),
+])
+def test_runtime_approval_reports_the_failed_boundary(change, reason):
     observed, approved = runtime_class()
     if change == "missing":
         observed = None
+    elif change == "name":
+        observed["metadata"]["name"] = "other-kata"
     elif change == "uid":
         observed["metadata"]["uid"] = "replacement-uid"
     elif change == "handler":
         observed["handler"] = "runc"
     elif change == "placement":
         observed["scheduling"]["nodeSelector"]["workload"] = "general"
-    else:
+    elif change == "label":
         observed["metadata"]["labels"]["openshell.ai/sandbox-attachable"] = "false"
-    with pytest.raises(preflight.PreflightError, match="RuntimeClassRejected"):
+    elif change == "scheduling":
+        observed["scheduling"] = {}
+    elif change == "approval":
+        approved["sha256"] = "bad"
+    with pytest.raises(preflight.PreflightError, match=reason):
         preflight.check_runtime_class(approved, observed)
+
+
+def test_runtime_approval_missing_site_binding_has_a_fixed_reason():
+    observed, _ = runtime_class()
+    with pytest.raises(preflight.PreflightError, match="RuntimeClassApprovalMissing"):
+        preflight.check_runtime_class(None, observed)
 
 
 def observations():

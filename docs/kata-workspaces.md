@@ -158,10 +158,12 @@ items on one canary only after the preflight passes. If a canary fails, collect
 the pipeline log, Argo sync and health state, controller status, Pod events,
 RuntimeClass UID and placement digest before another request.
 
-If RHDH reports `RuntimeClassRejected`, first check that the generator can read
-the live RuntimeClass. Then compare the approved name, UID, handler, and
-placement digest with the live object. Do not change an owner approval to match
-the live class until the RBAC check passes and the platform owner has reviewed
+If RHDH reports a RuntimeClass preflight error, check that the generator can
+read the live class. The fixed reasons separate a missing approval, a missing
+class, a name or UID change, a wrong handler, a missing attachable label, an
+invalid scheduling rule, and a changed placement digest. Compare the approved
+name, UID, handler, scheduling and overhead with the live object. Do not change
+an owner approval to match the live class until the platform owner has reviewed
 the class placement.
 
 ## Standalone workspace on an existing Kata pool

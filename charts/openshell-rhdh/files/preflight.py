@@ -54,24 +54,32 @@ def runtime_placement_digest(runtime_class):
 
 
 def check_runtime_class(approved, observed):
-    """Reject missing, replaced, changed, or non-Kata RuntimeClasses."""
-    if not isinstance(approved, dict) or not isinstance(observed, dict):
-        raise PreflightError("RuntimeClassRejected")
+    """Check a RuntimeClass and return fixed, safe failure reasons."""
+    if not isinstance(approved, dict) or not approved.get("name"):
+        raise PreflightError("RuntimeClassApprovalMissing")
+    if not isinstance(observed, dict):
+        raise PreflightError("RuntimeClassUnavailable")
     metadata = observed.get("metadata") or {}
     if not isinstance(metadata, dict):
-        raise PreflightError("RuntimeClassRejected")
+        raise PreflightError("RuntimeClassUnavailable")
+    if metadata.get("name") != approved["name"]:
+        raise PreflightError("RuntimeClassNameMismatch")
+    if not approved.get("uid") or metadata.get("uid") != approved["uid"]:
+        raise PreflightError("RuntimeClassIdentityMismatch")
+    if observed.get("handler") != "kata":
+        raise PreflightError("RuntimeClassHandlerMismatch")
     labels = metadata.get("labels") or {}
     if not isinstance(labels, dict):
-        raise PreflightError("RuntimeClassRejected")
-    if (not approved.get("name") or metadata.get("name") != approved["name"]
-            or not approved.get("uid") or metadata.get("uid") != approved["uid"]
-            or observed.get("handler") != "kata"
-            or labels.get("openshell.ai/sandbox-attachable") != "true"
-            or not isinstance(observed.get("scheduling"), dict)
-            or not observed.get("scheduling")
-            or not isinstance(approved.get("sha256"), str)
-            or runtime_placement_digest(observed) != approved["sha256"]):
-        raise PreflightError("RuntimeClassRejected")
+        raise PreflightError("RuntimeClassNotAttachable")
+    if labels.get("openshell.ai/sandbox-attachable") != "true":
+        raise PreflightError("RuntimeClassNotAttachable")
+    if not isinstance(observed.get("scheduling"), dict) or not observed["scheduling"]:
+        raise PreflightError("RuntimeClassSchedulingInvalid")
+    approved_digest = approved.get("sha256")
+    if not isinstance(approved_digest, str) or not re.fullmatch(r"[a-f0-9]{64}", approved_digest):
+        raise PreflightError("RuntimeClassApprovalInvalid")
+    if runtime_placement_digest(observed) != approved_digest:
+        raise PreflightError("RuntimeClassPlacementChanged")
     return True
 
 
@@ -318,7 +326,7 @@ def verify_kata_platform(site, runtime_class, kata_configs, nodes, required_crds
     installed_nodes = {name for item in ready_configs for name in kata_config_installed_nodes(item)}
     placement = (runtime_class.get("scheduling") or {}).get("nodeSelector") or {}
     if not isinstance(placement, dict) or not placement:
-        raise PreflightError("RuntimeClassRejected")
+        raise PreflightError("RuntimeClassSchedulingInvalid")
     eligible = []
     if not isinstance(nodes, list):
         raise PreflightError("KataWorkersNotReady")

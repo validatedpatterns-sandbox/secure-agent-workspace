@@ -1936,7 +1936,7 @@ def test_kata_portal_preflight_rejects_changed_runtime_before_vault(portal, worl
         signer, deploymentMode="kata", profile="audited-openclaw"))
 
     assert portal.main(["create", "saw-req-katabad"]) == 1
-    assert "Kata preflight failed: RuntimeClassRejected" in capsys.readouterr().out
+    assert "Kata preflight failed: RuntimeClassHandlerMismatch" in capsys.readouterr().out
     assert not fake.vault and REGISTRY not in fake.objects
 
 

@@ -2260,11 +2260,11 @@ def sandbox_model(sb, provider, default=""):
     return sb.model or (provider.model if provider else "") or default
 
 
-def openclaw_agent_model(model_ref, current):
-    """Change the model without dropping its provider's selected credential."""
+def openclaw_agent_model(model_ref, current, preserve_binding=True):
+    """Keep native credential bindings; managed custom routes can use provider refs."""
     primary = current.get("primary", "") if isinstance(current, dict) else current
     provider = model_ref.split("/", 1)[0]
-    if isinstance(primary, str) and primary.startswith(provider + "/"):
+    if preserve_binding and isinstance(primary, str) and primary.startswith(provider + "/"):
         binding = primary.partition("@")[2]
         if binding.startswith(provider + ":"):
             model_ref += "@" + binding
@@ -3226,6 +3226,26 @@ def openclaw_replacement_profile(output):
     ids = re.findall(r"openclaw models auth activate ([a-z0-9][a-z0-9_.-]*:setup-[0-9a-f]{8}-"
                      r"[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) --agent main", text)
     return ids[0] if len(set(ids)) == 1 else None
+
+
+def openclaw_credential_ref_script(provider_type, key_var, oc_env):
+    """Bind the managed provider only; leave OpenClaw auth-store profiles intact."""
+    ref = {"source": "env", "provider": "default", "id": key_var}
+    targets = [{"type": "models.providers.apiKey",
+                "path": f"models.providers.{provider_type}.apiKey",
+                "pathSegments": ["models", "providers", provider_type, "apiKey"],
+                "providerId": provider_type, "ref": ref}]
+    plan = {"version": 1, "protocolVersion": 1, "targets": targets,
+            "scrubEnv": False, "scrubAuthProfilesForProviderTargets": False}
+    return "\n".join([
+        "# SAW: bind runtime credential references",
+        "set -eu", "umask 077",
+        "plan=$(mktemp /sandbox/.openclaw/state/saw-credential-ref.XXXXXX)",
+        """trap 'rm -f "$plan"' EXIT""",
+        "printf '%s\\n' " + shlex.quote(json.dumps(plan)) + ' > "$plan"',
+        f'{oc_env} openclaw secrets apply --from "$plan" --dry-run',
+        f'{oc_env} openclaw secrets apply --from "$plan"',
+    ]) + "\n"
 
 
 def ws_args(name):
@@ -5008,16 +5028,24 @@ class ProfileApplier:
             key_env = f'CUSTOM_API_KEY="${key_var}" '
         onboarded = self.cli(*exec_cmd, "sh", "-c",
                  f"{oc_env} {key_env}openclaw onboard --non-interactive "
-                 f"--accept-risk --mode local {auth_args} --skip-channels --skip-health", check=False)
-        # Re-onboarding an existing sandbox with a different provider or model
-        # (e.g. after switching to a custom endpoint) makes OpenClaw save the
-        # new credential but keep the old connection; activate the new one.
+                 f"--accept-risk --mode local {auth_args} --secret-input-mode ref "
+                 f"--skip-channels --skip-health", check=False)
+        # Activation can temporarily put CUSTOM_API_KEY back into config.
+        # Keep its current runtime value available through native migration and
+        # gateway launch; only the reference is persisted, never this value.
+        if key_env:
+            oc_env = f"{oc_env} {key_env.strip()}"
+        # Keep native onboarding's saved connection metadata intact. A custom
+        # replacement's temporary alias is also needed during native activation.
         profile_id = openclaw_replacement_profile(onboarded.out + "\n" + onboarded.err)
         if profile_id:
             log(f"Activating the new OpenClaw credential '{profile_id}'")
             self.cli(*exec_cmd, "sh", "-c",
                      f"{oc_env} openclaw models auth activate {shlex.quote(profile_id)} --agent main",
                      check=False)
+        if not auth_choice:
+            self.cli(*exec_cmd, "sh", "-c",
+                     openclaw_credential_ref_script(provider.type, key_var, oc_env))
         model_id = model if model.startswith(f"{provider.type}/") else f"{provider.type}/{model}"
         if auth_choice:
             self.cli(*exec_cmd, "sh", "-c",
@@ -5061,7 +5089,9 @@ class ProfileApplier:
                      f"{oc_env} openclaw config set agents.defaults.models "
                      + shlex.quote(json.dumps(choices))
                      + f" && printf '%s\\n' {shlex.quote(json.dumps(list(desired)))} > {model_state}")
-        # Keep activation's credential binding: old profiles may hold stale placeholders.
+        # Native providers keep their selected credential. Custom routes use
+        # the explicit managed provider SecretRef; an old @profile can refer
+        # to a missing/stale auth-store entry after restart and override it.
         current = self.cli(*exec_cmd, "sh", "-c",
                            f"{oc_env} openclaw config get agents.entries.main.model --json",
                            check=False, quiet=True)
@@ -5071,7 +5101,7 @@ class ProfileApplier:
             selected = None
         self.cli(*exec_cmd, "sh", "-c",
                  f"{oc_env} openclaw config set agents.entries.main.model "
-                 f"{shlex.quote(json.dumps(openclaw_agent_model(model_id, selected)))}")
+                 f"{shlex.quote(json.dumps(openclaw_agent_model(model_id, selected, preserve_binding=bool(auth_choice))))}")
         # Tool actions permit workspace writes and edits. Keep OpenClaw's
         # filesystem tool confined to that workspace even if image defaults
         # or a prior onboarding changed its broader filesystem setting.

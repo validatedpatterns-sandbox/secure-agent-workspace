@@ -223,6 +223,7 @@ def test_onboarding_uses_the_provider_protocol(
     scripts = [c[-1] for c in calls if c[:2] == ["sandbox", "exec"]]
     onboard = next(s for s in scripts if "openclaw onboard " in s)
     assert f"--auth-choice {choice} " in onboard
+    assert "--secret-input-mode ref " in onboard
     if choice == "custom-api-key":
         assert f"--custom-model-id {model}" in onboard
         expected_endpoint = endpoint or "https://integrate.api.nvidia.com/v1"
@@ -373,7 +374,13 @@ def test_configured_model_replaces_the_main_agents_onboarding_selection(
     ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
     current = fake_env.openshell_state()["sandboxes"]["default/chat"]["openclawConfig"]
     expected = model if model.startswith(kind + "/") else f"{kind}/{model}"
-    assert current["agents.entries.main.model"] == f"{expected}@{profile_id}"
+    if kind == "nvidia":
+        # This route uses the custom API with an explicit managed provider ref.
+        assert current["agents.entries.main.model"] == expected
+        assert current["models.providers.nvidia.apiKey"] == {
+            "source": "env", "provider": "default", "id": "NVIDIA_API_KEY"}
+    else:
+        assert current["agents.entries.main.model"] == f"{expected}@{profile_id}"
     assert current["agents.entries.other.model"] == "other/keep-me"
     scripts = [c[-1] for c in fake_env.openshell_calls()[before:]
                if c[:2] == ["sandbox", "exec"]]

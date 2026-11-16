@@ -7,11 +7,41 @@ starts that replacement with the updated mounted inputs and template. Check
 `make saw-status` for the separate boot install/apply result before using agents.
 
 This requires the same SSH key and guest access as `make saw-vm-ssh`. A stopped
-or inaccessible guest fails the command; it does not fall back to forced host
-termination. Non-Always run strategies are refused before requesting poweroff.
+or inaccessible guest cannot complete the restart; the command does not fall
+back to forced host termination. SSH can disconnect with exit 255 as the guest
+powers off. In that case the command still requires a different Running VM
+instance before reporting success. Other SSH failures stop the command.
+Non-Always run strategies are refused before requesting poweroff.
 `RESTART_TIMEOUT` controls the replacement-instance wait (default 600 seconds).
 `make saw-restart-pending CONFIRM=yes` uses this same path for each pending VM;
 without confirmation it only lists the pending VMs.
+
+## After a restart
+
+A sandbox that still reports Error or Completed after the installer's 90-second
+recovery grace is recreated with its `/sandbox` files and gateway password
+carried over. The installer archives the workload volume and verifies the
+archive before deleting anything. If archiving fails, nothing is deleted and
+the apply reports the error. A pending restore resumes on the next apply.
+Sandboxes held for confinement repair remain protected from recreation.
+
+## If the guest is stuck without SSH
+
+First try the VM console to shut down from inside the guest. If the guest
+cannot be recovered, set `name` to the target VM's name and explicitly force a
+restart only as a last resort:
+
+```bash
+virtctl restart "$name" -n "saw-$name" --force --grace-period=0
+```
+
+This abruptly stops the VM and can lose pending writes or damage its container
+database. Preserve available disks, backups and evidence first; do not use it
+on a VM whose data still needs recovery. The restart scripts never invoke this
+fallback automatically. After recovery, check `make saw-status`, workspace
+files and passwords, and container-database integrity before resuming work.
+If `make saw-restart-pending CONFIRM=yes` stopped early, rerun it to process
+the VMs still marked as waiting for restart.
 
 ## Why restart through the guest
 

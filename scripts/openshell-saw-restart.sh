@@ -21,8 +21,16 @@ if [[ -z "${old_uid}" || "${phase}" != Running ]]; then
   exit 1
 fi
 
-"${SCRIPT_DIR}/openshell-saw-vm-ssh.sh" 'sudo systemctl poweroff'
-echo "Guest poweroff requested; waiting for a replacement VM instance."
+if "${SCRIPT_DIR}/openshell-saw-vm-ssh.sh" 'sudo systemctl poweroff'; then
+  echo "Guest poweroff requested."
+else
+  ssh_rc=$?
+  if (( ssh_rc != 255 )); then
+    exit "${ssh_rc}"
+  fi
+  echo "SSH disconnected during poweroff; checking for a replacement VM instance." >&2
+fi
+echo "Waiting for a replacement VM instance."
 deadline=$((SECONDS + RESTART_TIMEOUT))
 while (( SECONDS < deadline )); do
   snapshot="$(oc get vmi "${VM_NAME}" -n "${SAW_NS}" --ignore-not-found \

@@ -152,6 +152,12 @@ elif cmd == "inspect":
     if sb is None:
         print(f"Error: no such object: {args[-1]}", file=sys.stderr)
         sys.exit(125)
+    if ".State.Status" in args[args.index("--format") + 1]:
+        details = sb.get("workloadState", {})
+        print(f"{details.get('status', 'exited' if sb['phase'] in ('Error', 'Completed') else 'running')} "
+              f"exit={details.get('exit', 0)} oom={str(details.get('oom', False)).lower()} "
+              f"{details.get('error', '')}")
+        sys.exit(0)
     mounts = []
     if not sb.get("noSandboxVolume"):
         import shutil

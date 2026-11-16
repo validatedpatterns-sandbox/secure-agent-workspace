@@ -224,10 +224,12 @@ def test_broken_nemoclaw_sandbox_is_onboarded_again(ab, fake_env, config, profil
     make_applier(ab, config, creds).apply(profiles)
     state = fake_env.openshell_state()
     state["sandboxes"]["cuda-dev/cuda-sandbox"]["phase"] = "Error"
+    state["sandboxes"]["cuda-dev/cuda-sandbox"].setdefault("files", {})["notes.md"] = "keep me"
     (fake_env.state / "openshell.json").write_text(json.dumps(state))
     make_applier(ab, config, creds).apply(profiles)
     assert len(fake_env.other_calls("nemoclaw")) == 2
     assert fake_env.openshell_state()["sandboxes"]["cuda-dev/cuda-sandbox"]["phase"] == "Ready"
+    assert fake_env.openshell_state()["sandboxes"]["cuda-dev/cuda-sandbox"]["files"]["notes.md"] == "keep me"
 
 
 def test_owner_subject_becomes_admin_of_each_workspace(ab, fake_env, config, profiles, creds):
@@ -340,16 +342,18 @@ def test_provider_failure_stops_the_apply(ab, fake_env, config, profiles, creds)
     assert "sandbox create" not in cli_ops(fake_env)
 
 
-def test_errored_sandbox_is_recreated(ab, fake_env, config, profiles, creds, monkeypatch):
+def test_errored_sandbox_is_recreated_with_its_files(ab, fake_env, config, profiles, creds, monkeypatch):
     monkeypatch.setattr(ab.ProfileApplier, "BROKEN_GRACE_SECONDS", 0)
     make_applier(ab, config, creds).apply(profiles)
     state = fake_env.openshell_state()
     state["sandboxes"]["default/notebook"]["phase"] = "Error"
+    state["sandboxes"]["default/notebook"].setdefault("files", {})["notes.md"] = "keep me"
     fake_env.set_openshell_state(state)
     make_applier(ab, config, creds).apply(profiles)
     ops = fake_env.openshell_calls()
     assert ["sandbox", "delete", "notebook"] in ops
     assert fake_env.openshell_state()["sandboxes"]["default/notebook"]["phase"] == "Ready"
+    assert fake_env.openshell_state()["sandboxes"]["default/notebook"]["files"]["notes.md"] == "keep me"
 
 
 @pytest.fixture
@@ -359,7 +363,7 @@ def fast_polls(fake_clock):
 
 def test_a_sandbox_that_recovers_is_not_recreated(ab, fake_env, config, profiles, creds, fast_polls):
     """Found live after a VM restart: the notebook reported an error while
-    its supervisor reconnected. Recreating it would lose /sandbox."""
+    its supervisor reconnected. Avoid ending sessions unnecessarily."""
     make_applier(ab, config, creds).apply(profiles)
     state = fake_env.openshell_state()
     state["sandboxes"]["default/notebook"].update(phase="Error", after=[2, "Ready"])
@@ -367,6 +371,30 @@ def test_a_sandbox_that_recovers_is_not_recreated(ab, fake_env, config, profiles
     make_applier(ab, config, creds).apply(profiles)
     assert ["sandbox", "delete", "notebook"] not in fake_env.openshell_calls()
     assert fake_env.openshell_state()["sandboxes"]["default/notebook"]["phase"] == "Ready"
+
+
+@pytest.mark.parametrize("target", ["default/notebook", "cuda-dev/cuda-sandbox"])
+@pytest.mark.parametrize("use_ledger", [False, True])
+def test_broken_shipped_sandbox_keeps_files_and_password_on_later_apply(
+        ab, fake_env, config, profiles, creds, target, use_ledger, tmp_path, fake_clock, capsys):
+    if use_ledger:
+        config = {**config, "prune": {"ledgerPath": str(tmp_path / "managed.json")}}
+    applier_with_shipped_profiles(ab, config, creds).apply(profiles)
+    state = fake_env.openshell_state()
+    original = state["sandboxes"][target]
+    original.setdefault("files", {})["only-copy.txt"] = "must survive"
+    password = "original-password-1234567890"
+    original["openclawConfig"]["gateway.auth.password"] = password
+    original["phase"] = "Completed"
+    fake_env.set_openshell_state(state)
+
+    retry = applier_with_shipped_profiles(ab, config, creds)
+    retry.apply(profiles)
+    restored = fake_env.openshell_state()["sandboxes"][target]
+    assert restored["files"]["only-copy.txt"] == "must survive"
+    assert restored["openclawConfig"]["gateway.auth.password"] == password
+    assert "its /sandbox files are carried over" in capsys.readouterr().out
+    assert not retry.migrations
 
 
 def test_a_recreate_waits_for_the_deletion(ab, fake_env, config, profiles, creds, fast_polls, monkeypatch):

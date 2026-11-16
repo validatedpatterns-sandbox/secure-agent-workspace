@@ -62,8 +62,8 @@ guest shutdown. Use SQLite's backup API or a read transaction with the required
 journal/WAL state for live checks; immutable database reads are suitable only
 for verified frozen evidence.
 
-The deployment hold is tracked in
-[#165](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/165)
-and [#157](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157).
+Remaining acceptance is tracked in
+[#157](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157).
 [#161](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/161)
-tracks the open catalog and shutdown investigations; it doesn't block the rollout.
+tracks the deferred catalog and shutdown investigations. Deployment may proceed
+while acceptance and separate follow-up issues remain open.

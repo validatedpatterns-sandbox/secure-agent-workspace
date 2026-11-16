@@ -5,12 +5,9 @@ interceptor pinned in `charts/governance-interceptor/values.yaml` supplies the
 matching published OpenShell `v0.1.6` image, including the provider-annotation
 workaround and driver-config guard.
 
-**Deployment hold:** don't deploy the upgrade until
-[#165](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/165)
-is fixed and [#157](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157)
-records the final acceptance. [#162](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/pull/162)
-and [#164](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/pull/164)
-are merged; they don't fix #165.
+Deployment may proceed while the remaining acceptance checks continue in
+[#157](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157).
+New findings are tracked as separate follow-up issues.
 
 ## Published artifact
 
@@ -31,24 +28,20 @@ remains main-only; PR builds do not push images or use registry credentials.
   and no overrides: all 16 applications healthy. Inference, owner isolation,
   file-tool confinement, approval audit, credential cleanup, reapply and
   two-way NetworkPolicy (36/36) passed.
-- Restart testing found three problems: stale credentials (fixed in #162),
-  forced VM shutdown through the documented restart command (fixed in #164),
-  and sandbox data loss during recovery (#165, open).
-- Not yet tested: first boot with the #162 code, and upgrading a 0.1.2
-  deployment. Both are part of the final acceptance.
+- Restart fixes are merged: credentials (#162), guest-initiated shutdown (#164),
+  workspace preservation (#167) and recovery after a workload exits during
+  startup (#168).
+- Fresh-cluster 0.1.2 upgrade checks are in progress. Both VMs completed natural
+  guest shutdowns, and all three sandboxes retained their baseline test files
+  and gateway credentials. Runtime acceptance and new-user checks remain open.
 
-## Remaining rollout gate
+## Remaining acceptance
 
-1. Fix #165: a sandbox recreated during recovery keeps its `/sandbox` files
-   and password, or nothing is deleted.
-2. Final acceptance on a fresh cluster, recorded in #157: install the
-   pre-0.1.6 release, upgrade to main, restart every VM, then add a new user.
-3. Remove the hold notices from README, this record, `docs/container-images.md`
-   and the chart comment.
+1. Finish the fresh-cluster upgrade and new-user checks recorded in #157.
+2. Record new findings as follow-up issues without blocking deployment.
+3. Leave the catalog and host-triggered shutdown investigations in #161 deferred.
 
 ## Upgrading an existing deployment
-
-After the deployment hold is lifted:
 
 1. After Argo CD syncs, `make saw-restart-pending` lists the VMs waiting for a
    restart. VMs install the new BOM only at boot.

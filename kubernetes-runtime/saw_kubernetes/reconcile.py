@@ -106,12 +106,12 @@ class Reconciler:
         self.rpc = rpc
         self.store = StateStore(state_directory)
         if not callable(verify_resources):
-            raise ContractError("resource verifier is required")
+            raise ContractError("resource verifier is required", safe_reason="InvalidPlan")
         self.verify_resources = verify_resources
         self.verify_shutdown = (verify_shutdown if verify_shutdown is not None else
                                 getattr(verify_resources, "verify_shutdown", verify_resources))
         if not callable(self.verify_shutdown):
-            raise ContractError("shutdown identity verifier must be callable")
+            raise ContractError("shutdown identity verifier must be callable", safe_reason="InvalidPlan")
 
     def _get(self, method, request, field):
         try:

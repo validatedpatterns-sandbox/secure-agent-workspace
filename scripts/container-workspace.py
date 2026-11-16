@@ -33,6 +33,8 @@ def load_module(name, source):
 
 workspace = load_module("saw_workspace", ROOT / "charts/saw-users/files/workspace.py")
 container_topology = load_module("container_topology", ROOT / "scripts/container_topology.py")
+preflight_checks = load_module("saw_preflight", ROOT / "charts/saw-portal-container/files/preflight.py")
+kata_worker_check = load_module("kata_worker_check", ROOT / "scripts/kata_worker_check.py")
 
 
 class InstallError(ValueError):
@@ -105,16 +107,10 @@ def check_existing(existing, user):
         raise InstallError("existing release uses another backend")
 
 
-def preflight(config, namespace):
+def preflight(config, namespace, user):
     """Check the shared platform without installing or adopting its dependencies."""
-    for crd in ("applications.argoproj.io", "applicationsets.argoproj.io",
-                "sandboxes.agents.x-k8s.io", "externalsecrets.external-secrets.io",
-                "adminnetworkpolicies.policy.networking.k8s.io"):
-        if not get("crd", crd):
-            raise InstallError("required platform API is absent: " + crd)
-    resources = run("oc", "api-resources", "--api-group=admissionregistration.k8s.io", "-o", "name").splitlines()
-    if "validatingadmissionpolicies.admissionregistration.k8s.io" not in resources:
-        raise InstallError("native ValidatingAdmissionPolicy is required")
+    mode = user["values"]["deployment"]["mode"]
+    site = config["containerSites"][user["name"]]
     argo = config.get("global", {}).get("vpArgoNamespace") or config.get("argo", {}).get("namespace", "vp-gitops")
     if namespace == argo:
         raise InstallError("workspace installation namespace must be separate from Argo CD")
@@ -124,6 +120,55 @@ def preflight(config, namespace):
         if (existing.get("metadata", {}).get("deletionTimestamp")
                 or labels.get("argocd.argoproj.io/managed-by") != argo):
             raise InstallError("installation namespace is deleting or is not managed by the selected Argo CD")
+    observations = preflight_checks.configuration_facts(site)
+    observations["api"] = True  # The API reads below succeeded.
+    try:
+        version = get("clusterversion", "version")
+        preflight_checks.verify_cluster_version(version)
+        observations["version"] = True
+        crds = {name: preflight_checks.crd_established(get("crd", name)) for name in (
+            "applications.argoproj.io", "applicationsets.argoproj.io", "sandboxes.agents.x-k8s.io",
+            "externalsecrets.external-secrets.io", "adminnetworkpolicies.policy.networking.k8s.io",
+            "validatingadmissionpolicies.admissionregistration.k8s.io")}
+        observations["agentSandbox"] = crds["sandboxes.agents.x-k8s.io"]
+        observations["admission"] = (crds["adminnetworkpolicies.policy.networking.k8s.io"]
+                                      and crds["validatingadmissionpolicies.admissionregistration.k8s.io"])
+        storage = json.loads(run("oc", "get", "storageclasses", "-o", "json"))["items"]
+        preflight_checks.verify_storage_classes(site, storage)
+        observations["storage"] = True
+        store = get("clustersecretstore", preflight_checks.secret_store_name(site))
+        preflight_checks.verify_secret_store(site, [store] if store else [])
+        observations["secrets"] = crds["externalsecrets.external-secrets.io"]
+        observations["argo"] = (crds["applications.argoproj.io"]
+                                and crds["applicationsets.argoproj.io"]
+                                and all(
+            run("oc", "auth", "can-i", verb, resource, "-n", argo).strip() == "yes"
+            for resource in ("applications.argoproj.io", "applicationsets.argoproj.io")
+            for verb in ("get", "create", "patch", "delete")))
+        preflight_checks.check_observations("container", observations)
+    except preflight_checks.PreflightError as exc:
+        raise InstallError("SAW preflight failed: " + exc.reason) from None
+    if mode == "kata":
+        approval = site.get("kataRuntimeClass") or {}
+        runtime = get("runtimeclass", approval.get("name")) if approval.get("name") else None
+        try:
+            configs = json.loads(run("oc", "get", "kataconfigs", "-o", "json"))["items"]
+            nodes = json.loads(run("oc", "get", "nodes", "-o", "json"))["items"]
+            kata_crd = "kataconfigs.kataconfiguration.openshift.io"
+            crds[kata_crd] = preflight_checks.crd_established(get("crd", kata_crd))
+            preflight_checks.verify_kata_platform(site, runtime, configs, nodes, crds, version)
+            placement = (runtime.get("scheduling") or {}).get("nodeSelector") or {}
+            selector = ",".join(f"{key}={value}" for key, value in sorted(placement.items()))
+            try:
+                kata_worker_check.check(run("oc", "whoami", "--show-server").strip(), selector)
+            except Exception:
+                raise InstallError("Kata preflight failed: KataWorkersNotReady") from None
+            observations.update(osc=True, kataConfig=True, workers=True, runtimeClass=True)
+            preflight_checks.check_observations("kata", observations)
+        except preflight_checks.PreflightError as exc:
+            raise InstallError("Kata preflight failed: " + exc.reason) from None
+        except (KeyError, TypeError, ValueError):
+            raise InstallError("Kata preflight failed: KataPlatformUnavailable") from None
     return existing, argo
 
 
@@ -160,7 +205,7 @@ def status(user, config):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("apply", "status", "delete"))
+    parser.add_argument("action", choices=("apply", "preflight", "status", "delete"))
     parser.add_argument("--values", default=os.environ.get("SAW_USERS_VALUES_FILE"))
     parser.add_argument("--name", default=os.environ.get("OPENSHELL_SAW_NAME"))
     parser.add_argument("--namespace", default=os.environ.get("SAW_INSTALL_NAMESPACE", "saw-workspaces"))
@@ -188,7 +233,7 @@ def main():
             values_file.write_text(json.dumps(config))
             values_file.chmod(0o600)
             release = "workspace-"+args.name
-            run("helm", "template", release, str(ROOT/"charts/saw-users"), "-n", args.namespace, "-f", str(values_file))
+            rendered = run("helm", "template", release, str(ROOT/"charts/saw-users"), "-n", args.namespace, "-f", str(values_file))
             domain = config.get("global", {}).get("clusterDomain")
             ingress = get("ingress.config.openshift.io", "cluster")
             if not domain or (ingress or {}).get("spec", {}).get("domain") != "apps."+domain:
@@ -211,8 +256,15 @@ def main():
                 else:
                     print("Installation release is already absent.")
                 return 0
-            existing_namespace, argo = preflight(config, args.namespace)
-            ensure_namespace(existing_namespace, args.namespace, argo)
+            existing_namespace, argo = preflight(config, args.namespace, user)
+            if not existing_namespace:
+                if args.action == "preflight":
+                    raise InstallError("read-only server-side preflight requires the Argo-managed installation namespace to exist")
+                ensure_namespace(existing_namespace, args.namespace, argo)
+            run("oc", "apply", "--server-side", "--dry-run=server", "-f", "-", input_text=rendered)
+            if args.action == "preflight":
+                print("Read-only SAW preflight passed; no cluster changes were made.")
+                return 0
             run("helm", "upgrade", "--install", release, str(ROOT/"charts/saw-users"),
                 "-n", args.namespace, "-f", str(values_file),
                 "--wait", "--wait-for-jobs", "--timeout", "5m", capture=False)

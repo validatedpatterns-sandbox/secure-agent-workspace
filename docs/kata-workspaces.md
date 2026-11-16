@@ -113,6 +113,47 @@ value must be from 1 to 86400 seconds. Container mode keeps the OpenShell
 defaults. These longer windows allow more startup time; they do not change the
 runtime readiness checks or make an unhealthy sandbox ready.
 
+## Gated preflight
+
+Run the read-only preflight before creating a workspace:
+
+```sh
+DEPLOYMENT_MODE=kata OPENSHELL_SAW_NAME=alice \
+  SAW_USERS_VALUES_FILE="$PWD/container-users.yaml" \
+  make -f Makefile-quickstart saw-preflight
+```
+
+The command renders the workspace chart and submits it with server-side dry
+run. It checks the active API, cluster version, Agent Sandbox APIs, admission
+and network inputs, Argo access, storage classes, Vault and External Secrets health,
+image digest pins, provider host allowlists, source revisions, KataConfig,
+worker placement and RuntimeClass approval. A KataConfig passes only when its
+ready node count matches its nonzero node count, installation is not in
+progress, and an installed node matches the approved worker selector. This
+follows the [OSC status reference](https://docs.redhat.com/en/documentation/openshift_sandboxed_containers/1.12/html/deploying_openshift_sandboxed_containers_on_bare-metal_servers/reference_metal-osc).
+The Make path also checks `/dev/kvm` through the existing machine-config
+daemon. RHDH and GitOps use KataConfig's installed-node status. The preflight
+does not create a namespace, release, registration or credential. Run local
+Python tools through `uv`.
+
+The Make path needs an `oc` context whose API hostname resolves from the
+machine that runs Make. RHDH and GitOps run their checks inside the cluster.
+RHDH checks the owner and live platform before it writes credentials to Vault.
+The enrollment job checks the approved Kata placement again before it publishes
+the immutable runtime binding. A failure stops the request with a fixed reason.
+The read-only Make command also needs the Argo-managed installation namespace
+to exist so the API server can validate namespaced resources. On a first
+`make saw-create`, platform checks run first; the command then creates that
+namespace if needed and performs server-side dry run before Helm applies the
+workspace chart.
+
+This gate checks configuration and live API state. It cannot prove that every
+node can pull every image or that provider, denied-tool, network-denial, chat,
+audit, persistence, restart, stop/start and deletion flows work. Verify those
+items on one canary only after the preflight passes. If a canary fails, collect
+the pipeline log, Argo sync and health state, controller status, Pod events,
+RuntimeClass UID and placement digest before another request.
+
 ## Standalone workspace on an existing Kata pool
 
 Start with the [container installation](container-installation.md). Keep its
@@ -140,7 +181,7 @@ constraints when defining it. Inspect the live object before approving it.
 Compute the digest using the same canonical serialization as the reconciler.
 
 ```sh
-oc get runtimeclass saw-kata -o json | python3 -c '
+oc get runtimeclass saw-kata -o json | uv run --locked python -c '
 import hashlib, json, sys
 obj = json.load(sys.stdin)
 placement = {key: obj.get(key) for key in ("handler", "overhead", "scheduling")}

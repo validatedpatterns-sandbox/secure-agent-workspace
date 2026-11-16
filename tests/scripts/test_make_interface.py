@@ -23,7 +23,8 @@ def executable(path, body):
     path.chmod(0o755)
 
 
-@pytest.mark.parametrize("target,action", [("saw-create", "apply"), ("saw-status", "status"), ("saw-delete", "delete")])
+@pytest.mark.parametrize("target,action", [("saw-create", "apply"), ("saw-preflight", "preflight"),
+                                           ("saw-status", "status"), ("saw-delete", "delete")])
 def test_container_make_dispatch_never_calls_vm_operations(tmp_path, target, action):
     scripts = tmp_path / "scripts"
     scripts.mkdir()

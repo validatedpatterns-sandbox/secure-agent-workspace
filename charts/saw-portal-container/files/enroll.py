@@ -3,12 +3,14 @@ import json
 import os
 import ssl
 import time
+import urllib.error
 import urllib.request as h
 from pathlib import Path
 from saw_kubernetes.adapters import KubernetesResourceVerifier
 from saw_kubernetes.audit import capture
 from saw_kubernetes.compiler import compile_profile_files, digest
 from saw_kubernetes.intent import build_intent
+from preflight import PreflightError, crd_established, verify_kata_platform
 from portal_contract import verify_contract
 from receipt import receipt_key
 
@@ -34,6 +36,33 @@ def once(x):
         return api("/api/v1/namespaces/"+namespace+"/"+plural+"/"+name)
     nsobj=obj("namespace",ns)["metadata"]
     if nsobj["labels"].get("saw.redhat.com/runtime-owner")!=ident or nsobj.get("deletionTimestamp"):raise ValueError("namespace ownership")
+    if runtime:
+        try:
+            runtime_class=obj("runtimeclass",runtime["name"])
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:raise PreflightError("RuntimeClassRejected") from None
+            raise
+        try:
+            configs=api("/apis/kataconfiguration.openshift.io/v1/kataconfigs")["items"]
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:raise PreflightError("SandboxedContainersUnavailable") from None
+            raise
+        nodes=api("/api/v1/nodes")["items"]
+        try:
+            cluster_version=api("/apis/config.openshift.io/v1/clusterversions/version")
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:raise PreflightError("ClusterVersionUnavailable") from None
+            raise
+        crds={}
+        for name in ("kataconfigs.kataconfiguration.openshift.io", "sandboxes.agents.x-k8s.io",
+                     "externalsecrets.external-secrets.io", "adminnetworkpolicies.policy.networking.k8s.io",
+                     "validatingadmissionpolicies.admissionregistration.k8s.io"):
+            try:
+                crds[name]=crd_established(api("/apis/apiextensions.k8s.io/v1/customresourcedefinitions/"+name))
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404:crds[name]=False
+                else:raise
+        verify_kata_platform(x, runtime_class, configs, nodes, crds, cluster_version)
     cfg=dict(namespace=ns,namespaceUID=nsobj["uid"],ownerID=ident,mode=mode,trustedNamespace=t,
              governanceNamespace=x["governance"],gateway=u,proxyPolicy=u+"-proxy-policy",slotKeys=sorted(x["targets"]))
     if runtime: cfg["workloadRuntimeClass"]=runtime["name"]
@@ -102,6 +131,9 @@ if __name__=="__main__":
     x=json.loads(Path("/bootstrap/config.json").read_text())
     for n in range(100):
         try:once(x);break
+        except PreflightError as exc:
+            print("Kata preflight failed: "+exc.reason,flush=True)
+            raise SystemExit(1)
         except Exception as exc:
             # Never log an API body, credential, or other input.
             print("Waiting for reviewed inputs: "+type(exc).__name__+(" "+str(exc)[:120] if type(exc).__name__=="BoundaryError" else ""),flush=True)

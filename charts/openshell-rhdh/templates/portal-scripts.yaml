@@ -13,3 +13,5 @@ data:
 
   workspace.py: |
 {{ .Files.Get "files/workspace.py" | indent 4 }}
+  preflight.py: |
+{{ .Files.Get "files/preflight.py" | indent 4 }}

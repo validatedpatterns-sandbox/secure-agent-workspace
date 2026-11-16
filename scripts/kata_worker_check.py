@@ -38,9 +38,9 @@ if test -c /dev/kvm; then echo KVM; else echo missing-KVM; fi
 """
 
 
-def main():
-    selector = os.environ.get("KATA_NODE_SELECTOR", "").strip()
-    expected = os.environ.get("KATA_API_SERVER", "").strip()
+def check(expected, selector):
+    selector = (selector or "").strip()
+    expected = (expected or "").strip()
     if not selector or not expected:
         raise ValueError("set KATA_API_SERVER and KATA_NODE_SELECTOR")
     if oc("whoami", "--show-server").strip() != expected:
@@ -63,6 +63,13 @@ def main():
         passed &= len(facts) == 2 and facts[0] in {"UEFI", "legacy-BIOS"} and facts[1] == "KVM"
     if not passed:
         raise ValueError("selected workers must expose /dev/kvm; firmware is reported for context only")
+    return names
+
+
+def main():
+    selector = os.environ.get("KATA_NODE_SELECTOR", "").strip()
+    expected = os.environ.get("KATA_API_SERVER", "").strip()
+    check(expected, selector)
 
 
 if __name__ == "__main__":

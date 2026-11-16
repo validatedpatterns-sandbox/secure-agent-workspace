@@ -166,6 +166,63 @@ subjects:
   - kind: ServiceAccount
     name: saw-workspaces-generator
     namespace: {{ $ns }}
+{{- if or (has "container" .Values.portal.deploymentModes) (has "kata" .Values.portal.deploymentModes) }}
+---
+# Read-only facts for the Kata registration gate. This role reads node labels,
+# RuntimeClass metadata, KataConfig status and API registration only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: saw-portal-kata-preflight
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list"]
+  - apiGroups: ["node.k8s.io"]
+    resources: ["runtimeclasses"]
+    verbs: ["get"]
+  - apiGroups: ["kataconfiguration.openshift.io"]
+    resources: ["kataconfigs"]
+    verbs: ["list"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["list"]
+  - apiGroups: ["external-secrets.io"]
+    resources: ["clustersecretstores"]
+    verbs: ["list"]
+  - apiGroups: ["config.openshift.io"]
+    resources: ["clusterversions"]
+    resourceNames: ["version"]
+    verbs: ["get"]
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    resourceNames:
+      - applications.argoproj.io
+      - applicationsets.argoproj.io
+      - kataconfigs.kataconfiguration.openshift.io
+      - sandboxes.agents.x-k8s.io
+      - externalsecrets.external-secrets.io
+      - adminnetworkpolicies.policy.networking.k8s.io
+      - validatingadmissionpolicies.admissionregistration.k8s.io
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: saw-portal-kata-preflight
+  labels:
+    {{- include "openshell-rhdh.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: saw-portal-kata-preflight
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.portal.provisionerServiceAccount }}
+    namespace: {{ $ns }}
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

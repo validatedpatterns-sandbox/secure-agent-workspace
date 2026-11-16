@@ -367,6 +367,7 @@ class Fake:
         self.rv = 0            # last resourceVersion handed out
         self.deleted = []
         self.vault = {}        # kv path -> data
+        self.vault_health = {"initialized": True, "sealed": False, "standby": False}
         self.logins = []
         self.logs = {}         # pod log path -> text
 
@@ -387,6 +388,8 @@ class Fake:
 
             def do_GET(self):
                 url = urlsplit(self.path)
+                if url.path == "/v1/sys/health":
+                    return self._reply(200, fake.vault_health)
                 if url.path in fake.logs:
                     raw = fake.logs[url.path].encode()
                     self.send_response(200)
@@ -465,6 +468,39 @@ NEW_KEYS = "hub/saw-alice/" + GEN[1]   # a replacement's
 @pytest.fixture
 def world(portal, monkeypatch, tmp_path):
     fake = Fake()
+    fake.objects["/apis/config.openshift.io/v1/clusterversions/version"] = {
+        "status": {"conditions": [{"type": "Available", "status": "True"}],
+                   "desired": {"version": "4.22.0"}}}
+    for crd_name in ("applications.argoproj.io", "applicationsets.argoproj.io",
+                     "sandboxes.agents.x-k8s.io", "externalsecrets.external-secrets.io",
+                     "adminnetworkpolicies.policy.networking.k8s.io",
+                     "validatingadmissionpolicies.admissionregistration.k8s.io",
+                     "kataconfigs.kataconfiguration.openshift.io"):
+        fake.objects["/apis/apiextensions.k8s.io/v1/customresourcedefinitions/" + crd_name] = {
+            "status": {"conditions": [{"type": "Established", "status": "True"}]}}
+    fake.objects["/apis/storage.k8s.io/v1/storageclasses"] = {"items": [{
+        "metadata": {"name": "test-default",
+                     "annotations": {"storageclass.kubernetes.io/is-default-class": "true"}}}]}
+    fake.objects["/apis/external-secrets.io/v1/clustersecretstores"] = {"items": [{
+        "metadata": {"name": "vault-backend"},
+        "status": {"conditions": [{"type": "Ready", "status": "True"}]}}]}
+    fake.objects["/apis/kataconfiguration.openshift.io/v1/kataconfigs"] = {"items": [{
+        "status": {"conditions": [{"type": "InProgress", "status": "False"}],
+                   "kataNodes": {"nodeCount": 1, "readyNodeCount": 1,
+                                 "installed": ["worker-a"]}}}]}
+    fake.objects["/api/v1/nodes"] = {"items": [{
+        "metadata": {"name": "worker-a", "labels": {
+            "kubernetes.io/arch": "amd64", "node-role.kubernetes.io/worker": "",
+            "saw.example.com/kata-pool": "true"}},
+        "status": {"conditions": [{"type": "Ready", "status": "True"}]}, "spec": {}}]}
+    kata_site = synthetic_preflight_site(portal, {}, "kata")
+    kata_name = kata_site["kataRuntimeClass"]["name"]
+    fake.objects["/apis/node.k8s.io/v1/runtimeclasses/" + kata_name] = {
+        "metadata": {"name": kata_name, "uid": kata_site["kataRuntimeClass"]["uid"],
+                     "labels": {"openshell.ai/sandbox-attachable": "true"}},
+        "handler": "kata", "scheduling": {"nodeSelector": {"saw.example.com/kata-pool": "true"}},
+        "overhead": {"podFixed": {"memory": "128Mi"}},
+    }
     server, url = fake.serve()
     auth, scaffolder = Signer("auth"), Signer("scaffolder")
     sa = tmp_path / "sa"
@@ -508,6 +544,40 @@ class Tokens:
 def ds_request(signer, **extra):
     return {"action": "create", "token": signer.token(), "profile": "data-science",
             "inference.api_key": "nvapi-1", "web-search.api_key": "brave-1", **extra}
+
+
+def synthetic_preflight_site(portal, site, mode="container"):
+    """A cluster-agnostic passing site for the read-only workspace gate."""
+    site = json.loads(json.dumps(site))
+    pin = "a" * 40
+    image = "registry.example.invalid/saw@sha256:" + "b" * 64
+    site.setdefault("providerAllowHosts", ["api.example.invalid"])
+    site.setdefault("providerPolicy", {"allowHosts": ["api.example.invalid"]})
+    site.setdefault("stack", {
+        "identity": {"revision": pin, "values": {"secretStore": "vault-backend"}},
+        "policy": {"revision": pin, "values": {"enabled": True}},
+        "proxy": {"revision": pin, "values": {
+            "image": image, "network": {"bootstrapEgress": [{"to": ["api.example.invalid"]}]},
+        }},
+        "gateway": {"revision": pin, "values": {"image": image}},
+        "audit": {"revision": pin, "values": {"image": image}},
+    })
+    enrollment = site.get("automaticEnrollment")
+    if isinstance(enrollment, dict):
+        enrollment.setdefault("revision", pin)
+    if mode == "kata":
+        runtime = {
+            "metadata": {"name": "saw-kata", "uid": "478fdd1f-8db9-41e8-97ad-b563215c89e9",
+                          "labels": {"openshell.ai/sandbox-attachable": "true"}},
+            "handler": "kata",
+            "scheduling": {"nodeSelector": {"saw.example.com/kata-pool": "true"}},
+            "overhead": {"podFixed": {"memory": "128Mi"}},
+        }
+        site["kataRuntimeClass"] = {
+            "name": runtime["metadata"]["name"], "uid": runtime["metadata"]["uid"],
+            "sha256": portal._preflight.runtime_placement_digest(runtime),
+        }
+    return site
 
 
 def test_create_writes_vault_and_the_registry(portal, world):
@@ -1803,8 +1873,11 @@ def test_linked_runtime_tracks_owner_and_current_generation(portal):
 def test_container_preflight_explains_profile_and_cleanup_failures(portal, world, monkeypatch, capsys, fault, expected):
     fake, signer = world
     monkeypatch.setenv("SAW_DEPLOYMENT_MODES", '["vm","container"]')
-    monkeypatch.setenv("SAW_CONTAINER_SITES", json.dumps({"alice": {
-        "subject": "478fdd1f-8db9-41e8-97ad-b563215c89e9", "automaticEnrollment": {"approvedProfiles": {"audited-openclaw": "a"*64}}}}))
+    site = synthetic_preflight_site(portal, {
+        "subject": "478fdd1f-8db9-41e8-97ad-b563215c89e9",
+        "automaticEnrollment": {"approvedProfiles": {"audited-openclaw": "a"*64}},
+    })
+    monkeypatch.setenv("SAW_CONTAINER_SITES", json.dumps({"alice": site}))
     monkeypatch.setenv("PRUNE_ON_REMOVE", "false" if fault == "cleanup" else "true")
     fake.request("saw-req-rejected", ds_request(signer, deploymentMode="container",
         profile="data-science" if fault == "profile" else "audited-openclaw"))
@@ -1819,9 +1892,9 @@ def test_container_portal_register_update_delete(portal, world, monkeypatch, mod
     fake, signer = world
     subject = "478fdd1f-8db9-41e8-97ad-b563215c89e9"
     monkeypatch.setenv("SAW_DEPLOYMENT_MODES", json.dumps(["vm", mode]))
-    site = {"subject": subject, "automaticEnrollment": {"approvedProfiles": {"audited-openclaw": "a"*64}}}
-    if mode == "kata":
-        site["kataRuntimeClass"] = {"name": "saw-kata", "uid": subject, "sha256": "b"*64}
+    site = synthetic_preflight_site(portal, {
+        "subject": subject, "automaticEnrollment": {"approvedProfiles": {"audited-openclaw": "a"*64}},
+    }, mode)
     monkeypatch.setenv("SAW_CONTAINER_SITES", json.dumps({"alice": site}))
     for i in [1, 2]:
         fake.request("saw-req-" + str(i), ds_request(signer, deploymentMode=mode,
@@ -1847,6 +1920,41 @@ def test_container_portal_register_update_delete(portal, world, monkeypatch, mod
     assert portal.removal_status(portal.kube(), "alice", "vp-gitops", entry)[0]
     assert portal.main(["finish-delete","alice"]) == 0
     assert not fake.vault and REGISTRY not in fake.objects
+
+
+def test_kata_portal_preflight_rejects_changed_runtime_before_vault(portal, world, monkeypatch, capsys):
+    fake, signer = world
+    site = synthetic_preflight_site(portal, {
+        "subject": "478fdd1f-8db9-41e8-97ad-b563215c89e9",
+        "automaticEnrollment": {"approvedProfiles": {"audited-openclaw": "a" * 64}},
+    }, "kata")
+    monkeypatch.setenv("SAW_DEPLOYMENT_MODES", '["vm","kata"]')
+    monkeypatch.setenv("SAW_CONTAINER_SITES", json.dumps({"alice": site}))
+    runtime_name = site["kataRuntimeClass"]["name"]
+    fake.objects[f"/apis/node.k8s.io/v1/runtimeclasses/{runtime_name}"]["handler"] = "runc"
+    fake.request("saw-req-katabad", ds_request(
+        signer, deploymentMode="kata", profile="audited-openclaw"))
+
+    assert portal.main(["create", "saw-req-katabad"]) == 1
+    assert "Kata preflight failed: RuntimeClassRejected" in capsys.readouterr().out
+    assert not fake.vault and REGISTRY not in fake.objects
+
+
+def test_container_portal_preflight_rejects_sealed_vault_before_vault_write(portal, world, monkeypatch, capsys):
+    fake, signer = world
+    site = synthetic_preflight_site(portal, {
+        "subject": "478fdd1f-8db9-41e8-97ad-b563215c89e9",
+        "automaticEnrollment": {"approvedProfiles": {"audited-openclaw": "a" * 64}},
+    })
+    monkeypatch.setenv("SAW_DEPLOYMENT_MODES", '["vm","container"]')
+    monkeypatch.setenv("SAW_CONTAINER_SITES", json.dumps({"alice": site}))
+    fake.vault_health = {"initialized": True, "sealed": True}
+    fake.request("saw-req-vaultbad", ds_request(
+        signer, deploymentMode="container", profile="audited-openclaw"))
+
+    assert portal.main(["create", "saw-req-vaultbad"]) == 1
+    assert "Workspace preflight failed: SecretServicesUnavailable" in capsys.readouterr().out
+    assert not fake.logins and not fake.vault and REGISTRY not in fake.objects
 
 @pytest.mark.parametrize("mode,ready", [("registered",True),("pending",False),("wrong-client",False),("foreign",False),("anonymous-chat",False)])
 def test_chat_readiness_requires_registered_owner_callback(portal, monkeypatch, mode, ready):
@@ -1925,7 +2033,10 @@ def test_public_nvidia_selector_uses_its_catalog_field(portal, field):
 
 def test_owner_state_change_is_generation_scoped_and_does_not_touch_vault(portal, world, monkeypatch):
     fake, signer = world
-    site = {"subject": "478fdd1f-8db9-41e8-97ad-b563215c89e9", "modelLifecycle": True, "automaticEnrollment":{"approvedProfiles":{"audited-openclaw":"a"*64}}}
+    site = synthetic_preflight_site(portal, {
+        "subject": "478fdd1f-8db9-41e8-97ad-b563215c89e9", "modelLifecycle": True,
+        "automaticEnrollment": {"approvedProfiles": {"audited-openclaw": "a"*64}},
+    })
     monkeypatch.setenv("SAW_DEPLOYMENT_MODES", '["vm","container"]')
     monkeypatch.setenv("SAW_CONTAINER_SITES", json.dumps({"alice": site}))
     fake.request("saw-req-1", ds_request(signer, deploymentMode="container", profile="audited-openclaw"))
@@ -1951,8 +2062,11 @@ def test_custom_endpoint_is_approved_before_writing_vault(portal, world, monkeyp
     fake, signer = world
     url="https://models.fixture.test/v1"
     boundary={"allowHosts":["models.fixture.test"],"inferenceBaseURL":url}
-    site={"subject":"478fdd1f-8db9-41e8-97ad-b563215c89e9","profileBoundaries":{"custom-inference":boundary},
-          "automaticEnrollment":{"approvedProfiles":{"custom-inference":"a"*64}}}
+    site=synthetic_preflight_site(portal, {
+        "subject":"478fdd1f-8db9-41e8-97ad-b563215c89e9",
+        "profileBoundaries":{"custom-inference":boundary},
+        "automaticEnrollment":{"approvedProfiles":{"custom-inference":"a"*64}},
+    })
     monkeypatch.setenv("SAW_DEPLOYMENT_MODES",'["vm","container"]')
     monkeypatch.setenv("SAW_CONTAINER_SITES",json.dumps({"alice":site}))
     def submit(name,endpoint):
@@ -2008,9 +2122,11 @@ def test_headless_container_requires_current_runtime_and_healthy_argo(portal, mo
 def test_recycled_container_login_cannot_write_or_delete(portal, world, monkeypatch):
     fake, signer = world
     monkeypatch.setenv("SAW_DEPLOYMENT_MODES", '["vm","container"]')
-    monkeypatch.setenv("SAW_CONTAINER_SITES", json.dumps({"alice":{
+    site = synthetic_preflight_site(portal, {
         "subject":"478fdd1f-8db9-41e8-97ad-b563215c89e9",
-        "automaticEnrollment":{"approvedProfiles":{"audited-openclaw":"a"*64}}}}))
+        "automaticEnrollment":{"approvedProfiles":{"audited-openclaw":"a"*64}},
+    })
+    monkeypatch.setenv("SAW_CONTAINER_SITES", json.dumps({"alice": site}))
     fake.request("saw-req-owner", ds_request(signer, deploymentMode="container", profile="audited-openclaw"))
     assert portal.main(["create","saw-req-owner"]) == 0
     before = json.dumps([fake.vault, fake.objects[REGISTRY]], sort_keys=True)
@@ -2025,9 +2141,11 @@ def test_recycled_container_login_cannot_write_or_delete(portal, world, monkeypa
 def test_failed_vault_write_retains_reserved_generation(portal, world, monkeypatch):
     fake, signer = world
     monkeypatch.setenv("SAW_DEPLOYMENT_MODES", '["vm","container"]')
-    monkeypatch.setenv("SAW_CONTAINER_SITES", json.dumps({"alice":{
+    site = synthetic_preflight_site(portal, {
         "subject":"478fdd1f-8db9-41e8-97ad-b563215c89e9",
-        "automaticEnrollment":{"approvedProfiles":{"audited-openclaw":"a"*64}}}}))
+        "automaticEnrollment":{"approvedProfiles":{"audited-openclaw":"a"*64}},
+    })
+    monkeypatch.setenv("SAW_CONTAINER_SITES", json.dumps({"alice": site}))
     real = portal.vault_client
     def unavailable():
         raise portal.PortalError("simulated Vault outage")

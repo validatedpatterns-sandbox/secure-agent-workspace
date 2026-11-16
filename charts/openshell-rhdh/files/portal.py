@@ -92,6 +92,11 @@ _workspace = _importlib.module_from_spec(_workspace_spec)
 _workspace_spec.loader.exec_module(_workspace)
 
 
+_preflight_spec = _importlib.spec_from_file_location("saw_preflight", _Path(__file__).with_name("preflight.py"))
+_preflight = _importlib.module_from_spec(_preflight_spec)
+_preflight_spec.loader.exec_module(_preflight)
+
+
 def _project(function, *args, **kwargs):
     try:
         return function(*args, **kwargs)
@@ -725,6 +730,90 @@ def check_container_identity(user, site):
                                 credential.read().strip(), [user], insecure=False)
     if ids.get(user) != site["subject"]:
         raise PortalError("current identity does not match the enrolled container owner")
+
+
+def check_workspace_preflight(k8s, user, site, mode):
+    """Run read-only platform gates before reserving or writing keys."""
+    observations = _preflight.configuration_facts(site)
+    observations["api"] = True
+    try:
+        cluster_version = k8s.call("GET", "/apis/config.openshift.io/v1/clusterversions/version")
+    except Exception:
+        raise PortalError("Workspace preflight failed: ClusterVersionUnavailable") from None
+    try:
+        _preflight.verify_cluster_version(cluster_version)
+        observations["version"] = True
+    except _preflight.PreflightError as exc:
+        raise PortalError("Workspace preflight failed: " + exc.reason) from None
+    crd_names = ("applications.argoproj.io", "applicationsets.argoproj.io",
+                 "sandboxes.agents.x-k8s.io", "externalsecrets.external-secrets.io",
+                 "adminnetworkpolicies.policy.networking.k8s.io",
+                 "validatingadmissionpolicies.admissionregistration.k8s.io")
+    crds = {}
+    try:
+        for crd_name in crd_names:
+            crds[crd_name] = _preflight.crd_established(k8s.call(
+                "GET", "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/" + crd_name,
+                ok404=True))
+    except Exception:
+        raise PortalError("Workspace preflight failed: PlatformApiUnavailable") from None
+    observations["agentSandbox"] = crds["sandboxes.agents.x-k8s.io"]
+    observations["admission"] = (crds["adminnetworkpolicies.policy.networking.k8s.io"]
+                                  and crds["validatingadmissionpolicies.admissionregistration.k8s.io"])
+    try:
+        storage = k8s.call("GET", "/apis/storage.k8s.io/v1/storageclasses").get("items", [])
+        _preflight.verify_storage_classes(site, storage)
+        observations["storage"] = True
+    except _preflight.PreflightError:
+        observations["storage"] = False
+    except Exception:
+        observations["storage"] = False
+    try:
+        store_items = k8s.call("GET", "/apis/external-secrets.io/v1/clustersecretstores").get("items", [])
+        _preflight.verify_secret_store(site, store_items)
+    except Exception:
+        observations["secrets"] = False
+    try:
+        vault = Http(env("VAULT_ADDR"), cafile=os.environ.get("VAULT_CACERT") or None,
+                     insecure=os.environ.get("VAULT_SKIP_VERIFY") == "true")
+        health = vault.call("GET", "/v1/sys/health?standbyok=true&perfstandbyok=true")
+        observations["secrets"] = (observations.get("secrets") is not False
+                                     and crds["externalsecrets.external-secrets.io"]
+                                     and _preflight.vault_health_ready(health))
+    except Exception:
+        observations["secrets"] = False
+    try:
+        argo = env("ARGO_NAMESPACE")
+        k8s.call("GET", f"/apis/argoproj.io/v1alpha1/namespaces/{argo}/applications/saw-{user}", ok404=True)
+        observations["argo"] = (crds["applications.argoproj.io"]
+                                 and crds["applicationsets.argoproj.io"])
+    except Exception:
+        observations["argo"] = False
+    if mode == "kata":
+        approval = site.get("kataRuntimeClass") if isinstance(site, dict) else None
+        if not isinstance(approval, dict) or not approval.get("name"):
+            raise PortalError("Kata preflight failed: RuntimeClassRejected")
+        try:
+            runtime_class = k8s.call("GET", "/apis/node.k8s.io/v1/runtimeclasses/" + approval["name"])
+            configs = k8s.call("GET", "/apis/kataconfiguration.openshift.io/v1/kataconfigs").get("items", [])
+            nodes = k8s.call("GET", "/api/v1/nodes").get("items", [])
+            kata_crd = "kataconfigs.kataconfiguration.openshift.io"
+            crds[kata_crd] = _preflight.crd_established(k8s.call(
+                "GET", "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/" + kata_crd,
+                ok404=True))
+            _preflight.verify_kata_platform(site, runtime_class, configs, nodes, crds, cluster_version)
+            observations.update(osc=True, kataConfig=True, workers=True, runtimeClass=True)
+        except _preflight.PreflightError as exc:
+            raise PortalError("Kata preflight failed: " + exc.reason) from None
+        except Exception:
+            raise PortalError("Kata preflight failed: KataPlatformUnavailable") from None
+    try:
+        _preflight.check_observations(mode, observations)
+    except _preflight.PreflightError as exc:
+        raise PortalError("Workspace preflight failed: " + exc.reason) from None
+    except Exception:
+        # API errors can contain request details. Keep the pipeline log safe.
+        raise PortalError("Workspace preflight failed: PlatformApiUnavailable") from None
 
 
 def is_deleting(cm):
@@ -1482,6 +1571,8 @@ def handle(action, request_name):
                 raise PortalError(f"workspace saw-{user} is being deleted; request it again when "
                                   "the delete pipeline has finished")
             mode = request_deployment_mode(data)
+            if mode in KUBERNETES_MODES:
+                check_workspace_preflight(k8s, user, container_site(user), mode)
             if cm is not None:
                 assert_mode_unchanged(read_entry(cm), mode)
             if mode in KUBERNETES_MODES and container_site(user):

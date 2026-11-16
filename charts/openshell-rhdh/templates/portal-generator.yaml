@@ -31,7 +31,7 @@ spec:
       labels:
         app.kubernetes.io/name: saw-workspaces-generator
       annotations:
-        checksum/scripts: {{ printf "%s%s" (.Files.Get "files/portal.py") (.Files.Get "files/workspace.py") | sha256sum | trunc 16 }}
+        checksum/scripts: {{ printf "%s%s%s" (.Files.Get "files/portal.py") (.Files.Get "files/workspace.py") (.Files.Get "files/preflight.py") | sha256sum | trunc 16 }}
         checksum/catalog: {{ .Files.Get "files/profile-catalog.json" | sha256sum | trunc 16 }}
     spec:
       serviceAccountName: saw-workspaces-generator

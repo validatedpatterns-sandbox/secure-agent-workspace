@@ -435,6 +435,13 @@ saw-create: .check-saw-name .check-deployment-mode ## Provision one SAW using DE
 		$(or $(PYTHON),uv run --locked python) $(SCRIPTS_DIR)/container-workspace.py apply; \
 	else $(SCRIPTS_DIR)/openshell-saw-create.sh; fi
 
+.PHONY: saw-preflight
+saw-preflight: .check-saw-name .check-deployment-mode ## Check Kubernetes workspace prerequisites without changing the cluster
+	@if [ "$(DEPLOYMENT_MODE)" = vm ]; then \
+		echo "saw-preflight applies to container and kata modes" >&2; exit 1; \
+	fi
+	@$(or $(PYTHON),uv run --locked python) $(SCRIPTS_DIR)/container-workspace.py preflight
+
 saw-configure: .check-saw-name ## Configure the OpenShell CLI for one gateway
 	@$(SCRIPTS_DIR)/saw-configure.sh
 # Keep the token saved by `openshell gateway add`. The separate make-login token
@@ -473,7 +480,7 @@ harness-bundle-push: ## Push harness-bundles/$(HARNESS_BUNDLE) to $(HARNESS_REPO
 	@test -n "$(HARNESS_REPO)" || { echo "set HARNESS_REPO, e.g. ghcr.io/<owner>/saw-harness-$(HARNESS_BUNDLE)"; exit 1; }
 	@$(SCRIPTS_DIR)/harness-bundle.sh push $(HARNESS_BUNDLE) $(HARNESS_REPO)
 
-saw-restart: .check-saw-name .check-ssh-key ## Restart through guest poweroff to apply changed inputs
+saw-restart: .check-saw-name .check-vm-deployment .check-ssh-key ## Restart through guest poweroff to apply changed inputs
 	@VM_NAME="$(OPENSHELL_SAW_NAME)" \
 	$(SCRIPTS_DIR)/openshell-saw-restart.sh
 
@@ -805,4 +812,4 @@ $(eval $(call deprecated_alias,governance-create-profile,governance-profile-crea
 
 .PHONY: kata-worker-check
 kata-worker-check: ## Report firmware and verify KVM on selected local-Kata workers
-	@python3 scripts/kata_worker_check.py
+	@$(or $(PYTHON),uv run --locked python) scripts/kata_worker_check.py

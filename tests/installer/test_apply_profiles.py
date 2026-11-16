@@ -866,6 +866,57 @@ def test_gateway_get_failure_cannot_replace_a_running_agents_policy(
 
 
 @pytest.mark.parametrize("target", ["default/notebook", "cuda-dev/cuda-sandbox"])
+@pytest.mark.parametrize("phase", ["Error", "Completed"])
+def test_workload_exiting_during_exec_wait_can_recover_on_next_apply(
+        ab, fake_env, config, profiles, creds, target, phase, monkeypatch, fake_clock):
+    applier = applier_with_shipped_profiles(ab, config, creds)
+    applier.apply(profiles)
+    state = fake_env.openshell_state()
+    original = state["sandboxes"][target]
+    original["phase"] = "Provisioning"
+    original.setdefault("files", {})["only-copy.txt"] = "must survive"
+    password = "original-password-1234567890"
+    original["openclawConfig"]["gateway.auth.password"] = password
+    fake_env.set_openshell_state(state)
+    ws, name = target.split("/")
+    before = len(fake_env.openshell_calls())
+    fills = []
+    fill = applier.volumes.fill
+
+    def record_fill(*args, **kwargs):
+        fills.append(args[0])
+        return fill(*args, **kwargs)
+
+    wait = applier.wait_exec_ready
+
+    def exit_during_wait(workspace, sandbox):
+        if (workspace.name, sandbox.name) != (ws, name):
+            return wait(workspace, sandbox)
+        state = fake_env.openshell_state()
+        state["sandboxes"][target].update(phase=phase, execBroken=True)
+        fake_env.set_openshell_state(state)
+        return False
+
+    monkeypatch.setattr(applier.volumes, "fill", record_fill)
+    monkeypatch.setattr(applier, "wait_exec_ready", exit_during_wait)
+    with pytest.raises(ab.InstallerError, match="stopped while waiting for exec"):
+        applier.apply(profiles)
+    assert target not in applier.confinement_stops
+    assert ab.sandbox_volume_name(ab.GATE_VOLUME_PREFIX, ws, name) not in fills
+    assert not any(c[:2] == ["sandbox", "delete"] and name in c
+                   for c in fake_env.openshell_calls()[before:])
+
+    retry = applier_with_shipped_profiles(ab, config, creds)
+    retry.apply(profiles)
+    restored = fake_env.openshell_state()["sandboxes"][target]
+    assert restored["phase"] == "Ready"
+    assert restored["files"]["only-copy.txt"] == "must survive"
+    assert restored["openclawConfig"]["gateway.auth.password"] == password
+    assert restored["openclawConfig"]["tools.fs.workspaceOnly"] is True
+    assert not retry.confinement_stops
+
+
+@pytest.mark.parametrize("target", ["default/notebook", "cuda-dev/cuda-sandbox"])
 @pytest.mark.parametrize("use_ledger", [False, True])
 def test_confinement_host_stop_survives_later_applies_without_recreation(
         ab, fake_env, config, profiles, creds, target, use_ledger, tmp_path, fake_clock):

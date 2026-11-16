@@ -79,6 +79,29 @@ def test_broken_sandbox_interrupted_recreation_resumes(ab, broken_sandbox, fake_
     assert not archive.exists()
 
 
+@pytest.mark.parametrize("failure", ["missing", "corrupt"])
+def test_broken_sandbox_invalid_pending_archive_deletes_nothing(
+        ab, broken_sandbox, fake_env, monkeypatch, failure):
+    applier, profile, _, _ = broken_sandbox
+
+    def interrupted(*args, **kwargs):
+        raise ab.InstallerError("interrupted before delete")
+
+    monkeypatch.setattr(applier, "delete_sandbox_and_wait", interrupted)
+    with pytest.raises(ab.InstallerError, match="interrupted"):
+        applier.apply([profile])
+    archive = Path(applier.migrations["default/tools"]["archive"])
+    if failure == "missing":
+        archive.unlink()
+    else:
+        archive.write_text("damaged archive")
+    retry = ab.ProfileApplier(ab.Shell(), applier.cfg, {})
+    with pytest.raises(ab.InstallerError, match="nothing was deleted"):
+        retry.apply([profile])
+    assert not any(c[:2] == ["sandbox", "delete"] for c in fake_env.openshell_calls())
+    assert fake_env.openshell_state()["sandboxes"]["default/tools"]["files"]["notes.md"] == "preserve me"
+
+
 def test_broken_sandbox_unreadable_labels_changes_nothing(ab, broken_sandbox, fake_env, monkeypatch):
     applier, profile, _, _ = broken_sandbox
     before = fake_env.openshell_state()

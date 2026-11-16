@@ -4679,7 +4679,17 @@ class ProfileApplier:
             key = self.migration_key(ws, sb)
             self.log_broken_sandbox(ws, sb)
             if self.sh.dry_run or key in self.migrations:
-                # Dry run, or an earlier recreation holds a verified archive.
+                # A record can outlive its archive between applies. Verify it
+                # again before deleting the remaining copy of the workspace.
+                if not self.sh.dry_run:
+                    record = self.migrations[key]
+                    try:
+                        verified = sha256_file(Path(record["archive"])) == record["sha256"]
+                    except (OSError, KeyError, TypeError):
+                        verified = False
+                    if not verified:
+                        raise InstallerError(f"saved /sandbox archive of '{sb.name}' is missing "
+                                             "or invalid; nothing was deleted")
                 log(f"Sandbox '{sb.name}' is not running; recreating it")
                 self.cli("sandbox", "delete", sb.name, *ws_args(ws.name), check=False)
                 state = "deleting"

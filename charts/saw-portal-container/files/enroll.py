@@ -14,6 +14,7 @@ from preflight import PreflightError, api_resources_available, crd_established, 
 from portal_contract import verify_contract
 from receipt import receipt_key
 from gateway_ca import read_public_ca
+from http_errors import format_http_error
 
 S=Path("/var/run/secrets/kubernetes.io/serviceaccount")
 class NoRedirect(h.HTTPRedirectHandler):
@@ -144,6 +145,7 @@ if __name__=="__main__":
             raise SystemExit(1)
         except Exception as exc:
             # Never log an API body, credential, or other input.
-            print("Waiting for reviewed inputs: "+type(exc).__name__+(" "+str(exc)[:120] if type(exc).__name__=="BoundaryError" else ""),flush=True)
+            detail = format_http_error(exc) if isinstance(exc, urllib.error.HTTPError) else type(exc).__name__
+            print("Waiting for reviewed inputs: "+detail+(" "+str(exc)[:120] if type(exc).__name__=="BoundaryError" else ""),flush=True)
             if n==99:raise SystemExit(1)
             time.sleep(5)

@@ -145,6 +145,10 @@ The RHDH create handler runs in the generator Pod. A missing `get` permission
 for RuntimeClasses returns `403` and blocks the preflight before enrollment.
 The enrollment job checks the approved Kata placement again before it publishes
 the immutable runtime binding. A failure stops the request with a fixed reason.
+When an API request fails, the enrollment log shows its HTTP status and
+Kubernetes API path. It does not show the response body, headers, or query
+parameters. Use that status and path to check the matching API permission or
+resource. Other errors keep the current type-only log.
 The read-only Make command also needs the Argo-managed installation namespace
 to exist so the API server can validate namespaced resources. On a first
 `make saw-create`, platform checks run first; the command then creates that

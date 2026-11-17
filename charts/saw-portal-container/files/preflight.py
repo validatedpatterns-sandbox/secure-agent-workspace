@@ -41,6 +41,41 @@ COMMON_CHECKS = (
 )
 KATA_CHECKS = ("osc", "kataConfig", "workers", "runtimeClass")
 
+# This pinned image has /sandbox mode 0770, owned by 1000:0. The OpenShift
+# namespace UID cannot traverse it. The reviewed notebook build adds o+x.
+NON_TRAVERSABLE_WORKLOAD_IMAGES = frozenset({
+    "quay.io/aipcc/base-images/agentic/openclaw@sha256:"
+    "896d1526ee29b53167034ba65d1c758c8da777f441ed094e19f3bcf6d7445c61",
+})
+
+
+def verify_profile_image_access(site, profile_name, catalog):
+    """Reject known inaccessible workload images before enrollment starts."""
+    profile = catalog.get(profile_name) if isinstance(catalog, dict) else None
+    if not isinstance(profile, dict) or not isinstance(site, dict):
+        raise PreflightError("WorkloadImageApprovalMissing")
+    overrides = site.get("profileImageOverrides", {})
+    if not isinstance(overrides, dict):
+        raise PreflightError("WorkloadImageApprovalInvalid")
+    selected = overrides.get(profile_name, {})
+    if not isinstance(selected, dict):
+        raise PreflightError("WorkloadImageApprovalInvalid")
+    for workspace in profile.get("workspaces", []):
+        if not isinstance(workspace, dict) or not workspace.get("enabled"):
+            continue
+        for sandbox in workspace.get("sandboxes", []):
+            if not isinstance(sandbox, dict) or not sandbox.get("enabled"):
+                continue
+            image = sandbox.get("image")
+            if image in NON_TRAVERSABLE_WORKLOAD_IMAGES:
+                replacement = selected.get(sandbox.get("name"), image)
+                if replacement == image:
+                    raise PreflightError("WorkloadImageNotNamespaceAccessible")
+                if (not isinstance(replacement, str) or not re.fullmatch(
+                        r"[a-z0-9][a-z0-9./:_-]+@sha256:[a-f0-9]{64}", replacement)):
+                    raise PreflightError("WorkloadImageApprovalInvalid")
+    return True
+
 
 def runtime_placement(runtime_class):
     """Return the canonical placement payload used by owner approvals."""

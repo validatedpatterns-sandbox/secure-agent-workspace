@@ -53,6 +53,13 @@ def test_gitops_preflight_stops_stale_policy_before_projection(projector):
         projector.parameters(cfg, catalog(), Reader())
 
 
+def test_gitops_rejects_nontraversable_image_before_projection(projector):
+    cfg = config()
+    del cfg["containerSites"]["alice"]["profileImageOverrides"]["data-science"]["notebook"]
+    with pytest.raises(projector.ProjectionError, match="WorkloadImageNotNamespaceAccessible"):
+        projector.parameters(cfg, catalog(), lambda _: {})
+
+
 def test_gitops_kata_preflight_checks_live_runtime(projector):
     owner = {"name": "alice", "registration": "a" * 16,
              "installationID": "installation"}

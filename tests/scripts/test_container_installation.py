@@ -86,6 +86,16 @@ def test_make_preflight_accepts_a_first_registration_with_complete_approval(monk
     assert calls == [("namespace", "saw-alice")]
 
 
+def test_make_preflight_rejects_nontraversable_image_before_cluster_reads(monkeypatch):
+    values, user = install.select(inputs(), "alice")
+    del values["containerSites"]["alice"]["profileImageOverrides"]["data-science"]["notebook"]
+    calls = []
+    monkeypatch.setattr(install, "get", lambda *args: calls.append(args))
+    with pytest.raises(install.InstallError, match="WorkloadImageNotNamespaceAccessible"):
+        install.preflight(values, "workspaces", user)
+    assert calls == []
+
+
 def test_make_preflight_rejects_a_stale_live_boundary_before_apply(monkeypatch):
     values, user = install.select(inputs(), "alice")
     site = values["containerSites"]["alice"]

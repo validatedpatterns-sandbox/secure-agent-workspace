@@ -186,6 +186,11 @@ def preflight(config, namespace, user):
     """Check the shared platform without installing or adopting its dependencies."""
     mode = user["values"]["deployment"]["mode"]
     site = config["containerSites"][user["name"]]
+    catalog = json.loads((ROOT / "charts/saw-users/files/profile-catalog.json").read_text())["profiles"]
+    try:
+        preflight_checks.verify_profile_image_access(site, (user.get("profiles") or [None])[0], catalog)
+    except preflight_checks.PreflightError as exc:
+        raise InstallError("SAW preflight failed: " + exc.reason) from None
     argo = config.get("global", {}).get("vpArgoNamespace") or config.get("argo", {}).get("namespace", "vp-gitops")
     if namespace == argo:
         raise InstallError("workspace installation namespace must be separate from Argo CD")

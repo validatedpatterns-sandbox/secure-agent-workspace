@@ -203,6 +203,19 @@ site approval only after the platform owner reviews the difference. Existing
 registrations keep their immutable approval and need a fresh registration to
 use a reviewed change.
 
+The pinned AIPCC OpenClaw notebook image has `/sandbox` owned by `1000:0`
+with mode `0770`. A workspace Pod that uses an OpenShift namespace UID cannot
+enter that directory. The shared preflight now returns
+`WorkloadImageNotNamespaceAccessible` when an enabled sandbox uses that digest
+without a pinned profile image override. This check uses the known image digest;
+it is not a general image filesystem inspection. Prepare the notebook image
+with `make container-notebook-image BUILD_NS=<build-namespace> BUILD_ARCH=amd64`
+as described in [Container images](container-images.md#prepare-the-data-science-notebook-for-container-workspaces).
+Use the resulting digest in `profileImageOverrides.data-science.notebook` and
+grant the scoped `imagePull` access. Review the changed compiled profile and
+approve its new digest before a new registration. A failed registration keeps
+its old immutable approval until the normal delete completes.
+
 ## Standalone workspace on an existing Kata pool
 
 Start with the [container installation](container-installation.md). Keep its

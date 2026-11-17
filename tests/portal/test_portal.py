@@ -555,6 +555,9 @@ def synthetic_preflight_site(portal, site, mode="container"):
     site = json.loads(json.dumps(site))
     pin = "a" * 40
     image = "registry.example.invalid/saw@sha256:" + "b" * 64
+    overrides = site.setdefault("profileImageOverrides", {})
+    for profile in ("data-science", "custom-inference", "ci-nvidia"):
+        overrides.setdefault(profile, {}).setdefault("notebook", image)
     site.setdefault("providerAllowHosts", ["api.example.invalid"])
     site.setdefault("providerPolicy", {"allowHosts": ["api.example.invalid"]})
     site.setdefault("stack", {
@@ -585,6 +588,23 @@ def synthetic_preflight_site(portal, site, mode="container"):
             "sha256": portal._preflight.runtime_placement_digest(runtime),
         }
     return site
+
+
+@pytest.mark.parametrize("mode", ["container", "kata"])
+def test_portal_rejects_nontraversable_image_before_vault(portal, world, monkeypatch, capsys, mode):
+    fake, signer = world
+    site = synthetic_preflight_site(portal, {
+        "subject": "478fdd1f-8db9-41e8-97ad-b563215c89e9",
+        "automaticEnrollment": {"approvedProfiles": {"data-science": "a" * 64}},
+    }, mode)
+    del site["profileImageOverrides"]["data-science"]["notebook"]
+    monkeypatch.setenv("SAW_DEPLOYMENT_MODES", json.dumps(["vm", mode]))
+    monkeypatch.setenv("SAW_CONTAINER_SITES", json.dumps({"alice": site}))
+    fake.request("saw-req-inaccessible", ds_request(
+        signer, deploymentMode=mode, profile="data-science"))
+    assert portal.main(["create", "saw-req-inaccessible"]) != 0
+    assert "WorkloadImageNotNamespaceAccessible" in capsys.readouterr().out
+    assert not fake.vault and REGISTRY not in fake.objects
 
 
 def test_create_writes_vault_and_the_registry(portal, world):

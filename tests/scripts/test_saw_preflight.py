@@ -160,6 +160,29 @@ def test_non_kata_mode_does_not_require_kata_operator_facts():
     assert preflight.check_observations("container", facts) == preflight.COMMON_CHECKS
 
 
+def test_known_nontraversable_workload_needs_pinned_replacement():
+    source = next(iter(preflight.NON_TRAVERSABLE_WORKLOAD_IMAGES))
+    replacement = "registry.example.invalid/openclaw@sha256:" + "a" * 64
+    catalog = {"approved": {"workspaces": [{"enabled": True, "sandboxes": [
+        {"name": "notebook", "enabled": True, "image": source},
+    ]}]}}
+    with pytest.raises(preflight.PreflightError, match="WorkloadImageNotNamespaceAccessible"):
+        preflight.verify_profile_image_access({}, "approved", catalog)
+    site = {"profileImageOverrides": {"approved": {"notebook": replacement}}}
+    assert preflight.verify_profile_image_access(site, "approved", catalog)
+    site["profileImageOverrides"]["approved"]["notebook"] = "openclaw:latest"
+    with pytest.raises(preflight.PreflightError, match="WorkloadImageApprovalInvalid"):
+        preflight.verify_profile_image_access(site, "approved", catalog)
+
+
+def test_disabled_workload_does_not_require_image_replacement():
+    source = next(iter(preflight.NON_TRAVERSABLE_WORKLOAD_IMAGES))
+    catalog = {"approved": {"workspaces": [{"enabled": True, "sandboxes": [
+        {"name": "notebook", "enabled": False, "image": source},
+    ]}]}}
+    assert preflight.verify_profile_image_access({}, "approved", catalog)
+
+
 def site_config():
     pin = "a" * 40
     image = "registry.example.invalid/worker@sha256:" + "b" * 64

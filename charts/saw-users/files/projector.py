@@ -184,6 +184,8 @@ def parameters(config, catalog, read):
             raise ProjectionError("standalone container projection received another backend")
         site = sites.get(name)
         try:
+            profile = (owner.get("profiles") or [None])[0]
+            preflight.verify_profile_image_access(site, profile, catalog)
             values = workspace.project_workspace(owner, defaults, site, catalog, read, getattr(read, "previous", None))
             live_read = getattr(read, "preflight_resource", None)
             if callable(live_read):

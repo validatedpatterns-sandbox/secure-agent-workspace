@@ -1682,6 +1682,10 @@ def handle(action, request_name):
                 if os.environ.get("PRUNE_ON_REMOVE", "true") != "true":
                     raise PortalError("container provisioning requires foreground cleanup; "
                                       "the site administrator must enable portal.pruneOnRemove")
+                try:
+                    _preflight.verify_profile_image_access(site, profile, catalog)
+                except _preflight.PreflightError as exc:
+                    raise PortalError("Workspace preflight failed: " + exc.reason) from None
             elif mode not in PROVISIONABLE_MODES:
                 raise PortalError(f"{mode} workspace provisioning is not available in this release")
             if profile is None:

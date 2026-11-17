@@ -1,5 +1,10 @@
 # VM shutdown and restart
 
+For SAW deployments using OpenShell older than 0.1.6,
+[deploy SAW fresh](openshell-016-release.md#existing-deployments). Restarting the
+old VMs is not a supported upgrade path to 0.1.6. The procedure below applies
+to deployments already on 0.1.6.
+
 Use `make saw-restart OPENSHELL_SAW_NAME=<name>` to apply changed VM inputs. The
 command uses the normal guest SSH access to run `sudo systemctl poweroff`, then
 waits for a different Running VM instance. The chart's `runStrategy: Always`

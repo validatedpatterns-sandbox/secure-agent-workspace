@@ -159,6 +159,15 @@ def test_container_mode_requires_default_runtime_for_both_roles():
                 "object.spec.runtimeClassName == ''") in checks
 
 
+def test_supervisor_accepts_stock_gateway_tls_name_only():
+    validations = render()["ValidatingAdmissionPolicy"]["spec"]["validations"]
+    rule, = [item["expression"] for item in validations
+             if item["message"] == "Supervisor executable, TLS projection and token must match the stock contract."]
+    assert "'OPENSHELL_GATEWAY_TLS_SERVER_NAME'" in rule
+    assert "object.spec.containers[0].env.all(e, e.name in [" in rule
+    assert "AWS_SECRET_ACCESS_KEY" not in rule
+
+
 def test_identity_fences_cover_creation_and_label_removal_on_update():
     vap = render()["ValidatingAdmissionPolicy"]["spec"]
     variables = {item["name"]: item["expression"] for item in vap["variables"]}

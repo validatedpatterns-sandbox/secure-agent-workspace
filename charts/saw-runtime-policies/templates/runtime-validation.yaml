@@ -177,7 +177,7 @@ spec:
         'OPENSHELL_SANDBOX_ID','OPENSHELL_SANDBOX','OPENSHELL_MAIN_PROCESS_SPEC','OPENSHELL_K8S_SA_TOKEN_FILE',
         'OPENSHELL_SSH_SOCKET_PATH','OPENSHELL_SSH_SOCKET_SHARED','OPENSHELL_PROXY_TLS_DIR','OPENSHELL_PROXY_CA_CERT',
         'OPENSHELL_PROXY_CA_KEY','OPENSHELL_LOG_LEVEL','OPENSHELL_TELEMETRY_ENABLED','OPENSHELL_NETWORK_RUNTIME_CAPABILITIES',
-        'OPENSHELL_TLS_CA','OPENSHELL_GATEWAY_TLS_SERVER_NAME']) &&
+        'OPENSHELL_TLS_CA','OPENSHELL_GATEWAY_TLS_SERVER_NAME','OPENSHELL_GATEWAY_NAME']) &&
         object.spec.volumes.all(v, has(v.emptyDir) ||
           (v.name == 'bootstrap' && has(v.secret) && v.secret.secretName.matches('^os-supervisor-' + variables.pair + '-[a-f0-9]{12}$')) ||
           (v.name == 'client-tls' && has(v.secret) && v.secret.secretName == {{ .Values.serverTLSSecret | toJson }} &&

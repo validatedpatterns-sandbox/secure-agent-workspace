@@ -6,6 +6,16 @@ and separate supervisor run as ordinary Pods. Each data-science slot is a
 separate workload Pod. The workspace BOM, images, storage, credential routing,
 relay and audit flows are shared with container workspaces.
 
+## Qualification status
+
+On 2026-11-17, one RHDH data-science Kata canary completed. Both workload
+Pods were Ready with the Kata RuntimeClass. Each Pod mapped to a different
+host QEMU process. The gateway and both supervisors used the default runtime.
+Both owner chat links returned fresh model replies. This result does not yet
+cover tool allow and deny rules, network denial, secret isolation, audit,
+persistence, restart, stop/start, deletion, GitOps, Make, a container
+regression, or two active owners. Keep the PR in draft until these checks pass.
+
 ## Check worker KVM access before installing OSC
 
 Run this from a platform administrator's existing OpenShift login. Supply the
@@ -213,8 +223,16 @@ with `make container-notebook-image BUILD_NS=<build-namespace> BUILD_ARCH=amd64`
 as described in [Container images](container-images.md#prepare-the-data-science-notebook-for-container-workspaces).
 Use the resulting digest in `profileImageOverrides.data-science.notebook` and
 grant the scoped `imagePull` access. Review the changed compiled profile and
-approve its new digest before a new registration. A failed registration keeps
-its old immutable approval until the normal delete completes.
+approve its new digest before a new registration. The validation admission
+policy also pins each workload image. Render that policy and approve its new
+normalized `validation` digest when an image override changes. Check that the
+new policy differs only in the reviewed image reference. The portal generator
+reads the site Secret through an environment variable, so restart its
+Deployment after a site approval change. Verify the owner Argo Application
+and the enrollment bootstrap use the new digest before waiting for the
+workspace runtime. A failed registration keeps its old immutable approval
+until the normal delete completes, unless it has not yet published an
+enrollment binding and the corrected site projection can reconcile it.
 
 ## Standalone workspace on an existing Kata pool
 

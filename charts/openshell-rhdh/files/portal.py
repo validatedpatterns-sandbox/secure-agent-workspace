@@ -732,7 +732,90 @@ def check_container_identity(user, site):
         raise PortalError("current identity does not match the enrolled container owner")
 
 
-def check_workspace_preflight(k8s, user, site, mode):
+def _approved_profile_reference(site, profile):
+    boundaries = site.get("profileBoundaries", {}) if isinstance(site, dict) else {}
+    boundary = boundaries.get(profile) if isinstance(boundaries, dict) else None
+    if isinstance(boundary, dict) and isinstance(boundary.get("reference"), dict):
+        return boundary["reference"]
+    automatic = site.get("automaticEnrollment", {}) if isinstance(site, dict) else {}
+    return automatic.get("reference") if isinstance(automatic, dict) else None
+
+
+def check_live_boundary_approval(k8s, user, site, mode, profile, catalog):
+    """Check the existing namespace policy against the owner-approved hash."""
+    automatic = site.get("automaticEnrollment", {}) if isinstance(site, dict) else {}
+    if not isinstance(automatic, dict) or not automatic or automatic.get("enabled") is False:
+        return
+    reference = _approved_profile_reference(site, profile)
+    try:
+        _preflight.verify_boundary_reference(reference, mode)
+    except _preflight.PreflightError as exc:
+        raise PortalError("Workspace preflight failed: " + exc.reason) from None
+    namespace_name = "saw-" + user
+    try:
+        namespace = k8s.call("GET", "/api/v1/namespaces/" + namespace_name, ok404=True)
+    except Exception:
+        raise PortalError("Workspace preflight failed: BoundaryNamespaceUnavailable") from None
+    if namespace is None:
+        # A first registration has no generated namespace policies yet. The
+        # site reference is complete and valid; shared live prerequisites were
+        # checked above. Compare exact policy hashes after Argo creates them.
+        return
+    labels = namespace.get("metadata", {}).get("labels", {})
+    if labels.get(PORTAL_NS_LABEL) != "true":
+        # check_namespace_is_ours reports this case before any credential write.
+        return
+    registration = labels.get("saw.redhat.com/registration", "")
+    owner_id = labels.get("saw.redhat.com/runtime-owner", "")
+    if (not GENERATION_RE.fullmatch(registration)
+            or owner_id != installation_id(user, registration)):
+        raise PortalError("Workspace preflight failed: BoundaryApprovalIdentityMismatch")
+    profiles = (catalog.get("profiles", catalog) if isinstance(catalog, dict) else {})
+    profile_data = profiles.get(profile) if isinstance(profiles, dict) else None
+    if not isinstance(profile_data, dict):
+        raise PortalError("Workspace preflight failed: BoundaryApprovalInvalid")
+    slots = sorted(sandbox_targets(user, registration, profile_data))
+    if not slots:
+        raise PortalError("Workspace preflight failed: BoundaryApprovalInvalid")
+
+    def resource(path, key, normalize=False):
+        try:
+            obj = k8s.call("GET", path, ok404=True)
+        except Exception:
+            raise PortalError("Workspace preflight failed: BoundaryPolicyUnavailable") from None
+        if not isinstance(obj, dict) or not isinstance(obj.get("spec"), dict):
+            raise PortalError("Workspace preflight failed: BoundaryPolicyUnavailable")
+        spec = obj["spec"]
+        if normalize:
+            digest = _preflight.validation_policy_digest(
+                spec, user, registration, owner_id, slots)
+        else:
+            digest = _preflight.fingerprint(spec)
+        try:
+            _preflight.verify_boundary_hash(reference, key, digest)
+        except _preflight.PreflightError as exc:
+            raise PortalError("Workspace preflight failed: " + exc.reason + ":" + key) from None
+        if obj.get("kind") == "ValidatingAdmissionPolicy":
+            status = obj.get("status", {})
+            meta = obj.get("metadata", {})
+            if (status.get("observedGeneration") != meta.get("generation")
+                    or "typeChecking" not in status
+                    or status["typeChecking"].get("expressionWarnings")):
+                raise PortalError("Workspace preflight failed: AdmissionUnavailable:" + key)
+
+    admission = "/apis/admissionregistration.k8s.io/v1"
+    policy = "saw-" + namespace_name + "-runtime"
+    resource(admission + "/validatingadmissionpolicies/" + policy,
+             "validation", normalize=True)
+    resource(admission + "/validatingadmissionpolicybindings/" + policy, "binding")
+    if mode == "kata":
+        resource(admission + "/validatingadmissionpolicies/" + policy + "-kata",
+                 "sandboxPlacement")
+        resource(admission + "/validatingadmissionpolicybindings/" + policy + "-kata",
+                 "sandboxPlacementBinding")
+
+
+def check_workspace_preflight(k8s, user, site, mode, profile, catalog):
     """Run read-only platform gates before reserving or writing keys."""
     observations = _preflight.configuration_facts(site)
     observations["api"] = True
@@ -820,6 +903,7 @@ def check_workspace_preflight(k8s, user, site, mode):
     except Exception:
         # API errors can contain request details. Keep the pipeline log safe.
         raise PortalError("Workspace preflight failed: PlatformApiUnavailable") from None
+    check_live_boundary_approval(k8s, user, site, mode, profile, catalog)
 
 
 def is_deleting(cm):
@@ -1577,16 +1661,20 @@ def handle(action, request_name):
                 raise PortalError(f"workspace saw-{user} is being deleted; request it again when "
                                   "the delete pipeline has finished")
             mode = request_deployment_mode(data)
+            site = container_site(user) if mode in KUBERNETES_MODES else None
+            profile = None
+            secrets = None
             if mode in KUBERNETES_MODES:
-                check_workspace_preflight(k8s, user, container_site(user), mode)
+                profile, secrets = parse_request(data, catalog)
+                check_workspace_preflight(k8s, user, site, mode, profile, catalog)
             if cm is not None:
                 assert_mode_unchanged(read_entry(cm), mode)
-            if mode in KUBERNETES_MODES and container_site(user):
+            if mode in KUBERNETES_MODES and site:
                 try:
-                    _workspace.validate_runtime_placement(mode, container_site(user))
+                    _workspace.validate_runtime_placement(mode, site)
                 except _workspace.WorkspaceError as exc:
                     raise PortalError(str(exc)) from exc
-                approved = container_profiles(container_site(user))
+                approved = container_profiles(site)
                 if data.get("profile") not in approved:
                     raise PortalError("selected profile is not approved for your container workspace; "
                                       "approved profiles: " + (", ".join(sorted(approved)) or "none") +
@@ -1596,12 +1684,13 @@ def handle(action, request_name):
                                       "the site administrator must enable portal.pruneOnRemove")
             elif mode not in PROVISIONABLE_MODES:
                 raise PortalError(f"{mode} workspace provisioning is not available in this release")
-            profile, secrets = parse_request(data, catalog)
+            if profile is None:
+                profile, secrets = parse_request(data, catalog)
             if mode in KUBERNETES_MODES:
                 if cm and read_entry(cm)["profiles"] != [profile]:
                     raise PortalError("changing the profile requires a new container registration")
                 endpoint = approved_endpoint(catalog[profile], secrets,
-                                             container_site(user).get("profileBoundaries", {}).get(profile, {}))
+                                             site.get("profileBoundaries", {}).get(profile, {}))
                 if cm and endpoint != read_entry(cm).get("customInferenceURL"):
                     raise PortalError("changing the endpoint requires a new registration")
                 models = public_model_inputs(catalog[profile], secrets)
@@ -1630,7 +1719,7 @@ def handle(action, request_name):
                     entry["webSearch"] = {"enabled": False}
                 if models:
                     entry["modelInputs"] = models
-                if "approvedProfiles" in container_site(user).get("automaticEnrollment",{}):
+                if "approvedProfiles" in site.get("automaticEnrollment",{}):
                     slots=sandbox_targets(user,generation,catalog[profile])
                     entry["uiNamespaces"]=sorted({"saw-ui-"+slot["relayID"] for slot in slots.values() if slot["ui"]})
                 entry["intentGeneration"] = previous.get("intentGeneration", 0) + 1

@@ -568,6 +568,9 @@ def synthetic_preflight_site(portal, site, mode="container"):
     })
     enrollment = site.get("automaticEnrollment")
     if isinstance(enrollment, dict):
+        # These registration tests use foundation mode unless they provide an
+        # explicit reviewed boundary reference.
+        enrollment.setdefault("enabled", False)
         enrollment.setdefault("revision", pin)
     if mode == "kata":
         runtime = {
@@ -1942,6 +1945,158 @@ def test_kata_portal_preflight_rejects_changed_runtime_before_vault(portal, worl
     assert portal.main(["create", "saw-req-katabad"]) == 1
     assert "Kata preflight failed: RuntimeClassHandlerMismatch" in capsys.readouterr().out
     assert not fake.vault and REGISTRY not in fake.objects
+
+
+def test_first_kata_registration_checks_approval_shape_without_existing_namespace(portal):
+    site = synthetic_preflight_site(portal, {
+        "automaticEnrollment": {
+            "enabled": True,
+            "reference": {
+                "validation": "a" * 64,
+                "binding": "b" * 64,
+                "sandboxPlacement": "c" * 64,
+                "sandboxPlacementBinding": "d" * 64,
+            },
+        },
+    }, "kata")
+
+    class EmptyKubernetes:
+        def __init__(self):
+            self.paths = []
+
+        def call(self, method, path, **kwargs):
+            self.paths.append(path)
+            assert method == "GET"
+            assert kwargs.get("ok404") is True
+            return None
+
+    reader = EmptyKubernetes()
+    portal.check_live_boundary_approval(
+        reader, "alice", site, "kata", "audited-openclaw", {})
+    assert reader.paths == ["/api/v1/namespaces/saw-alice"]
+
+
+def test_first_kata_registration_rejects_missing_approval_before_namespace_read(portal):
+    site = synthetic_preflight_site(portal, {
+        "automaticEnrollment": {"enabled": True, "reference": {"validation": "a" * 64}},
+    }, "kata")
+
+    class EmptyKubernetes:
+        def call(self, *args, **kwargs):
+            pytest.fail("The missing approval must fail before a cluster read")
+
+    with pytest.raises(portal.PortalError, match="BoundaryApprovalMissing"):
+        portal.check_live_boundary_approval(
+            EmptyKubernetes(), "alice", site, "kata", "audited-openclaw", {})
+
+
+def install_live_boundary_fixtures(portal, fake, site, mode="kata"):
+    owner = "alice"
+    registration = GEN[0]
+    owner_id = portal.installation_id(owner, registration)
+    fake.objects["/api/v1/namespaces/saw-" + owner] = {
+        "metadata": {"name": "saw-" + owner, "labels": {
+            portal.PORTAL_NS_LABEL: "true",
+            "saw.redhat.com/registration": registration,
+            "saw.redhat.com/runtime-owner": owner_id,
+        }},
+    }
+    catalog = portal.load_catalog(os.environ["CATALOG_PATH"])
+    slots = sorted(portal.sandbox_targets(
+        owner, registration, catalog["audited-openclaw"]))
+    relays = [portal.hashlib.sha256((registration + "/" + slot).encode()).hexdigest()[:16]
+              if len(slots) > 1 else registration for slot in slots]
+    policy = "saw-saw-" + owner + "-runtime"
+    validation_spec = {
+        "controlNamespace": "saw-ctl-" + registration,
+        "installation": owner_id,
+        "mode": mode,
+        "runtimeClass": site.get("kataRuntimeClass", {}).get("name", ""),
+        "gatewaySlots": [owner + "-" + relay[:8] for relay in relays] if len(slots) > 1 else [],
+        "gateRelays": ["gate-" + relay + "-claims" for relay in relays],
+        "browserProofs": ["ui-" + relay + "-browser-proof" for relay in relays],
+    }
+    validation_path = "/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicies/" + policy
+    fake.objects[validation_path] = {
+        "kind": "ValidatingAdmissionPolicy",
+        "metadata": {"name": policy, "generation": 1},
+        "spec": validation_spec,
+        "status": {"observedGeneration": 1, "typeChecking": {"expressionWarnings": []}},
+    }
+    binding_spec = {"policyName": policy, "validationActions": ["Deny"]}
+    binding_path = "/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicybindings/" + policy
+    fake.objects[binding_path] = {
+        "kind": "ValidatingAdmissionPolicyBinding",
+        "metadata": {"name": policy, "generation": 1},
+        "spec": binding_spec,
+    }
+    reference = {
+        "validation": portal._preflight.validation_policy_digest(
+            validation_spec, owner, registration, owner_id, slots),
+        "binding": portal._preflight.fingerprint(binding_spec),
+    }
+    if mode == "kata":
+        placement_name = policy + "-kata"
+        placement_spec = {"runtimeClassName": site["kataRuntimeClass"]["name"]}
+        placement_binding_spec = {"policyName": placement_name, "validationActions": ["Deny"]}
+        fake.objects["/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicies/" + placement_name] = {
+            "kind": "ValidatingAdmissionPolicy",
+            "metadata": {"name": placement_name, "generation": 1},
+            "spec": placement_spec,
+            "status": {"observedGeneration": 1, "typeChecking": {"expressionWarnings": []}},
+        }
+        fake.objects["/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicybindings/" + placement_name] = {
+            "kind": "ValidatingAdmissionPolicyBinding",
+            "metadata": {"name": placement_name, "generation": 1},
+            "spec": placement_binding_spec,
+        }
+        reference["sandboxPlacement"] = portal._preflight.fingerprint(placement_spec)
+        reference["sandboxPlacementBinding"] = portal._preflight.fingerprint(placement_binding_spec)
+    site["automaticEnrollment"]["enabled"] = True
+    site["automaticEnrollment"]["reference"] = reference
+    return validation_path
+
+
+@pytest.mark.parametrize("change", ["validation", "binding"])
+def test_kata_portal_preflight_rejects_changed_admission_approval_before_vault(
+        portal, world, monkeypatch, capsys, change):
+    fake, signer = world
+    site = synthetic_preflight_site(portal, {
+        "subject": "478fdd1f-8db9-41e8-97ad-b563215c89e9",
+        "automaticEnrollment": {"approvedProfiles": {"audited-openclaw": "a" * 64}},
+    }, "kata")
+    validation_path = install_live_boundary_fixtures(portal, fake, site)
+    if change == "validation":
+        fake.objects[validation_path]["spec"]["runtimeClass"] = "unapproved-runtime"
+    else:
+        fake.objects["/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicybindings/"
+                     "saw-saw-alice-runtime"]["spec"]["validationActions"] = ["Audit"]
+    monkeypatch.setenv("SAW_DEPLOYMENT_MODES", '["vm","kata"]')
+    monkeypatch.setenv("SAW_CONTAINER_SITES", json.dumps({"alice": site}))
+    fake.request("saw-req-boundarybad", ds_request(
+        signer, deploymentMode="kata", profile="audited-openclaw"))
+
+    assert portal.main(["create", "saw-req-boundarybad"]) == 1
+    output = capsys.readouterr().out
+    assert "Workspace preflight failed: BoundaryApprovalChanged" in output
+    assert not fake.vault and REGISTRY not in fake.objects
+
+
+def test_kata_portal_preflight_accepts_the_approved_live_boundary(
+        portal, world, monkeypatch):
+    fake, signer = world
+    site = synthetic_preflight_site(portal, {
+        "subject": "478fdd1f-8db9-41e8-97ad-b563215c89e9",
+        "automaticEnrollment": {"approvedProfiles": {"audited-openclaw": "a" * 64}},
+    }, "kata")
+    install_live_boundary_fixtures(portal, fake, site)
+    monkeypatch.setenv("SAW_DEPLOYMENT_MODES", '["vm","kata"]')
+    monkeypatch.setenv("SAW_CONTAINER_SITES", json.dumps({"alice": site}))
+    fake.request("saw-req-boundaryok", ds_request(
+        signer, deploymentMode="kata", profile="audited-openclaw"))
+
+    assert portal.main(["create", "saw-req-boundaryok"]) == 0
+    assert fake.vault and REGISTRY in fake.objects
 
 
 def test_container_portal_preflight_rejects_sealed_vault_before_vault_write(portal, world, monkeypatch, capsys):

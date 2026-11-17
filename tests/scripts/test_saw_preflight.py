@@ -73,6 +73,62 @@ def test_runtime_approval_missing_site_binding_has_a_fixed_reason():
         preflight.check_runtime_class(None, observed)
 
 
+def test_validation_policy_hash_normalizes_registration_specific_names():
+    registration = "0123456789abcdef"
+    installation = "11111111-1111-4111-8111-111111111111"
+    slots = ["default/worker", "tools/worker"]
+
+    def spec(reg, install):
+        relays = [preflight.hashlib.sha256((reg + "/" + slot).encode()).hexdigest()[:16]
+                  for slot in slots]
+        return {
+            "controlNamespace": "saw-ctl-" + reg,
+            "installation": install,
+            "gatewaySlots": ["alice-" + relay[:8] for relay in relays],
+            "gateRelays": ["gate-" + relay + "-claims" for relay in relays],
+            "browserProofs": ["ui-" + relay + "-browser-proof" for relay in relays],
+        }
+
+    first = preflight.validation_policy_digest(
+        spec(registration, installation), "alice", registration, installation, slots)
+    next_registration = "fedcba9876543210"
+    next_installation = "22222222-2222-4222-8222-222222222222"
+    second = preflight.validation_policy_digest(
+        spec(next_registration, next_installation), "alice", next_registration,
+        next_installation, slots)
+    assert first == second
+    assert len(first) == 64
+
+
+def test_boundary_reference_fails_closed_on_missing_or_changed_hash():
+    observed = "a" * 64
+    assert preflight.verify_boundary_hash({"validation": observed}, "validation", observed)
+    with pytest.raises(preflight.PreflightError, match="BoundaryApprovalMissing"):
+        preflight.verify_boundary_hash({}, "validation", observed)
+    with pytest.raises(preflight.PreflightError, match="BoundaryApprovalChanged"):
+        preflight.verify_boundary_hash({"validation": "b" * 64}, "validation", observed)
+
+
+@pytest.mark.parametrize(("mode", "reference"), [
+    ("container", {"validation": "a" * 64, "binding": "b" * 64}),
+    ("kata", {"validation": "a" * 64, "binding": "b" * 64,
+               "sandboxPlacement": "c" * 64, "sandboxPlacementBinding": "d" * 64}),
+])
+def test_boundary_reference_requires_all_hashes_for_the_selected_mode(mode, reference):
+    assert preflight.verify_boundary_reference(reference, mode)
+
+
+@pytest.mark.parametrize(("mode", "reference", "reason"), [
+    ("kata", {"validation": "a" * 64}, "BoundaryApprovalMissing"),
+    ("kata", {"validation": "a" * 64, "binding": "b" * 64,
+               "sandboxPlacement": "not-a-hash", "sandboxPlacementBinding": "d" * 64},
+     "BoundaryApprovalInvalid"),
+])
+def test_boundary_reference_rejects_incomplete_or_malformed_hashes(mode, reference, reason):
+    with pytest.raises(preflight.PreflightError, match=reason):
+        preflight.verify_boundary_reference(reference, mode)
+
+
 def observations():
     return {key: True for key in preflight.COMMON_CHECKS + preflight.KATA_CHECKS}
 

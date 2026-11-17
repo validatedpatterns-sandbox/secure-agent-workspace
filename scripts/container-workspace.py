@@ -107,6 +107,81 @@ def check_existing(existing, user):
         raise InstallError("existing release uses another backend")
 
 
+def check_live_boundary_approval(site, mode, user):
+    """Check an existing workspace's live admission policies before apply."""
+    automatic = site.get("automaticEnrollment", {}) if isinstance(site, dict) else {}
+    if not isinstance(automatic, dict) or not automatic or automatic.get("enabled") is False:
+        return
+    profiles = user.get("profiles", [])
+    profile = profiles[0] if len(profiles) == 1 else None
+    boundaries = site.get("profileBoundaries", {})
+    boundary = boundaries.get(profile) if isinstance(boundaries, dict) else None
+    reference = (boundary.get("reference") if isinstance(boundary, dict)
+                 else automatic.get("reference"))
+    try:
+        preflight_checks.verify_boundary_reference(reference, mode)
+    except preflight_checks.PreflightError as exc:
+        raise InstallError("SAW preflight failed: " + exc.reason) from None
+
+    owner = user["name"]
+    namespace_name = "saw-" + owner
+    try:
+        namespace = get("namespace", namespace_name)
+    except InstallError:
+        raise InstallError("SAW preflight failed: BoundaryNamespaceUnavailable") from None
+    if namespace is None:
+        # Argo has not created the first workspace yet. Check the complete
+        # site approval now; enrollment verifies the generated policies later.
+        return
+    labels = namespace.get("metadata", {}).get("labels", {})
+    if (labels.get("saw.redhat.com/registration") != user.get("registration")
+            or labels.get("saw.redhat.com/runtime-owner") != user.get("installationID")):
+        raise InstallError("SAW preflight failed: BoundaryApprovalIdentityMismatch")
+
+    catalog = json.loads((ROOT / "charts/saw-users/files/profile-catalog.json").read_text())["profiles"]
+    profile_data = catalog.get(profile)
+    if not isinstance(profile_data, dict):
+        raise InstallError("SAW preflight failed: BoundaryApprovalInvalid")
+    slots = sorted(workspace.sandbox_targets(owner, user["registration"], profile_data))
+    if not slots:
+        raise InstallError("SAW preflight failed: BoundaryApprovalInvalid")
+
+    def resource(kind, name, key, normalize=False):
+        try:
+            obj = get(kind, name)
+        except InstallError:
+            raise preflight_checks.PreflightError("BoundaryPolicyUnavailable") from None
+        if not isinstance(obj, dict) or not isinstance(obj.get("spec"), dict):
+            raise preflight_checks.PreflightError("BoundaryPolicyUnavailable")
+        if normalize:
+            digest = preflight_checks.validation_policy_digest(
+                obj["spec"], owner, user["registration"], user["installationID"], slots)
+        else:
+            digest = preflight_checks.fingerprint(obj["spec"])
+        preflight_checks.verify_boundary_hash(reference, key, digest)
+        if obj.get("kind") == "ValidatingAdmissionPolicy":
+            status = obj.get("status", {})
+            metadata = obj.get("metadata", {})
+            if (status.get("observedGeneration") != metadata.get("generation")
+                    or "typeChecking" not in status
+                    or status["typeChecking"].get("expressionWarnings")):
+                raise preflight_checks.PreflightError("AdmissionUnavailable:" + key)
+
+    policy = "saw-" + namespace_name + "-runtime"
+    try:
+        resource("validatingadmissionpolicies.admissionregistration.k8s.io",
+                 policy, "validation", normalize=True)
+        resource("validatingadmissionpolicybindings.admissionregistration.k8s.io",
+                 policy, "binding")
+        if mode == "kata":
+            resource("validatingadmissionpolicies.admissionregistration.k8s.io",
+                     policy + "-kata", "sandboxPlacement")
+            resource("validatingadmissionpolicybindings.admissionregistration.k8s.io",
+                     policy + "-kata", "sandboxPlacementBinding")
+    except preflight_checks.PreflightError as exc:
+        raise InstallError("SAW preflight failed: " + exc.reason) from None
+
+
 def preflight(config, namespace, user):
     """Check the shared platform without installing or adopting its dependencies."""
     mode = user["values"]["deployment"]["mode"]
@@ -179,6 +254,7 @@ def preflight(config, namespace, user):
             raise InstallError("Kata preflight failed: " + exc.reason) from None
         except (KeyError, TypeError, ValueError):
             raise InstallError("Kata preflight failed: KataPlatformUnavailable") from None
+    check_live_boundary_approval(site, mode, user)
     return existing, argo
 
 

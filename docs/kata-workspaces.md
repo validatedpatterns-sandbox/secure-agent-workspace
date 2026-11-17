@@ -136,6 +136,22 @@ daemon. RHDH and GitOps use KataConfig's installed-node status. The preflight
 does not create a namespace, release, registration or credential. Run local
 Python tools through `uv`.
 
+Before RHDH reserves a workspace or writes credentials, it checks the selected
+profile's approved admission hashes. If the owner's namespace exists, it reads
+the live runtime validation policy and binding. Kata mode also checks the Kata
+placement policy and binding. The Make preflight performs the same checks for
+an existing workspace namespace. A changed hash stops the request before the
+portal writes credentials or the registry entry. Review the rendered policy,
+source revision and site approval before changing a hash.
+
+A first registration has no workspace namespace or policy to compare. In that
+case, RHDH and Make require complete, valid approval hashes and continue with
+the shared platform checks. Argo's enrollment Job then verifies the generated
+runtime boundary before it publishes the immutable enrollment binding. This
+Job runs during GitOps reconciliation, after Argo has applied the workspace
+resources. The GitOps path can therefore create the policy resources before
+the Job detects a stale approval. Do not treat that check as a pre-sync gate.
+
 The Make path needs an `oc` context whose API hostname resolves from the
 machine that runs Make. RHDH and GitOps run their checks inside the cluster.
 RHDH checks the owner and live platform before it writes credentials to Vault.
@@ -171,6 +187,14 @@ invalid scheduling rule, and a changed placement digest. Compare the approved
 name, UID, handler, scheduling and overhead with the live object. Do not change
 an owner approval to match the live class until the platform owner has reviewed
 the class placement.
+
+If RHDH reports `BoundaryApprovalChanged:validation` or a binding reason, the
+selected profile's approved hash does not match the live admission resource.
+Do not submit another request against that approval. Check the pinned policy
+revision and compare the live resource with its rendered source. Update the
+site approval only after the platform owner reviews the difference. Existing
+registrations keep their immutable approval and need a fresh registration to
+use a reviewed change.
 
 ## Standalone workspace on an existing Kata pool
 

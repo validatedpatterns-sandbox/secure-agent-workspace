@@ -77,6 +77,50 @@ def test_update_cannot_adopt_another_registration(field):
     install.check_existing(values, user)
 
 
+def test_make_preflight_accepts_a_first_registration_with_complete_approval(monkeypatch):
+    values, user = install.select(inputs(), "alice")
+    calls = []
+    monkeypatch.setattr(install, "get", lambda kind, name, namespace=None:
+                        calls.append((kind, name)) or None)
+    install.check_live_boundary_approval(values["containerSites"]["alice"], "container", user)
+    assert calls == [("namespace", "saw-alice")]
+
+
+def test_make_preflight_rejects_a_stale_live_boundary_before_apply(monkeypatch):
+    values, user = install.select(inputs(), "alice")
+    site = values["containerSites"]["alice"]
+    owner, registration, installation = (
+        user["name"], user["registration"], user["installationID"])
+    policy = "saw-saw-alice-runtime"
+    catalog = json.loads((ROOT / "charts/saw-users/files/profile-catalog.json").read_text())["profiles"]
+    slots = sorted(install.workspace.sandbox_targets(
+        owner, registration, catalog["data-science"]))
+    relays = [install.preflight_checks.hashlib.sha256((registration + "/" + slot).encode()).hexdigest()[:16]
+              if len(slots) > 1 else registration for slot in slots]
+    validation_spec = {
+        "controlNamespace": "saw-ctl-" + registration,
+        "installation": installation,
+        "mode": "container",
+        "gatewaySlots": [owner + "-" + relay[:8] for relay in relays] if len(slots) > 1 else [],
+        "gateRelays": ["gate-" + relay + "-claims" for relay in relays],
+        "browserProofs": ["ui-" + relay + "-browser-proof" for relay in relays],
+    }
+    objects = {
+        ("namespace", "saw-alice"): {"metadata": {"labels": {
+            "saw.redhat.com/registration": registration,
+            "saw.redhat.com/runtime-owner": installation,
+        }}},
+        ("validatingadmissionpolicies.admissionregistration.k8s.io", policy): {
+            "kind": "ValidatingAdmissionPolicy", "metadata": {"generation": 1},
+            "spec": validation_spec,
+            "status": {"observedGeneration": 1, "typeChecking": {"expressionWarnings": []}},
+        },
+    }
+    monkeypatch.setattr(install, "get", lambda kind, name, namespace=None: objects.get((kind, name)))
+    with pytest.raises(install.InstallError, match="BoundaryApprovalChanged"):
+        install.check_live_boundary_approval(site, "container", user)
+
+
 def test_preflight_fails_without_required_api_and_never_installs_dependency(monkeypatch):
     config = inputs()
     user = install.select(config, "alice")[1]

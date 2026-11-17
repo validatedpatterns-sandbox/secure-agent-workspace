@@ -53,6 +53,69 @@ def runtime_placement_digest(runtime_class):
     return hashlib.sha256(raw).hexdigest()
 
 
+def fingerprint(value):
+    """Match the canonical JSON hash used by boundary approvals."""
+    raw = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def validation_policy_digest(spec, owner, registration, installation_id, slot_keys):
+    """Hash a live workspace policy with only registration names normalized."""
+    if (not isinstance(spec, dict) or not isinstance(owner, str) or not owner
+            or not isinstance(registration, str) or not re.fullmatch(r"[a-f0-9]{16}", registration)
+            or not isinstance(installation_id, str) or not installation_id
+            or not isinstance(slot_keys, (list, tuple)) or not slot_keys
+            or any(not isinstance(slot, str) or not slot for slot in slot_keys)
+            or len(set(slot_keys)) != len(slot_keys)):
+        raise PreflightError("BoundaryApprovalInvalid")
+    text = json.dumps(spec, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    if "@SAW_" in text:
+        raise PreflightError("BoundaryApprovalInvalid")
+    text = text.replace("saw-ctl-" + registration, "@SAW_CONTROL_NS@")
+    text = text.replace(installation_id, "@SAW_INSTALLATION@")
+    for slot in slot_keys:
+        relay = (hashlib.sha256((registration + "/" + slot).encode()).hexdigest()[:16]
+                 if len(slot_keys) > 1 else registration)
+        if len(slot_keys) > 1:
+            text = text.replace(owner + "-" + relay[:8], "@SAW_SLOT_" + slot + "@")
+            text = text.replace("gate-" + relay + "-", "gate-@SAW_RELAY_" + slot + "@-")
+        text = text.replace("ui-" + relay + "-browser-proof",
+                            "ui-@SAW_RELAY_" + slot + "@-browser-proof")
+    return fingerprint(json.loads(text))
+
+
+def verify_boundary_hash(reference, key, observed):
+    """Fail with a fixed reason when a live policy differs from approval."""
+    if not isinstance(reference, dict):
+        raise PreflightError("BoundaryApprovalMissing")
+    if key not in reference:
+        raise PreflightError("BoundaryApprovalMissing")
+    approved = reference.get(key)
+    if not isinstance(approved, str) or not re.fullmatch(r"[a-f0-9]{64}", approved):
+        raise PreflightError("BoundaryApprovalInvalid")
+    if approved != observed:
+        raise PreflightError("BoundaryApprovalChanged")
+    return True
+
+
+def verify_boundary_reference(reference, mode):
+    """Require every policy approval before a new workspace can be reserved."""
+    if mode not in {"container", "kata"}:
+        raise PreflightError("BoundaryApprovalInvalid")
+    if not isinstance(reference, dict):
+        raise PreflightError("BoundaryApprovalMissing")
+    keys = {"validation", "binding"}
+    if mode == "kata":
+        keys.update(("sandboxPlacement", "sandboxPlacementBinding"))
+    for key in keys:
+        approved = reference.get(key)
+        if approved is None:
+            raise PreflightError("BoundaryApprovalMissing")
+        if not isinstance(approved, str) or not re.fullmatch(r"[a-f0-9]{64}", approved):
+            raise PreflightError("BoundaryApprovalInvalid")
+    return True
+
+
 def check_runtime_class(approved, observed):
     """Check a RuntimeClass and return fixed, safe failure reasons."""
     if not isinstance(approved, dict) or not approved.get("name"):

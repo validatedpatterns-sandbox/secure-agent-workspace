@@ -168,8 +168,8 @@ subjects:
     namespace: {{ $ns }}
 {{- if or (has "container" .Values.portal.deploymentModes) (has "kata" .Values.portal.deploymentModes) }}
 ---
-# Read-only facts for the Kata registration gate. This role reads node labels,
-# RuntimeClass metadata, KataConfig status and API registration only.
+# Read-only facts for the Kubernetes registration gate. This role checks node
+# labels, runtime placement, admission resources, storage and service readiness.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -182,6 +182,9 @@ rules:
     verbs: ["list"]
   - apiGroups: ["node.k8s.io"]
     resources: ["runtimeclasses"]
+    verbs: ["get"]
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["validatingadmissionpolicies", "validatingadmissionpolicybindings"]
     verbs: ["get"]
   - apiGroups: ["kataconfiguration.openshift.io"]
     resources: ["kataconfigs"]

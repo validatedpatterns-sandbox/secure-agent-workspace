@@ -786,6 +786,13 @@ def test_kata_preflight_read_access_includes_the_rhdh_generator():
                         if rule.get("apiGroups") == ["node.k8s.io"]
                         and rule.get("resources") == ["runtimeclasses"])
     assert runtime_rule["verbs"] == ["get"]
+    admission_rule = next(rule for rule in role["rules"]
+                          if rule.get("apiGroups") == ["admissionregistration.k8s.io"]
+                          and set(rule.get("resources", [])) == {
+                              "validatingadmissionpolicies",
+                              "validatingadmissionpolicybindings",
+                          })
+    assert admission_rule["verbs"] == ["get"]
 
     binding = one(docs, "ClusterRoleBinding", "saw-portal-kata-preflight")
     subjects = {(subject["kind"], subject["name"], subject["namespace"])

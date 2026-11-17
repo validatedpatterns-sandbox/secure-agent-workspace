@@ -2,12 +2,11 @@
 
 Deploy isolated, per-user AI agent sandboxes on OpenShift Virtualization with OIDC authentication and policy-controlled access.
 
-> **OpenShell 0.1.6 deployment hold:** don't deploy or upgrade to 0.1.6 from main yet.
-> [#165](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/165)
-> can delete a sandbox's workspace files during automatic recovery after a VM restart.
-> The hold lifts when that fix and the final acceptance in
-> [#157](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157)
-> are done. See the [release record](docs/openshell-016-release.md).
+**Existing SAW deployments using OpenShell older than 0.1.6 must deploy SAW
+fresh.** In-place upgrades from those versions are not supported. Back up the
+workspace files you need before retiring the old deployment. See the
+[OpenShell 0.1.6 release record](docs/openshell-016-release.md) for deployment
+guidance and validation results.
 
 ## Upgrade: stage network isolation per user
 

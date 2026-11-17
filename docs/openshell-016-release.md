@@ -5,12 +5,8 @@ interceptor pinned in `charts/governance-interceptor/values.yaml` supplies the
 matching published OpenShell `v0.1.6` image, including the provider-annotation
 workaround and driver-config guard.
 
-**Deployment hold:** don't deploy the upgrade until
-[#165](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/165)
-is fixed and [#157](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157)
-records the final acceptance. [#162](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/pull/162)
-and [#164](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/pull/164)
-are merged; they don't fix #165.
+Deployment may proceed. Existing SAW deployments using OpenShell older than
+0.1.6 must deploy SAW fresh; see [Existing deployments](#existing-deployments).
 
 ## Published artifact
 
@@ -25,30 +21,46 @@ Anonymous checks on November 12, 2026 confirmed `v0.1.6` and
 `sha-fe19b46c29928e5d7bd6ad62440e591bb4907d3f` resolve to this index. Publishing
 remains main-only; PR builds do not push images or use registry credentials.
 
-## Validation so far
+## Validation
 
 - November 12 clean README Option A install on OpenShift 4.22.22 with this pin
   and no overrides: all 16 applications healthy. Inference, owner isolation,
   file-tool confinement, approval audit, credential cleanup, reapply and
   two-way NetworkPolicy (36/36) passed.
-- Restart testing found three problems: stale credentials (fixed in #162),
-  forced VM shutdown through the documented restart command (fixed in #164),
-  and sandbox data loss during recovery (#165, open).
-- Not yet tested: first boot with the #162 code, and upgrading a 0.1.2
-  deployment. Both are part of the final acceptance.
+- Restart fixes are merged: credentials (#162), guest-initiated shutdown (#164),
+  workspace preservation (#167) and recovery after a workload exits during
+  startup (#168).
+- Upgrade experiments retained all three baseline test files and gateway
+  credentials, but some existing workloads kept an obsolete runtime boundary.
+  In-place upgrades from pre-0.1.6 deployments are not supported.
+- Fresh-user first boot and real inference passed in both workspaces on
+  November 16. On November 17, the operator confirmed the post-restart check
+  worked. Detailed results and the reduced acceptance scope are recorded in
+  [#157](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157).
 
-## Remaining rollout gate
+## Follow-ups
 
-1. Fix #165: a sandbox recreated during recovery keeps its `/sandbox` files
-   and password, or nothing is deleted.
-2. Final acceptance on a fresh cluster, recorded in #157: install the
-   pre-0.1.6 release, upgrade to main, restart every VM, then add a new user.
-3. Remove the hold notices from README, this record, `docs/container-images.md`
-   and the chart comment.
+New findings are tracked separately without blocking deployment. The catalog
+and host-triggered shutdown investigations in
+[#161](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/161)
+remain deferred. The live NetworkPolicy probe timeout is tracked in
+[#171](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/171).
 
-## Upgrading an existing deployment
+## Existing deployments
 
-After the deployment hold is lifted:
+### Moving from OpenShell older than 0.1.6
+
+Deploy SAW fresh using the current [README installation instructions](../README.md#installation).
+Back up any workspace files and configuration you need before retiring the old
+deployment. Do not reuse the old VMs or sandbox containers: their workload
+boundaries can remain on the older runtime even after a VM restart. Existing
+workspace files and gateway credentials are not automatically migrated into
+the fresh deployment.
+
+This replaces the pre-0.1.6 in-place recovery work tracked in
+[#170](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/170).
+
+### Updating a deployment already on OpenShell 0.1.6
 
 1. After Argo CD syncs, `make saw-restart-pending` lists the VMs waiting for a
    restart. VMs install the new BOM only at boot.

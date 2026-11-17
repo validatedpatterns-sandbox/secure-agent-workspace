@@ -145,12 +145,19 @@ portal writes credentials or the registry entry. Review the rendered policy,
 source revision and site approval before changing a hash.
 
 A first registration has no workspace namespace or policy to compare. In that
-case, RHDH and Make require complete, valid approval hashes and continue with
-the shared platform checks. Argo's enrollment Job then verifies the generated
-runtime boundary before it publishes the immutable enrollment binding. This
-Job runs during GitOps reconciliation, after Argo has applied the workspace
-resources. The GitOps path can therefore create the policy resources before
-the Job detects a stale approval. Do not treat that check as a pre-sync gate.
+case, RHDH, Make, and the static GitOps projector require complete, valid
+approval hashes. The projector checks the Kata platform and approved
+RuntimeClass before it emits a child Application. If the workspace namespace
+exists, it also checks the live admission policies and bindings against the
+approved hashes. A failed projector check returns an error to ApplicationSet
+and does not return an empty desired set that could prune existing owners.
+The projector reads public resources only and cannot read Secrets.
+
+Argo's enrollment Job verifies a first registration's generated boundary
+before it publishes the immutable enrollment binding. That Job runs after
+Argo has applied the workspace resources. A first GitOps registration can
+therefore create policy resources before a stale policy hash is detected.
+Review the pinned policy source and approved hash before that first sync.
 
 The Make path needs an `oc` context whose API hostname resolves from the
 machine that runs Make. RHDH and GitOps run their checks inside the cluster.

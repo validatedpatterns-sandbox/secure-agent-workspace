@@ -24,7 +24,78 @@ def load(name):
 @pytest.fixture
 def projector(monkeypatch):
     monkeypatch.setitem(sys.modules, "workspace", load("workspace"))
+    monkeypatch.setitem(sys.modules, "preflight", load("preflight"))
     return load("projector")
+
+
+def test_gitops_preflight_stops_stale_policy_before_projection(projector):
+    cfg = config()
+    owner = cfg["users"][0]
+    ns = "saw-" + owner["name"]
+    policy = "saw-" + ns + "-runtime"
+
+    class Reader:
+        def __call__(self, path):
+            return {}
+
+        def preflight_resource(self, path):
+            if path == "/api/v1/namespaces/" + ns:
+                return {"metadata": {"labels": {
+                    "saw.redhat.com/runtime-owner": owner["installationID"],
+                    "saw.redhat.com/registration": owner["registration"]}}}
+            if path.endswith("/validatingadmissionpolicies/" + policy):
+                return {"spec": {"failurePolicy": "Fail"},
+                        "metadata": {"generation": 1},
+                        "status": {"observedGeneration": 1, "typeChecking": {}}}
+            return {}
+
+    with pytest.raises(projector.ProjectionError, match="BoundaryApprovalChanged:validation"):
+        projector.parameters(cfg, catalog(), Reader())
+
+
+def test_gitops_kata_preflight_checks_live_runtime(projector):
+    owner = {"name": "alice", "registration": "a" * 16,
+             "installationID": "installation"}
+    runtime = {"metadata": {"name": "kata", "uid": "11111111-1111-4111-8111-111111111111",
+                            "labels": {"openshell.ai/sandbox-attachable": "true"}},
+               "handler": "kata", "scheduling": {"nodeSelector": {"node-role.kubernetes.io/kata": ""}},
+               "overhead": {"podFixed": {"cpu": "250m", "memory": "350Mi"}}}
+    site = {"automaticEnrollment": {"reference": {
+        key: "a" * 64 for key in ("validation", "binding", "sandboxPlacement", "sandboxPlacementBinding")}},
+        "kataRuntimeClass": {"name": "kata", "uid": runtime["metadata"]["uid"],
+                             "sha256": projector.preflight.runtime_placement_digest(runtime)},
+        "targets": {"default/notebook": {}}}
+    crd = {"status": {"conditions": [{"type": "Established", "status": "True"}]}}
+    observed = {
+        "/apis/config.openshift.io/v1/clusterversions/version": {"status": {
+            "conditions": [{"type": "Available", "status": "True"}],
+            "desired": {"version": "4.22.22"}}},
+        "/apis/node.k8s.io/v1/runtimeclasses/kata": runtime,
+        "/apis/kataconfiguration.openshift.io/v1/kataconfigs": {"items": [{"status": {
+            "kataNodes": {"nodeCount": 1, "readyNodeCount": 1, "installed": ["worker-1"]}}}]},
+        "/api/v1/nodes": {"items": [{"metadata": {"name": "worker-1", "labels": {
+            "kubernetes.io/arch": "amd64", "node-role.kubernetes.io/worker": "",
+            "node-role.kubernetes.io/kata": ""}},
+            "status": {"conditions": [{"type": "Ready", "status": "True"}]}}]},
+        "/apis/admissionregistration.k8s.io/v1": {"groupVersion": "admissionregistration.k8s.io/v1",
+            "resources": [{"name": "validatingadmissionpolicies"},
+                          {"name": "validatingadmissionpolicybindings"}]},
+    }
+    for name in ("kataconfigs.kataconfiguration.openshift.io",
+                 "sandboxes.agents.x-k8s.io", "externalsecrets.external-secrets.io",
+                 "adminnetworkpolicies.policy.networking.k8s.io"):
+        observed["/apis/apiextensions.k8s.io/v1/customresourcedefinitions/" + name] = crd
+    read = lambda path: observed.get(path, {})
+    projector.verify_gitops_preflight(owner, site, "kata", read)
+    runtime["handler"] = "runc"
+    with pytest.raises(projector.preflight.PreflightError, match="RuntimeClassHandlerMismatch"):
+        projector.verify_gitops_preflight(owner, site, "kata", read)
+
+
+def test_gitops_preflight_reader_rejects_secret_paths(projector):
+    reader = object.__new__(projector.Publications)
+    with pytest.raises(projector.ProjectionError, match="outside the workspace scope"):
+        reader.preflight_resource("/api/v1/namespaces/saw-alice/secrets/inference")
 
 
 def config():

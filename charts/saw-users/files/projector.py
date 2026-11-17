@@ -15,6 +15,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 import workspace
+import preflight
 
 LIMIT = 4 * 1024 * 1024
 
@@ -38,6 +39,26 @@ class Publications:
         if not re.fullmatch(r"/api/v1/namespaces/saw-ctl-[a-f0-9]{16}/configmaps/[a-z0-9-]+", path):
             raise ProjectionError("publication is outside the workspace scope")
         return self.get(path, publication=True)
+
+    def preflight_resource(self, path):
+        fixed = {
+            "/apis/config.openshift.io/v1/clusterversions/version",
+            "/apis/kataconfiguration.openshift.io/v1/kataconfigs",
+            "/api/v1/nodes",
+            "/apis/admissionregistration.k8s.io/v1",
+        }
+        allowed = (path in fixed or re.fullmatch(
+            r"/api/v1/namespaces/saw-[a-z0-9-]+", path) or re.fullmatch(
+            r"/apis/node.k8s.io/v1/runtimeclasses/[a-z0-9-]+", path) or re.fullmatch(
+            r"/apis/apiextensions.k8s.io/v1/customresourcedefinitions/"
+            r"(?:kataconfigs.kataconfiguration.openshift.io|sandboxes.agents.x-k8s.io|"
+            r"externalsecrets.external-secrets.io|adminnetworkpolicies.policy.networking.k8s.io)", path) or re.fullmatch(
+            r"/apis/admissionregistration.k8s.io/v1/"
+            r"(?:validatingadmissionpolicies|validatingadmissionpolicybindings)/"
+            r"saw-saw-[a-z0-9-]+-runtime(?:-kata)?", path))
+        if not allowed:
+            raise ProjectionError("preflight resource is outside the workspace scope")
+        return self.get(path)
 
     def get(self, path, *, publication=False):
         token = (self.root / "token").read_text().strip()
@@ -64,6 +85,82 @@ class Publications:
         return workspace.previous_child(app, appset, owner)
 
 
+def verify_gitops_preflight(owner, site, mode, read):
+    """Stop ApplicationSet generation on a changed live Kata boundary."""
+    automatic = site.get("automaticEnrollment", {})
+    if not automatic or automatic.get("enabled") is False:
+        return
+    reference = automatic.get("reference")
+    preflight.verify_boundary_reference(reference, mode)
+    if mode == "kata":
+        approval = site.get("kataRuntimeClass") or {}
+        if not isinstance(approval, dict) or not approval.get("name"):
+            raise preflight.PreflightError("RuntimeClassApprovalMissing")
+        try:
+            version = read("/apis/config.openshift.io/v1/clusterversions/version")
+            runtime = read("/apis/node.k8s.io/v1/runtimeclasses/" + approval["name"])
+            configs = read("/apis/kataconfiguration.openshift.io/v1/kataconfigs")
+            nodes = read("/api/v1/nodes")
+            readiness = {}
+            for name in ("kataconfigs.kataconfiguration.openshift.io",
+                         "sandboxes.agents.x-k8s.io",
+                         "externalsecrets.external-secrets.io",
+                         "adminnetworkpolicies.policy.networking.k8s.io"):
+                readiness[name] = preflight.crd_established(read(
+                    "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/" + name))
+            readiness["admissionregistration.k8s.io/v1"] = preflight.api_resources_available(
+                read("/apis/admissionregistration.k8s.io/v1"),
+                "admissionregistration.k8s.io/v1",
+                ("validatingadmissionpolicies", "validatingadmissionpolicybindings"))
+            preflight.verify_kata_platform(site, runtime, (configs or {}).get("items"),
+                                           (nodes or {}).get("items"), readiness, version)
+        except preflight.PreflightError:
+            raise
+        except Exception:
+            raise preflight.PreflightError("KataPlatformUnavailable") from None
+
+    name = owner["name"]
+    namespace_name = "saw-" + name
+    try:
+        namespace = read("/api/v1/namespaces/" + namespace_name)
+    except Exception:
+        raise preflight.PreflightError("BoundaryNamespaceUnavailable") from None
+    if not namespace:
+        return  # Enrollment verifies policies after the first namespace exists.
+    metadata = namespace.get("metadata", {})
+    labels = metadata.get("labels", {})
+    if (metadata.get("deletionTimestamp") or labels.get("saw.redhat.com/runtime-owner") != owner["installationID"]
+            or labels.get("saw.redhat.com/registration") != owner["registration"]):
+        raise preflight.PreflightError("BoundaryApprovalIdentityMismatch")
+    policy = "saw-" + namespace_name + "-runtime"
+    resources = [("validation", "validatingadmissionpolicies", policy),
+                 ("binding", "validatingadmissionpolicybindings", policy)]
+    if mode == "kata":
+        resources.extend((("sandboxPlacement", "validatingadmissionpolicies", policy + "-kata"),
+                          ("sandboxPlacementBinding", "validatingadmissionpolicybindings", policy + "-kata")))
+    for key, plural, resource_name in resources:
+        try:
+            obj = read("/apis/admissionregistration.k8s.io/v1/" + plural + "/" + resource_name)
+        except Exception:
+            raise preflight.PreflightError("BoundaryPolicyUnavailable") from None
+        if not isinstance(obj, dict) or not isinstance(obj.get("spec"), dict):
+            raise preflight.PreflightError("BoundaryPolicyUnavailable")
+        digest = (preflight.validation_policy_digest(
+            obj["spec"], name, owner["registration"], owner["installationID"],
+            sorted(site["targets"])) if key == "validation" else preflight.fingerprint(obj["spec"]))
+        try:
+            preflight.verify_boundary_hash(reference, key, digest)
+        except preflight.PreflightError as exc:
+            raise preflight.PreflightError(exc.reason + ":" + key) from None
+        if plural == "validatingadmissionpolicies":
+            status = obj.get("status", {})
+            type_checking = status.get("typeChecking", {}) if isinstance(status, dict) else {}
+            if (not isinstance(type_checking, dict)
+                    or status.get("observedGeneration") != obj.get("metadata", {}).get("generation")
+                    or "typeChecking" not in status or type_checking.get("expressionWarnings")):
+                raise preflight.PreflightError("AdmissionUnavailable:" + key)
+
+
 def parameters(config, catalog, read):
     """Project the whole desired set atomically; errors never mean deletion."""
     if not isinstance(config, dict) or not isinstance(config.get("users"), list):
@@ -88,6 +185,12 @@ def parameters(config, catalog, read):
         site = sites.get(name)
         try:
             values = workspace.project_workspace(owner, defaults, site, catalog, read, getattr(read, "previous", None))
+            live_read = getattr(read, "preflight_resource", None)
+            if callable(live_read):
+                mode = owner["values"]["deployment"]["mode"]
+                verify_gitops_preflight(owner, values["containerSites"][name], mode, live_read)
+        except preflight.PreflightError as exc:
+            raise ProjectionError("workspace " + name + ": preflight failed: " + exc.reason) from None
         except workspace.WorkspaceError as exc:
             raise ProjectionError(str(exc)) from None
         except (KeyError, TypeError, ValueError):

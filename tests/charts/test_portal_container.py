@@ -316,12 +316,37 @@ def test_static_projection_owns_no_workload_and_generates_same_composition():
     server = deployment["spec"]["template"]["spec"]["serviceAccountName"]
     rules = [o for o in docs if o["kind"] in ("Role", "ClusterRole") and o["metadata"]["name"] == server]
     assert all("secrets" not in r["resources"] and r["verbs"] == ["get"] for o in rules for r in o["rules"])
+    preflight_role, = [o for o in docs if o["kind"] == "ClusterRole"
+                       and o["metadata"]["name"] == server + "-preflight"]
+    assert all("secrets" not in rule.get("resources", []) for rule in preflight_role["rules"])
+    assert any(rule.get("resourceNames") == ["saw-saw-alice-runtime", "saw-saw-alice-runtime-kata"]
+               for rule in preflight_role["rules"])
+    source, = [o for o in docs if o["kind"] == "ConfigMap" and "projector.py" in o.get("data", {})]
+    assert source["data"]["preflight.py"] == (ROOT / "charts/saw-portal-container/files/preflight.py").read_text()
     container_values = dict(owner=U, ownerSubject=SITE["subject"], registration=REG,
                             installationID=user()["installationID"], vaultPrefix=user()["vaultPrefix"],
                             site={**SITE, "observer": observer}, **{"global": GLOBAL})
     resources = render("saw-portal-container", U, "saw-"+U, container_values)
     readers = [o for o in resources if o["kind"] == "RoleBinding" and o["metadata"]["name"] == "portal-binding-reader"]
     assert readers[0]["subjects"] == [{"kind": "ServiceAccount", "name": server, "namespace": "saw-installation"}]
+
+
+def test_static_kata_projector_can_read_only_approved_platform_metadata():
+    entry = user()
+    entry["values"] = {"deployment": {"mode": "kata"}}
+    site = {**SITE, "kataRuntimeClass": {"name": "kata", "uid": "11111111-1111-4111-8111-111111111111",
+                                          "sha256": "a" * 64}}
+    docs = render("saw-users", "workspaces", "saw-installation", {
+        "global": GLOBAL, "users": [entry], "containerSites": {U: site},
+        "projection": {"enabled": True, "applicationSetControllerLabels": {"app": "controller"},
+                       "egress": [{"ports": [{"protocol": "TCP", "port": 443}]}]}})
+    role, = [obj for obj in docs if obj["kind"] == "ClusterRole"
+             and obj["metadata"]["name"].endswith("-preflight")]
+    assert any(rule.get("resources") == ["runtimeclasses"] and rule.get("resourceNames") == ["kata"]
+               for rule in role["rules"])
+    assert any(rule.get("resources") == ["nodes"] and rule.get("verbs") == ["list"]
+               for rule in role["rules"])
+    assert all("secrets" not in rule.get("resources", []) for rule in role["rules"])
 
 
 def test_static_mixed_backends_keep_vm_resolution_in_the_root():

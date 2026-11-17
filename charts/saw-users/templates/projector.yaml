@@ -48,6 +48,8 @@ data:
 {{ .Files.Get "files/projector.py" | indent 4 }}
   workspace.py: |
 {{ .Files.Get "files/workspace.py" | indent 4 }}
+  preflight.py: |
+{{ .Files.Get "files/preflight.py" | indent 4 }}
   profile-catalog.json: |
 {{ .Files.Get "files/profile-catalog.json" | indent 4 }}
 ---
@@ -88,6 +90,33 @@ kind: ClusterRoleBinding
 metadata: {name: {{ $name }}-identity}
 roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ $name }}-identity}
 subjects: [{kind: ServiceAccount, name: {{ $name }}-identity, namespace: {{ .Release.Namespace }}}]
+---
+{{- $classes := list }}
+{{- range $user := $users }}
+{{- if eq (dig "deployment" "mode" "vm" ($user.values | default dict)) "kata" }}
+{{- $classes = append $classes (dig "kataRuntimeClass" "name" "" (index $.Values.containerSites $user.name)) }}
+{{- end }}
+{{- end }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: {{ $name }}-preflight}
+rules:
+- {apiGroups: [""], resources: [namespaces], resourceNames: [{{ range $user := $users }}{{ printf "saw-%s" $user.name | quote }},{{ end }}], verbs: [get]}
+- {apiGroups: [admissionregistration.k8s.io], resources: [validatingadmissionpolicies, validatingadmissionpolicybindings], resourceNames: [{{ range $user := $users }}{{ printf "saw-saw-%s-runtime" $user.name | quote }},{{ printf "saw-saw-%s-runtime-kata" $user.name | quote }},{{ end }}], verbs: [get]}
+{{- if $classes }}
+- {apiGroups: [node.k8s.io], resources: [runtimeclasses], resourceNames: {{ $classes | uniq | toJson }}, verbs: [get]}
+- {apiGroups: [""], resources: [nodes], verbs: [list]}
+- {apiGroups: [config.openshift.io], resources: [clusterversions], resourceNames: [version], verbs: [get]}
+- {apiGroups: [kataconfiguration.openshift.io], resources: [kataconfigs], verbs: [list]}
+- {apiGroups: [apiextensions.k8s.io], resources: [customresourcedefinitions], resourceNames: [kataconfigs.kataconfiguration.openshift.io, sandboxes.agents.x-k8s.io, externalsecrets.external-secrets.io, adminnetworkpolicies.policy.networking.k8s.io], verbs: [get]}
+- {nonResourceURLs: [/apis/admissionregistration.k8s.io/v1], verbs: [get]}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: {{ $name }}-preflight}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ $name }}-preflight}
+subjects: [{kind: ServiceAccount, name: {{ $name }}, namespace: {{ .Release.Namespace }}}]
 ---
 # Kubernetes RBAC cannot limit CREATE by resourceNames. Fence the bootstrap
 # identity before granting it create in either namespace, especially Argo CD.
@@ -185,7 +214,7 @@ spec:
     metadata:
       labels: {app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: projector}
       annotations:
-        checksum/source: {{ printf "%s%s%s" (.Files.Get "files/projector.py") (.Files.Get "files/workspace.py") (.Files.Get "files/profile-catalog.json") | sha256sum }}
+        checksum/source: {{ printf "%s%s%s%s" (.Files.Get "files/projector.py") (.Files.Get "files/workspace.py") (.Files.Get "files/preflight.py") (.Files.Get "files/profile-catalog.json") | sha256sum }}
     spec:
       serviceAccountName: {{ $name }}
       automountServiceAccountToken: true

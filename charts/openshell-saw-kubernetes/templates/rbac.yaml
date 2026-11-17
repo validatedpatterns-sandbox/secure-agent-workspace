@@ -39,8 +39,8 @@ rules:
     verbs: [get]
   - apiGroups: [networking.k8s.io]
     resources: [networkpolicies]
-    resourceNames: [openshell-sandbox-workloads, openshell-sandbox-supervisors]
-    verbs: [get]
+    # The stock driver creates and verifies per-sandbox os-* policies.
+    verbs: [get, create]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

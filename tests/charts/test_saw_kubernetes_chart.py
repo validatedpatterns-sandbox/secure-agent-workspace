@@ -142,7 +142,8 @@ def test_network_does_not_grant_workload_or_namespace_wide_egress():
         'matchLabels': {'openshell.ai/boundary-role': 'supervisor'}}
     rules = docs['Role', 'saw-test-gateway']['rules']
     fence, = [r for r in rules if 'networkpolicies' in r['resources']]
-    assert fence['verbs'] == ['get']
+    assert fence['verbs'] == ['get', 'create']
+    assert 'resourceNames' not in fence
     assert not any(p['spec']['podSelector'].get('matchLabels', {}).get('openshell.ai/boundary-role') == 'workload' for p in granting)
     assert docs['Route', 'saw-test-gateway']['spec']['tls'] == {'termination': 'passthrough'}
 

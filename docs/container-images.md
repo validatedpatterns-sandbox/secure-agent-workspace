@@ -36,7 +36,9 @@ The credential and guest-shutdown corrections in #162/#164 are merged.
 Build provenance and validation are in the [release record](openshell-016-release.md).
 
 Workspace-preservation and startup-recovery fixes are merged in #167/#168.
-Remaining acceptance and follow-up findings are tracked in
+SAW deployments using OpenShell older than 0.1.6 must deploy fresh; see
+[Existing deployments](openshell-016-release.md#existing-deployments).
+Rollout results are recorded in
 [#157](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157).
 
 Pull requests build without registry credentials or pushing. Publishing is

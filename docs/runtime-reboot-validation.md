@@ -62,8 +62,11 @@ guest shutdown. Use SQLite's backup API or a read transaction with the required
 journal/WAL state for live checks; immutable database reads are suitable only
 for verified frozen evidence.
 
-Remaining acceptance is tracked in
+Rollout results, including the operator's November 17 post-restart confirmation,
+are recorded in
 [#157](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/157).
+SAW deployments using OpenShell older than 0.1.6 must
+[deploy fresh](openshell-016-release.md#existing-deployments).
 [#161](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/issues/161)
-tracks the deferred catalog and shutdown investigations. Deployment may proceed
-while acceptance and separate follow-up issues remain open.
+tracks the deferred catalog and shutdown investigations. Deployment may proceed;
+new findings are separate follow-up issues.

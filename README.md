@@ -2,8 +2,11 @@
 
 Deploy isolated, per-user AI agent sandboxes on OpenShift Virtualization with OIDC authentication and policy-controlled access.
 
-See the [OpenShell 0.1.6 release record](docs/openshell-016-release.md) for
-validation status and the upgrade procedure.
+**Existing SAW deployments using OpenShell older than 0.1.6 must deploy SAW
+fresh.** In-place upgrades from those versions are not supported. Back up the
+workspace files you need before retiring the old deployment. See the
+[OpenShell 0.1.6 release record](docs/openshell-016-release.md) for deployment
+guidance and validation results.
 
 ## Upgrade: stage network isolation per user
 

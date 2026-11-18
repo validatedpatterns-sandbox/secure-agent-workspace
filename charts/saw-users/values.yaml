@@ -7,6 +7,11 @@
 # Set it to false when that user's Vault prefix has no web-search key.
 users: []
 
+# Operator-owned revision pins for individual owners, in global.repoURL.
+# Each value is a full Git commit SHA; unlisted owners use global.targetRevision.
+# RHDH passes the same map through sawUsers.workspaceRevisions.
+workspaceRevisions: {}
+
 # Pattern Keycloak accounts are resolved centrally. Disable this only for an
 # external issuer and supply a verified ownerSubject in each user entry.
 ownerResolution:
@@ -132,3 +137,14 @@ global:
   clusterDomain: example.com
   pattern: secure-agent-workspace
   vpArgoNamespace: vp-gitops
+
+# Static container entries use the same workspace projector as the portal.
+# RHDH supplies already-projected values and leaves this disabled.
+projection:
+  enabled: false
+  image: registry.access.redhat.com/ubi9/python-311@sha256:a0bdb55576fc5b8d6704279307817828ef027e1065533ceba133fe9516003a6c
+  # Explicit API/DNS egress for the projector and its identity bootstrap.
+  egress: []
+  # Match the selected OpenShift GitOps instance's controller Pod, not a
+  # presumed instance name. Used together with the Argo namespace selector.
+  applicationSetControllerLabels: {}

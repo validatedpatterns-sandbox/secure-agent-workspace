@@ -1,0 +1,8 @@
+apiVersion: saw.redhat.com/v1alpha1
+kind: Providers
+spec:
+  providers:
+    - name: openai
+      type: openai
+      credentialSecret: inference
+      credentialSecretKey: api_key

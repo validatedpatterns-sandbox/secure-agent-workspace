@@ -1,0 +1,8 @@
+# Synthetic nonsecret render inputs; never a live installation.
+enabled: true
+ownerID: 67a9891d-e281-442f-86c3-41771f5ce049
+targetNamespace: saw-lint
+gateway: saw-lint
+serverSans:
+  - saw-lint-gateway.saw-lint.svc
+  - saw-lint-gateway.saw-lint.svc.cluster.local

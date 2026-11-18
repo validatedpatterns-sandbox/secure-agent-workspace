@@ -1,0 +1,8 @@
+enabled: false
+ownerID: ""
+# Install this chart in a dedicated trusted namespace; target is separate.
+targetNamespace: ""
+gateway: ""
+serverSans: []
+gatewayImage: quay.io/opendatahub/odh-openshell-gateway@sha256:bd2d7c9084b80b8d3d8ef92d00a27b963b35168fad84cd862b7f91fd9c488c3e
+helperImage: registry.access.redhat.com/ubi9/python-311@sha256:a0bdb55576fc5b8d6704279307817828ef027e1065533ceba133fe9516003a6c

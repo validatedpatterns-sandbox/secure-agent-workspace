@@ -10,3 +10,8 @@ data:
 {{ .Files.Get "files/portal.py" | indent 4 }}
   profile-catalog.json: |
 {{ .Files.Get "files/profile-catalog.json" | indent 4 }}
+
+  workspace.py: |
+{{ .Files.Get "files/workspace.py" | indent 4 }}
+  preflight.py: |
+{{ .Files.Get "files/preflight.py" | indent 4 }}

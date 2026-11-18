@@ -1,0 +1,22 @@
+FROM registry.access.redhat.com/ubi9/python-311@sha256:a0bdb55576fc5b8d6704279307817828ef027e1065533ceba133fe9516003a6c AS generate
+USER 0
+WORKDIR /build
+COPY kubernetes-runtime/build-sdk.py kubernetes-runtime/sdk-lock.json /build/
+RUN pip install --no-cache-dir grpcio-tools==1.80.0 grpcio==1.80.0 protobuf==6.33.5 && python3 build-sdk.py
+
+FROM registry.access.redhat.com/ubi9/python-311@sha256:a0bdb55576fc5b8d6704279307817828ef027e1065533ceba133fe9516003a6c
+USER 0
+RUN pip install --no-cache-dir grpcio==1.80.0 protobuf==6.33.5 PyYAML==6.0.3
+RUN command -v openssl && command -v shred && command -v stat
+WORKDIR /opt/saw
+COPY --from=generate /build/python/openshell/_proto /opt/saw/sdk/openshell/_proto
+COPY charts/openshell-saw/files/installer/saw_core.py charts/openshell-saw/files/installer/saw_core.py
+COPY charts/openshell-saw/files/installer/saw_admin.py charts/openshell-saw/files/installer/saw_admin.py
+COPY charts/openshell-saw/files/installer/tool-actions.yaml charts/openshell-saw/files/installer/tool-gate.mjs charts/openshell-saw/files/installer/tool-gate-plugin.mjs charts/openshell-saw/files/installer/
+COPY charts/openshell-saw/files/provider-profiles/ charts/openshell-saw/files/provider-profiles/
+COPY charts/saw-users/files/workspace.py /opt/saw/kubernetes-runtime/saw_workspace.py
+COPY kubernetes-runtime/saw_kubernetes kubernetes-runtime/saw_kubernetes
+ENV PYTHONPATH=/opt/saw/kubernetes-runtime:/opt/saw/sdk PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+RUN python3 -c 'from openshell._proto import openshell_pb2_grpc; from saw_kubernetes import serve'
+USER 1001
+ENTRYPOINT ["python3", "-m", "saw_kubernetes.serve"]

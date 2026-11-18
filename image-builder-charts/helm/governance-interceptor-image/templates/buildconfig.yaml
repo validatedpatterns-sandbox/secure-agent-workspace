@@ -1,9 +1,12 @@
 apiVersion: build.openshift.io/v1
 kind: BuildConfig
 metadata:
-  name: governance-interceptor
+  name: {{ .Values.build.name | quote }}
 spec:
   source:
+    configMaps:
+      - configMap: {name: {{ .Values.build.name }}-source}
+        destinationDir: saw-extension
     type: Dockerfile
     dockerfile: |
 {{ .Files.Get "files/Dockerfile" | indent 6 }}
@@ -38,4 +41,9 @@ spec:
   resources:
     limits:
       memory: 4Gi
+  {{- if .Values.build.configChangeTrigger }}
+  triggers:
+    - type: ConfigChange
+  {{- else }}
   triggers: []
+  {{- end }}

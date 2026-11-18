@@ -150,6 +150,9 @@ def test_no_keycloak_deploys_one(kc):
     (helm,) = kc.calls("helm")
     assert "keycloak.existing" not in " ".join(helm) and "keycloak.realm=openshell" in helm
     log = kc.log()
+    wait = ["oc", "wait", "-n", "keycloak", "--for=condition=Done",
+            "keycloakrealmimport/openshell-keycloak-realm", "--timeout=5m"]
+    assert log.index(wait) > log.index(["helm", *helm])
     assert not [c for c in log if c[:4] == ["oc", "create", "secret", "generic"]]
 
 

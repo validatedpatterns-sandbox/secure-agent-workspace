@@ -1,3 +1,9 @@
+# Deployment backend. VM remains the only implemented backend in this revision.
+# container uses its separate composition chart; unsupported modes never
+# silently fall back to a VM. See docs/container-workspaces.md.
+deployment:
+  mode: vm
+
 # Required — must be set at install time. Maximum 19 characters (OpenShell limit).
 sandboxName: ""
 # Operator SSH access (used by `make saw-configure` to fetch

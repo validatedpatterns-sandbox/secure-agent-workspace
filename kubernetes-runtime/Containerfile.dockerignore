@@ -1,0 +1,24 @@
+# This build needs only the adapter and its canonical shared sources.
+**
+!kubernetes-runtime/
+!kubernetes-runtime/Containerfile
+!kubernetes-runtime/build-sdk.py
+!kubernetes-runtime/sdk-lock.json
+!kubernetes-runtime/saw_kubernetes/
+!kubernetes-runtime/saw_kubernetes/*.py
+!kubernetes-runtime/saw_kubernetes/*.js
+!kubernetes-runtime/saw_kubernetes/*.sh
+!charts/
+!charts/openshell-saw/
+!charts/openshell-saw/files/
+!charts/openshell-saw/files/installer/
+!charts/openshell-saw/files/installer/saw_core.py
+!charts/openshell-saw/files/installer/saw_admin.py
+!charts/openshell-saw/files/installer/tool-actions.yaml
+!charts/openshell-saw/files/installer/tool-gate.mjs
+!charts/openshell-saw/files/installer/tool-gate-plugin.mjs
+!charts/openshell-saw/files/provider-profiles/
+!charts/openshell-saw/files/provider-profiles/*.yaml
+!charts/saw-users/
+!charts/saw-users/files/
+!charts/saw-users/files/workspace.py

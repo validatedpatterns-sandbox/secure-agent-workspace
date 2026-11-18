@@ -1,0 +1,66 @@
+deployment:
+  mode: container
+
+# Explicit opt-in: chart readiness is gateway readiness, not SAW feature parity.
+kubernetes:
+  experimental: false
+  # Kata VMs can need more time than the stock OpenShell startup windows.
+  # The chart applies these values only when deployment.mode is kata.
+  startupTimeouts:
+    provisioningRepairWindowSeconds: 900
+    runtimeBootstrapGraceSeconds: 900
+    sandboxAttachRequestTimeoutSeconds: 900
+  gateway:
+    version: 0.1.6-rhaiv.4
+    image: quay.io/opendatahub/odh-openshell-gateway@sha256:bd2d7c9084b80b8d3d8ef92d00a27b963b35168fad84cd862b7f91fd9c488c3e
+    resources:
+      requests: {cpu: 100m, memory: 256Mi}
+      limits: {memory: 1Gi}
+  supervisor:
+    image: quay.io/opendatahub/odh-openshell-supervisor@sha256:626b91a0f53393dac0d591c142b81100916aa66b4e65444b5527672b5533fe86
+  workload:
+    # Application image; set to an approved immutable sandbox image.
+    image: ""
+    runtimeImage: quay.io/opendatahub/odh-openshell-sandbox@sha256:0cde11346e68485907c22d3c9b30802e52cf16e3853720a864ac8347bb68f6ef
+    runtimeClassName: ""
+  identity:
+    # Existing, retained identity; generated once outside Helm by its owner.
+    # server TLS: tls.crt,tls.key,ca.crt; client CA: ca.crt only mounted.
+    serverTlsSecret: ""
+    clientCaSecret: ""
+    # signing.pem, public.pem, kid
+    jwtSecret: ""
+    # key: key-encryption-key (stock gateway format)
+    credentialKeySecret: ""
+  storage:
+    className: ""
+    gatewaySize: 5Gi
+    workspaceSize: 20Gi
+    # Prefer an independently owned retained claim for existing state.
+    existingGatewayClaim: ""
+  imagePullSecrets: []
+  # Only CA certificates are published into the runtime namespace.
+  proxy:
+    url: ""
+    caConfigMap: ""
+  # Reviewed stock governance endpoint, reached through declared egress.
+  governance:
+    endpoint: ""
+  network:
+    # All gateway egress is explicit; no namespace-wide internet allowance.
+    # Include API Service + real backend IPs, DNS, OIDC, governance and proxy.
+    gatewayEgress: []
+    # Trusted API reconciler Pods are selected by exact namespace AND label.
+    reconcilerNamespace: ""
+    reconcilerLabels: {}
+
+oidc:
+  issuerUrl: ""
+  clientId: openshell-cli
+  rolesClaim: realm_access.roles
+  adminRole: openshell-admin
+  userRole: openshell-user
+  caConfigMap: ""
+route:
+  enabled: true
+  host: ""

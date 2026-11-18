@@ -1,0 +1,66 @@
+# Namespace owns one gateway/workspace family; trusted provider keys live elsewhere.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-default-deny
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-gateway
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/instance: {{ .Release.Name }}, openshell.pattern/role: gateway}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {policy-group.network.openshift.io/ingress: ""}
+      ports: [{protocol: TCP, port: 17670}]
+    - from:
+        - podSelector:
+            matchLabels:
+              openshell.ai/boundary-role: supervisor
+              openshell.ai/gateway-id: {{ .Release.Name | quote }}
+      ports: [{protocol: TCP, port: 17670}]
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ .Values.kubernetes.network.reconcilerNamespace | quote }}}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.kubernetes.network.reconcilerLabels | nindent 14 }}
+      ports: [{protocol: TCP, port: 17670}]
+  egress:
+    {{- toYaml .Values.kubernetes.network.gatewayEgress | nindent 4 }}
+# Do not add workload egress here. Stock OpenShell owns its workload fence.
+# Supervisor's stock allow-all egress is restricted by the separate native ANP.
+
+---
+# The pinned shared-namespace driver GETs and validates these two fences.
+# Install them before the gateway starts so it never needs network policy writes.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openshell-sandbox-workloads
+  labels: {openshell.ai/component: sandbox-workload-fence, openshell.ai/managed-by: openshell}
+spec:
+  podSelector: {matchLabels: {openshell.ai/boundary-role: workload}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: [{podSelector: {matchLabels: {openshell.ai/boundary-role: supervisor}}}]
+      ports: [{port: 5500, protocol: TCP}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openshell-sandbox-supervisors
+  labels: {openshell.ai/component: sandbox-supervisor-egress, openshell.ai/managed-by: openshell}
+spec:
+  podSelector: {matchLabels: {openshell.ai/boundary-role: supervisor}}
+  policyTypes: [Egress]
+  egress: [{}]

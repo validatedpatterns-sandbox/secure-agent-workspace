@@ -696,3 +696,22 @@ key-less -meta copies; the issuer CA bundle and registry pull token as is. */}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{/* Never let a requested but unimplemented backend fall through to the VM. */}}
+{{- define "openshell-sandbox.validateDeploymentMode" -}}
+{{- $deployment := .Values.deployment -}}
+{{- if not (kindIs "map" $deployment) -}}
+{{- fail "deployment must be an object with a mode" -}}
+{{- end -}}
+{{- range $key, $_ := $deployment -}}
+{{- if ne $key "mode" -}}{{- fail (printf "unknown deployment field %q" $key) -}}{{- end -}}
+{{- end -}}
+{{- $mode := get $deployment "mode" -}}
+{{- if not (kindIs "string" $mode) -}}{{- fail "deployment.mode must be a string" -}}{{- end -}}
+{{- if not (has $mode (list "vm" "container")) -}}
+{{- fail "deployment.mode must be one of vm, container" -}}
+{{- end -}}
+{{- if ne $mode "vm" -}}
+{{- fail (printf "deployment.mode=%s is not implemented in this revision; no VM fallback (see docs/container-workspaces.md)" $mode) -}}
+{{- end -}}
+{{- end -}}

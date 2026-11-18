@@ -1,0 +1,79 @@
+name: Build Kubernetes workspace runtime image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - kubernetes-runtime/**
+      - charts/openshell-saw/files/installer/saw_core.py
+      - charts/openshell-saw/files/installer/saw_admin.py
+      - charts/openshell-saw/files/installer/tool-*.mjs
+      - charts/openshell-saw/files/installer/tool-actions.yaml
+      - charts/openshell-saw/files/provider-profiles/**
+      - charts/saw-users/files/workspace.py
+      - .github/workflows/build-kubernetes-runtime.yml
+      - .github/actions/build-push-image/**
+      - .github/actions/merge-image/**
+      - .github/actions/verify-public-image/**
+  pull_request:
+    paths:
+      - kubernetes-runtime/**
+      - charts/openshell-saw/files/installer/saw_core.py
+      - charts/openshell-saw/files/installer/saw_admin.py
+      - charts/openshell-saw/files/installer/tool-*.mjs
+      - charts/openshell-saw/files/installer/tool-actions.yaml
+      - charts/openshell-saw/files/provider-profiles/**
+      - charts/saw-users/files/workspace.py
+      - .github/workflows/build-kubernetes-runtime.yml
+      - .github/actions/build-push-image/**
+      - .github/actions/merge-image/**
+      - .github/actions/verify-public-image/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-kubernetes-runtime-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.event_name == 'pull_request' || github.ref != 'refs/heads/main'
+    strategy: &platforms
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps: &build_steps
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/build-push-image
+        with:
+          image_name: saw-kubernetes-runtime
+          context: .
+          dockerfile: kubernetes-runtime/Containerfile
+          cache_scope: saw-kubernetes-runtime
+          platform: ${{ matrix.platform }}
+          registry_token: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && secrets.GITHUB_TOKEN || '' }}
+  publish:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    permissions: {contents: read, packages: write}
+    strategy: *platforms
+    runs-on: ${{ matrix.runner }}
+    steps: *build_steps
+
+  merge:
+    needs: publish
+    permissions: {contents: read, packages: write}
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/merge-image
+        with:
+          image_name: saw-kubernetes-runtime
+          registry_token: ${{ secrets.GITHUB_TOKEN }}

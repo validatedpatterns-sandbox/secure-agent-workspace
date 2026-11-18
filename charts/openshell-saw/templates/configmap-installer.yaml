@@ -48,6 +48,31 @@ changes here reach an existing VM after a restart (unlike cloud-init).
 {{- if $webuiHost }}{{- $redirectUrl = printf "https://%s/oauth2/callback" $webuiHost }}{{- end }}
 {{- $dashboardEnabled := false }}
 {{- if and .Values.oidc.enabled .Values.dashboard.enabled .Values.route.webui }}{{- $dashboardEnabled = true }}{{- end }}
+{{- /*
+The existing golden-image verifier signs apply_bom.py in a fixed manifest.
+Embed the canonical shared module INTO that signed file, instead of adding an
+adjacent Python import that an older verifier would not cover. The deployed
+installer and its runtime-user copy therefore remain one executable artifact.
+*/ -}}
+{{- $applyBom := .Files.Get "files/installer/apply_bom.py" -}}
+{{- $sharedCore := required "canonical files/installer/saw_core.py is required" (.Files.Get "files/installer/saw_core.py") -}}
+{{- $coreMarker := "_SAW_CORE_EMBEDDED_B64 = \"__SAW_CORE_SOURCE_BASE64__\"" -}}
+{{- if ne (len (regexFindAll $coreMarker $applyBom -1)) 1 -}}
+{{- fail "apply_bom.py must contain exactly one shared-core embedding marker" -}}
+{{- end -}}
+{{- $applyBom = replace $coreMarker (printf "_SAW_CORE_EMBEDDED_B64 = %q" (b64enc $sharedCore)) $applyBom -}}
+{{- $adminSource := required "canonical files/installer/saw_admin.py is required" (.Files.Get "files/installer/saw_admin.py") -}}
+{{- $adminMarker := "_SAW_ADMIN_EMBEDDED_B64 = \"__SAW_ADMIN_SOURCE_BASE64__\"" -}}
+{{- if ne (len (regexFindAll $adminMarker $applyBom -1)) 1 -}}
+{{- fail "apply_bom.py must contain exactly one admin-session embedding marker" -}}
+{{- end -}}
+{{- $applyBom = replace $adminMarker (printf "_SAW_ADMIN_EMBEDDED_B64 = %q" (b64enc $adminSource)) $applyBom -}}
+{{- $uiSource := required "canonical files/installer/saw_ui_limit.py is required" (.Files.Get "files/installer/saw_ui_limit.py") -}}
+{{- $uiMarker := "_SAW_UI_LIMIT_EMBEDDED_B64 = \"__SAW_UI_LIMIT_SOURCE_BASE64__\"" -}}
+{{- if ne (len (regexFindAll $uiMarker $applyBom -1)) 1 -}}
+{{- fail "apply_bom.py must contain exactly one UI transport embedding marker" -}}
+{{- end -}}
+{{- $applyBom = replace $uiMarker (printf "_SAW_UI_LIMIT_EMBEDDED_B64 = %q" (b64enc $uiSource)) $applyBom -}}
 {{- $signMode := .Values.signing.mode | default "warn" }}
 {{- if not (or (eq $signMode "off") (eq $signMode "warn") (eq $signMode "enforce")) }}
 {{- fail (printf "signing.mode must be off, warn, or enforce, got %q" $signMode) }}
@@ -152,7 +177,7 @@ data:
   openshell-gateway-pki.conf: |
 {{ .Files.Get "files/guest/openshell-gateway-pki.conf" | indent 4 }}
   apply_bom.py: |
-{{ .Files.Get "files/installer/apply_bom.py" | indent 4 }}
+{{ $applyBom | indent 4 }}
   tool-actions.yaml: |
 {{ .Files.Get "files/installer/tool-actions.yaml" | indent 4 }}
   tool-gate.mjs: |

@@ -29,4 +29,16 @@ spec:
           podSelector:
             matchLabels:
               kubevirt.io: virt-launcher
+        {{- range .Values.kubernetesGateways }}
+        {{- if or (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" (.namespace | default ""))) (gt (len .namespace) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" (.gatewayId | default ""))) (gt (len .gatewayId) 19) }}
+        {{- fail "kubernetesGateways requires exact namespace and gatewayId DNS labels" }}
+        {{- end }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .namespace | quote }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .gatewayId | quote }}
+              openshell.pattern/role: gateway
+        {{- end }}
 {{- end }}

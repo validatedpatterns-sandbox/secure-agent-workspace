@@ -21,7 +21,8 @@ def archive_bytes(content):
     raw = io.BytesIO()
     with tarfile.open(fileobj=raw, mode="w") as archive:
         for name, value in sorted(content.items()):
-            data = value.encode()
+            # Keep arbitrary archived bytes round-trippable through JSON state.
+            data = value.encode("utf-8", errors="surrogateescape")
             member = tarfile.TarInfo(name)
             member.uid = member.gid = 1000
             member.mode, member.size = 0o644, len(data)
@@ -395,8 +396,15 @@ elif op == "sandbox upload":
     if not remote.startswith("/sandbox/"):
         fail(f"Error: upload destination {remote!r} escapes the sandbox working directory")
     with tarfile.open(local, "r:gz") as archive:
-        content = {member.name.removeprefix("./"): archive.extractfile(member).read().decode()
-                   for member in archive if member.isfile()}
+        content = {}
+        for member in archive:
+            name = member.name.removeprefix("./")
+            # The fake models the Linux OpenShell guest. macOS tar can add
+            # AppleDouble resource-fork entries for files in the host fixture.
+            if not member.isfile() or name.startswith("__MACOSX/") or Path(name).name.startswith("._"):
+                continue
+            content[name] = archive.extractfile(member).read().decode(
+                "utf-8", errors="surrogateescape")
     sb.setdefault("archives", {})[remote] = content
     sb.setdefault("archiveDigests", {})[remote] = hashlib.sha256(Path(local).read_bytes()).hexdigest()
 elif op == "sandbox delete":

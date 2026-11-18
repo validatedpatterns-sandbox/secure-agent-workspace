@@ -92,6 +92,8 @@ kind: ConfigMap
 metadata:
   name: {{ $name }}
 data:
+  saw_keycloak_admin.py: |
+{{ .Files.Get "files/saw_keycloak_admin.py" | indent 4 }}
   ca-bundle.crt: |
 {{ $r.caBundle | default "" | indent 4 }}
   saw_tls.py: |
@@ -115,7 +117,7 @@ spec:
       labels:
         app.kubernetes.io/name: {{ $name }}
       annotations:
-        checksum/script: {{ print (.Files.Get "files/owner-resolver.py") (.Files.Get "files/saw_tls.py") ($r.caBundle | default "") | sha256sum }}
+        checksum/script: {{ print (.Files.Get "files/owner-resolver.py") (.Files.Get "files/saw_tls.py") (.Files.Get "files/saw_keycloak_admin.py") ($r.caBundle | default "") | sha256sum }}
     spec:
       serviceAccountName: {{ $name }}
       securityContext:

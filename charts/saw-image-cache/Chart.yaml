@@ -1,0 +1,5 @@
+apiVersion: v2
+name: saw-image-cache
+description: Prepare approved workspace images on eligible nodes before sandbox creation
+type: application
+version: 0.1.0

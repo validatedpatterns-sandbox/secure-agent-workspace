@@ -4,6 +4,10 @@ source:
     ref: "v0.1.6"
 
 build:
+  # For GitOps, give each new build recipe its own BuildConfig name.
+  name: governance-interceptor
+  # Default preserves the existing explicit Make build command.
+  configChangeTrigger: false
   contextDir: "examples/governance-interceptor"
   # OpenShell 0.1.x needs Rust 1.94 (rust-version in its Cargo.toml).
   builderImage: "rust:1.94-bookworm"

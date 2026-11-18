@@ -1,0 +1,5 @@
+apiVersion: v2
+name: saw-kubernetes-identity
+description: Create-once identity bootstrap for a stock OpenShell Kubernetes gateway
+type: application
+version: 0.1.0

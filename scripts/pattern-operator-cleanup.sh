@@ -2,6 +2,13 @@
 # Run only after the framework removes the Argo CD applications.
 set -euo pipefail
 
+hco_storage_resource() {
+  # The preferred API version can require a conversion webhook from the
+  # operator being uninstalled. Address the served storage version directly.
+  jq -er '[.spec.versions[] | select(.served and .storage)] |
+    select(length == 1) | "hyperconvergeds." + .[0].name + ".hco.kubevirt.io"'
+}
+
 namespaces="$(oc get namespaces -o json)"
 pattern_namespace="$(jq -r '.items[] |
   select(.metadata.name == "openshift-cnv") |
@@ -22,7 +29,11 @@ if [[ "${namespace_present}" == true ]]; then
       clusterserviceversions.operators.coreos.com \
       installplans.operators.coreos.com; do
     if ! grep -qx "${kind}" <<<"${resources}"; then continue; fi
-    objects="$(oc get "${kind}" -n openshift-cnv -o json)"
+    resource="${kind}"
+    if [[ "${kind}" == hyperconvergeds.hco.kubevirt.io ]]; then
+      resource="$(oc get crd "${kind}" -o json | hco_storage_resource)"
+    fi
+    objects="$(oc get "${resource}" -n openshift-cnv -o json)"
     owned_names="$(jq -r '.items[] |
       select(.metadata.labels["argocd.argoproj.io/instance"] == "openshift-cnv" or
         ((.metadata.annotations["argocd.argoproj.io/tracking-id"] // "") |
@@ -38,7 +49,7 @@ if [[ "${namespace_present}" == true ]]; then
     while IFS= read -r name; do
       [[ -n "${name}" ]] || continue
       echo "Deleting pattern-owned ${kind}/${name} in openshift-cnv."
-      oc delete "${kind}" "${name}" -n openshift-cnv \
+      oc delete "${resource}" "${name}" -n openshift-cnv \
         --wait=false --ignore-not-found=true
     done <<<"${owned_names}"
   done
@@ -54,10 +65,14 @@ if [[ "${namespace_present}" == true && \
 fi
 
 if [[ "${namespace_present}" == true ]]; then
-  if ! oc wait --for=delete namespace/openshift-cnv --timeout=180s; then
-    if [[ -n "$(oc get namespace openshift-cnv -o name --ignore-not-found)" ]]; then
-      echo "Warning: openshift-cnv still exists after 180 s; keeping its HyperConverged CRD." >&2
-      exit 0
+  # OLM and namespace event collection can outlast the operator workloads.
+  # Use the same one-hour bound as the framework uninstall.
+  if ! oc wait --for=delete namespace/openshift-cnv --timeout=1h; then
+    remaining="$(oc get namespace openshift-cnv -o name --ignore-not-found)"
+    if [[ -n "${remaining}" ]]; then
+      echo "CNV teardown incomplete: openshift-cnv still exists; its HyperConverged CRD is retained." >&2
+      echo "After the namespace terminates, rerun make pattern-uninstall before reinstalling." >&2
+      exit 1
     fi
   fi
 fi
@@ -75,7 +90,8 @@ if ! jq -e '.metadata.annotations["openshell.pattern/cleanup-on-uninstall"] ==
   exit 0
 fi
 
-hyperconvergeds="$(oc get hyperconvergeds.hco.kubevirt.io -A -o json)"
+hco_resource="$(hco_storage_resource <<<"${crd}")"
+hyperconvergeds="$(oc get "${hco_resource}" -A -o json)"
 subscriptions="$(oc get subscriptions.operators.coreos.com -A -o json)"
 if jq -e '.items | length > 0' <<<"${hyperconvergeds}" >/dev/null ||
    jq -e '.items | any(.spec.name == "kubevirt-hyperconverged")' \

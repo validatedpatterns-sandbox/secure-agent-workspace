@@ -9,13 +9,17 @@ metadata:
     {{- include "openshell-rhdh.labels" . | nindent 4 }}
 data:
   create-workspace.yaml: |
-{{ .Files.Get "files/create-workspace.yaml" | replace "__PROVISIONER_SA__" .Values.portal.provisionerServiceAccount | indent 4 }}
+{{ include "openshell-rhdh.createTemplate" (dict "root" . "path" "files/create-workspace.yaml") | indent 4 }}
+  {{- if or (has "container" (include "openshell-rhdh.deploymentModes" . | fromJsonArray)) (has "kata" (include "openshell-rhdh.deploymentModes" . | fromJsonArray)) }}
+  set-workspace-state.yaml: |
+{{ include "openshell-rhdh.readinessTemplate" (dict "root" . "template" (.Files.Get "files/set-workspace-state.yaml" | fromYaml)) | indent 4 }}
+  {{- end }}
   delete-workspace.yaml: |
 {{ .Files.Get "files/delete-workspace.yaml" | replace "__PROVISIONER_SA__" .Values.portal.provisionerServiceAccount | indent 4 }}
   {{- if .Values.portal.admins }}
   # Administrators (portal.admins): a workspace for another user.
   create-workspace-for-user.yaml: |
-{{ .Files.Get "files/create-workspace-for-user.yaml" | replace "__PROVISIONER_SA__" .Values.portal.provisionerServiceAccount | indent 4 }}
+{{ include "openshell-rhdh.createTemplate" (dict "root" . "path" "files/create-workspace-for-user.yaml") | indent 4 }}
   delete-workspace-for-user.yaml: |
 {{ .Files.Get "files/delete-workspace-for-user.yaml" | replace "__PROVISIONER_SA__" .Values.portal.provisionerServiceAccount | indent 4 }}
   {{- end }}

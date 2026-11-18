@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-# Regenerate the RHDH form, the profile catalogs and the installer's mirror
-# of the governance provider profiles when a profile (or the generator) is
-# part of the commit, and add them to the commit, so adding a profile is only
-# adding its directory under charts/saw-bom/profiles/ (or its file under
-# charts/governance-policy/profiles/).
+# Regenerate the forms/catalogs and canonical source mirrors when an input
+# changes. RHDH and standalone installation package the same workspace projection.
 #
 # Enable once per clone with: make git-hooks
 # (Portable to macOS's bash 3.2: no mapfile, no associative arrays.)
@@ -12,7 +9,7 @@ set -euo pipefail
 # Capture first: `git diff | grep -q` under pipefail can fail with SIGPIPE
 # when grep stops reading early, which would skip the regeneration.
 staged=$(git diff --cached --name-only)
-if ! grep -qE '^(charts/saw-bom/profiles/|charts/governance-policy/profiles/|scripts/saw-profile-catalog\.py$)' <<<"$staged"; then
+if ! grep -qE '^(charts/saw-bom/profiles/|charts/governance-policy/profiles/|charts/openshell-saw/files/provider-profiles/|charts/openshell-saw/files/installer/saw_ui_limit\.py$|charts/saw-workspace-relay/files/saw_ui_limit\.py$|charts/openshell-saw/templates/_governed-proxy-policy\.tpl$|charts/saw-users/files/workspace\.py$|charts/openshell-keycloak/files/saw_keycloak_admin\.py$|scripts/saw-profile-catalog\.py$)' <<<"$staged"; then
   exit 0
 fi
 

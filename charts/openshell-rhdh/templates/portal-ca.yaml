@@ -8,11 +8,15 @@ kind: ConfigMap
 metadata:
   name: saw-ca-sources
   namespace: {{ $ns }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
   labels:
     {{- include "openshell-rhdh.labels" $ | nindent 4 }}
 data:
   ca-bundle.py: |
 {{ $.Files.Get "files/ca-bundle.py" | indent 4 }}
+  wait-oidc.py: |
+{{ $.Files.Get "files/wait-oidc.py" | indent 4 }}
   extra-ca.crt: |
 {{ $.Values.tls.extraCaBundle | default "" | indent 4 }}
 ---
@@ -23,6 +27,8 @@ kind: ConfigMap
 metadata:
   name: saw-trusted-ca
   namespace: {{ $ns }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
   labels:
     {{- include "openshell-rhdh.labels" $ | nindent 4 }}
     config.openshift.io/inject-trusted-cabundle: "true"
@@ -36,6 +42,8 @@ kind: Role
 metadata:
   name: saw-portal-ingress-ca
   namespace: openshift-config-managed
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
   labels:
     {{- include "openshell-rhdh.labels" . | nindent 4 }}
 rules:
@@ -49,6 +57,8 @@ kind: RoleBinding
 metadata:
   name: saw-portal-ingress-ca
   namespace: openshift-config-managed
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
   labels:
     {{- include "openshell-rhdh.labels" . | nindent 4 }}
 roleRef:

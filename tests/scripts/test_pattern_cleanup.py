@@ -6,6 +6,8 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+HCO_SPEC = {"versions": [{"name": "v1", "served": True, "storage": False},
+                         {"name": "v1beta1", "served": True, "storage": True}]}
 
 
 def fake_oc(tmp_path, namespaces, resources, objects):
@@ -16,7 +18,12 @@ def fake_oc(tmp_path, namespaces, resources, objects):
     (fixtures / "namespaces.json").write_text(json.dumps({"items": namespaces}))
     (fixtures / "resources.txt").write_text("\n".join(resources) + "\n")
     for name, items in objects.items():
+        if name == "hyperconvergeds.hco.kubevirt.io":
+            # Only the storage endpoint works after the conversion webhook disappears.
+            name = "hyperconvergeds.v1beta1.hco.kubevirt.io"
         (fixtures / f"{name}.json").write_text(json.dumps({"items": items}))
+    if "hyperconvergeds.hco.kubevirt.io" in objects:
+        (fixtures / "crd.json").write_text(json.dumps({"spec": HCO_SPEC}))
     oc = bindir / "oc"
     oc.write_text('''#!/usr/bin/env bash
 set -euo pipefail
@@ -91,6 +98,7 @@ def test_operator_cleanup_keeps_unowned_resources(tmp_path):
     assert result.returncode == 0, result.stderr
     calls = log.read_text().splitlines()
     assert len(calls) == len(kinds)
+    assert any(call.startswith("delete hyperconvergeds.v1beta1.hco.kubevirt.io owned ") for call in calls)
     assert all(" owned -n openshift-cnv " in call for call in calls)
     assert all("--all" not in call and " other " not in call for call in calls)
 
@@ -99,7 +107,7 @@ def test_operator_cleanup_removes_orphaned_hco_crd(tmp_path):
     namespace = {"metadata": {"name": "openshift-cnv", "annotations": {
         "argocd.argoproj.io/tracking-id":
             "secure-agent-workspace-prod:/Namespace:patterns-operator/openshift-cnv"}}}
-    crd = {"metadata": {"annotations": {
+    crd = {"spec": HCO_SPEC, "metadata": {"annotations": {
         "openshell.pattern/cleanup-on-uninstall": "secure-agent-workspace-prod"},
         "labels": {
         "olm.managed": "true",
@@ -115,11 +123,11 @@ def test_operator_cleanup_removes_orphaned_hco_crd(tmp_path):
                             env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     calls = log.read_text().splitlines()
-    assert "wait --for=delete namespace/openshift-cnv --timeout=180s" in calls
+    assert "wait --for=delete namespace/openshift-cnv --timeout=1h" in calls
     assert "delete crd hyperconvergeds.hco.kubevirt.io --wait=true" in calls
 
 
-def test_operator_cleanup_warns_when_cnv_namespace_remains(tmp_path):
+def test_operator_cleanup_fails_without_removing_crd_when_cnv_namespace_remains(tmp_path):
     namespace = {"metadata": {"name": "openshift-cnv", "annotations": {
         "argocd.argoproj.io/tracking-id":
             "secure-agent-workspace-prod:/Namespace:patterns-operator/openshift-cnv"}}}
@@ -127,8 +135,8 @@ def test_operator_cleanup_warns_when_cnv_namespace_remains(tmp_path):
     env["OC_WAIT_FAIL"] = "yes"
     result = subprocess.run(["bash", str(ROOT / "scripts/pattern-operator-cleanup.sh")],
                             env=env, capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
-    assert "still exists after 180 s" in result.stderr
+    assert result.returncode != 0
+    assert "CNV teardown incomplete" in result.stderr
     assert "delete crd" not in log.read_text()
 
 
@@ -136,7 +144,7 @@ def test_operator_cleanup_preserves_crd_with_hco(tmp_path):
     namespace = {"metadata": {"name": "openshift-cnv", "annotations": {
         "argocd.argoproj.io/tracking-id":
             "secure-agent-workspace-prod:/Namespace:patterns-operator/openshift-cnv"}}}
-    crd = {"metadata": {"annotations": {
+    crd = {"spec": HCO_SPEC, "metadata": {"annotations": {
         "openshell.pattern/cleanup-on-uninstall": "secure-agent-workspace-prod"},
         "labels": {
         "olm.managed": "true",
@@ -155,7 +163,7 @@ def test_operator_cleanup_preserves_crd_with_hco(tmp_path):
 
 
 def test_operator_cleanup_removes_marked_crd_after_namespace_is_gone(tmp_path):
-    crd = {"metadata": {"annotations": {
+    crd = {"spec": HCO_SPEC, "metadata": {"annotations": {
         "openshell.pattern/cleanup-on-uninstall": "secure-agent-workspace-prod"},
         "labels": {
             "olm.managed": "true",
@@ -175,7 +183,7 @@ def test_operator_cleanup_removes_marked_crd_after_namespace_is_gone(tmp_path):
 
 
 def test_operator_cleanup_keeps_unmarked_crd_after_namespace_is_gone(tmp_path):
-    crd = {"metadata": {"labels": {
+    crd = {"spec": HCO_SPEC, "metadata": {"labels": {
         "olm.managed": "true",
         "operators.coreos.com/kubevirt-hyperconverged.openshift-cnv": ""}}}
     env, log = fake_oc(tmp_path, [], [], {})
@@ -190,7 +198,7 @@ def test_cnv_mark_preserves_ownership_before_namespace_removal(tmp_path):
     namespace = {"metadata": {"annotations": {
         "argocd.argoproj.io/tracking-id":
             "secure-agent-workspace-prod:/Namespace:patterns-operator/openshift-cnv"}}}
-    crd = {"metadata": {"labels": {
+    crd = {"spec": HCO_SPEC, "metadata": {"labels": {
         "olm.managed": "true",
         "operators.coreos.com/kubevirt-hyperconverged.openshift-cnv": ""}}}
     env, log = fake_oc(tmp_path, [], [], {})

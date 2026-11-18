@@ -4,6 +4,8 @@ kind: ExternalSecret
 metadata:
   name: rhdh-oidc
   namespace: {{ .Values.rhdh.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
   labels:
     {{- include "openshell-rhdh.labels" . | nindent 4 }}
 spec:

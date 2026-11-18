@@ -16,6 +16,7 @@ import urllib.parse
 import urllib.request
 
 import saw_tls
+from saw_keycloak_admin import ensure_admin_api_scope
 
 SA = "/var/run/secrets/kubernetes.io/serviceaccount"
 USER_RE = re.compile(r"[a-z0-9]([-a-z0-9]{0,17}[a-z0-9])?")
@@ -128,14 +129,9 @@ def bootstrap():
     if not roles:
         role = kc_call(url, realm, token, f"/clients/{management_id}/roles/view-users", ctx=ctx)
         kc_call(url, realm, token, path, "POST", [role], ctx)
-    # Validate role grants before enabling Admin API tokens.
-    admin_api_scopes = kc_call(url, realm, token, "/client-scopes", ctx=ctx) or []
-    admin_api_scope = next((s for s in admin_api_scopes if s.get("name") == "kc-admin-api"), None)
-    if admin_api_scope is not None:
-        default_scopes = kc_call(url, realm, token, f"/clients/{client['id']}/default-client-scopes", ctx=ctx) or []
-        if not any(s.get("name") == "kc-admin-api" for s in default_scopes):
-            kc_call(url, realm, token,
-                    f"/clients/{client['id']}/default-client-scopes/{admin_api_scope['id']}", "PUT", ctx=ctx)
+    ensure_admin_api_scope(
+        lambda method, path, body=None: kc_call(url, realm, token, path, method, body, ctx),
+        client["id"])
     secret = kc_call(url, realm, token, f"/clients/{client['id']}/client-secret", ctx=ctx)["value"]
     fd = os.open(os.environ["OUT"], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as stream:

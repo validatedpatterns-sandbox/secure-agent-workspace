@@ -1,0 +1,22 @@
+# Synthetic owner-login and membership inputs; no credential values.
+enabled: true
+clientID: saw-alice
+keycloakNamespace: saw-keycloak
+keycloakProvisionerSecret: keycloak-admin
+issuer: https://sso.example.test/realms/openshell
+trustedNamespace: saw-ci-trusted
+gatewayNamespace: saw-alice
+gateway: alice
+gatewayEndpoint: https://alice-gateway.saw-alice.svc:17670
+installationID: 802fe583-9329-54b6-b5b4-7be58ec171f3
+workspace: default
+workspaceID: 33333333-3333-4333-8333-333333333333
+sandbox: notebook
+ownerLogin: alice
+ownerSubject: 11111111-1111-4111-8111-111111111111
+subject: 22222222-2222-4222-8222-222222222222
+sdkImage: ghcr.io/validatedpatterns-sandbox/saw-kubernetes-runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+host: alice.apps.example.test
+egress:
+  - to: [{ipBlock: {cidr: 192.0.2.10/32}}]
+    ports: [{protocol: TCP, port: 443}]

@@ -21,6 +21,7 @@ def _write_bundle_files(directory):
 
 
 def test_manifest_requires_every_tool_gate_file():
+    import base64
     import importlib.util
     from pathlib import Path
     script = Path(__file__).resolve().parents[2] / "scripts/build-installer-manifest.py"
@@ -28,6 +29,12 @@ def test_manifest_requires_every_tool_gate_file():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     data = {name: name + "\n" for name in BUNDLE_FILES}
+    data["apply_bom.py"] = '_SAW_CORE_EMBEDDED_B64 = "' + base64.b64encode(
+        module.CORE_SOURCE.read_bytes()).decode("ascii") + '"\n'
+    data["apply_bom.py"] += '_SAW_ADMIN_EMBEDDED_B64 = "' + base64.b64encode(
+        module.CORE_SOURCE.with_name("saw_admin.py").read_bytes()).decode("ascii") + '"\n'
+    data["apply_bom.py"] += '_SAW_UI_LIMIT_EMBEDDED_B64 = "' + base64.b64encode(
+        module.CORE_SOURCE.with_name("saw_ui_limit.py").read_bytes()).decode("ascii") + '"\n'
     assert len(module.build_manifest(data).splitlines()) == len(BUNDLE_FILES)
     for name in BUNDLE_FILES[3:]:
         with pytest.raises(SystemExit, match=name):

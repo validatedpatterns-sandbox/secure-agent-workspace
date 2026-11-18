@@ -18,6 +18,8 @@ ROOT = Path(__file__).resolve().parents[2]
 GENERATOR = ROOT / "scripts" / "saw-profile-catalog.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "profile-catalog.yml"
 HOOK = ROOT / ".githooks" / "pre-commit"
+UI_SOURCE = "charts/openshell-saw/files/installer/saw_ui_limit.py"
+UI_MIRROR = "charts/saw-workspace-relay/files/saw_ui_limit.py"
 
 
 def outputs():
@@ -63,12 +65,17 @@ def test_attached_model_fields_follow_enabled_sandbox_providers(scratch, enabled
 
 def test_list_names_every_generated_file():
     listed = outputs()
-    # The six catalog/form files, plus the installer's mirror of every
-    # shipped governance profile.
+    # Catalogs, owner/admin forms, shared broker inputs and the governance mirrors.
     mirrored = [p for p in listed if p.startswith("charts/openshell-saw/files/provider-profiles/")]
     shipped = sorted(p.name for p in (ROOT / "charts/governance-policy/profiles").glob("*.yaml"))
     # ... plus the mirror directory itself (so a removed mirror is staged too).
-    assert len(listed) == 6 + len(shipped) + 1
+    assert "charts/saw-users/templates/_governed-proxy-policy.tpl" in listed
+    assert "charts/saw-users/files/governed-profiles.json" in listed
+    assert "charts/openshell-rhdh/files/set-workspace-state.yaml" in listed
+    assert "charts/openshell-rhdh/files/workspace.py" in listed
+    assert "charts/openshell-rhdh/files/saw_keycloak_admin.py" in listed
+    assert UI_MIRROR in listed
+    assert len(listed) == 12 + len(shipped) + 1
     assert sorted(p.rsplit("/", 1)[1] for p in mirrored) == shipped
     assert "charts/openshell-saw/files/provider-profiles" in listed
     assert "charts/openshell-rhdh/files/create-workspace.yaml" in listed
@@ -81,7 +88,7 @@ def scratch(tmp_path):
     """A git repo with the generator, the profiles and their outputs, and a
     PATH whose python/python3 are this interpreter (it has PyYAML)."""
     repo = tmp_path / "repo"
-    for rel in ["scripts/saw-profile-catalog.py", ".githooks/pre-commit", *outputs()]:
+    for rel in ["scripts/saw-profile-catalog.py", ".githooks/pre-commit", "charts/openshell-saw/templates/_governed-proxy-policy.tpl", "charts/saw-users/files/workspace.py", "charts/openshell-keycloak/files/saw_keycloak_admin.py", UI_SOURCE, *outputs()]:
         if (ROOT / rel).is_dir():          # the mirror directory is listed as an owned path
             continue
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -233,6 +240,26 @@ def test_the_workflow_runs_on_profile_changes_without_pull_request_target():
     assert "pull_request_target" not in on
     assert "charts/saw-bom/profiles/**" in on["pull_request"]["paths"]
     assert doc["permissions"] == {"contents": "write"}
+    for event in ("pull_request", "push"):
+        assert UI_SOURCE in on[event]["paths"]
+        assert UI_MIRROR in on[event]["paths"]
+
+
+@pytest.mark.parametrize("changed", [UI_SOURCE, UI_MIRROR])
+def test_transport_source_or_mirror_only_change_runs_generation(scratch, changed):
+    repo, env, git = scratch
+    target = repo / changed
+    target.write_text(target.read_text() + "\n# transport fixture change\n")
+    git("add", changed)
+    result = subprocess.run(["bash", ".githooks/pre-commit"], cwd=repo, env=env,
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (repo / UI_MIRROR).read_bytes() == (repo / UI_SOURCE).read_bytes()
+    assert git("show", ":" + UI_MIRROR).stdout == (repo / UI_SOURCE).read_text()
+    if changed == UI_SOURCE:
+        assert UI_MIRROR in git("diff", "--cached", "--name-only").stdout
+    else:
+        assert git("diff", "--cached", "--name-only").stdout == ""
 
 
 def test_the_hook_is_executable():

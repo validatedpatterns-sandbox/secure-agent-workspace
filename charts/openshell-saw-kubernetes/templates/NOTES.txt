@@ -1,0 +1,7 @@
+Container gateway foundation using the stock OpenShell gateway and supervisor.
+
+Install native admission/network policy, retained identity, the credential proxy,
+governance and Agent Sandbox through their declared owners. Workspace preparation,
+reconciliation and browser access are composed by saw-users.
+
+See docs/container-installation.md and docs/container-workspaces.md.

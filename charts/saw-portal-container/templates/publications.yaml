@@ -1,0 +1,29 @@
+{{- $s := .Values.site | default dict }}
+{{- if $s.automaticEnrollment }}
+{{- $observer := $s.observer | default dict }}
+{{- $t := printf "saw-ctl-%s" .Values.registration }}
+{{- $targets := include "portal.targets" . | fromJson }}
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: saw-portal-enrollment, namespace: {{ $t }}, labels: {saw.redhat.com/runtime-owner: {{ .Values.installationID }}}}
+{{- $names := list "saw-portal-enrollment" }}
+{{- range $slot := $targets }}{{- if $slot.ui }}{{- $names = append $names $slot.subjectMap }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: {{ $slot.subjectMap }}, namespace: {{ $t }}, labels: {saw.redhat.com/runtime-owner: {{ $.Values.installationID }}}}
+{{- end }}{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: portal-binding-reader, namespace: {{ $t }}}
+rules: [{apiGroups: [""], resources: [configmaps], resourceNames: {{ $names | toJson }}, verbs: [get]}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: portal-binding-reader, namespace: {{ $t }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: portal-binding-reader}
+subjects: [{kind: ServiceAccount, name: {{ $observer.serviceAccount | default "saw-workspaces-generator" }}, namespace: {{ $observer.namespace | default .Values.portalNamespace | default "saw-portal" }}}]
+{{- end }}

@@ -1,0 +1,7 @@
+enabled: false
+image: ""
+configuration: {}
+stateClaim: ""
+claimNames: []
+trustedEgress: []
+imageBuildNamespace: ""

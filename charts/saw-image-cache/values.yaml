@@ -1,0 +1,9 @@
+enabled: false
+# Site-approved OCI images used by the workload. Every reference must be immutable.
+images: []
+# This infrastructure image runs only sleep. Workspace images are mounted read-only.
+holderImage: registry.access.redhat.com/ubi9/python-311@sha256:a0bdb55576fc5b8d6704279307817828ef027e1065533ceba133fe9516003a6c
+nodeSelector:
+  kubernetes.io/os: linux
+tolerations: []
+imagePullSecrets: []

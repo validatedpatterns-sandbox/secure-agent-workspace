@@ -1,0 +1,137 @@
+{{- $site := .Values.site | default dict }}
+{{- $e := $site.enrollment | default dict }}
+{{- if and $e (eq $e.registration .Values.registration) }}
+{{- $reg := .Values.registration }}
+{{- $u := .Values.owner }}
+{{- $ns := .Release.Namespace }}
+{{- $ctl := printf "saw-ctl-%s" $reg }}
+{{- $history := printf "saw-history-%s" $reg }}
+{{- $b := $e.intent.bindings }}
+{{- if or (ne $b.ownerID .Values.installationID) (ne $b.ownerSubject .Values.ownerSubject) (ne $b.namespace $ns) (ne $b.mode (ternary "kata" "container" (not (empty $site.kataRuntimeClass)))) (ne $e.intent.profileRef.name "saw-bom-profiles") }}{{ fail "enrollment belongs to a different registration" }}{{ end }}
+{{- if not (regexMatch "^.+@sha256:[0-9a-f]{64}$" $e.image) }}{{ fail "pinned controller image required" }}{{ end }}
+{{- $targets := include "portal.targets" . | fromJson }}
+{{- $claims := include "portal.claims" . | fromJsonArray }}
+{{- if ne (len $b.bindings) (len $targets) }}{{ fail "sandbox slot count mismatch" }}{{- end }}
+{{- $intent := dict "schemaVersion" 1 "generation" .Values.intentGeneration "desiredState" ($site.desiredState | default "Running") "bindings" $b "profileRef" $e.intent.profileRef }}
+{{- if $site.lifecycleVersion }}{{- $_ := set $intent "restartGeneration" $site.restartGeneration }}{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: saw-runtime-intent, namespace: {{ $ns }}, {{ if $site.lifecycleVersion }}annotations: {argocd.argoproj.io/sync-wave: '3'}, {{ end }}labels: {saw.redhat.com/runtime-owner: {{ $b.ownerID }}}}
+data:
+  intent.json: {{ $intent | toJson | quote }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: portal-ledger, namespace: {{ $ctl }}}
+spec:
+  storageClassName: {{ $site.stack.audit.values.storageClass }}
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 1Gi}}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: saw-gate-preparation, namespace: {{ $ns }}}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: {{ printf "portal-gate-%s" $reg }}, namespace: {{ $e.buildNamespace }}}
+rules: [{apiGroups: [image.openshift.io], resources: [imagestreams/layers], resourceNames: [{{ base (index (splitList "@" $e.image) 0) | quote }}], verbs: [get]}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ printf "portal-gate-%s" $reg }}, namespace: {{ $e.buildNamespace }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ printf "portal-gate-%s" $reg }}}
+subjects: [{kind: ServiceAccount, name: saw-gate-preparation, namespace: {{ $ns }}}]
+{{- range $key,$target := $targets }}
+{{- $slot := index $b.bindings $key }}
+{{- $gate := $slot.toolGate }}
+{{- if or (ne $slot.workspace.claimName (printf "workspace-%s" $target.base)) (ne $gate.trusted.claimName (printf "saw-gate-%s" $target.base)) (ne $gate.audit.claimName (printf "saw-audit-%s" $target.base)) (ne $gate.ownerLogin $u) (not $gate.receiptKey) }}{{ fail "invalid storage binding" }}{{- end }}
+{{- if and $target.ui (or (ne $slot.browser.ownerLogin $u) (ne $slot.browser.origin (printf "https://%s-%s-%s-ui.apps.%s" $u $target.workspace $target.sandbox $.Values.global.clusterDomain))) }}{{ fail "invalid owner UI binding" }}{{- end }}
+{{- $job := ternary "saw-gate-preparation" (printf "gate-%s" $target.relayID) (eq (len $targets) 1) }}
+{{- if $gate.harness }}
+{{- $job = printf "%s-h%s" $job (trimPrefix "sha256:" $gate.harness.digest | trunc 12) }}
+{{- end }}
+{{- $model := "" }}
+{{- $publication := max 1 ($site.restartGeneration | default 0) }}
+{{- if $gate.modelSelector }}
+{{- $model = required "public model selection missing" (index $site.requestedModels $target.modelInput) }}
+{{- $job = printf "%s-m%d" $job $publication }}
+{{- end }}
+{{- /* Job PodSpecs are immutable. A new artifact or bundle gets a new Job,
+while an unchanged sync keeps the completed publication. */ -}}
+{{- $publicationSpec := dict "version" 2 "image" $e.image "owner" $u "subject" $b.ownerSubject "target" $target "gate" $gate "model" $model "generation" $publication -}}
+{{- $job = printf "%s-%s" $job ($publicationSpec | toJson | sha256sum | trunc 10) }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata: {name: {{ $job }}, namespace: {{ $ns }}, annotations: {argocd.argoproj.io/sync-wave: '2'}}
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 360
+  template:
+    spec:
+      serviceAccountName: saw-gate-preparation
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+      - name: prep
+        image: {{ $e.image | quote }}
+        command: [python3, -m, saw_kubernetes.prepare_gate, --owner, {{ $u | quote }}, --subject, {{ $b.ownerSubject | quote }}, --workspace, {{ $target.workspace }}, --sandbox, {{ $target.sandbox }}, --receipt-key, {{ $gate.receiptKey | quote }}{{ if $target.ui }}, --browser-proof, /proof/relay-proof{{ end }}{{ if $gate.harness }}, --harness, {{ $gate.harness.name | quote }}, {{ $gate.harness.digest | quote }}{{ end }}{{ if $model }}, --model, {{ $model | quote }}, --model-generation, {{ $publication | quote }}{{ end }}]
+        securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+        volumeMounts: [{name: gate, mountPath: /volume}{{ if $target.ui }}, {name: proof, mountPath: /proof, readOnly: true}{{ end }}{{ if $gate.harness }}, {name: bom, mountPath: /bom, readOnly: true}{{ end }}]
+      volumes: [{name: gate, persistentVolumeClaim: {claimName: {{ $gate.trusted.claimName }}}}{{ if $target.ui }}, {name: proof, secret: {secretName: ui-{{ $target.relayID }}-browser-proof, items: [{key: relay-proof, path: relay-proof}]}}{{ end }}{{ if $gate.harness }}, {name: bom, configMap: {name: saw-bom-profiles}}{{ end }}]
+{{- end }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {{ printf "saw-c-%s-controller" $reg }}
+  namespace: {{ .Values.global.vpArgoNamespace }}
+  annotations: {argocd.argoproj.io/sync-wave: '3'}
+  labels: {openshell.pattern/owner: {{ $u }}, saw.redhat.com/registration: {{ $reg | quote }}}
+  finalizers: [resources-finalizer.argocd.argoproj.io/foreground]
+spec:
+  project: {{ $site.project | default "default" }}
+  destination: {server: 'https://kubernetes.default.svc', namespace: {{ $ctl }}}
+  source:
+    repoURL: {{ .Values.global.repoURL | quote }}
+    targetRevision: {{ $e.revision | quote }}
+    path: charts/saw-kubernetes-controller
+    helm:
+      releaseName: {{ $u }}
+      valuesObject:
+        enabled: true
+        image: {{ $e.image | quote }}
+        stateClaim: portal-ledger
+        imageBuildNamespace: {{ $e.buildNamespace }}
+        claimNames: {{ $claims | toJson }}
+        configuration:
+          gateway: {{ $u }}
+          namespace: {{ $ns }}
+          trustedNamespace: {{ $ctl }}
+          governanceNamespace: {{ $site.governanceNamespace }}
+          proxyPolicy: {{ $u }}-proxy-policy
+          ownerID: {{ $b.ownerID }}
+          namespaceUID: {{ $b.namespaceUID }}
+          mode: {{ $b.mode }}
+{{- with $site.kataRuntimeClass }}
+          workloadRuntimeClass: {{ .name | quote }}
+{{- end }}
+          intent: saw-runtime-intent
+          profile: saw-bom-profiles
+          status: saw-runtime-status
+          approved: {{ $e.approved | toJson }}
+        trustedEgress:
+{{ toYaml $site.stack.proxy.values.network.bootstrapEgress | indent 10 }}
+          - to:
+            - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ $ns }}}}
+              podSelector: {matchLabels: {app.kubernetes.io/instance: {{ $u }}, openshell.pattern/role: gateway}}
+            ports: [{protocol: TCP, port: 17670}]
+  ignoreDifferences:
+    - {group: "", kind: ConfigMap, name: saw-runtime-status, namespace: {{ $ns }}, jsonPointers: [/data]}
+  syncPolicy:
+    automated: {prune: true, selfHeal: true}
+    syncOptions: [RespectIgnoreDifferences=true]
+{{- end }}

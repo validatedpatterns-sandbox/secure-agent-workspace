@@ -1,0 +1,226 @@
+{{- if .Values.enabled }}
+{{- $v := .Values -}}
+{{- range $name := list .Release.Namespace $v.targetNamespace $v.gateway }}
+{{- if or (gt (len $name) 40) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $name)) (eq $name "default") (hasPrefix "openshift" $name) (hasPrefix "kube-" $name) }}{{- fail "dedicated DNS-label names of at most 40 characters required" }}{{- end }}{{- end }}
+{{- if eq .Release.Namespace $v.targetNamespace }}{{- fail "trusted and runtime namespaces must differ" }}{{- end }}
+{{- if or (eq $v.ownerID "00000000-0000-0000-0000-000000000000") (not (regexMatch "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" $v.ownerID)) }}{{- fail "installation UUID required" }}{{- end }}
+{{- range $image := list $v.image $v.helperImage }}{{- if not (regexMatch "^.+@sha256:[0-9a-f]{64}$" $image) }}{{- fail "digest-pinned images required" }}{{- end }}{{- end }}
+{{- if or (not $v.policyConfigMap) (not $v.credentialSecretNames) (not $v.network.bootstrapEgress) (not $v.network.proxyEgress) }}{{- fail "existing policy, credential references and explicit egress required" }}{{- end }}
+{{- range $name := append (deepCopy $v.credentialSecretNames) $v.policyConfigMap }}{{- if or (gt (len $name) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $name)) }}{{- fail "policy and credential references must be DNS labels" }}{{- end }}{{- end }}
+{{- if ne (len (uniq $v.credentialSecretNames)) (len $v.credentialSecretNames) }}{{- fail "duplicate credential reference" }}{{- end }}
+{{- if not (regexMatch "^[0-9a-f]{64}$" $v.policyDigest) }}{{- fail "SHA256 of policy config.json required for explicit rollout" }}{{- end }}
+{{- $name := printf "%s-credential-proxy" $v.gateway }}
+{{- $job := printf "%s-proxy-bootstrap" $v.gateway }}
+{{- $ca := printf "%s-proxy-ca" $v.gateway }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $job }}
+  annotations: {argocd.argoproj.io/sync-wave: "-20"}
+data:
+  config.json: {{ dict "ownerID" $v.ownerID "namespace" .Release.Namespace "targetNamespace" $v.targetNamespace "name" $ca | toJson | quote }}
+  project_ca.py: |
+{{ .Files.Get "files/project_ca.py" | indent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $job }}
+  annotations: {argocd.argoproj.io/sync-wave: "-20"}
+automountServiceAccountToken: false
+{{- range $ns := list .Release.Namespace $v.targetNamespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $job }}
+  namespace: {{ $ns }}
+  annotations: {argocd.argoproj.io/sync-wave: "-20"}
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [{{ $ca }}]
+    verbs: [get{{ if eq $ns $.Release.Namespace }}, update{{ end }}]
+{{- if eq $ns $.Release.Namespace }}
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [{{ $ca }}]
+    verbs: [get]
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $job }}
+  namespace: {{ $ns }}
+  annotations: {argocd.argoproj.io/sync-wave: "-20"}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $job }}}
+subjects:
+  - {kind: ServiceAccount, name: {{ $job }}, namespace: {{ $.Release.Namespace }}}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Namespace }}-{{ $job }}
+  annotations: {argocd.argoproj.io/sync-wave: "-20"}
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    resourceNames: [{{ .Release.Namespace }}, {{ $v.targetNamespace }}]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Namespace }}-{{ $job }}
+  annotations: {argocd.argoproj.io/sync-wave: "-20"}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ .Release.Namespace }}-{{ $job }}}
+subjects:
+  - {kind: ServiceAccount, name: {{ $job }}, namespace: {{ .Release.Namespace }}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $job }}
+  annotations: {argocd.argoproj.io/sync-wave: "-20"}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/instance: {{ $v.gateway }}, openshell.pattern/role: proxy-bootstrap}
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+{{ toYaml $v.network.bootstrapEgress | indent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $job }}
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels: {app.kubernetes.io/instance: {{ $v.gateway }}, openshell.pattern/role: proxy-bootstrap}
+    spec:
+      serviceAccountName: {{ $job }}
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      initContainers:
+        - name: stock-ca
+          image: {{ $v.image }}
+          args: [init-ca]
+          env:
+            - {name: POD_NAMESPACE, value: {{ .Release.Namespace }}}
+            - {name: SAW_CA_SECRET_NAME, value: {{ $ca }}}
+            - {name: SAW_CA_CONFIGMAP_NAME, value: {{ $ca }}}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          resources: {requests: {cpu: 50m, memory: 64Mi}, limits: {memory: 256Mi}}
+          volumeMounts:
+            - {name: api, mountPath: /var/run/secrets/kubernetes.io/serviceaccount, readOnly: true}
+      containers:
+        - name: public-projection
+          image: {{ $v.helperImage }}
+          command: [python3, /config/project_ca.py]
+          env: [{name: PYTHONDONTWRITEBYTECODE, value: "1"}]
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          resources: {requests: {cpu: 50m, memory: 64Mi}, limits: {memory: 256Mi}}
+          volumeMounts:
+            - {name: api, mountPath: /var/run/secrets/kubernetes.io/serviceaccount, readOnly: true}
+            - {name: config, mountPath: /config, readOnly: true}
+      volumes:
+        - name: config
+          configMap: {name: {{ $job }}}
+        - name: api
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken: {path: token, expirationSeconds: 600}
+              - configMap: {name: kube-root-ca.crt, items: [{key: ca.crt, path: ca.crt}]}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: {{ $name }}}
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: {{ $name }}}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/instance: {{ $v.gateway }}, openshell.pattern/role: credential-proxy}
+  template:
+    metadata:
+      annotations: {checksum/policy: {{ $v.policyDigest | quote }}}
+      labels: {app.kubernetes.io/instance: {{ $v.gateway }}, openshell.pattern/role: credential-proxy}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: proxy
+          image: {{ $v.image }}
+          args: [serve]
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          resources: {requests: {cpu: 50m, memory: 64Mi}, limits: {memory: 256Mi}}
+          ports: [{name: connect, containerPort: 3128}, {name: health, containerPort: 8081}]
+          readinessProbe: {httpGet: {path: /healthz, port: health}, periodSeconds: 5}
+          livenessProbe: {tcpSocket: {port: connect}, periodSeconds: 30}
+          volumeMounts:
+            - {name: policy, mountPath: /etc/saw-proxy, readOnly: true}
+            - {name: ca, mountPath: /var/run/saw/ca, readOnly: true}
+{{- range $i, $secret := $v.credentialSecretNames }}
+            - {name: credential-{{ $i }}, mountPath: /var/run/saw/secrets/{{ $secret }}, readOnly: true}
+{{- end }}
+      volumes:
+        - name: policy
+          configMap: {name: {{ $v.policyConfigMap }}}
+        - name: ca
+          secret: {secretName: {{ $ca }}, defaultMode: 0440}
+{{- range $i, $secret := $v.credentialSecretNames }}
+        - name: credential-{{ $i }}
+          secret: {secretName: {{ $secret }}, defaultMode: 0440}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: {{ $name }}}
+spec:
+  selector:
+    app.kubernetes.io/instance: {{ $v.gateway }}
+    openshell.pattern/role: credential-proxy
+  ports: [{name: connect, port: 3128, targetPort: connect}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: {{ $name }}}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/instance: {{ $v.gateway }}, openshell.pattern/role: credential-proxy}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ $v.targetNamespace }}}
+          podSelector:
+            matchLabels: {app.kubernetes.io/instance: {{ $v.gateway }}, openshell.pattern/role: gateway}
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ $v.targetNamespace }}}
+          podSelector:
+            matchLabels: {openshell.ai/gateway-id: {{ $v.gateway }}, openshell.ai/boundary-role: supervisor}
+      ports: [{protocol: TCP, port: 3128}]
+  egress:
+{{ toYaml $v.network.proxyEgress | indent 4 }}
+{{- end }}

@@ -1,0 +1,32 @@
+# Synthetic offline values, not a live deployment or published artifact.
+deployment:
+  mode: container
+kubernetes:
+  experimental: true
+  workload:
+    image: registry.example.test/agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  identity:
+    serverTlsSecret: gateway-server
+    clientCaSecret: gateway-client-ca
+    jwtSecret: gateway-jwt
+    credentialKeySecret: gateway-kek
+  storage:
+    className: test-rbd
+  proxy:
+    url: http://saw-test-credential-proxy.saw-test-trusted.svc:3128
+    caConfigMap: saw-proxy-ca
+  governance:
+    endpoint: http://governance-interceptor.saw-governance.svc:18081
+  network:
+    reconcilerNamespace: saw-test-trusted
+    reconcilerLabels:
+      openshell.pattern/role: reconciler
+    gatewayEgress:
+    - to:
+      - ipBlock:
+          cidr: 192.0.2.10/32
+      ports:
+      - protocol: TCP
+        port: 6443
+oidc:
+  issuerUrl: https://sso.example.test/realms/openshell

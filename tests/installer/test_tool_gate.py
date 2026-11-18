@@ -206,3 +206,23 @@ held.hook.requireApproval.onResolution("timeout");
         assert line["policyHash"] == policy_hash and line["rule"]
         assert line["argsDigest"].startswith("sha256:")
         assert json.dumps(line, separators=(",", ":")) in result.stderr
+
+
+@pytest.mark.ci_external
+def test_missing_final_receipt_prevents_approved_effect():
+    # Stock OpenClaw catches callback exceptions. The signed container path
+    # must stop the executor synchronously before control returns to the tool.
+    script = """
+import {evaluateToolCall} from "./tool-gate.mjs";
+import {readFileSync} from "node:fs";
+const held=evaluateToolCall({policyText:readFileSync("tool-actions.yaml","utf8"),
+ identity:{username:"alice",subject:"example",workspace:"w",sandbox:"s"},
+ sessionKey:"test", toolName:"exec", params:{command:"rm fixture"},
+ appendRecord(r){if(r.decision==="approved")throw Error("writer unavailable")},
+ unacknowledgedApproval:()=>process.exit(75)});
+try {held.hook.requireApproval.onResolution("allow-once")} catch {}
+console.log("TOOL_EXECUTED");
+"""
+    result = subprocess.run(["node","--input-type=module","-e",script], cwd=GATE,
+                            capture_output=True,text=True)
+    assert result.returncode == 75 and "TOOL_EXECUTED" not in result.stdout

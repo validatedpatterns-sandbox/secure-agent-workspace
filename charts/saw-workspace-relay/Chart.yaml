@@ -1,0 +1,4 @@
+apiVersion: v2
+name: saw-workspace-relay
+description: Workspace-scoped Keycloak service account and owner-authenticated OpenShell UI forward
+version: 0.1.0

@@ -1,0 +1,7 @@
+{
+  "proto/openshell.proto": "efc7842c224157acdab9811f089e25b956ae188dc0e5a45320a5dcd43b1f2133",
+  "proto/datamodel.proto": "e50bd875a760f54b80269c65ee47984cae424fb623b7f59551ba62550c23e70b",
+  "proto/sandbox.proto": "ed3d2650c8d1c4cbb653259c6055adba2dba8a51498ab6a1b2cfc339997ab2b9",
+  "proto/options.proto": "10c8a99b505047f759951285fdae6068afd267ef672d00a65385a91ee8d027ee",
+  "tasks/scripts/generate_python_proto.py": "267078b042d0ad0a2aa09f2abfc075df8e076b7032035fa11e98f99e33d22be0"
+}

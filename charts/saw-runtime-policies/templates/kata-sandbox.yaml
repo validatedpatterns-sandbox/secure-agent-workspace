@@ -1,0 +1,37 @@
+{{- if and .Values.enabled (eq .Values.mode "kata") }}
+{{- $name := printf "%s-kata" (include "saw-runtime-policies.name" .) }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ $name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+    argocd.argoproj.io/sync-options: Prune=false
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Values.targetNamespace | quote }}
+    resourceRules:
+      - apiGroups: ["agents.x-k8s.io"]
+        apiVersions: ["v1beta1"]
+        operations: [CREATE, UPDATE]
+        resources: [sandboxes]
+  validations:
+    - expression: >-
+        has(object.spec.podTemplate.spec.runtimeClassName) &&
+        object.spec.podTemplate.spec.runtimeClassName == {{ .Values.workloadRuntimeClassName | toJson }}
+      message: The Sandbox workload template must use the approved Kata RuntimeClass.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ $name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-9"
+    argocd.argoproj.io/sync-options: Prune=false
+spec:
+  policyName: {{ $name }}
+  validationActions: [Deny]
+{{- end }}

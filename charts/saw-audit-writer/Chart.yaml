@@ -1,0 +1,4 @@
+apiVersion: v2
+name: saw-audit-writer
+version: 0.1.0
+description: Restricted audit writer and workspace receipt forwarder

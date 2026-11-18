@@ -1,0 +1,174 @@
+{{- if .Values.enabled }}
+{{- $v := .Values -}}
+{{- range $name := list .Release.Namespace $v.targetNamespace $v.gateway }}
+{{- if or (gt (len $name) 50) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $name)) (eq $name "default") (hasPrefix "openshift" $name) (hasPrefix "kube-" $name) }}
+{{- fail "bootstrap requires explicit dedicated DNS-label names, at most 50 characters" }}
+{{- end }}{{- end }}
+{{- if eq .Release.Namespace $v.targetNamespace }}{{- fail "trusted namespace must differ from runtime namespace" }}{{- end }}
+{{- if not (regexMatch "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" $v.ownerID) }}{{- fail "explicit installation UUID required" }}{{- end }}
+{{- range $image := list $v.gatewayImage $v.helperImage }}
+{{- if not (regexMatch "^.+@sha256:[0-9a-f]{64}$" $image) }}{{- fail "bootstrap images must be digest pinned" }}{{- end }}{{- end }}
+{{- $svc := printf "%s-gateway.%s.svc" $v.gateway $v.targetNamespace }}
+{{- if or (not (has $svc $v.serverSans)) (not (has (printf "%s.cluster.local" $svc) $v.serverSans)) }}{{- fail "both gateway Service DNS SANs are required" }}{{- end }}
+{{- $config := dict "ownerID" $v.ownerID "namespace" .Release.Namespace "targetNamespace" $v.targetNamespace "gateway" $v.gateway "serverSans" $v.serverSans }}
+{{- $name := printf "%s-identity-bootstrap" $v.gateway }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-20"
+data:
+  config.json: {{ $config | toJson | quote }}
+  bootstrap.py: |
+{{ .Files.Get "files/bootstrap.py" | indent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-20"
+automountServiceAccountToken: false
+{{- range $namespace := list .Release.Namespace $v.targetNamespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  namespace: {{ $namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-20"
+rules:
+  # Kubernetes RBAC cannot restrict create by resourceNames. Both namespaces
+  # are dedicated, admin-owned; this short-lived SA is part of the trusted base.
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get]
+    resourceNames:
+{{- if eq $namespace $.Release.Namespace }}
+      - {{ printf "%s-identity" $v.gateway }}
+{{- else }}
+      - {{ printf "%s-server" $v.gateway }}
+      - {{ printf "%s-client-ca" $v.gateway }}
+      - {{ printf "%s-jwt" $v.gateway }}
+      - {{ printf "%s-kek" $v.gateway }}
+{{- end }}
+{{- if eq $namespace $.Release.Namespace }}
+  - {apiGroups: [""], resources: [configmaps], verbs: [create]}
+  - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ printf "%s-gateway-ca" $v.gateway }}], verbs: [get]}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  namespace: {{ $namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-20"
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $name }}}
+subjects:
+  - {kind: ServiceAccount, name: {{ $name }}, namespace: {{ $.Release.Namespace }}}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Namespace }}-{{ $name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-20"
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    resourceNames: [{{ .Release.Namespace }}, {{ $v.targetNamespace }}]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Namespace }}-{{ $name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-20"
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ .Release.Namespace }}-{{ $name }}}
+subjects:
+  - {kind: ServiceAccount, name: {{ $name }}, namespace: {{ .Release.Namespace }}}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        openshell.pattern/role: identity-bootstrap
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        - name: stock-certificates
+          image: {{ $v.gatewayImage }}
+          args:
+            - generate-certs
+            - --output-dir
+            - /generated/pki
+{{- range $v.serverSans }}
+            - --server-san
+            - {{ . | quote }}
+{{- end }}
+          env:
+            - {name: HOME, value: /generated/home}
+            - {name: XDG_CONFIG_HOME, value: /generated/config}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          volumeMounts:
+            - {name: generated, mountPath: /generated}
+      containers:
+        - name: retain-and-project
+          image: {{ $v.helperImage }}
+          command: [python3, /config/bootstrap.py]
+          env:
+            - {name: PYTHONDONTWRITEBYTECODE, value: "1"}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          volumeMounts:
+            - {name: generated, mountPath: /generated}
+            - {name: config, mountPath: /config, readOnly: true}
+            - {name: api, mountPath: /var/run/secrets/kubernetes.io/serviceaccount, readOnly: true}
+      volumes:
+        - name: generated
+          emptyDir: {medium: Memory, sizeLimit: 16Mi}
+        - name: config
+          configMap: {name: {{ $name }}}
+        - name: api
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken: {path: token, expirationSeconds: 600}
+              - configMap:
+                  name: kube-root-ca.crt
+                  items: [{key: ca.crt, path: ca.crt}]
+{{- end }}

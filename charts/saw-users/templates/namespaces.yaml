@@ -1,12 +1,19 @@
 {{- include "saw-users.validate" . -}}
 {{- range $user := .Values.users | default list }}
+{{- if not (and $.Values.projection.enabled (has (dig "deployment" "mode" "vm" ($user.values | default dict)) (list "container" "kata"))) }}
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
   name: {{ printf "saw-%s" $user.name }}
   labels:
+    {{- if has (dig "deployment" "mode" "vm" ($user.values | default dict)) (list "container" "kata") }}
+    pod-security.kubernetes.io/enforce: restricted
+    saw.redhat.com/runtime-owner: {{ required "installationID required" $user.installationID | quote }}
+    saw.redhat.com/registration: {{ $user.registration | quote }}
+    {{- else }}
     openshell.pattern/saw: "true"
+    {{- end }}
     openshell.pattern/owner: {{ $user.name | quote }}
     argocd.argoproj.io/managed-by: {{ include "saw-users.argoNamespace" $ | quote }}
     {{- range $k, $v := $.Values.namespaceLabels | default dict }}
@@ -17,4 +24,5 @@ metadata:
     {{- if not (include "saw-users.prune" (dict "root" $ "user" $user)) }}
     argocd.argoproj.io/sync-options: Prune=false
     {{- end }}
+{{- end }}
 {{- end }}

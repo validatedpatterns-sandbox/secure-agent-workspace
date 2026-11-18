@@ -166,14 +166,25 @@ oc logs -n saw-portal deploy/saw-workspaces-generator --tail=20
 ## 4. Request a workspace
 
 1. In RHDH: **Create** → **Create or update my agent workspace** → **Choose**.
-2. **Profile**: pick one, e.g. `data-science`. The form now asks only for
-   that profile's keys:
+2. Select the deployment and profile. **Virtual machine** is the default.
+   **Container** appears when the site advertises an approved container profile.
+   The portal also checks that the signed-in owner is approved for the selected
+   profile. For the GitOps inputs, digest check and first enrollment, follow
+   [first-owner container approval](container-installation.md#approve-the-first-rhdh-container-profile).
+3. Enter credentials for the provider configured in the selected profile.
+   For the shipped NVIDIA `data-science` profile these are:
    - `inference: API key`: the NVIDIA API key (build.nvidia.com);
    - `web-search: API key`: the Brave Search API key.
 
    "Sandbox web UIs" lists the sandboxes that get their own route
    (`notebook (default)`).
-3. **Review** → **Create**.
+4. **Review** → **Create**.
+
+For container registrations the first two tasks, `register` and
+`argo-cd-apps`, verify the registration and generated Applications.
+The run can still be waiting for site enrollment, storage or the sandboxes.
+Wait for readiness and send a message through the owner's chat link to verify
+the deployed workspace.
 
 Argo CD builds the workspace as before; pipeline `saw-workspace-create`
 follows it, one task per stage, and the run page shows one step per task

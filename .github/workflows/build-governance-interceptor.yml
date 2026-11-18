@@ -22,7 +22,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
   group: build-governance-interceptor-${{ github.ref }}
@@ -32,7 +31,8 @@ jobs:
   # One native build per architecture (no QEMU), each pushed by digest; the
   # merge job joins them into one multi-arch :latest / :sha-<commit> tag.
   build:
-    strategy:
+    if: github.event_name == 'pull_request' || github.ref != 'refs/heads/main'
+    strategy: &platforms
       # Each architecture reports its own result; merge still needs both.
       fail-fast: false
       matrix:
@@ -43,7 +43,7 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
 
-    steps:
+    steps: &build_steps
       - uses: actions/checkout@v4
 
       - name: Read build parameters from values.yaml
@@ -78,7 +78,7 @@ jobs:
           # the interceptor must match the SAW gateways' OpenShell release.
           extra_tag: ${{ steps.params.outputs.openshell_ref }}
           platform: ${{ matrix.platform }}
-          registry_token: ${{ secrets.GITHUB_TOKEN }}
+          registry_token: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && secrets.GITHUB_TOKEN || '' }}
 
       # Compile the OpenShift build source too, including its behavioral
       # tests, on each architecture. This targets the builder stage; no
@@ -120,8 +120,16 @@ jobs:
           cache-to: type=gha,mode=max,scope=governance-interceptor-openshift-${{ matrix.runner }},ignore-error=true
           provenance: false
 
+  publish:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    permissions: {contents: read, packages: write}
+    strategy: *platforms
+    runs-on: ${{ matrix.runner }}
+    steps: *build_steps
+
   merge:
-    needs: build
+    needs: publish
+    permissions: {contents: read, packages: write}
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:

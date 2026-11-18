@@ -1,0 +1,404 @@
+# Synthetic chart inputs; not an installation configuration.
+portal:
+  deploymentModes:
+  - vm
+  - container
+  containerSites:
+    alice:
+      modelLifecycle: true
+      governanceNamespace: saw-builds
+      subject: 11111111-1111-4111-8111-111111111111
+      stack:
+        identity:
+          revision: '1111111111111111111111111111111111111111'
+          values:
+            enabled: true
+            ownerID: '@INSTALLATION@'
+            targetNamespace: '@RUNTIME@'
+            gateway: '@OWNER@'
+            serverSans:
+            - '@OWNER@-gateway.@RUNTIME@.svc'
+            - '@OWNER@-gateway.@RUNTIME@.svc.cluster.local'
+        policy:
+          revision: '1111111111111111111111111111111111111111'
+          values:
+            enabled: true
+            targetNamespace: '@RUNTIME@'
+            gatewayId: '@OWNER@'
+            gatewayServiceAccount: '@OWNER@-gateway'
+            sandboxServiceAccount: '@OWNER@-sandbox'
+            mode: container
+            network:
+              priority: 51
+              egress:
+              - name: dns
+                to:
+                - pods:
+                    namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: openshift-dns
+                    podSelector:
+                      matchLabels:
+                        dns.operator.openshift.io/daemonset-dns: default
+                ports:
+                - portNumber:
+                    protocol: UDP
+                    port: 53
+                - portNumber:
+                    protocol: TCP
+                    port: 53
+                - portNumber:
+                    protocol: UDP
+                    port: 5353
+                - portNumber:
+                    protocol: TCP
+                    port: 5353
+              - name: gateway
+                to:
+                - pods:
+                    namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: '@RUNTIME@'
+                    podSelector:
+                      matchLabels:
+                        app.kubernetes.io/instance: '@OWNER@'
+                        openshell.pattern/role: gateway
+                ports:
+                - portNumber:
+                    protocol: TCP
+                    port: 17670
+              - name: workload-boundary
+                to:
+                - pods:
+                    namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: '@RUNTIME@'
+                    podSelector:
+                      matchLabels:
+                        openshell.ai/boundary-role: workload
+                ports:
+                - portNumber:
+                    protocol: TCP
+                    port: 5500
+              - name: credential-proxy
+                to:
+                - pods:
+                    namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: '@TRUSTED@'
+                    podSelector:
+                      matchLabels:
+                        app.kubernetes.io/instance: '@OWNER@'
+                        openshell.pattern/role: credential-proxy
+                ports:
+                - portNumber:
+                    protocol: TCP
+                    port: 3128
+        proxy:
+          revision: '1111111111111111111111111111111111111111'
+          values:
+            enabled: true
+            ownerID: '@INSTALLATION@'
+            gateway: '@OWNER@'
+            targetNamespace: '@RUNTIME@'
+            policyConfigMap: '@OWNER@-proxy-policy'
+            policyDigest: 3601c933b11c60e7d693c4635ed14c626e32c29c9a9e8920a144f852dcba184d
+            credentialSecretNames:
+            - inference
+            network:
+              bootstrapEgress:
+              - to:
+                - ipBlock:
+                    cidr: 192.0.2.10/32
+                - ipBlock:
+                    cidr: 192.0.2.10/32
+                - ipBlock:
+                    cidr: 192.0.2.10/32
+                - ipBlock:
+                    cidr: 192.0.2.10/32
+                ports:
+                - protocol: TCP
+                  port: 443
+                - protocol: TCP
+                  port: 6443
+              - to:
+                - namespaceSelector:
+                    matchLabels:
+                      kubernetes.io/metadata.name: openshift-dns
+                  podSelector:
+                    matchLabels:
+                      dns.operator.openshift.io/daemonset-dns: default
+                ports:
+                - protocol: UDP
+                  port: 53
+                - protocol: UDP
+                  port: 5353
+                - protocol: TCP
+                  port: 53
+                - protocol: TCP
+                  port: 5353
+              proxyEgress:
+              - to:
+                - namespaceSelector:
+                    matchLabels:
+                      kubernetes.io/metadata.name: openshift-dns
+                  podSelector:
+                    matchLabels:
+                      dns.operator.openshift.io/daemonset-dns: default
+                ports:
+                - protocol: UDP
+                  port: 53
+                - protocol: UDP
+                  port: 5353
+                - protocol: TCP
+                  port: 53
+                - protocol: TCP
+                  port: 5353
+              - to:
+                - ipBlock:
+                    cidr: 0.0.0.0/0
+                    except:
+                    - 0.0.0.0/8
+                    - 10.0.0.0/8
+                    - 100.64.0.0/10
+                    - 127.0.0.0/8
+                    - 169.254.0.0/16
+                    - 172.16.0.0/12
+                    - 192.168.0.0/16
+                    - 224.0.0.0/4
+                    - 240.0.0.0/4
+                    - 192.0.2.0/24
+                ports:
+                - protocol: TCP
+                  port: 443
+        gateway:
+          revision: '1111111111111111111111111111111111111111'
+          values:
+            deployment:
+              mode: container
+            kubernetes:
+              experimental: true
+              workload:
+                image: registry.access.redhat.com/ubi9/python-311@sha256:a0bdb55576fc5b8d6704279307817828ef027e1065533ceba133fe9516003a6c
+              identity:
+                serverTlsSecret: '@OWNER@-server'
+                clientCaSecret: '@OWNER@-client-ca'
+                jwtSecret: '@OWNER@-jwt'
+                credentialKeySecret: '@OWNER@-kek'
+              storage:
+                className: block
+                gatewaySize: 1Gi
+                workspaceSize: 1Gi
+              proxy:
+                url: http://@OWNER@-credential-proxy.@TRUSTED@.svc:3128
+                caConfigMap: '@OWNER@-proxy-ca'
+              governance:
+                endpoint: http://governance-interceptor.saw-builds.svc:18081
+              network:
+                reconcilerNamespace: '@TRUSTED@'
+                reconcilerLabels:
+                  app.kubernetes.io/instance: '@OWNER@'
+                  openshell.pattern/role: reconciler
+                gatewayEgress:
+                - to:
+                  - ipBlock:
+                      cidr: 192.0.2.10/32
+                  - ipBlock:
+                      cidr: 192.0.2.10/32
+                  - ipBlock:
+                      cidr: 192.0.2.10/32
+                  - ipBlock:
+                      cidr: 192.0.2.10/32
+                  ports:
+                  - protocol: TCP
+                    port: 443
+                  - protocol: TCP
+                    port: 6443
+                - to:
+                  - namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: openshift-dns
+                    podSelector:
+                      matchLabels:
+                        dns.operator.openshift.io/daemonset-dns: default
+                  ports:
+                  - protocol: UDP
+                    port: 53
+                  - protocol: UDP
+                    port: 5353
+                  - protocol: TCP
+                    port: 53
+                  - protocol: TCP
+                    port: 5353
+                - to:
+                  - ipBlock:
+                      cidr: 192.0.2.10/32
+                  - ipBlock:
+                      cidr: 192.0.2.10/32
+                  - ipBlock:
+                      cidr: 192.0.2.10/32
+                  - ipBlock:
+                      cidr: 192.0.2.10/32
+                  - ipBlock:
+                      cidr: 192.0.2.10/32
+                  - ipBlock:
+                      cidr: 192.0.2.10/32
+                  ports:
+                  - protocol: TCP
+                    port: 443
+                - to:
+                  - namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: saw-builds
+                    podSelector:
+                      matchLabels:
+                        app.kubernetes.io/name: governance-interceptor
+                  ports:
+                  - protocol: TCP
+                    port: 18081
+                - to:
+                  - namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: '@TRUSTED@'
+                    podSelector:
+                      matchLabels:
+                        app.kubernetes.io/instance: '@OWNER@'
+                        openshell.pattern/role: credential-proxy
+                  ports:
+                  - protocol: TCP
+                    port: 3128
+            oidc:
+              issuerUrl: https://openshell-keycloak-ingress-saw-keycloak.apps.@DOMAIN@/realms/openshell
+            route:
+              enabled: false
+        audit:
+          revision: '1111111111111111111111111111111111111111'
+          values:
+            enabled: true
+            trustedNamespace: '@ARCHIVE@'
+            runtimeNamespace: '@RUNTIME@'
+            ownerID: '@INSTALLATION@'
+            storageClass: block-immediate
+            exchangeStorageClass: shared-filesystem
+            image: ghcr.io/openclaw/openclaw@sha256:0a5ff5e682e62afa19149df126aa50063bf65ef885b5c94713ce32dc0eb12e15
+            identity:
+              subject: '@SUBJECT@'
+              username: '@OWNER@'
+              workspace: agent
+              sandbox: audited
+      automaticEnrollment:
+        image: registry.example.test/saw-runtime-controller@sha256:966c76c969f074ea088e1499d40fd8d993ecb4df527239736df554d9d726c6d0
+        revision: '1111111111111111111111111111111111111111'
+        buildNamespace: saw-builds
+        resources:
+          limits:
+            cpu: '2'
+            memory: 4Gi
+          requests:
+            cpu: 500m
+            memory: 1Gi
+        reference:
+          validation: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          binding: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          network: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          deny: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          podDeleteGuard: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          podDeleteBinding: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          secretGuard: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          secretBinding: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          serviceGuard: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          serviceBinding: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          gatewayRole: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          workloadFence: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          supervisorFence: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          gatewayNetwork: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          gateway: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          gatewayService: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          gatewayConfig: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          governance:
+            uid: 22222222-2222-4222-8222-222222222222
+            sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          governanceService:
+            uid: 22222222-2222-4222-8222-222222222222
+            sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          governancePolicy:
+            uid: 22222222-2222-4222-8222-222222222222
+            sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          governanceProfiles:
+            uid: 22222222-2222-4222-8222-222222222222
+            sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          proxy: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          proxyNetwork: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          proxyPolicy: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          publicCA: equals independent trusted proxy public CA
+        relay:
+          keycloakNamespace: saw-keycloak
+          keycloakProvisionerSecret: saw-relay-provisioner
+          issuer: https://openshell-keycloak-ingress-saw-keycloak.apps.cluster.example.test/realms/openshell
+          egress:
+          - to:
+            - namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: openshift-dns
+              podSelector:
+                matchLabels:
+                  dns.operator.openshift.io/daemonset-dns: default
+            ports:
+            - protocol: UDP
+              port: 53
+            - protocol: UDP
+              port: 5353
+            - protocol: TCP
+              port: 53
+            - protocol: TCP
+              port: 5353
+          - to:
+            - ipBlock:
+                cidr: 192.0.2.10/32
+            - ipBlock:
+                cidr: 192.0.2.10/32
+            - ipBlock:
+                cidr: 192.0.2.10/32
+            - ipBlock:
+                cidr: 192.0.2.10/32
+            - ipBlock:
+                cidr: 192.0.2.10/32
+            - ipBlock:
+                cidr: 192.0.2.10/32
+            ports:
+            - protocol: TCP
+              port: 443
+          revision: 661194fd49c75b4e7dd202d4d2ad5fa7b04934e3
+        approvedProfiles:
+          data-science: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          custom-inference: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      profileImageOverrides:
+        data-science:
+          notebook: registry.example.test/saw-openclaw-home@sha256:a89f54d5ffe6d1ee9df9c9a65978c26c54fd46aaf5f0b4e4c2c2c0c64ad5b18a
+      imagePull:
+        namespace: saw-builds
+        streams:
+        - saw-openclaw-home
+      targets:
+        default/notebook:
+          workspace: default
+          sandbox: notebook
+          ui: true
+          base: alice
+          relayID: a8cb6cbd0eb62f31
+          subjectMap: saw-portal-relay-subject
+      selectedDigest: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      providerAllowHosts:
+      - api.openai.com
+      providerPolicy:
+        allowHosts:
+        - api.openai.com
+        bindings:
+        - secret: inference
+          key: api_key
+          providers:
+          - openai
+        markerPrefix: saw-cred
+        profiles:
+          openai:
+          - api.openai.com

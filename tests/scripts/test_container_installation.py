@@ -42,6 +42,13 @@ def test_select_isolates_container_without_modifying_vm_or_input():
     assert selected["projection"]["enabled"] is True
 
 
+def test_select_derives_installation_id_like_the_portal():
+    values = inputs()
+    del values["users"][0]["installationID"]
+    _, user = install.select(values, "alice")
+    assert user["installationID"] == "12305846-148f-5386-9827-819d16cda0e1"  # uuid5 of urn:saw:portal:alice:aaaa...
+
+
 @pytest.mark.parametrize(("requested", "declared"), [
     ("container", "kata"), ("kata", "container"), ("vm", "container"),
 ])

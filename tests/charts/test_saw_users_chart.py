@@ -84,6 +84,89 @@ def test_container_policy_is_derived_from_documented_hosts(tmp_path):
     assert rendered_site["providerPolicy"]["allowHosts"] == site["providerAllowHosts"]
 
 
+def container_alice(**extra):
+    site = yaml.safe_load((ROOT / "tests/fixtures/container-site.yaml").read_text())["portal"]["containerSites"]["alice"]
+    user = {"name": "alice", "registration": "3f9a1c0e7b2d4a68", "ownerSubject": site["subject"],
+            "profiles": ["data-science"], "intentGeneration": 1, "pruneOnRemove": True,
+            "vaultPrefix": "secret/data/hub/saw-alice/3f9a1c0e7b2d4a68",
+            "values": {"deployment": {"mode": "container"}}, **extra}
+    return user, {"containerSites": {"alice": site}}
+
+
+@pytest.mark.parametrize(("given", "expected"), [
+    (None, "c4d7d813-fd00-5645-b4b9-7b73e372d0dd"),  # uuid5 of urn:saw:portal:alice:3f9a1c0e7b2d4a68
+    ("22222222-2222-4222-8222-222222222222", "22222222-2222-4222-8222-222222222222"),
+])
+def test_container_installation_id_defaults_to_portal_uuid5(tmp_path, given, expected):
+    user, extra = container_alice(**({"installationID": given} if given else {}))
+    docs = docs_from(render_file(tmp_path, [user], extra))
+    namespace = [d for d in by_kind(docs, "Namespace") if d["metadata"]["name"] == "saw-alice"][0]
+    assert namespace["metadata"]["labels"]["saw.redhat.com/runtime-owner"] == expected
+    assert helm_values(app(docs, "saw-alice"))["installationID"] == expected
+
+
+def test_minimal_container_entry_uses_cluster_defaults(tmp_path):
+    site = yaml.safe_load((ROOT / "tests/fixtures/container-site.yaml").read_text())["portal"]["containerSites"]["alice"]
+    subject = site.pop("subject")
+    for item in site["stack"].values():
+        item.pop("revision")
+    site["automaticEnrollment"].pop("revision")
+    site["automaticEnrollment"]["relay"].pop("revision")
+    user = {"name": "alice", "ownerSubject": subject, "profiles": ["data-science"],
+            "vaultPrefix": "secret/data/hub", "values": {"deployment": {"mode": "container"}}}
+    docs = docs_from(render_file(tmp_path, [user], {"containerDefaults": site}))
+    values = helm_values(app(docs, "saw-alice"))
+    registration = "1f732dc2bd1766a0"  # sha256("alice:1")[:16]
+    assert values["registration"] == registration
+    assert values["installationID"] == "a4300afa-4ae4-5da1-a5b1-44e50a34eb59"
+    assert values["vaultPrefix"] == "secret/data/hub/saw-alice/" + registration
+    assert values["site"]["subject"] == subject
+    assert {item["revision"] for item in values["site"]["stack"].values()} == {"main"}
+    assert values["site"]["automaticEnrollment"]["relay"]["revision"] == "main"
+
+
+def test_vm_and_container_users_coexist(tmp_path):
+    site = yaml.safe_load((ROOT / "tests/fixtures/container-site.yaml").read_text())["portal"]["containerSites"]["alice"]
+    subject = site.pop("subject")
+    alice = {"name": "alice", "ownerSubject": subject, "profiles": ["data-science"],
+             "vaultPrefix": "secret/data/hub", "values": {"deployment": {"mode": "container"}}}
+    bob = {"name": "bob"}
+    projection = {"enabled": True, "applicationSetControllerLabels": {
+                      "app.kubernetes.io/name": "vp-gitops-applicationset-controller"},
+                  "egress": [{"to": [{"ipBlock": {"cidr": "10.0.0.3/32"}}],
+                              "ports": [{"protocol": "TCP", "port": 6443}]}]}
+    extra = {"containerDefaults": site, "projection": projection, "ownerResolution": {"enabled": True}}
+    mixed = docs_from(render_file(tmp_path, [alice, bob], extra))
+    (tmp_path / "vm").mkdir()
+    alone = docs_from(render_file(tmp_path / "vm", [bob], {"ownerResolution": {"enabled": True}}))
+
+    # Bob's VM resources are exactly what a VM-only list renders.
+    def bobs(docs):
+        return sorted((d["kind"], d["metadata"]["name"], json.dumps(d, sort_keys=True)) for d in docs
+                      if d["metadata"].get("labels", {}).get("openshell.pattern/owner") == "bob"
+                      or d["metadata"].get("namespace") == "saw-bob" or d["metadata"]["name"] == "saw-bob")
+    assert bobs(mixed) and bobs(mixed) == bobs(alone)
+    assert {"saw-bob", "saw-bob-secrets", "saw-bob-bom"} <= {d["metadata"]["name"] for d in by_kind(mixed, "Application")}
+
+    # Alice goes through the projector only: no direct Application or Namespace.
+    names = {(d["kind"], d["metadata"]["name"]) for d in mixed}
+    assert ("Application", "saw-alice") not in names and ("Namespace", "saw-alice") not in names
+    config = [d for d in by_kind(mixed, "ConfigMap") if d["metadata"]["name"].endswith("-configuration")]
+    workspaces = json.loads(config[0]["data"]["workspaces.json"])
+    assert [u["name"] for u in workspaces["users"]] == ["alice"]
+    assert list(workspaces["containerSites"]) == ["alice"]
+    assert workspaces["containerSites"]["alice"]["subject"] == subject
+    assert workspaces["users"][0]["registration"] == "1f732dc2bd1766a0"
+    assert "containerDefaults" not in workspaces
+
+
+def test_container_entry_without_defaults_or_site_fails(tmp_path):
+    user = {"name": "alice", "ownerSubject": "11111111-1111-4111-8111-111111111111",
+            "profiles": ["data-science"], "values": {"deployment": {"mode": "container"}}}
+    result = render_file(tmp_path, [user])
+    assert result.returncode != 0 and "requires containerDefaults or a containerSites entry" in result.stderr
+
+
 def test_static_owner_revision_pin_selects_all_children_and_preserves_sibling(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE, {"name": "bob"}],
                                 {"workspaceRevisions": {"alice": "a"*40}}))

@@ -2,7 +2,7 @@
 {{- $e := $site.enrollment | default dict }}
 {{- if and $e (eq $e.registration .Values.registration) $e.relay }}
 {{- $r := $e.relay }}
-{{- if not (regexMatch "^[a-f0-9]{40}$" ($r.revision | default "")) }}{{ fail "relay revision must be a full Git commit SHA" }}{{ end }}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._/-]*$" ($r.revision | default "")) }}{{ fail "relay revision must be a Git commit or branch" }}{{ end }}
 {{- $u := .Values.owner }}
 {{- $reg := .Values.registration }}
 {{- $ctl := printf "saw-ctl-%s" $reg }}

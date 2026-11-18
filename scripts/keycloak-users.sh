@@ -10,6 +10,8 @@
 #                          Secret; --show prints the value (never printed otherwise).
 #   reset-password USER    Give USER a new generated password in the Secret.
 #   resolve-subject USER   Return the exact enabled user's Keycloak subject.
+#   user-info USER         Show USER's subject (ownerSubject), enabled flag and
+#                          email, or say why there is no usable account.
 #   show                   List users that have stored passwords.
 #   ensure                 Create or complete Secret $SECRET: a generated
 #                          password per test user in the chart's values (the
@@ -299,6 +301,41 @@ resolve_subject() {
   printf '%s\n' "${subject}"
 }
 
+user_info() {
+  local user="${1:-}" response count
+  [[ "${user}" =~ ^[a-z0-9][-a-z0-9]*$ ]] || {
+    echo "usage: $0 user-info USER (a plain Keycloak username)" >&2
+    return 2
+  }
+  admin_login
+  response="$(api_get "/users?exact=true&username=${user}")"
+  count="$(jq -r 'if type == "array" then length else -1 end' <<<"${response}" 2>/dev/null || echo -1)"
+  if [[ "${count}" == -1 ]]; then
+    echo "Error: Keycloak user lookup failed in realm ${REALM} (namespace ${NS})." >&2
+    return 1
+  fi
+  if [[ "${count}" == 0 ]]; then
+    echo "${user} is not in realm ${REALM} (namespace ${NS})." >&2
+    echo "Create it with: make keycloak-add-user KC_USER=${user}" >&2
+    echo "or set KEYCLOAK_REALM / KEYCLOAK_NS if it lives elsewhere." >&2
+    return 1
+  fi
+  jq -r --arg realm "${REALM}" '.[] |
+    "realm:        \($realm)",
+    "username:     \(.username)",
+    "subject:      \(.id)",
+    "enabled:      \(.enabled)",
+    "email:        \(.email // "-")",
+    "name:         \([.firstName, .lastName] | map(select(. != null)) | join(" ") | if . == "" then "-" else . end)",
+    ""' <<<"${response}"
+  if [[ "${count}" == 1 ]] && [[ "$(jq -r '.[0].enabled' <<<"${response}")" == true ]]; then
+    echo "ownerSubject: $(jq -r '.[0].id' <<<"${response}")"
+  else
+    echo "Warning: no single enabled account; resolve-subject and container registration will refuse it." >&2
+    return 1
+  fi
+}
+
 set_password() {  # user id, password, temporary (true|false)
   api_code PUT "/users/$1/reset-password" \
     "$(jq -n --arg pw "$2" --argjson t "$3" '{type: "password", value: $pw, temporary: $t}')"
@@ -467,5 +504,6 @@ case "${1:-}" in
   password) password "${@:2}" ;;
   reset-password) reset_password "${2:-}" ;;
   resolve-subject) resolve_subject "${2:-}" ;;
-  *) echo "usage: $0 add-users [FILE]|password USER|reset-password USER|show|ensure|harden" >&2; exit 2 ;;
+  user-info) user_info "${2:-}" ;;
+  *) echo "usage: $0 add-users [FILE]|password USER|reset-password USER|resolve-subject USER|user-info USER|show|ensure|harden" >&2; exit 2 ;;
 esac

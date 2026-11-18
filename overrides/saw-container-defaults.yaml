@@ -1,0 +1,158 @@
+# Cluster-wide settings for container/kata workspaces in saw-users, set once by
+# the platform admin. Users only add an entry to overrides/saw-users.yaml.
+# Every container user's site is built from containerDefaults; per-user
+# overrides go under containerSites.<name>. subject comes from the user's
+# ownerSubject and chart revisions follow the pattern's targetRevision.
+# <...> values are cluster-specific. Egress to the API server, DNS and Keycloak,
+# the issuer URLs and projection.applicationSetControllerLabels are generated
+# by `make container-topology` into overrides/container-network.yaml, as are
+# storage classes left unset here (the cluster default for single-node volumes,
+# a shared-filesystem class such as CephFS for the audit exchange volume).
+projection:
+  enabled: true
+
+containerDefaults:
+  governanceNamespace: openshell-agents
+  providerAllowHosts:
+    - api.inference.example.com
+  automaticEnrollment:
+    enabled: true
+    autoApprove: true   # dev/demo cluster: enroll on first observation, no manual review
+    # CI build of main f582a118 in the sauagarwa fork (public, multi-arch);
+    # tag sha-f582a1183dc13ee15f8df4349e8467c981a39250. Switch to the
+    # validatedpatterns-sandbox package once it is public.
+    image: ghcr.io/sauagarwa/saw-kubernetes-runtime@sha256:78ea2cf9eebdbf6b350fff43175e034724f22def60bdf03b4fb014f54430221d
+    buildNamespace: saw-component-builds
+    resources:
+      requests: {cpu: 500m, memory: 1Gi}
+      limits: {cpu: "2", memory: 4Gi}
+    relay:
+      keycloakNamespace: saw-keycloak
+      keycloakProvisionerSecret: saw-relay-provisioner
+      egress: []   # generated
+  stack:
+    identity:
+      values:
+        enabled: true
+        ownerID: '@INSTALLATION@'
+        targetNamespace: '@RUNTIME@'
+        gateway: '@OWNER@'
+        serverSans:
+          - '@OWNER@-gateway.@RUNTIME@.svc'
+          - '@OWNER@-gateway.@RUNTIME@.svc.cluster.local'
+    policy:
+      values:
+        enabled: true
+        targetNamespace: '@RUNTIME@'
+        gatewayId: '@OWNER@'
+        gatewayServiceAccount: '@OWNER@-gateway'
+        sandboxServiceAccount: '@OWNER@-sandbox'
+        mode: container
+        network:
+          priority: 51   # must be unique per workspace: oc get adminnetworkpolicy
+          egress:
+            - name: dns
+              to:
+                - pods:
+                    namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openshift-dns}}
+                    podSelector: {matchLabels: {dns.operator.openshift.io/daemonset-dns: default}}
+              ports:
+                - portNumber: {protocol: UDP, port: 53}
+                - portNumber: {protocol: TCP, port: 53}
+                - portNumber: {protocol: UDP, port: 5353}
+                - portNumber: {protocol: TCP, port: 5353}
+            - name: gateway
+              to:
+                - pods:
+                    namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: '@RUNTIME@'}}
+                    podSelector: {matchLabels: {app.kubernetes.io/instance: '@OWNER@', openshell.pattern/role: gateway}}
+              ports:
+                - portNumber: {protocol: TCP, port: 17670}
+            - name: workload-boundary
+              to:
+                - pods:
+                    namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: '@RUNTIME@'}}
+                    podSelector: {matchLabels: {openshell.ai/boundary-role: workload}}
+              ports:
+                - portNumber: {protocol: TCP, port: 5500}
+            - name: credential-proxy
+              to:
+                - pods:
+                    namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: '@TRUSTED@'}}
+                    podSelector: {matchLabels: {app.kubernetes.io/instance: '@OWNER@', openshell.pattern/role: credential-proxy}}
+              ports:
+                - portNumber: {protocol: TCP, port: 3128}
+    proxy:
+      values:
+        enabled: true
+        ownerID: '@INSTALLATION@'
+        gateway: '@OWNER@'
+        targetNamespace: '@RUNTIME@'
+        policyConfigMap: '@OWNER@-proxy-policy'
+        # credentialSecretNames and policyDigest are derived from the profile catalog.
+        network:
+          bootstrapEgress: []   # generated
+          proxyEgress:
+            - to:
+                - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openshift-dns}}
+                  podSelector: {matchLabels: {dns.operator.openshift.io/daemonset-dns: default}}
+              ports:
+                - {protocol: UDP, port: 53}
+                - {protocol: UDP, port: 5353}
+                - {protocol: TCP, port: 53}
+                - {protocol: TCP, port: 5353}
+            - to:   # public HTTPS only; the proxy policy narrows it to providerAllowHosts
+                - ipBlock:
+                    cidr: 0.0.0.0/0
+                    except: [0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16,
+                             172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4]
+              ports:
+                - {protocol: TCP, port: 443}
+    gateway:
+      values:
+        deployment: {mode: container}
+        kubernetes:
+          experimental: true
+          workload:
+            image: quay.io/aipcc/base-images/agentic/openclaw@sha256:896d1526ee29b53167034ba65d1c758c8da777f441ed094e19f3bcf6d7445c61
+          identity:
+            serverTlsSecret: '@OWNER@-server'
+            clientCaSecret: '@OWNER@-client-ca'
+            jwtSecret: '@OWNER@-jwt'
+            credentialKeySecret: '@OWNER@-kek'
+          storage:
+            gatewaySize: 1Gi
+            workspaceSize: 10Gi
+          proxy:
+            url: http://@OWNER@-credential-proxy.@TRUSTED@.svc:3128
+            caConfigMap: '@OWNER@-proxy-ca'
+          governance:
+            endpoint: http://governance-interceptor.openshell-agents.svc:18081
+          network:
+            reconcilerNamespace: '@TRUSTED@'
+            reconcilerLabels:
+              app.kubernetes.io/instance: '@OWNER@'
+              openshell.pattern/role: reconciler
+            gatewayEgress:   # operator rules; API/DNS/issuer rules are generated
+              - to:
+                  - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openshell-agents}}
+                    podSelector: {matchLabels: {app.kubernetes.io/name: governance-interceptor}}
+                ports:
+                  - {protocol: TCP, port: 18081}
+              - to:
+                  - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: '@TRUSTED@'}}
+                    podSelector: {matchLabels: {app.kubernetes.io/instance: '@OWNER@', openshell.pattern/role: credential-proxy}}
+                ports:
+                  - {protocol: TCP, port: 3128}
+        route: {enabled: false}
+    audit:
+      values:
+        enabled: true
+        trustedNamespace: '@ARCHIVE@'
+        runtimeNamespace: '@RUNTIME@'
+        ownerID: '@INSTALLATION@'
+        image: ghcr.io/openclaw/openclaw@sha256:0a5ff5e682e62afa19149df126aa50063bf65ef885b5c94713ce32dc0eb12e15
+        identity:
+          username: '@OWNER@'
+          workspace: agent
+          sandbox: audited

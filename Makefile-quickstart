@@ -119,7 +119,7 @@ endif
         governance-interceptor-build governance-interceptor-build-local \
         keycloak-deploy keycloak-delete keycloak-check keycloak-issuer \
         keycloak-register keycloak-redirects keycloak-redirects-sync \
-        keycloak-passwords keycloak-harden keycloak-add-users keycloak-add-user keycloak-password keycloak-reset-password \
+        keycloak-passwords keycloak-harden keycloak-add-users keycloak-add-user keycloak-password keycloak-reset-password keycloak-user-info \
         login whoami logout saw-create saw-configure saw-list saw-logs saw-status \
         saw-restart saw-restart-pending saw-vm-ssh saw-ssh saw-tui saw-gui saw-delete \
         sandbox-pre-delete quickstart-delete status test test-deployment test-dependencies test-pattern-e2e test-pattern-e2e-install test-pattern-e2e-live test-pattern-e2e-cleanup test-harness-e2e lint \
@@ -368,6 +368,10 @@ keycloak-add-user: ## Create one Keycloak user with a generated password, kept i
 keycloak-password: ## Copy a user's password to the clipboard / name its Secret (KC_USER=alice; SHOW=1 prints it)
 	@if [ -z "$(KC_USER)" ]; then echo "Error: KC_USER is required. Pass KC_USER=alice." >&2; exit 1; fi
 	@$(SCRIPTS_DIR)/keycloak-users.sh password $(if $(SHOW),--show) "$(KC_USER)"
+
+keycloak-user-info: ## Show a user's Keycloak subject (ownerSubject), enabled flag and email (KC_USER=alice)
+	@if [ -z "$(KC_USER)" ]; then echo "Error: KC_USER is required. Pass KC_USER=alice." >&2; exit 1; fi
+	@$(KC_USERS_ENV) $(SCRIPTS_DIR)/keycloak-users.sh user-info "$(KC_USER)"
 
 keycloak-reset-password: ## Reset one user's password in a Secret (KC_USER=alice)
 	@if [ -z "$(KC_USER)" ]; then echo "Error: KC_USER is required. Pass KC_USER=alice." >&2; exit 1; fi

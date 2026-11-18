@@ -123,17 +123,18 @@ def enrolled_site(site, ws, read):
         if data:
             raise WorkspaceError("cannot disable enrollment of a bound workspace; use desiredState")
         return fresh
-    for key, kind in (("reference", dict), ("relay", dict), ("revision", str),
-                      ("image", str), ("buildNamespace", str)):
+    auto = a.get("autoApprove") is True
+    for key, kind in ((() if auto else (("reference", dict),)) + (("relay", dict), ("revision", str),
+                      ("image", str), ("buildNamespace", str))):
         if not isinstance(a.get(key), kind) or not a[key]:
             raise WorkspaceError(f"container site for {ws['name']} requires automaticEnrollment.{key}")
     if not data:
         return fresh
     bound=json.loads(data["binding.json"])
-    if set(bound)!={"registration","intent","approved","gatewayCA"} or bound["registration"]!=reg or set(bound["approved"])!=set(a["reference"]):
+    if set(bound)!={"registration","intent","approved","gatewayCA"} or bound["registration"]!=reg or (not auto and set(bound["approved"])!=set(a["reference"])):
         raise WorkspaceError("invalid published enrollment")
     intent=bound["intent"]
-    if intent["bindings"]["ownerID"]!=install or intent["bindings"]["namespace"]!="saw-"+ws["name"] or intent["bindings"]["ownerSubject"]!=ws["ownerSubject"] or intent["profileRef"]["sha256"]!=site.get("selectedDigest",a.get("profileSHA256")):
+    if intent["bindings"]["ownerID"]!=install or intent["bindings"]["namespace"]!="saw-"+ws["name"] or intent["bindings"]["ownerSubject"]!=ws["ownerSubject"] or (not auto and intent["profileRef"]["sha256"]!=site.get("selectedDigest",a.get("profileSHA256"))):
         raise WorkspaceError("published intent does not belong to this workspace")
     subjects = {target["subjectMap"]:publication(target["subjectMap"]).get("subject", "")
                 for target in site.get("targets",{}).values() if target["ui"]}
@@ -241,7 +242,7 @@ def _project_workspace(workspace, defaults, site, catalog, read=None):
     validate_runtime_placement(mode, site)
     automatic = site.get("automaticEnrollment", {})
     selected, *extra = ws.get("profiles", []) or [None]
-    foundation = automatic.get("enabled") is False
+    foundation = automatic.get("enabled") is False or automatic.get("autoApprove") is True
     if extra or selected not in catalog or not foundation and selected not in automatic.get("approvedProfiles", {}):
         raise WorkspaceError("container requires one approved BOM profile")
     if not ws.get("registration") or not ws.get("installationID"):

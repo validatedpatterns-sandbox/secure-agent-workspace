@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from urllib.request import HTTPRedirectHandler, build_opener
 
 import yaml
@@ -82,6 +83,9 @@ def select(values, name):
     if mode not in {"container", "kata"} or mode != os.environ.get("DEPLOYMENT_MODE", "container"):
         raise InstallError("the selected user must explicitly select the requested Kubernetes deployment mode")
     config["ownerResolution"] = {**config.get("ownerResolution", {}), "enabled": False}
+    # Same derivation as the chart and portal when installationID is omitted.
+    if not user.get("installationID") and re.fullmatch(r"[a-f0-9]{16}", str(user.get("registration", ""))):
+        user["installationID"] = str(uuid.uuid5(uuid.NAMESPACE_URL, f"urn:saw:portal:{name}:{user['registration']}"))
     for field, pattern in [("registration", r"[a-f0-9]{16}"),
                            ("installationID", r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}"),
                            ("ownerSubject", r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}")]:

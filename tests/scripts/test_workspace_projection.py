@@ -83,6 +83,49 @@ def test_foundation_requires_no_synthetic_approval_hash():
         workspace.project_workspace(owner, {}, site, CATALOG, lambda _: {})
 
 
+def auto_site(owner):
+    return dict(subject=owner["ownerSubject"], automaticEnrollment={
+        "autoApprove": True, "revision": "main", "image": "example/runtime@sha256:" + "d"*64,
+        "buildNamespace": "saw-builds", "relay": {"revision": "main"}})
+
+
+def published(owner, subject=None):
+    intent = {"bindings": {"ownerID": owner["installationID"], "namespace": "saw-" + owner["name"],
+                           "ownerSubject": subject or owner["ownerSubject"]},
+              "profileRef": {"name": "saw-bom-profiles", "sha256": "e"*64}}
+    binding = {"registration": owner["registration"], "intent": intent,
+               "approved": {"observed": "f"*64}, "gatewayCA": "ca"}
+    return {"immutable": True, "metadata": {"labels": {"saw.redhat.com/runtime-owner": owner["installationID"]}},
+            "data": {"binding.json": json.dumps(binding)}}
+
+
+def test_auto_approve_needs_no_reference_or_profile_digest():
+    owner, _ = inputs()
+    result = workspace.project_workspace(owner, {}, auto_site(owner), CATALOG, lambda _: {})
+    projected = result["containerSites"]["alice"]
+    assert not projected["selectedDigest"] and "enrollment" not in projected
+
+
+def test_auto_approve_accepts_the_observed_enrollment_but_still_binds_the_owner():
+    owner, _ = inputs()
+    projected = workspace.project_workspace(owner, {}, auto_site(owner), CATALOG,
+                                            lambda _: published(owner))["containerSites"]["alice"]
+    assert projected["enrollment"]["approved"] == {"observed": "f"*64}
+    assert projected["enrollment"]["revision"] == "main"
+    with pytest.raises(workspace.WorkspaceError, match="does not belong"):
+        workspace.project_workspace(owner, {}, auto_site(owner), CATALOG,
+                                    lambda _: published(owner, subject="33333333-3333-4333-8333-333333333333"))
+
+
+def test_reviewed_site_still_rejects_an_unreviewed_enrollment():
+    owner, _ = inputs()
+    site = auto_site(owner)
+    site["automaticEnrollment"].update(autoApprove=False, reference={"other": "0"*64},
+                                       approvedProfiles={"data-science": "e"*64})
+    with pytest.raises(workspace.WorkspaceError, match="invalid published enrollment"):
+        workspace.project_workspace(owner, {}, site, CATALOG, lambda _: published(owner))
+
+
 @pytest.mark.parametrize("mode", ["vm", "container"])
 def test_operator_revision_pin_is_shared_and_does_not_change_repository(mode):
     owner, site = inputs()

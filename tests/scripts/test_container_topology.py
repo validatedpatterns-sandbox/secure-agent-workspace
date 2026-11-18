@@ -40,6 +40,15 @@ def cluster(monkeypatch):
                 {"name": p.lower(), "port": 5353, "protocol": p} for p in ["UDP", "TCP"]]}]})
         if "ingress.config.openshift.io" in args:
             return '{"spec":{"domain":"apps.cluster.example.test"}}'
+        if "storageclass" in args:
+            return json.dumps({"items": [
+                {"metadata": {"name": "gp3-csi", "annotations": {
+                    "storageclass.kubernetes.io/is-default-class": "true"}}, "provisioner": "ebs.csi.aws.com"},
+                {"metadata": {"name": "ocs-cephfs"}, "provisioner": "openshift-storage.cephfs.csi.ceph.com"}]})
+        if "pods" in args and "vp-gitops" in args:
+            return json.dumps({"items": [{"metadata": {"labels": {
+                "app.kubernetes.io/name": "vp-gitops-applicationset-controller",
+                "app.kubernetes.io/component": "applicationset-controller"}}}]})
         if args[0].endswith("keycloak-host.sh"):
             return "keycloak.apps.cluster.example.test"
         if "exec" in args:
@@ -86,6 +95,51 @@ def test_overlay_uses_one_probe_and_preserves_separation(base, cluster):
             "ports": [{"protocol": "TCP", "port": 53}, {"protocol": "UDP", "port": 53}]} in bootstrap
     assert set(result["stack"]) == {"gateway", "proxy"}
     assert set(result["stack"]["proxy"]["values"]["network"]) == {"bootstrapEgress"}
+
+
+def test_overlay_discovers_appset_controller_unless_operator_set(base, cluster):
+    overlay = topo.container_overlay(copy.deepcopy(base), "trusted-tools/network-probe")
+    assert overlay["projection"]["applicationSetControllerLabels"] == {
+        "app.kubernetes.io/name": "vp-gitops-applicationset-controller"}
+    base["projection"] = {"applicationSetControllerLabels": {"app.kubernetes.io/name": "mine"}}
+    calls = len(cluster[1])
+    overlay = topo.container_overlay(base, "trusted-tools/network-probe")
+    assert "applicationSetControllerLabels" not in overlay["projection"]
+    assert not any("pods" in c for c in cluster[1][calls:])
+
+
+def test_overlay_covers_shared_container_defaults(base, cluster):
+    values = {"global": base["global"], "containerDefaults": base["containerSites"]["alice"],
+              "containerSites": {"alice": {"automaticEnrollment": {"autoApprove": True}}}}
+    overlay = topo.container_overlay(values, "trusted-tools/network-probe")
+    assert "containerSites" not in overlay  # a bare per-user override inherits the defaults' rules
+    defaults = overlay["containerDefaults"]
+    assert topo.path_value(defaults, topo.RELAY + ("issuer",)).startswith("https://")
+    assert topo.path_value(defaults, topo.BOOTSTRAP) == overlay["projection"]["egress"]
+
+
+def test_overlay_fills_only_missing_storage_classes(base, cluster):
+    site = base["containerSites"]["alice"]
+    topo.path_value(site, topo.GATEWAY + ("kubernetes", "storage"))["className"] = ""
+    del site["stack"]["audit"]["values"]["storageClass"]
+    overlay = topo.container_overlay(base, "trusted-tools/network-probe")["containerSites"]["alice"]
+    assert topo.path_value(overlay, topo.GATEWAY_STORAGE) == "gp3-csi"
+    assert overlay["stack"]["audit"]["values"] == {"storageClass": "gp3-csi"}  # explicit exchange class kept
+    assert sum("storageclass" in c for c in cluster[1]) == 1
+
+
+def test_missing_shared_filesystem_class_is_reported(base, monkeypatch):
+    del base["containerSites"]["alice"]["stack"]["audit"]["values"]["exchangeStorageClass"]
+    monkeypatch.setattr(topo, "storage_classes", lambda: ("gp3-csi", None))
+    with pytest.raises(ValueError, match="shared-filesystem"):
+        topo.storage_overlay(base["containerSites"]["alice"], {}, topo.storage_classes)
+
+
+def test_appset_controller_must_be_unique(monkeypatch):
+    monkeypatch.setattr(topo, "command", lambda *a: json.dumps({"items": [
+        {"metadata": {"labels": {"app.kubernetes.io/name": n}}} for n in ("a-applicationset-controller", "b-applicationset-controller")]}))
+    with pytest.raises(ValueError, match="expected one ApplicationSet controller in vp-gitops"):
+        topo.appset_controller_labels({})
 
 
 def test_make_bootstrap_saves_once_enrolled_apply_rechecks_and_delete_works_offline(base, cluster, tmp_path):
@@ -232,6 +286,8 @@ elif "network.config" in args:
     data = {"status":{"clusterNetwork":[{"cidr":"10.128.0.0/14"}],"serviceNetwork":["172.30.0.0/16"]}}
 elif "ingress.config.openshift.io" in args:
     data = {"spec":{"domain":"apps.cluster.example.test"}}
+elif "pods" in args:
+    data = {"items":[{"metadata":{"labels":{"app.kubernetes.io/name":"vp-gitops-applicationset-controller"}}}]}
 elif "service" in args and "kubernetes" in args:
     data = {"spec":{"clusterIP":"172.30.0.1","ports":[{"port":443}]}}
 elif "endpointslice" in args and "default" in args:

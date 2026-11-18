@@ -69,6 +69,21 @@ def helm_values(application):
     return yaml.safe_load(application["spec"]["source"]["helm"]["values"])
 
 
+def test_container_policy_is_derived_from_documented_hosts(tmp_path):
+    site = yaml.safe_load((ROOT / "tests/fixtures/container-site.yaml").read_text())["portal"]["containerSites"]["alice"]
+    del site["providerPolicy"]
+    user = {
+        "name": "alice", "registration": "a" * 16,
+        "installationID": "22222222-2222-4222-8222-222222222222",
+        "ownerSubject": site["subject"], "profiles": ["data-science"],
+        "intentGeneration": 1, "vaultPrefix": "secret/data/hub/saw-alice/" + "a" * 16,
+        "pruneOnRemove": True, "values": {"deployment": {"mode": "container"}},
+    }
+    docs = docs_from(render_file(tmp_path, [user], {"containerSites": {"alice": site}}))
+    rendered_site = helm_values(app(docs, "saw-alice"))["site"]
+    assert rendered_site["providerPolicy"]["allowHosts"] == site["providerAllowHosts"]
+
+
 def test_static_owner_revision_pin_selects_all_children_and_preserves_sibling(tmp_path):
     docs = docs_from(render_file(tmp_path, [ALICE, {"name": "bob"}],
                                 {"workspaceRevisions": {"alice": "a"*40}}))

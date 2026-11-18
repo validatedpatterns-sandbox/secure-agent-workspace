@@ -79,6 +79,8 @@ def test_update_cannot_adopt_another_registration(field):
 
 def test_make_preflight_accepts_a_first_registration_with_complete_approval(monkeypatch):
     values, user = install.select(inputs(), "alice")
+    del values["containerSites"]["alice"]["providerPolicy"]
+    assert install.preflight_checks.configuration_facts(values["containerSites"]["alice"])["providerEgress"]
     calls = []
     monkeypatch.setattr(install, "get", lambda kind, name, namespace=None:
                         calls.append((kind, name)) or None)
@@ -235,9 +237,58 @@ def test_commands_use_only_owned_helm_release_and_public_observations(action, mo
     assert not any("secret" in args or "patch" in args or "delete" in args for args in calls)
 
 
+def test_server_dry_run_separates_new_and_helm_owned_resources(monkeypatch):
+    resources = [
+        {"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "new"}},
+        {"apiVersion": "admissionregistration.k8s.io/v1", "kind": "ValidatingAdmissionPolicy",
+         "metadata": {"name": "owned"}, "spec": {"matchConstraints": {"resourceRules": []}}},
+    ]
+    commands = []
+    def run(*args, **kwargs):
+        commands.append((args, kwargs))
+        if args[:3] == ("oc", "get", "ConfigMap"):
+            return ""
+        if args[:3] == ("oc", "get", "ValidatingAdmissionPolicy"):
+            return "workspace-alice|workspaces|Helm"
+        return ""
+    monkeypatch.setattr(install, "run", run)
+    install.dry_run_rendered(yaml.safe_dump_all(resources), "workspaces", "workspace-alice")
+    applies = [(args, kwargs) for args, kwargs in commands if args[:2] == ("oc", "apply")]
+    assert len(applies) == 2
+    assert "--force-conflicts" not in applies[0][0]
+    assert "--force-conflicts" in applies[1][0]
+    assert all("--dry-run=server" in args for args, _ in applies)
+    assert [item["metadata"]["name"] for item in yaml.safe_load_all(applies[0][1]["input_text"])] == ["new"]
+    assert [item["metadata"]["name"] for item in yaml.safe_load_all(applies[1][1]["input_text"])] == ["owned"]
+
+
+def test_server_dry_run_rejects_foreign_resource_before_apply(monkeypatch):
+    resource = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "foreign"}}
+    calls = []
+    def run(*args, **kwargs):
+        calls.append(args)
+        return "another-release|workspaces|Helm"
+    monkeypatch.setattr(install, "run", run)
+    with pytest.raises(install.InstallError, match="outside Helm release"):
+        install.dry_run_rendered(yaml.safe_dump(resource), "workspaces", "workspace-alice")
+    assert all(args[:2] != ("oc", "apply") for args in calls)
+
+
+def test_server_dry_run_preserves_admission_rejection(monkeypatch):
+    resource = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "new"}}
+    def run(*args, **kwargs):
+        if args[:2] == ("oc", "apply"):
+            raise install.InstallError("OpenShift admission rejected the resource")
+        return ""
+    monkeypatch.setattr(install, "run", run)
+    with pytest.raises(install.InstallError, match="admission rejected"):
+        install.dry_run_rendered(yaml.safe_dump(resource), "workspaces", "workspace-alice")
+
+
 @pytest.mark.parametrize(("error", "expected"), [
     ("Unable to connect to the server: dial tcp: lookup example: no such host", "DNS lookup failed"),
     ("Error from server (Forbidden): access denied", "HTTP 403"),
+    ('Error from server (Conflict): conflict with "helm"', "field ownership conflict"),
     ("unexpected response", "oc operation failed"),
 ])
 def test_oc_diagnostic_does_not_echo_stderr(monkeypatch, error, expected):

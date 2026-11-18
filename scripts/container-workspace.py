@@ -51,6 +51,8 @@ def run(*args, capture=True, input_text=None):
             raise InstallError("OpenShift API DNS lookup failed; check the hostname for the current oc context")
         if args[0] == "oc" and "Error from server (Forbidden)" in error:
             raise InstallError("OpenShift refused this operation (HTTP 403); check access for the current oc identity")
+        if args[0] == "oc" and "conflict with" in error:
+            raise InstallError("OpenShift field ownership conflict during dry run; check the Helm release owner")
         raise InstallError(f"{args[0]} operation failed; inspect that tool's status before continuing")
     return result.stdout if capture else ""
 
@@ -273,6 +275,49 @@ def ensure_namespace(existing, namespace, argo):
     run("oc", "create", "-f", "-", input_text=json.dumps(manifest))
 
 
+def dry_run_rendered(rendered, namespace, release):
+    """Validate Helm manifests without claiming fields owned by Helm."""
+    try:
+        resources = [item for item in yaml.safe_load_all(rendered) if item is not None]
+    except yaml.YAMLError:
+        raise InstallError("rendered chart contains invalid YAML") from None
+    fresh, owned = [], []
+    cluster_scoped = {"Namespace", "ClusterRole", "ClusterRoleBinding",
+                      "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding"}
+    for resource in resources:
+        if not isinstance(resource, dict) or not isinstance(resource.get("kind"), str):
+            raise InstallError("rendered chart contains an invalid resource")
+        kind = resource["kind"]
+        metadata = resource.get("metadata") or {}
+        name = metadata.get("name") if isinstance(metadata, dict) else None
+        if not isinstance(name, str) or not name:
+            raise InstallError("rendered chart resource has no name")
+        resource_namespace = (None if kind in cluster_scoped else
+                              metadata.get("namespace") or namespace)
+        ownership = ('go-template={{index .metadata.annotations "meta.helm.sh/release-name"}}'
+                     '|{{index .metadata.annotations "meta.helm.sh/release-namespace"}}'
+                     '|{{index .metadata.labels "app.kubernetes.io/managed-by"}}')
+        command = ["oc", "get", kind, name, "--ignore-not-found", "-o", ownership]
+        if resource_namespace:
+            command += ["-n", resource_namespace]
+        live = run(*command).strip()
+        if not live:
+            fresh.append(resource)
+            continue
+        fields = live.split("|")
+        if len(fields) != 3:
+            raise InstallError("OpenShift returned invalid resource ownership metadata")
+        if fields != [release, namespace, "Helm"]:
+            raise InstallError(f"rendered {kind}/{name} is outside Helm release {release}")
+        owned.append(resource)
+    for group, force in ((fresh, False), (owned, True)):
+        if group:
+            command = ["oc", "apply", "--server-side", "--dry-run=server"]
+            if force:
+                command.append("--force-conflicts")
+            run(*command, "-f", "-", input_text=yaml.safe_dump_all(group))
+
+
 def status(user, config):
     class NoRedirect(HTTPRedirectHandler):
         def redirect_request(self, *args, **kwargs):
@@ -352,7 +397,7 @@ def main():
                 if args.action == "preflight":
                     raise InstallError("read-only server-side preflight requires the Argo-managed installation namespace to exist")
                 ensure_namespace(existing_namespace, args.namespace, argo)
-            run("oc", "apply", "--server-side", "--dry-run=server", "-f", "-", input_text=rendered)
+            dry_run_rendered(rendered, args.namespace, release)
             if args.action == "preflight":
                 print("Read-only SAW preflight passed; no cluster changes were made.")
                 return 0

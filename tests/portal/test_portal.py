@@ -1915,6 +1915,23 @@ def test_container_preflight_explains_profile_and_cleanup_failures(portal, world
 
 
 @pytest.mark.parametrize("mode", ["container", "kata"])
+def test_portal_accepts_documented_site_without_generated_provider_policy(
+        portal, world, monkeypatch, mode):
+    fake, signer = world
+    site = synthetic_preflight_site(portal, {
+        "subject": "478fdd1f-8db9-41e8-97ad-b563215c89e9",
+        "automaticEnrollment": {"approvedProfiles": {"audited-openclaw": "a" * 64}},
+    }, mode)
+    del site["providerPolicy"]
+    monkeypatch.setenv("SAW_DEPLOYMENT_MODES", json.dumps(["vm", mode]))
+    monkeypatch.setenv("SAW_CONTAINER_SITES", json.dumps({"alice": site}))
+    fake.request("saw-req-p1234", ds_request(
+        signer, deploymentMode=mode, profile="audited-openclaw"))
+    assert portal.main(["create", "saw-req-p1234"]) == 0
+    assert REGISTRY in fake.objects
+
+
+@pytest.mark.parametrize("mode", ["container", "kata"])
 def test_container_portal_register_update_delete(portal, world, monkeypatch, mode):
     fake, signer = world
     subject = "478fdd1f-8db9-41e8-97ad-b563215c89e9"

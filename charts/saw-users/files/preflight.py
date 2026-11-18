@@ -233,12 +233,15 @@ def configuration_facts(site):
                 walk(child, path)
     walk(site)
 
-    policy = site.get("providerPolicy") or {}
-    hosts = policy.get("allowHosts") if isinstance(policy, dict) else None
     declared_hosts = site.get("providerAllowHosts")
-    clean_hosts = (isinstance(hosts, list) and bool(hosts)
-                   and all(isinstance(host, str) and host and "*" not in host for host in hosts)
-                   and isinstance(declared_hosts, list) and set(hosts) == set(declared_hosts))
+    policy = site.get("providerPolicy")
+    clean_hosts = (isinstance(declared_hosts, list) and bool(declared_hosts)
+                   and all(isinstance(host, str) and host and "*" not in host
+                           for host in declared_hosts)
+                   and (policy is None or (isinstance(policy, dict)
+                        and isinstance(policy.get("allowHosts"), list)
+                        and all(isinstance(host, str) for host in policy["allowHosts"])
+                        and set(policy["allowHosts"]) == set(declared_hosts))))
     proxy = stack.get("proxy") or {}
     proxy_values = proxy.get("values") or {} if isinstance(proxy, dict) else {}
     bootstrap_egress = ((proxy_values.get("network") or {}).get("bootstrapEgress")

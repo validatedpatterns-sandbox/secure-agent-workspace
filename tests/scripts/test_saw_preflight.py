@@ -231,6 +231,20 @@ def test_site_configuration_requires_pinned_sources_and_scoped_egress():
     assert preflight.configuration_facts(invalid_network)["network"] is False
 
 
+def test_documented_provider_hosts_do_not_need_generated_policy():
+    site = site_config()
+    del site["providerPolicy"]
+    assert preflight.configuration_facts(site)["providerEgress"] is True
+    for hosts in ([], ["*"], ["api.example.invalid", "*.example.invalid"]):
+        site["providerAllowHosts"] = hosts
+        assert preflight.configuration_facts(site)["providerEgress"] is False
+    site["providerAllowHosts"] = ["api.example.invalid"]
+    site["providerPolicy"] = {"allowHosts": ["other.example.invalid"]}
+    assert preflight.configuration_facts(site)["providerEgress"] is False
+    site["providerPolicy"] = {"allowHosts": [{}]}
+    assert preflight.configuration_facts(site)["providerEgress"] is False
+
+
 def test_storage_preflight_rejects_missing_class_and_accepts_default_class():
     with pytest.raises(preflight.PreflightError, match="StorageUnavailable"):
         preflight.verify_storage_classes(site_config(), [])
@@ -264,6 +278,8 @@ def test_vault_health_rejects_uninitialized_or_sealed_service(health, ready):
 def test_portal_chart_uses_the_shared_preflight_source():
     portal_copy = ROOT / "charts/openshell-rhdh/files/preflight.py"
     assert portal_copy.read_bytes() == MODULE_PATH.read_bytes()
+    projector_copy = ROOT / "charts/saw-users/files/preflight.py"
+    assert projector_copy.read_bytes() == MODULE_PATH.read_bytes()
 
 
 @pytest.mark.parametrize(("discovery", "available"), [

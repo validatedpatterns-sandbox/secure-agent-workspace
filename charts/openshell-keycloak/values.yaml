@@ -30,8 +30,8 @@ keycloak:
       public: true
       # Access token lifetime in seconds. Set high for long-running sandboxes.
       # 86400 = 24 hours. Sandboxes run for days, so short-lived tokens cause
-      # ssh-proxy and dashboard failures. The realm raises no SSO Session Max,
-      # so Keycloak's 10-hour default still caps the effective token lifetime.
+      # ssh-proxy and dashboard failures. The realm's SSO Session Max is also
+      # set to 24 hours; an existing session can still shorten a new token.
       accessTokenLifespan: 86400
     dashboard:
       clientId: openshell-dashboard

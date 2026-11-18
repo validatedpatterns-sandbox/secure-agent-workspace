@@ -20,14 +20,16 @@
 #                          brute-force protection, registration off, and the
 #                          test users' passwords (an import never changes an
 #                          existing realm).
+#   session-max            Set the existing realm's SSO session maximum from
+#                          keycloak.ssoSessionMaxLifespan in the chart values.
 #
 # FILE entries (extra keys, e.g. saw-users' profiles, are ignored):
 #   - name: carol                # or username:; a lowercase DNS label, at most 19 characters
 #     email: carol@example.com   # optional (default <name>@openshell.local), as are firstName and lastName
 #     roles: [openshell-user]    # realm roles; default [openshell-user]
 #
-# add-users, reset-password and harden use the Keycloak admin Secret
-# (<KEYCLOAK_NAME>-initial-admin).
+# add-users, reset-password, harden and session-max use the Keycloak admin
+# Secret (<KEYCLOAK_NAME>-initial-admin).
 #
 # Env: KEYCLOAK_NS (saw-keycloak), KEYCLOAK_REALM (openshell),
 #      KEYCLOAK_NAME (openshell-keycloak, the Keycloak CR),
@@ -271,6 +273,38 @@ api_get() {  # path
   curl -sS "${CURL_TLS_OPTS[@]}" "${AUTH[@]}" "${BASE}/admin/realms/${REALM}$1"
 }
 
+session_max() {
+  local lifespan settings code current
+  lifespan="$(run_python - "${CHART}/values.yaml" <<'EOF'
+import sys, yaml
+values = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}
+keycloak = values.get("keycloak") or {}
+print(keycloak.get("ssoSessionMaxLifespan", ""))
+EOF
+)"
+  if [[ ! "${lifespan}" =~ ^[1-9][0-9]*$ ]] || (( ${#lifespan} > 10 )) || \
+      { (( ${#lifespan} == 10 )) && [[ "${lifespan}" > "2147483647" ]]; }; then
+    echo "Error: keycloak.ssoSessionMaxLifespan must be a positive 32-bit integer." >&2
+    return 2
+  fi
+
+  admin_login
+  settings="$(jq -n --argjson lifespan "${lifespan}" \
+    '{ssoSessionMaxLifespan: $lifespan}')"
+  code="$(api_code PUT "" "${settings}")"
+  if [[ "${code}" != 204 ]]; then
+    echo "Error: setting the realm SSO session maximum failed (HTTP ${code})." >&2
+    return 1
+  fi
+
+  current="$(api_get "" | jq -er '.ssoSessionMaxLifespan | select(type == "number")')"
+  if [[ "${current}" != "${lifespan}" ]]; then
+    echo "Error: Keycloak did not apply the configured SSO session maximum." >&2
+    return 1
+  fi
+  echo "Realm ${REALM}: SSO session maximum set to ${lifespan} seconds."
+}
+
 user_id() {  # username; empty when not in the realm
   api_get "/users?exact=true&username=$1" | jq -r '.[0].id // empty'
 }
@@ -463,9 +497,10 @@ case "${1:-}" in
   ensure) ensure ;;
   show) show ;;
   harden) harden ;;
+  session-max) [[ $# -eq 1 ]] || { echo "usage: $0 session-max" >&2; exit 2; }; session_max ;;
   add-users) add_users "${2:-}" ;;
   password) password "${@:2}" ;;
   reset-password) reset_password "${2:-}" ;;
   resolve-subject) resolve_subject "${2:-}" ;;
-  *) echo "usage: $0 add-users [FILE]|password USER|reset-password USER|show|ensure|harden" >&2; exit 2 ;;
+  *) echo "usage: $0 add-users [FILE]|password USER|reset-password USER|show|ensure|harden|session-max" >&2; exit 2 ;;
 esac

@@ -55,6 +55,16 @@ def test_existing_mode_imports_only_the_realm_into_that_keycloak():
 
 
 @pytest.mark.ci_external
+def test_realm_import_sets_configured_sso_session_max_without_changing_idle():
+    default = realm_of(render())["spec"]["realm"]
+    override = realm_of(render("--set", "keycloak.ssoSessionMaxLifespan=43200"))["spec"]["realm"]
+    assert default["ssoSessionMaxLifespan"] == 86400
+    assert override["ssoSessionMaxLifespan"] == 43200
+    assert "ssoSessionIdleTimeout" not in default
+    assert "ssoSessionIdleTimeout" not in override
+
+
+@pytest.mark.ci_external
 def test_client_lists_are_never_null(tmp_path):
     """Found live (Helm 4, server-side apply): the dashboard client's empty
     redirectUris/webOrigins rendered as null and the CRD rejected the import."""

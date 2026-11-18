@@ -449,7 +449,7 @@ GUI_PORT=18790 \
 make openclaw-gui # OpenClaw
 ```
 
-> **Token expiry:** The OIDC access token lasts 10 hours. The `openshell-cli` client asks for 24 hours, but Keycloak caps the access token at the realm's SSO Session Max, which defaults to 10 hours because the realm import does not raise it; the refresh token lapses after 30 minutes without use. If the gateway token expires, run `openshell gateway login $OPENSHELL_SAW_NAME` to sign in again. Use `make saw-configure` if the gateway configuration is missing.
+> **Token expiry:** A fresh OIDC access token can last up to 24 hours. The `openshell-cli` client and realm SSO Session Max are both set to 24 hours; session age can shorten the token, and the refresh token expires after 30 minutes without use. A chart import does not update an existing realm, so run `make keycloak-session-max` after upgrading. If the gateway token expires, run `openshell gateway login $OPENSHELL_SAW_NAME` to sign in again. Use `make saw-configure` if the gateway configuration is missing.
 
 > **Shell in a sandbox:** `openshell sandbox connect` attaches to the sandbox's main process, which in SAW sandboxes is `sleep infinity` with no terminal, so it shows nothing. Open a shell with `openshell sandbox exec -n notebook -- sh` (use `--workspace cuda-dev` for `cuda-sandbox`). See [Shell access](docs/deployment-guide.md#shell-access).
 
@@ -1142,8 +1142,10 @@ not the user name or email, not one of the last 5), and locks an account out
 for a growing time after 5 failed sign-ins (`keycloak.bruteForce`). A realm
 imported before this kept its old settings and passwords (an import never
 changes an existing realm): run `make keycloak-harden` to apply the policy
-and turn registration off. Follow the existing-install migration in the
-deployment guide before disabling any account.
+and turn registration off. Run `make keycloak-session-max` to apply the
+chart's 24-hour SSO session maximum. This command keeps the realm's current
+idle timeout. Follow the existing-install migration in the deployment guide
+before disabling any account.
 
 ### Web UI sign-in (redirect URIs)
 

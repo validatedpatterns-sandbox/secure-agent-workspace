@@ -41,6 +41,7 @@ spec:
     realm: {{ .Values.keycloak.realm }}
     displayName: OpenShell
     enabled: true
+    ssoSessionMaxLifespan: {{ .Values.keycloak.ssoSessionMaxLifespan }}
     registrationAllowed: {{ and .Values.demo.enabled .Values.keycloak.registrationAllowed }}
     loginWithEmailAllowed: true
     duplicateEmailsAllowed: false

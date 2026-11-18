@@ -17,6 +17,9 @@ keycloak:
   hostname: ""
 
   realm: openshell
+  # Maximum lifetime for an SSO session. This lets the openshell-cli's
+  # configured 24h access token live for its full lifetime.
+  ssoSessionMaxLifespan: 86400
   # An admin adds production users with keycloak-add-users. Demo mode may
   # enable registration explicitly, but never enables it by itself.
   registrationAllowed: false

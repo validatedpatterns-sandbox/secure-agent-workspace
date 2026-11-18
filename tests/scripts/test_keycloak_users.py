@@ -62,7 +62,7 @@ sys.exit(f"fake oc: unexpected {args}")
 '''
 
 
-def run(tmp_path, *args, demo=True):
+def run(tmp_path, *args, demo=True, chart=None, put_status="204"):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     oc = bin_dir / "oc"
@@ -71,8 +71,9 @@ def run(tmp_path, *args, demo=True):
     state = tmp_path / "state"
     state.mkdir(exist_ok=True)
     env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", FAKE_OC_STATE=str(state),
-               KEYCLOAK_CHART=str(ROOT / "charts" / "openshell-keycloak"),
-               DEMO_ENABLED="true" if demo else "false")
+               KEYCLOAK_CHART=str(chart or ROOT / "charts" / "openshell-keycloak"),
+               DEMO_ENABLED="true" if demo else "false",
+               FAKE_REALM_PUT_STATUS=put_status)
     return subprocess.run(["bash", str(SCRIPT), *args], capture_output=True, text=True, env=env)
 
 
@@ -185,7 +186,9 @@ import json, os, sys
 from pathlib import Path
 state = Path(os.environ["FAKE_OC_STATE"])
 realm_file = state / "realm.json"
-realm = json.loads(realm_file.read_text()) if realm_file.exists() else {"users": {}}
+realm = json.loads(realm_file.read_text()) if realm_file.exists() else {
+    "users": {}, "settings": {"ssoSessionIdleTimeout": 1800, "ssoSessionMaxLifespan": 36000}}
+realm.setdefault("settings", {"ssoSessionIdleTimeout": 1800, "ssoSessionMaxLifespan": 36000})
 args = sys.argv[1:]
 with open(state / "curl.log", "a") as f:
     f.write(json.dumps(args) + "\n")
@@ -196,6 +199,12 @@ code = "200"
 out = ""
 if url.endswith("/protocol/openid-connect/token"):
     out = json.dumps({"access_token": "admin-token"})
+elif url.endswith("/admin/realms/openshell") and method == "PUT":
+    code = os.environ.get("FAKE_REALM_PUT_STATUS", "204")
+    if code == "204":
+        realm["settings"].update(body)
+elif url.endswith("/admin/realms/openshell") and method == "GET":
+    out = json.dumps(realm["settings"])
 elif "/users?exact=true&username=" in url:
     name = url.rsplit("=", 1)[1]
     out = json.dumps([{"id": "id-" + name}] if name in realm["users"] else [])
@@ -286,6 +295,47 @@ def test_an_explicit_demo_file_creates_its_accounts(tmp_path, keycloak):
     assert result.returncode == 0, result.stdout + result.stderr
     names = {u["name"] for u in yaml.safe_load((ROOT / "overrides" / "saw-users-demo.yaml").read_text())["users"]}
     assert set(keycloak()) == names
+
+
+def test_session_max_applies_chart_value_and_keeps_idle_timeout(tmp_path, keycloak):
+    result = run(tmp_path, "session-max")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "SSO session maximum set to 86400 seconds" in result.stdout
+    realm = json.loads((tmp_path / "state" / "realm.json").read_text())
+    assert realm["settings"] == {"ssoSessionIdleTimeout": 1800, "ssoSessionMaxLifespan": 86400}
+    calls = [json.loads(line) for line in (tmp_path / "state" / "curl.log").read_text().splitlines()]
+    update = next(call for call in calls if call[-1] == "https://sso.example.com/admin/realms/openshell"
+                  and "-X" in call and call[call.index("-X") + 1] == "PUT")
+    assert json.loads(update[update.index("-d") + 1]) == {"ssoSessionMaxLifespan": 86400}
+
+
+def test_session_max_is_safe_to_repeat(tmp_path, keycloak):
+    first = run(tmp_path, "session-max")
+    second = run(tmp_path, "session-max")
+    assert first.returncode == second.returncode == 0
+    realm = json.loads((tmp_path / "state" / "realm.json").read_text())
+    assert realm["settings"]["ssoSessionMaxLifespan"] == 86400
+
+
+@pytest.mark.parametrize("lifespan", [0, 2147483648, 999999999999999999999999])
+def test_session_max_rejects_invalid_chart_value(tmp_path, keycloak, lifespan):
+    chart = tmp_path / "bad-chart"
+    chart.mkdir()
+    (chart / "values.yaml").write_text(f"keycloak:\n  ssoSessionMaxLifespan: {lifespan}\n")
+    result = run(tmp_path, "session-max", chart=chart)
+    assert result.returncode == 2
+    assert "must be a positive 32-bit integer" in result.stderr
+    curl_log = tmp_path / "state" / "curl.log"
+    assert not curl_log.exists() or not any("admin/realms/openshell" in line
+                                             for line in curl_log.read_text().splitlines())
+
+
+def test_session_max_reports_keycloak_update_failure(tmp_path, keycloak):
+    result = run(tmp_path, "session-max", put_status="500")
+    assert result.returncode == 1
+    assert "failed (HTTP 500)" in result.stderr
+    realm = json.loads((tmp_path / "state" / "realm.json").read_text())
+    assert realm["settings"]["ssoSessionMaxLifespan"] == 36000
 
 
 def test_password_reports_secret_location_without_value(tmp_path, keycloak):

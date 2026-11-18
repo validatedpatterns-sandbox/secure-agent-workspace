@@ -80,31 +80,11 @@ or `~/.local/state/openshell/confinement-stops.json` without a ledger. Do not
 remove it to bypass recovery. A configured agent can resume without a usable
 provider while retaining its model/credentials; unchanged reapply leaves it running.
 
-<<<<<<< HEAD
 In OpenClaw 2026.9.6, `automations` aliases `cron`. Only `list`, `status`, `get`,
-`show` and `runs` need no approval; `add`, `edit`, `rm`, `enable`, `disable` and
-`run` require it. Unsupported aliases, mixed read/write `scratch`, unknown
+`show` and `runs` need no approval; `add`/`create`, `edit`, `rm`, `enable`,
+`disable` and `run` require it. Unsupported aliases (`remove`, `delete`), mixed
+read/write `scratch`, unknown
 commands and shell wrappers remain denied. Every `agents set-identity` call
 requires approval: its file/avatar inputs can reach outside the workspace and
 it rewrites configuration, beyond filesystem-tool confinement. Denial,
 cancellation or timeout prevents execution. See the [governance guide](governance-interceptor.md).
-=======
-OpenClaw `automations` aliases `cron` in the pinned 2026.9.6 release. Both
-allow only `list`, `status`, `get`, `show`, and `runs` without approval.
-`add`/`create`, `edit`, `rm`, `enable`, `disable`, and `run` require approval. Unsupported
-aliases (`remove`, `delete`), the mixed read/write `scratch` interface
-and unknown commands stay denied. Shell wrappers, chaining, substitutions
-and conflicting command representations remain denied. Command registration
-was verified against the upstream release's
-[`register.ts`](https://github.com/openclaw/openclaw/blob/v2026.9.6/src/cli/cron-cli/register.ts),
-[`register.cron-add.ts`](https://github.com/openclaw/openclaw/blob/v2026.9.6/src/cli/cron-cli/register.cron-add.ts),
-[`register.cron-simple.ts`](https://github.com/openclaw/openclaw/blob/v2026.9.6/src/cli/cron-cli/register.cron-simple.ts)
-and [`register.cron-edit.ts`](https://github.com/openclaw/openclaw/blob/v2026.9.6/src/cli/cron-cli/register.cron-edit.ts).
-
-`openclaw agents set-identity` requires approval for every invocation, including
-ordinary name changes. In the pinned OpenClaw version, `--identity-file` can
-read arbitrary paths and `--avatar` accepts HTTP(S) and data URIs; the command
-also rewrites `openclaw.json`. Filesystem-tool workspace confinement does not
-limit this CLI command. Cancelled, denied or timed-out approvals do not run it;
-shell wrappers, chaining and substitutions remain denied.
->>>>>>> 552a620f (Allow OpenClaw automation create commands)

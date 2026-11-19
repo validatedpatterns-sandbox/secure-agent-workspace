@@ -12,6 +12,17 @@ projection:
   enabled: true
 
 containerDefaults:
+  # Stock OpenClaw image rebuilt so OpenShift namespace UIDs can enter /sandbox
+  # (make container-notebook-image BUILD_NS=saw-component-builds BUILD_ARCH=amd64).
+  # Both profiles use the same source image.
+  profileImageOverrides:
+    data-science:
+      notebook: "image-registry.openshift-image-registry.svc:5000/saw-component-builds/saw-openclaw-896d1526ee29-amd64@sha256:5c923bbb2f244f0818e57c041370d10eea697204b4b63f558b7e907fb657f8e1"
+    custom-inference:
+      notebook: "image-registry.openshift-image-registry.svc:5000/saw-component-builds/saw-openclaw-896d1526ee29-amd64@sha256:5c923bbb2f244f0818e57c041370d10eea697204b4b63f558b7e907fb657f8e1"
+  imagePull:
+    namespace: saw-component-builds
+    streams: [saw-openclaw-896d1526ee29-amd64]
   governanceNamespace: openshell-agents
   providerAllowHosts:
     - api.inference.example.com

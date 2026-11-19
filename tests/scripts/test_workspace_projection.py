@@ -117,6 +117,25 @@ def test_auto_approve_accepts_the_observed_enrollment_but_still_binds_the_owner(
                                     lambda _: published(owner, subject="33333333-3333-4333-8333-333333333333"))
 
 
+def test_auto_approve_site_endpoint_defaults_custom_inference_url():
+    owner, _ = inputs()
+    owner.update(profiles=["custom-inference"])
+    for key in ("lifecycleVersion", "initialModelInputs", "modelInputs", "desiredState", "restartGeneration"):
+        owner.pop(key)
+    site = auto_site(owner)
+    site["profileBoundaries"] = {"custom-inference": {
+        "inferenceBaseURL": "https://api.inference.example/v1", "allowHosts": ["api.inference.example"]}}
+    result = workspace.project_workspace(owner, {}, site, CATALOG, lambda _: {})
+    projected = result["containerSites"]["alice"]
+    assert projected["customInferenceURL"] == "https://api.inference.example/v1"
+    assert projected["providerAllowHosts"] == ["api.inference.example"]
+    assert "reference" not in projected["automaticEnrollment"]
+    assert result["users"][0]["customInferenceURL"] == "https://api.inference.example/v1"
+    owner["customInferenceURL"] = "https://elsewhere.example/v1"
+    with pytest.raises(workspace.WorkspaceError, match="endpoint differs"):
+        workspace.project_workspace(owner, {}, site, CATALOG, lambda _: {})
+
+
 def test_reviewed_site_still_rejects_an_unreviewed_enrollment():
     owner, _ = inputs()
     site = auto_site(owner)

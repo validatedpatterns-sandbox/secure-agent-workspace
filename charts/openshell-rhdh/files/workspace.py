@@ -260,8 +260,15 @@ def _project_workspace(workspace, defaults, site, catalog, read=None):
         target["image"] = overrides.get(target["sandbox"], target["image"])
     boundary = site.get("profileBoundaries", {}).get(selected)
     if boundary:
+        # autoApprove sites have no operator-reviewed reference to pin.
+        reviewed = {"reference": boundary["reference"]} if "reference" in boundary or \
+            automatic.get("autoApprove") is not True else {}
         site = {**site, "providerAllowHosts": boundary["allowHosts"],
-                "automaticEnrollment": {**automatic, "reference": boundary["reference"]}}
+                "automaticEnrollment": {**automatic, **reviewed}}
+        # A static entry takes the site-approved endpoint unless it names one.
+        if (not ws.get("customInferenceURL") and boundary.get("inferenceBaseURL")
+                and any(sb.get("endpointInput") for _, sb in enabled_catalog_sandboxes(catalog[selected]))):
+            ws["customInferenceURL"] = boundary["inferenceBaseURL"]
     if ws.get("customInferenceURL"):
         if not boundary or boundary.get("inferenceBaseURL") != ws["customInferenceURL"]:
             raise WorkspaceError("endpoint differs from the site-approved custom inference URL")

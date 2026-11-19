@@ -138,6 +138,20 @@ global:
   pattern: secure-agent-workspace
   vpArgoNamespace: vp-gitops
 
+# Container and Kata users (values.deployment.mode). A user entry needs only
+# name, ownerSubject, profiles and vaultPrefix (the credential base path);
+# registration, installationID, pruneOnRemove and intentGeneration have defaults
+# (see saw-users.containerUser in _helpers.tpl).
+#
+# containerDefaults: the cluster-wide site every container user gets, with
+# @OWNER@/@RUNTIME@/... placeholders. subject defaults to the user's
+# ownerSubject and every chart revision to global.targetRevision.
+# automaticEnrollment.autoApprove: true enrolls on first observation instead of
+# an operator-reviewed reference/approvedProfiles (dev and demo clusters).
+containerDefaults: {}
+# containerSites.<name>: per-user overrides layered over containerDefaults.
+containerSites: {}
+
 # Static container entries use the same workspace projector as the portal.
 # RHDH supplies already-projected values and leaves this disabled.
 projection:

@@ -164,7 +164,7 @@ test("both automation aliases allow only inspection and hold mutations for appro
       assert.equal(result.effect.kind, "allow");
       assert.equal(result.record.rule, "exec-openclaw-automation-inspect");
     }
-    for (const verb of ["add", "edit", "rm", "enable", "disable", "run"]) {
+    for (const verb of ["add", "create", "edit", "rm", "enable", "disable", "run"]) {
       const result = call({ params: { command: `openclaw ${group} ${verb} job-id` } });
       assert.equal(result.effect.kind, "approval");
       assert.equal(result.record.rule, "exec-openclaw-automation-change");
@@ -175,7 +175,7 @@ test("both automation aliases allow only inspection and hold mutations for appro
       }
     }
     // Unsupported aliases, mixed read/write surfaces and unknown verbs stay denied.
-    for (const verb of ["", "create", "remove", "delete", "scratch", "listx", "runsx", "run-all"]) {
+    for (const verb of ["", "remove", "delete", "scratch", "listx", "runsx", "run-all"]) {
       assert.equal(call({ params: { command: `openclaw ${group} ${verb}` } }).effect.kind, "deny");
     }
     for (const command of [

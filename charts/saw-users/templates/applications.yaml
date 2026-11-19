@@ -1,7 +1,8 @@
 {{- include "saw-users.validate" . -}}
 {{- range $user := .Values.users | default list }}
-{{- if not (and $.Values.projection.enabled (has (dig "deployment" "mode" "vm" ($user.values | default dict)) (list "container" "kata"))) }}
+{{- if and (not (include "saw-users.awaitingOwner" (dict "root" $ "user" $user))) (not (and $.Values.projection.enabled (has (dig "deployment" "mode" "vm" ($user.values | default dict)) (list "container" "kata")))) }}
 {{- $container := has (dig "deployment" "mode" "vm" ($user.values | default dict)) (list "container" "kata") }}
+{{- if $container }}{{- $user = include "saw-users.containerUser" (dict "root" $ "user" $user) | fromJson }}{{- end }}
 {{- if not $container }}
 ---
 {{ include "saw-users.application" (dict
@@ -26,7 +27,7 @@
 ) }}
 ---
 {{- if $container }}
-{{- $site := deepCopy (index $.Values.containerSites $user.name | default dict) }}
+{{- $site := include "saw-users.containerSite" (dict "root" $ "user" $user) | fromJson }}
 {{- $mode := dig "deployment" "mode" "vm" ($user.values | default dict) }}
 {{- if ne (eq $mode "kata") (not (empty $site.kataRuntimeClass)) }}{{ fail "registration placement differs from the site RuntimeClass approval" }}{{- end }}
 {{- with $site.providerAllowHosts }}

@@ -35,6 +35,8 @@ clusterGroup:
     # the namespace with the workspace registry and its pipelines.
     rhdh:
     saw-portal:
+    # Agent Sandbox controller for container and Kata workspaces (cluster-wide).
+    agent-sandbox-system:
     redhat-ods-operator:
       operatorGroup: true
       targetNamespaces: []
@@ -90,6 +92,15 @@ clusterGroup:
           value: "true"
         - name: ownerResolver.enabled
           value: "true"
+    # Stock upstream Agent Sandbox controller (CRDs + controller), required by
+    # container and Kata workspaces. Remove if the platform already provides it.
+    agent-sandbox:
+      name: agent-sandbox
+      namespace: agent-sandbox-system
+      path: charts/agent-sandbox
+      overrides:
+        - name: enabled
+          value: "true"
     # One namespace and three apps (secrets, bill of materials, VM) per user,
     # from overrides/saw-users.yaml. The chart release is tracked here; the
     # Application objects it creates live in the Argo CD namespace.
@@ -100,6 +111,7 @@ clusterGroup:
       namespace: openshell-agents
       path: charts/saw-users
       extraValueFiles:
+        - /overrides/saw-container-defaults.yaml
         - /overrides/saw-users.yaml
       overrides:
         - name: ownerResolution.enabled

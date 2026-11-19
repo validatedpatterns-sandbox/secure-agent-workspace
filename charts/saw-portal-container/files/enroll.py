@@ -80,10 +80,14 @@ def once(x):
     def get(p):
         if p not in cache:cache[p]=api(p)
         return cache[p]
-    approved=capture(cfg,get)["approved"]
-    verify_contract(cfg,get,x["reference"])
+    approved=capture(cfg,get)["approved"]  # health, admission and network checks always run
     profile=obj("configmap","saw-bom-profiles")
-    if digest(profile["data"])!=x["profileSHA256"]:raise ValueError("unapproved BOM")
+    if not x.get("autoApprove"):
+        # Reviewed sites compare the live boundary and BOM with the operator's approval.
+        # autoApprove (an explicit cluster setting) publishes this first observation instead;
+        # later changes to the enrolled boundary still fail closed.
+        verify_contract(cfg,get,x["reference"])
+        if digest(profile["data"])!=x["profileSHA256"]:raise ValueError("unapproved BOM")
     def pvc(name,ro):
         return dict(claimName=name,uid=obj("persistentvolumeclaim",name)["metadata"]["uid"],readOnly=ro)
     harnesses = {}

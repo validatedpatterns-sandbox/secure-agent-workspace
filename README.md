@@ -284,6 +284,14 @@ make check-oidc-ca
 # docs/credential-isolation.md for migrations and required key rotation.
 # See docs/container-images.md for published images, releases and mirroring.
 
+# 5d. Prepare the cluster. Checks the default StorageClass and, when
+# overrides/saw-users.yaml has container or kata users, the container-mode
+# APIs, a shared-filesystem (ReadWriteMany) StorageClass (with none, it creates a
+# small in-cluster NFS server for dev/demo; SAW_SHARED_STORAGE=efs offers EFS on
+# AWS, =none only reports) and the runtime image in overrides/saw-container-defaults.yaml.
+# `make install` runs it too; running it first lets you answer its prompts.
+make saw-init
+
 # 6. Deploy the pattern (runs inside the VP utility container)
 # NOTE: The deploying branch must exist on your fork (origin): the Pattern
 # CR points Argo CD at it, and every later change (steps 7+) is a push there.
@@ -304,6 +312,17 @@ git add overrides/saw-users.yaml && git commit -m "Add alice" && git push
 make keycloak-add-users       # creates the account; password in a Secret
 oc -n vp-gitops get application saw-alice   # wait until Synced/Healthy
 make saw-logs OPENSHELL_SAW_NAME=alice      # until "apply: Done"
+# Container workspace instead of a VM: add the Keycloak subject and mode, e.g.
+#     - name: alice
+#       ownerSubject: <make keycloak-user-info KC_USER=alice>
+#       profiles: [custom-inference]
+#       values: {deployment: {mode: container}}
+# Until ownerSubject is set the entry waits (ConfigMap saw-users-awaiting-owner)
+# without blocking other users. Once, after Keycloak is up, generate the network
+# overlay: make container-topology > overrides/container-network.yaml, commit
+# it on your fork and list it after saw-users.yaml in saw-users'
+# extraValueFiles (it holds this cluster's addresses, so it is not in this
+# repository). See docs/container-installation.md#minimal-static-entries.
 # Without a fork: users create their own workspace in the self-service
 # portal (Red Hat Developer Hub, docs/rhdh-user-guide.md), or create one
 # outside GitOps with `make saw-create OPENSHELL_SAW_NAME=alice` (Option B).
@@ -351,6 +370,10 @@ export OPENSHELL_SAW_NAME=alice     # the user VM, deployed into namespace saw-a
 
 # 4. Verify prerequisites after CNV and RHBK are installed
 make quickstart-prereqs-check
+# Container or kata workspaces (DEPLOYMENT_MODE=container|kata) also need
+# OpenShift GitOps installed: their components are Argo CD Applications even
+# here. `make saw-create` runs `make saw-init` first for those modes; run it
+# now: without a shared-filesystem StorageClass it creates a small in-cluster NFS server.
 # This check does not change the cluster. It can save ingress-ca.pem here.
 # make images-mirror enables the registry route.
 

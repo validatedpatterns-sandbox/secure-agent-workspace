@@ -71,7 +71,7 @@ data:
 {{- range $slot := $targets }}{{- $key := ternary "audit" (printf "audit-%s" $slot.relayID) (eq (len $targets) 1) }}{{- $_ := set $charts $key (list "saw-audit-writer" $archive $slot) }}{{- end }}
 {{- range $key, $c := $charts }}
 {{- $item := required (printf "missing site.stack.%s" $key) (get $stack (ternary "audit" $key (eq (len $c) 3))) }}
-{{- if not (regexMatch "^[a-f0-9]{40}$" ($item.revision | default "")) }}{{ fail "each infrastructure chart must be pinned to a Git commit" }}{{ end }}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._/-]*$" ($item.revision | default "")) }}{{ fail "each infrastructure chart needs a Git commit or branch revision" }}{{ end }}
 {{- $values := $item.values | toJson }}
 {{- range $k, $v := $map }}
 {{- $values = replace (printf "@%s@" $k) $v $values }}

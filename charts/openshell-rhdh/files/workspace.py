@@ -123,17 +123,18 @@ def enrolled_site(site, ws, read):
         if data:
             raise WorkspaceError("cannot disable enrollment of a bound workspace; use desiredState")
         return fresh
-    for key, kind in (("reference", dict), ("relay", dict), ("revision", str),
-                      ("image", str), ("buildNamespace", str)):
+    auto = a.get("autoApprove") is True
+    for key, kind in ((() if auto else (("reference", dict),)) + (("relay", dict), ("revision", str),
+                      ("image", str), ("buildNamespace", str))):
         if not isinstance(a.get(key), kind) or not a[key]:
             raise WorkspaceError(f"container site for {ws['name']} requires automaticEnrollment.{key}")
     if not data:
         return fresh
     bound=json.loads(data["binding.json"])
-    if set(bound)!={"registration","intent","approved","gatewayCA"} or bound["registration"]!=reg or set(bound["approved"])!=set(a["reference"]):
+    if set(bound)!={"registration","intent","approved","gatewayCA"} or bound["registration"]!=reg or (not auto and set(bound["approved"])!=set(a["reference"])):
         raise WorkspaceError("invalid published enrollment")
     intent=bound["intent"]
-    if intent["bindings"]["ownerID"]!=install or intent["bindings"]["namespace"]!="saw-"+ws["name"] or intent["bindings"]["ownerSubject"]!=ws["ownerSubject"] or intent["profileRef"]["sha256"]!=site.get("selectedDigest",a.get("profileSHA256")):
+    if intent["bindings"]["ownerID"]!=install or intent["bindings"]["namespace"]!="saw-"+ws["name"] or intent["bindings"]["ownerSubject"]!=ws["ownerSubject"] or (not auto and intent["profileRef"]["sha256"]!=site.get("selectedDigest",a.get("profileSHA256"))):
         raise WorkspaceError("published intent does not belong to this workspace")
     subjects = {target["subjectMap"]:publication(target["subjectMap"]).get("subject", "")
                 for target in site.get("targets",{}).values() if target["ui"]}
@@ -241,11 +242,26 @@ def _project_workspace(workspace, defaults, site, catalog, read=None):
     validate_runtime_placement(mode, site)
     automatic = site.get("automaticEnrollment", {})
     selected, *extra = ws.get("profiles", []) or [None]
-    foundation = automatic.get("enabled") is False
+    foundation = automatic.get("enabled") is False or automatic.get("autoApprove") is True
     if extra or selected not in catalog or not foundation and selected not in automatic.get("approvedProfiles", {}):
         raise WorkspaceError("container requires one approved BOM profile")
     if not ws.get("registration") or not ws.get("installationID"):
         raise WorkspaceError("container requires a registration and installation identity")
+    # As the portal does at registration: a dedicated-endpoint profile (such as
+    # custom-inference) has no web-search credential unless the entry asks for it.
+    if "dedicatedEndpointSecrets" in catalog[selected] and "webSearch" not in ws:
+        ws["webSearch"] = {"enabled": False}
+    # The runtime compiles the model from public inputs, never from the Secret.
+    # The portal reads it from the form; a static entry must name it.
+    given = ws.get("initialModelInputs") if ws.get("lifecycleVersion") == 1 else ws.get("modelInputs")
+    for _, sandbox in enabled_catalog_sandboxes(catalog[selected]):
+        key = sandbox.get("modelInput")
+        if not key:
+            continue
+        secret, field = key.split(".", 1)
+        definition = next((f for f in catalog[selected]["secrets"][secret]["fields"] if f["key"] == field), {})
+        if definition.get("required") and not definition.get("default") and not (given or {}).get(key):
+            raise WorkspaceError(f"{ws['name']}: set modelInputs.{key} (the model this profile requires)")
     overrides = site.get("profileImageOverrides", {}).get(selected, {})
     if overrides:
         ws["imageOverrides"] = overrides
@@ -259,8 +275,15 @@ def _project_workspace(workspace, defaults, site, catalog, read=None):
         target["image"] = overrides.get(target["sandbox"], target["image"])
     boundary = site.get("profileBoundaries", {}).get(selected)
     if boundary:
+        # autoApprove sites have no operator-reviewed reference to pin.
+        reviewed = {"reference": boundary["reference"]} if "reference" in boundary or \
+            automatic.get("autoApprove") is not True else {}
         site = {**site, "providerAllowHosts": boundary["allowHosts"],
-                "automaticEnrollment": {**automatic, "reference": boundary["reference"]}}
+                "automaticEnrollment": {**automatic, **reviewed}}
+        # A static entry takes the site-approved endpoint unless it names one.
+        if (not ws.get("customInferenceURL") and boundary.get("inferenceBaseURL")
+                and any(sb.get("endpointInput") for _, sb in enabled_catalog_sandboxes(catalog[selected]))):
+            ws["customInferenceURL"] = boundary["inferenceBaseURL"]
     if ws.get("customInferenceURL"):
         if not boundary or boundary.get("inferenceBaseURL") != ws["customInferenceURL"]:
             raise WorkspaceError("endpoint differs from the site-approved custom inference URL")

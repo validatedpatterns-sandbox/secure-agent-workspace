@@ -20,6 +20,24 @@ BOOTSTRAP = ("stack", "proxy", "values", "network", "bootstrapEgress")
 RELAY = ("automaticEnrollment", "relay")
 
 
+class PlainDumper(yaml.SafeDumper):
+    """Write shared rules out in full: reviewers read the overlay, not anchors."""
+    def ignore_aliases(self, data):
+        return True
+
+
+def dump(data, stream=None):
+    return yaml.dump(data, stream, Dumper=PlainDumper, sort_keys=False)
+AUDIT = ("stack", "audit", "values")
+GATEWAY_STORAGE = GATEWAY + ("kubernetes", "storage", "className")
+# CSI provisioners that serve ReadWriteMany filesystems.
+SHARED_FILESYSTEM_PROVISIONERS = (
+    "openshift-storage.cephfs.csi.ceph.com", "cephfs.csi.ceph.com", "nfs.csi.k8s.io",
+    "efs.csi.aws.com", "file.csi.azure.com", "filestore.csi.storage.gke.io",
+    "csi.trident.netapp.io", "spectrumscale.csi.ibm.com", "k8s-sigs.io/nfs-subdir-external-provisioner")
+# Keep in sync with SHARED in scripts/shared-storage.sh.
+
+
 def command(*args):
     result = subprocess.run(args, capture_output=True, text=True, timeout=90)
     if result.returncode:
@@ -93,6 +111,55 @@ def discover_issuer(issuer, probe, container):
     return [host_rule(ip, port) for ip in sorted(set(answers), key=ipaddress.IPv4Address)]
 
 
+def appset_controller_labels(values):
+    """Pod labels of the GitOps ApplicationSet controller the projector serves."""
+    namespace = (path_value(values, ("global", "vpArgoNamespace"))
+                 or path_value(values, ("argo", "namespace")) or "vp-gitops")
+    if not isinstance(namespace, str) or not DNS_LABEL.fullmatch(namespace):
+        raise ValueError("invalid Argo CD namespace")
+    # Operator-managed instances label the pod app.kubernetes.io/name=<instance>-applicationset-controller;
+    # some also set app.kubernetes.io/component=applicationset-controller.
+    pods = json.loads(command("oc", "get", "pods", "-n", namespace, "-o", "json"))
+    names = set()
+    for pod in pods.get("items", []):
+        meta = pod.get("metadata", {})
+        labels = meta.get("labels", {})
+        name = labels.get("app.kubernetes.io/name", "")
+        if not meta.get("deletionTimestamp") and (name.endswith("-applicationset-controller") or
+                labels.get("app.kubernetes.io/component") == "applicationset-controller"):
+            names.add(name)
+    if len(names) != 1 or not DNS_LABEL.fullmatch(next(iter(names))):
+        raise ValueError(f"expected one ApplicationSet controller in {namespace}; "
+                         "set projection.applicationSetControllerLabels in the base file")
+    return {"app.kubernetes.io/name": names.pop()}
+
+
+def storage_classes():
+    """The cluster's default class (RWO volumes) and a shared-filesystem class (RWX)."""
+    items = json.loads(command("oc", "get", "storageclass", "-o", "json")).get("items", [])
+    def is_default(item):
+        notes = item.get("metadata", {}).get("annotations", {})
+        return "true" in (notes.get("storageclass.kubernetes.io/is-default-class"),
+                          notes.get("storageclass.beta.kubernetes.io/is-default-class"))
+    defaults = sorted(i["metadata"]["name"] for i in items if is_default(i))
+    shared = sorted((not is_default(i), i["metadata"]["name"]) for i in items
+                    if i.get("provisioner") in SHARED_FILESYSTEM_PROVISIONERS)
+    return (defaults[0] if len(defaults) == 1 else None), (shared[0][1] if shared else None)
+
+
+def storage_overlay(site, out, discover):
+    """Fill only storage classes the base leaves empty; explicit choices win."""
+    wanted = [(GATEWAY_STORAGE, 0), (AUDIT + ("storageClass",), 0), (AUDIT + ("exchangeStorageClass",), 1)]
+    for path, kind in wanted:
+        if path_value(site, path[:-1]) is None or path_value(site, path):
+            continue
+        name = discover()[kind]
+        if not name:
+            raise ValueError("no " + ("default" if kind == 0 else "shared-filesystem (ReadWriteMany)")
+                             + " storage class found; set " + ".".join(path) + " in the base file")
+        put(out, path, name)
+
+
 def container_overlay(values, probe, container=None):
     topology = json.loads(command(sys.executable, str(SCRIPTS / "network-topology.py"), "print-json"))
     api = topology["cleanupApi"]
@@ -125,11 +192,22 @@ def container_overlay(values, probe, container=None):
         raise ValueError("clusterDomain differs from the current cluster ingress domain")
     overlay = {}
     checked = {}
+    found = []
+    def discover():
+        if not found:
+            found.append(storage_classes())
+        return found[0]
     for scope in [(), ("portal",)]:
         sites = path_value(values, scope + ("containerSites",), {})
         if not isinstance(sites, dict):
             raise ValueError("containerSites must be a mapping")
-        for owner, site in sites.items():
+        # saw-users' shared containerDefaults get the same generated rules as a site.
+        entries = [(scope + ("containerSites", owner), site) for owner, site in sites.items()
+                   if not (scope == () and path_value(values, ("containerDefaults",)) and not
+                           (path_value(site, GATEWAY) and path_value(site, RELAY)))]
+        if not scope and path_value(values, ("containerDefaults",)):
+            entries.insert(0, (("containerDefaults",), path_value(values, ("containerDefaults",))))
+        for target, site in entries:
             if not isinstance(site, dict) or not path_value(site, GATEWAY) or not path_value(site, RELAY):
                 raise ValueError("expected gateway and automatic enrollment relay site inputs")
             raw = [path_value(site, GATEWAY + ("oidc", "issuerUrl")), path_value(site, RELAY + ("issuer",))]
@@ -152,9 +230,13 @@ def container_overlay(values, probe, container=None):
             for path in [GATEWAY + ("kubernetes", "network", "gatewayEgress"), RELAY + ("egress",)]:
                 put(out, path, egress(site, path, common + checked[issuer]))
             put(out, BOOTSTRAP, egress(site, BOOTSTRAP, common))
-            put(overlay, scope + ("containerSites", owner), out)
-        if not scope and sites:
+            storage_overlay(site, out, discover)
+            put(overlay, target, out)
+        if not scope and entries:
             put(overlay, ("projection", "egress"), egress(values, ("projection", "egress"), common))
+            # An operator-chosen selector in the base file wins; Helm merges maps.
+            if not path_value(values, ("projection", "applicationSetControllerLabels")):
+                put(overlay, ("projection", "applicationSetControllerLabels"), appset_controller_labels(values))
     if not overlay:
         raise ValueError("no containerSites in site values")
     return overlay
@@ -179,7 +261,7 @@ def install_values(config, owner, overlay_file, probe, container, verify):
             raise ValueError("review the generated topology overlay before enabling enrollment")
         # Link a complete file without overwriting another concurrent install's review.
         with tempfile.NamedTemporaryFile(dir=path_on_disk.parent, mode="w") as tmp:
-            yaml.safe_dump(expected, tmp, sort_keys=False)
+            dump(expected, tmp)
             tmp.flush()
             try:
                 os.link(tmp.name, path_on_disk)
@@ -215,7 +297,7 @@ def main():
             if yaml.safe_load(args.check.read_text()) != found:
                 raise ValueError("container topology drift; regenerate the overlay from the base file and review the diff")
         else:
-            sys.stdout.write(yaml.safe_dump(found, sort_keys=False))
+            sys.stdout.write(dump(found))
     except yaml.YAMLError:
         p.exit(1, "Container topology check failed: invalid YAML input\n")
     except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as exc:

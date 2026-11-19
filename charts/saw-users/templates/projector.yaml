@@ -1,14 +1,23 @@
 {{- if .Values.projection.enabled }}
 {{- $users := list }}
 {{- range $user := .Values.users }}
-{{- if has (dig "deployment" "mode" "vm" ($user.values | default dict)) (list "container" "kata") }}
-{{- $users = append $users $user }}
+{{- if and (has (dig "deployment" "mode" "vm" ($user.values | default dict)) (list "container" "kata")) $user.ownerSubject }}
+{{- $users = append $users (include "saw-users.containerUser" (dict "root" $ "user" $user) | fromJson) }}
 {{- end }}{{- end }}
 {{- $owner := printf "%s/%s" .Release.Namespace .Release.Name | sha256sum | trunc 20 }}
 {{- $name := printf "saw-projector-%s" $owner }}
 {{- $config := dict }}
 {{- if $users }}{{- $config = deepCopy .Values }}{{- end }}
 {{- $_ := set $config "users" $users }}
+{{- if $users }}
+{{- $sites := dict }}
+{{- range $user := $users }}
+{{- $resolved := include "saw-users.containerSite" (dict "root" $ "user" $user) | fromJson }}
+{{- if $resolved }}{{- $_ := set $sites $user.name $resolved }}{{- end }}
+{{- end }}
+{{- $_ := set $config "containerSites" $sites }}
+{{- $_ := unset $config "containerDefaults" }}
+{{- end }}
 {{- range $user := $users }}
 {{- $site := index $config.containerSites $user.name }}
 {{- if not $site }}{{ fail (printf "user %q: deployment.mode=container requires a containerSites entry" $user.name) }}{{ end }}
@@ -94,7 +103,7 @@ subjects: [{kind: ServiceAccount, name: {{ $name }}-identity, namespace: {{ .Rel
 {{- $classes := list }}
 {{- range $user := $users }}
 {{- if eq (dig "deployment" "mode" "vm" ($user.values | default dict)) "kata" }}
-{{- $classes = append $classes (dig "kataRuntimeClass" "name" "" (index $.Values.containerSites $user.name)) }}
+{{- $classes = append $classes (dig "kataRuntimeClass" "name" "" (index $config.containerSites $user.name)) }}
 {{- end }}
 {{- end }}
 apiVersion: rbac.authorization.k8s.io/v1

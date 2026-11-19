@@ -1,5 +1,18 @@
 # Add real account names here after creating them with keycloak-add-users.
 # Each entry creates saw-<name>. Demo entries are in saw-users-demo.yaml.
+#
+# Container workspaces: set the mode, the Keycloak subject
+# (make keycloak-user-info KC_USER=<name>) and the credential base path.
+# Credentials are read from <vaultPrefix>/saw-<name>/<registration>/inference.
+# Bump generation to start over with a fresh workspace.
+#   - name: alice
+#     ownerSubject: <make keycloak-user-info KC_USER=alice>
+#     profiles: [custom-inference]
+#     vaultPrefix: secret/data/hub
+#     modelInputs:
+#       inference.model: <public model name>
+#     values:
+#       deployment: {mode: container}
 users: []
 
 # Opt in only for users of a configured custom-inference endpoint. Match

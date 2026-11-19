@@ -52,12 +52,14 @@ rules:
     action: approval
     whenCommandMatches:
       - openclaw cron add
+      - openclaw cron create
       - openclaw cron edit
       - openclaw cron rm
       - openclaw cron enable
       - openclaw cron disable
       - openclaw cron run
       - openclaw automations add
+      - openclaw automations create
       - openclaw automations edit
       - openclaw automations rm
       - openclaw automations enable

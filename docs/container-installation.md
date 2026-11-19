@@ -282,7 +282,8 @@ users:
   - name: alice
     ownerSubject: <keycloak-subject-uuid>
     registration: <16-lowercase-hex-characters>
-    installationID: <installation-uuid>
+    # installationID: optional; defaults to the portal's
+    #   uuid5(NAMESPACE_URL, "urn:saw:portal:<name>:<registration>")
     vaultPrefix: secret/data/hub/saw-alice/<same-registration>
     profiles: [data-science]
     pruneOnRemove: true
@@ -308,7 +309,8 @@ containerSites:
 ```
 
 This shows the input contract, not a runnable site with omitted fields. Generate
-unique registration/installation IDs and keep them stable for the installation.
+a unique registration and keep it stable for the installation. Omit
+`installationID` to use the derived value; set it only to keep an existing one.
 Never reuse an old registration to adopt retained storage or credentials.
 
 Enrollment also pins the initial compiled plan. A runtime/compiler change that
@@ -495,6 +497,65 @@ by per-workspace deletion. Provider material provisioned directly in Vault is
 operator-owned; deleting the standalone Helm release does not erase it.
 
 ## Pattern and RHDH enablement
+
+### Minimal static entries
+
+The pattern reads two files for `saw-users`. The platform admin sets the
+cluster-wide container settings once in `overrides/saw-container-defaults.yaml`
+(`projection` and `containerDefaults`, the site every container user gets).
+Users only add an entry to `overrides/saw-users.yaml`:
+
+```yaml
+users:
+  - name: alice
+    ownerSubject: <keycloak subject>   # make keycloak-user-info KC_USER=alice
+    profiles: [custom-inference]
+    vaultPrefix: secret/data/hub       # credential base path
+    values:
+      deployment: {mode: container}
+```
+
+The chart fills in the rest; an explicit value always wins:
+
+| Field | Default |
+|---|---|
+| `registration` | `sha256("<name>:<generation>")[:16]`; set `generation: 2` (default 1) for a fresh workspace instead of reusing an old one |
+| `installationID` | `uuid5(NAMESPACE_URL, "urn:saw:portal:<name>:<registration>")` |
+| `vaultPrefix` | base path + `/saw-<name>/<registration>`; credentials go under it (for example `.../inference`) |
+| `pruneOnRemove`, `intentGeneration` | `true`, `1` |
+| site | `containerDefaults`, overlaid by `containerSites.<name>`; `subject` is the user's `ownerSubject` |
+| chart revisions | `global.targetRevision`: workspaces follow the pattern's branch like VM users. Pin a site's `stack.*.revision`, `automaticEnrollment.revision` and `relay.revision` to full SHAs to stop that. |
+
+`containerDefaults.automaticEnrollment.autoApprove: true` is for development and
+demo clusters. The enrollment Job still runs its health, admission and network
+checks, then publishes the boundary and BOM it observes instead of comparing
+them with an operator-reviewed `reference` and `approvedProfiles` digest. Later
+changes to an enrolled boundary still fail closed; start a new `generation`
+to re-enroll. Keep the reviewed flow below for production clusters.
+
+Generate the network overlay from both files with `make container-topology`;
+it covers `containerDefaults` as well as individual sites.
+
+Before install, `make saw-init` checks the cluster for these entries: OVN-Kubernetes,
+AdminNetworkPolicy and ValidatingAdmissionPolicy, a shared-filesystem
+(ReadWriteMany) StorageClass for the audit exchange volume, and an
+anonymous pull of the runtime image from inside the cluster. `pattern-install`
+and `make saw-create DEPLOYMENT_MODE=container|kata` run it first.
+
+Without a ReadWriteMany class, `saw-init` creates one for development and demo
+clusters: a privileged NFS server Pod on a default-class volume in namespace
+`saw-nfs`, the upstream NFS subdirectory provisioner and StorageClass `saw-nfs`,
+then verifies a read/write mount. It is a single Pod with no replication. For
+production, install a real shared filesystem first (ODF CephFS, EFS, vendor NFS);
+`saw-init` then leaves storage alone. `SAW_SHARED_STORAGE=efs` instead offers to
+create EFS on AWS (filesystem, mount targets, security group, the AWS EFS CSI
+Driver Operator and StorageClass `saw-efs`) with working `aws` credentials, and
+`SAW_SHARED_STORAGE=none` only reports.
+
+A container entry without `ownerSubject` waits: it renders nothing and is listed
+in the `saw-users-awaiting-owner` ConfigMap, so other users still sync. Set it
+from `make keycloak-user-info KC_USER=<name>` once the account exists. With
+`make saw-create`, an omitted `ownerSubject` is resolved from Keycloak.
 
 For static pattern users, put the same values under `overrides/saw-users.yaml`,
 enable `projection`, commit them and let the existing `saw-users` Application

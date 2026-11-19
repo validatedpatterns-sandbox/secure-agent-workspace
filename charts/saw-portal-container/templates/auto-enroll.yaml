@@ -1,6 +1,7 @@
 {{- $s := .Values.site | default dict }}{{- $a := $s.automaticEnrollment | default dict }}
 {{- if and $a (ne (get $a "enabled" | toString) "false") }}
-{{- if or (not (regexMatch "^.+@sha256:[a-f0-9]{64}$" $a.image)) (not (regexMatch "^[a-f0-9]{40}$" $a.revision)) (ne (len $a.reference) (ternary 27 25 (not (empty $s.kataRuntimeClass)))) }}{{ fail "automatic enrollment requires pinned code and a reviewed boundary" }}{{- end }}
+{{- $autoApprove := eq (toString ($a.autoApprove | default false)) "true" }}
+{{- if or (not (regexMatch "^.+@sha256:[a-f0-9]{64}$" $a.image)) (not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._/-]*$" ($a.revision | default ""))) (and (not $autoApprove) (ne (len ($a.reference | default dict)) (ternary 27 25 (not (empty $s.kataRuntimeClass))))) }}{{ fail "automatic enrollment requires a pinned image, a Git revision and a reviewed boundary (or autoApprove)" }}{{- end }}
 {{- $observer := $s.observer | default dict }}
 {{- $r := .Values.registration }}{{- $g := .Values.owner }}{{- $n := .Release.Namespace }}
 {{- $t := printf "saw-ctl-%s" $r }}{{- $archive := printf "saw-history-%s" $r }}
@@ -8,7 +9,7 @@
 {{- $bases := list }}{{- range $slot := $targets }}{{- $bases = append $bases $slot.base }}{{- end }}
 {{- $gov := $s.governanceNamespace }}{{- $name := printf "enroll-%s" $r }}{{- $policy := printf "saw-%s-runtime" $n }}
 {{- $gatewayVersion := dig "stack" "gateway" "values" "kubernetes" "gateway" "version" .Values.driverDefaults.gatewayVersion $s -}}
-{{- $bootstrap := dict "registration" $r "installation" .Values.installationID "user" $g "subject" .Values.ownerSubject "governance" $gov "reference" $a.reference "profileSHA256" ($s.selectedDigest | default $a.profileSHA256) "targets" $targets "gatewayVersion" $gatewayVersion "customInferenceURL" ($s.customInferenceURL | default "") "providerPolicy" ($s.providerPolicy | default dict) "lifecycleVersion" ($s.lifecycleVersion | default 0) "modelInputs" ($s.modelInputs | default dict) "resources" $a.resources "domain" .Values.global.clusterDomain -}}
+{{- $bootstrap := dict "registration" $r "installation" .Values.installationID "user" $g "subject" .Values.ownerSubject "governance" $gov "reference" ($a.reference | default dict) "autoApprove" $autoApprove "profileSHA256" ($s.selectedDigest | default $a.profileSHA256) "targets" $targets "gatewayVersion" $gatewayVersion "customInferenceURL" ($s.customInferenceURL | default "") "providerPolicy" ($s.providerPolicy | default dict) "lifecycleVersion" ($s.lifecycleVersion | default 0) "modelInputs" ($s.modelInputs | default dict) "resources" $a.resources "domain" .Values.global.clusterDomain -}}
 {{- $scripts := (.Files.Glob "files/*.py").AsConfig -}}
 {{- with $s.kataRuntimeClass }}{{- $_ := set $bootstrap "kataRuntimeClass" . }}{{- end }}
 {{- $revision := dict "chartVersion" .Chart.Version "image" $a.image "config" $bootstrap "scripts" $scripts | toJson | sha256sum | trunc 12 -}}

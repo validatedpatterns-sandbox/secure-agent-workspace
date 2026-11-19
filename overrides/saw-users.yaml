@@ -10,6 +10,8 @@ users:
     ownerSubject: 9a30e84e-2a47-4b88-a2c2-7ba2bddc6dbf
     profiles: [custom-inference]
     vaultPrefix: secret/data/hub
+    modelInputs:
+      inference.model: rits/zai-org/glm-5-3   # public model name; the key stays in Vault
     values:
       deployment: {mode: container}
 

@@ -251,6 +251,17 @@ def _project_workspace(workspace, defaults, site, catalog, read=None):
     # custom-inference) has no web-search credential unless the entry asks for it.
     if "dedicatedEndpointSecrets" in catalog[selected] and "webSearch" not in ws:
         ws["webSearch"] = {"enabled": False}
+    # The runtime compiles the model from public inputs, never from the Secret.
+    # The portal reads it from the form; a static entry must name it.
+    given = ws.get("initialModelInputs") if ws.get("lifecycleVersion") == 1 else ws.get("modelInputs")
+    for _, sandbox in enabled_catalog_sandboxes(catalog[selected]):
+        key = sandbox.get("modelInput")
+        if not key:
+            continue
+        secret, field = key.split(".", 1)
+        definition = next((f for f in catalog[selected]["secrets"][secret]["fields"] if f["key"] == field), {})
+        if definition.get("required") and not definition.get("default") and not (given or {}).get(key):
+            raise WorkspaceError(f"{ws['name']}: set modelInputs.{key} (the model this profile requires)")
     overrides = site.get("profileImageOverrides", {}).get(selected, {})
     if overrides:
         ws["imageOverrides"] = overrides

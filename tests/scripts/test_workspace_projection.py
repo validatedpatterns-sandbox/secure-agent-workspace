@@ -122,6 +122,7 @@ def test_auto_approve_site_endpoint_defaults_custom_inference_url():
     owner.update(profiles=["custom-inference"])
     for key in ("lifecycleVersion", "initialModelInputs", "modelInputs", "desiredState", "restartGeneration"):
         owner.pop(key)
+    owner["modelInputs"] = {"inference.model": "org/model"}
     site = auto_site(owner)
     site["profileBoundaries"] = {"custom-inference": {
         "inferenceBaseURL": "https://api.inference.example/v1", "allowHosts": ["api.inference.example"]}}
@@ -132,6 +133,10 @@ def test_auto_approve_site_endpoint_defaults_custom_inference_url():
     assert "reference" not in projected["automaticEnrollment"]
     assert result["users"][0]["customInferenceURL"] == "https://api.inference.example/v1"
     assert result["users"][0]["webSearch"] == {"enabled": False}  # dedicated endpoint, as in the portal
+    del owner["modelInputs"]
+    with pytest.raises(workspace.WorkspaceError, match="set modelInputs.inference.model"):
+        workspace.project_workspace(owner, {}, site, CATALOG, lambda _: {})
+    owner["modelInputs"] = {"inference.model": "org/model"}
     owner["customInferenceURL"] = "https://elsewhere.example/v1"
     with pytest.raises(workspace.WorkspaceError, match="endpoint differs"):
         workspace.project_workspace(owner, {}, site, CATALOG, lambda _: {})

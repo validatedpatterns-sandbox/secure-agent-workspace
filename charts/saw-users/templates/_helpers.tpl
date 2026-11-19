@@ -23,7 +23,9 @@ watches, not in whatever namespace this chart happens to be released into.
 {{- $seen := dict -}}
 {{- range .Values.users | default list -}}
 {{- $name := .name | default "" | toString -}}
+{{- if not (include "saw-users.awaitingOwner" (dict "root" $ "user" .)) -}}
 {{- include "saw-users.validateDeploymentMode" (dict "root" $ "user" .) -}}
+{{- end -}}
 {{- if and $.Values.ownerResolution.enabled (not (has (dig "deployment" "mode" "vm" (.values | default dict)) (list "container" "kata"))) -}}
 {{- $entryValues := .values | default dict -}}
 {{- $entryAccess := index $entryValues "accessControl" | default dict -}}
@@ -530,4 +532,16 @@ skips empty values, so a per-user false/"" cannot unset a default. Returns JSON.
 {{- if and .relay (not .relay.revision) }}{{ $_ := set .relay "revision" $rev }}{{ end -}}
 {{- end -}}
 {{- toJson $site -}}
+{{- end -}}
+
+{{/* "true" for a container or Kata user whose ownerSubject is not known yet
+(typically before the Keycloak account exists) on an installation configured
+for containers (containerDefaults or the user's containerSites entry). Such a
+user is left out of every rendered resource and listed in the
+saw-users-awaiting-owner ConfigMap, so VM users and the rest of the install
+still sync. Without any container configuration the entry still fails. */}}
+{{- define "saw-users.awaitingOwner" -}}
+{{- $u := .user -}}
+{{- $configured := or .root.Values.containerDefaults (hasKey (.root.Values.containerSites | default dict) ($u.name | default "")) -}}
+{{- if and $configured (has (dig "deployment" "mode" "vm" ($u.values | default dict)) (list "container" "kata")) (not $u.ownerSubject) -}}true{{- end -}}
 {{- end -}}

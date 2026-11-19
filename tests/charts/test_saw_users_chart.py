@@ -160,6 +160,18 @@ def test_vm_and_container_users_coexist(tmp_path):
     assert "containerDefaults" not in workspaces
 
 
+def test_container_user_without_subject_waits_without_blocking_others(tmp_path):
+    site = yaml.safe_load((ROOT / "tests/fixtures/container-site.yaml").read_text())["portal"]["containerSites"]["alice"]
+    site.pop("subject")
+    alice = {"name": "alice", "profiles": ["data-science"], "values": {"deployment": {"mode": "container"}}}
+    docs = docs_from(render_file(tmp_path, [alice, {"name": "bob"}], {"containerDefaults": site}))
+    names = {(d["kind"], d["metadata"]["name"]) for d in docs}
+    assert ("Application", "saw-bob") in names
+    assert not any(n == "saw-alice" or n.startswith("saw-alice-") for _, n in names)
+    waiting = [d for d in by_kind(docs, "ConfigMap") if d["metadata"]["name"] == "saw-users-awaiting-owner"]
+    assert waiting[0]["data"]["users"] == "alice"
+
+
 def test_container_entry_without_defaults_or_site_fails(tmp_path):
     user = {"name": "alice", "ownerSubject": "11111111-1111-4111-8111-111111111111",
             "profiles": ["data-science"], "values": {"deployment": {"mode": "container"}}}

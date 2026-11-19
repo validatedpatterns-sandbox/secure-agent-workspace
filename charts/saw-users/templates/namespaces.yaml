@@ -1,6 +1,6 @@
 {{- include "saw-users.validate" . -}}
 {{- range $user := .Values.users | default list }}
-{{- if not (and $.Values.projection.enabled (has (dig "deployment" "mode" "vm" ($user.values | default dict)) (list "container" "kata"))) }}
+{{- if and (not (include "saw-users.awaitingOwner" (dict "root" $ "user" $user))) (not (and $.Values.projection.enabled (has (dig "deployment" "mode" "vm" ($user.values | default dict)) (list "container" "kata")))) }}
 {{- if has (dig "deployment" "mode" "vm" ($user.values | default dict)) (list "container" "kata") }}{{- $user = include "saw-users.containerUser" (dict "root" $ "user" $user) | fromJson }}{{- end }}
 ---
 apiVersion: v1

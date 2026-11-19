@@ -1,7 +1,7 @@
 {{- if .Values.projection.enabled }}
 {{- $users := list }}
 {{- range $user := .Values.users }}
-{{- if has (dig "deployment" "mode" "vm" ($user.values | default dict)) (list "container" "kata") }}
+{{- if and (has (dig "deployment" "mode" "vm" ($user.values | default dict)) (list "container" "kata")) $user.ownerSubject }}
 {{- $users = append $users (include "saw-users.containerUser" (dict "root" $ "user" $user) | fromJson) }}
 {{- end }}{{- end }}
 {{- $owner := printf "%s/%s" .Release.Namespace .Release.Name | sha256sum | trunc 20 }}

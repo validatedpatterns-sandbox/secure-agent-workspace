@@ -18,13 +18,24 @@ DNS_LABEL = re.compile(r"[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?")
 GATEWAY = ("stack", "gateway", "values")
 BOOTSTRAP = ("stack", "proxy", "values", "network", "bootstrapEgress")
 RELAY = ("automaticEnrollment", "relay")
+
+
+class PlainDumper(yaml.SafeDumper):
+    """Write shared rules out in full: reviewers read the overlay, not anchors."""
+    def ignore_aliases(self, data):
+        return True
+
+
+def dump(data, stream=None):
+    return yaml.dump(data, stream, Dumper=PlainDumper, sort_keys=False)
 AUDIT = ("stack", "audit", "values")
 GATEWAY_STORAGE = GATEWAY + ("kubernetes", "storage", "className")
 # CSI provisioners that serve ReadWriteMany filesystems.
 SHARED_FILESYSTEM_PROVISIONERS = (
     "openshift-storage.cephfs.csi.ceph.com", "cephfs.csi.ceph.com", "nfs.csi.k8s.io",
     "efs.csi.aws.com", "file.csi.azure.com", "filestore.csi.storage.gke.io",
-    "csi.trident.netapp.io", "spectrumscale.csi.ibm.com")
+    "csi.trident.netapp.io", "spectrumscale.csi.ibm.com", "k8s-sigs.io/nfs-subdir-external-provisioner")
+# Keep in sync with SHARED in scripts/shared-storage.sh.
 
 
 def command(*args):
@@ -106,11 +117,17 @@ def appset_controller_labels(values):
                  or path_value(values, ("argo", "namespace")) or "vp-gitops")
     if not isinstance(namespace, str) or not DNS_LABEL.fullmatch(namespace):
         raise ValueError("invalid Argo CD namespace")
-    pods = json.loads(command("oc", "get", "pods", "-n", namespace, "-l",
-                              "app.kubernetes.io/component=applicationset-controller", "-o", "json"))
-    names = {p.get("metadata", {}).get("labels", {}).get("app.kubernetes.io/name")
-             for p in pods.get("items", []) if not p.get("metadata", {}).get("deletionTimestamp")}
-    names.discard(None)
+    # Operator-managed instances label the pod app.kubernetes.io/name=<instance>-applicationset-controller;
+    # some also set app.kubernetes.io/component=applicationset-controller.
+    pods = json.loads(command("oc", "get", "pods", "-n", namespace, "-o", "json"))
+    names = set()
+    for pod in pods.get("items", []):
+        meta = pod.get("metadata", {})
+        labels = meta.get("labels", {})
+        name = labels.get("app.kubernetes.io/name", "")
+        if not meta.get("deletionTimestamp") and (name.endswith("-applicationset-controller") or
+                labels.get("app.kubernetes.io/component") == "applicationset-controller"):
+            names.add(name)
     if len(names) != 1 or not DNS_LABEL.fullmatch(next(iter(names))):
         raise ValueError(f"expected one ApplicationSet controller in {namespace}; "
                          "set projection.applicationSetControllerLabels in the base file")
@@ -244,7 +261,7 @@ def install_values(config, owner, overlay_file, probe, container, verify):
             raise ValueError("review the generated topology overlay before enabling enrollment")
         # Link a complete file without overwriting another concurrent install's review.
         with tempfile.NamedTemporaryFile(dir=path_on_disk.parent, mode="w") as tmp:
-            yaml.safe_dump(expected, tmp, sort_keys=False)
+            dump(expected, tmp)
             tmp.flush()
             try:
                 os.link(tmp.name, path_on_disk)
@@ -280,7 +297,7 @@ def main():
             if yaml.safe_load(args.check.read_text()) != found:
                 raise ValueError("container topology drift; regenerate the overlay from the base file and review the diff")
         else:
-            sys.stdout.write(yaml.safe_dump(found, sort_keys=False))
+            sys.stdout.write(dump(found))
     except yaml.YAMLError:
         p.exit(1, "Container topology check failed: invalid YAML input\n")
     except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as exc:

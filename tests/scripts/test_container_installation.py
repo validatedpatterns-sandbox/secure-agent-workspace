@@ -42,6 +42,32 @@ def test_select_isolates_container_without_modifying_vm_or_input():
     assert selected["projection"]["enabled"] is True
 
 
+def test_select_accepts_the_minimal_entry_with_container_defaults(monkeypatch):
+    values = inputs()
+    site = values.pop("containerSites")["alice"]
+    subject = site.pop("subject")
+    values["containerDefaults"] = site
+    values["users"][0] = {"name": "alice", "profiles": ["data-science"], "vaultPrefix": "secret/data/hub",
+                          "values": {"deployment": {"mode": "container"}}}
+    monkeypatch.setattr(install, "resolve_subject", lambda name: subject)
+    selected, user = install.select(values, "alice")
+    assert user["registration"] == "1f732dc2bd1766a0"  # sha256("alice:1")[:16], as the chart derives
+    assert user["installationID"] == "a4300afa-4ae4-5da1-a5b1-44e50a34eb59"
+    assert user["vaultPrefix"] == "secret/data/hub/saw-alice/1f732dc2bd1766a0"
+    assert user["ownerSubject"] == subject and user["pruneOnRemove"] is True and user["intentGeneration"] == 1
+    assert selected["containerSites"]["alice"]["subject"] == subject
+
+
+def test_select_without_subject_or_keycloak_account_explains(monkeypatch):
+    values = inputs()
+    del values["users"][0]["ownerSubject"]
+    def missing(name):
+        raise install.InstallError("set ownerSubject for alice, or create the Keycloak account first")
+    monkeypatch.setattr(install, "resolve_subject", missing)
+    with pytest.raises(install.InstallError, match="Keycloak account"):
+        install.select(values, "alice")
+
+
 def test_select_derives_installation_id_like_the_portal():
     values = inputs()
     del values["users"][0]["installationID"]

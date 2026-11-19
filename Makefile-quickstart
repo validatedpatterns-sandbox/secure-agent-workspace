@@ -119,7 +119,7 @@ endif
         governance-interceptor-build governance-interceptor-build-local \
         keycloak-deploy keycloak-delete keycloak-check keycloak-issuer \
         keycloak-register keycloak-redirects keycloak-redirects-sync \
-        keycloak-passwords keycloak-harden keycloak-add-users keycloak-add-user keycloak-password keycloak-reset-password keycloak-user-info \
+        keycloak-passwords keycloak-harden keycloak-add-users keycloak-add-user keycloak-password keycloak-reset-password keycloak-user-info saw-init \
         login whoami logout saw-create saw-configure saw-list saw-logs saw-status \
         saw-restart saw-restart-pending saw-vm-ssh saw-ssh saw-tui saw-gui saw-delete \
         sandbox-pre-delete quickstart-delete status test test-deployment test-dependencies test-pattern-e2e test-pattern-e2e-install test-pattern-e2e-live test-pattern-e2e-cleanup test-harness-e2e lint \
@@ -139,6 +139,9 @@ quickstart-prereqs-check: ## Check tools, capacity, CNV, and RHBK before quickst
 
 storage-class-check: ## Ensure a default StorageClass exists for the VM disks (offers to reuse one or enable HPP)
 	@$(SCRIPTS_DIR)/storage-class-check.sh
+
+saw-init: storage-class-check ## Prepare the cluster before install: storage, and for container/kata users the APIs, a shared-filesystem class (offers EFS on AWS) and the runtime image
+	@$(SCRIPTS_DIR)/saw-init.sh
 
 check-oidc-ca: ## Check if the OIDC issuer needs a CA bundle
 	@$(SCRIPTS_DIR)/check-oidc-ca.sh
@@ -436,6 +439,7 @@ check-container-topology: ## Compare the reviewed site network overlay with live
 
 saw-create: .check-saw-name .check-deployment-mode ## Provision one SAW using DEPLOYMENT_MODE=vm, container or kata
 	@if [ "$(DEPLOYMENT_MODE)" != vm ]; then \
+		$(SCRIPTS_DIR)/saw-init.sh && \
 		$(or $(PYTHON),uv run --locked python) $(SCRIPTS_DIR)/container-workspace.py apply; \
 	else $(SCRIPTS_DIR)/openshell-saw-create.sh; fi
 

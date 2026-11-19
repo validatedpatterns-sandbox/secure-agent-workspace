@@ -8,7 +8,9 @@ include Makefile-quickstart
 # SAW: a default StorageClass must exist before the GitOps apply provisions
 # the VM disks (they set no storageClassName). Interactive on a TTY; offers to
 # reuse an existing class or enable HPP. See scripts/storage-class-check.sh.
-pattern-install: storage-class-check
+# saw-init adds the container-mode checks when overrides/saw-users.yaml has
+# container or kata users (scripts/saw-init.sh).
+pattern-install: saw-init
 
 # Bootstrap stock GitOps before the framework selects its Argo CD namespace.
 .PHONY: prepare-gitops

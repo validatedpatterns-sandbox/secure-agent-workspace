@@ -536,6 +536,27 @@ to re-enroll. Keep the reviewed flow below for production clusters.
 Generate the network overlay from both files with `make container-topology`;
 it covers `containerDefaults` as well as individual sites.
 
+Before install, `make saw-init` checks the cluster for these entries: OVN-Kubernetes,
+AdminNetworkPolicy and ValidatingAdmissionPolicy, a shared-filesystem
+(ReadWriteMany) StorageClass for the audit exchange volume, and an
+anonymous pull of the runtime image from inside the cluster. `pattern-install`
+and `make saw-create DEPLOYMENT_MODE=container|kata` run it first.
+
+Without a ReadWriteMany class, `saw-init` creates one for development and demo
+clusters: a privileged NFS server Pod on a default-class volume in namespace
+`saw-nfs`, the upstream NFS subdirectory provisioner and StorageClass `saw-nfs`,
+then verifies a read/write mount. It is a single Pod with no replication. For
+production, install a real shared filesystem first (ODF CephFS, EFS, vendor NFS);
+`saw-init` then leaves storage alone. `SAW_SHARED_STORAGE=efs` instead offers to
+create EFS on AWS (filesystem, mount targets, security group, the AWS EFS CSI
+Driver Operator and StorageClass `saw-efs`) with working `aws` credentials, and
+`SAW_SHARED_STORAGE=none` only reports.
+
+A container entry without `ownerSubject` waits: it renders nothing and is listed
+in the `saw-users-awaiting-owner` ConfigMap, so other users still sync. Set it
+from `make keycloak-user-info KC_USER=<name>` once the account exists. With
+`make saw-create`, an omitted `ownerSubject` is resolved from Keycloak.
+
 For static pattern users, put the same values under `overrides/saw-users.yaml`,
 enable `projection`, commit them and let the existing `saw-users` Application
 reconcile. Its namespace must be separate from Argo CD. VM users keep their

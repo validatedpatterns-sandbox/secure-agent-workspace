@@ -46,9 +46,9 @@ def cluster(monkeypatch):
                     "storageclass.kubernetes.io/is-default-class": "true"}}, "provisioner": "ebs.csi.aws.com"},
                 {"metadata": {"name": "ocs-cephfs"}, "provisioner": "openshift-storage.cephfs.csi.ceph.com"}]})
         if "pods" in args and "vp-gitops" in args:
-            return json.dumps({"items": [{"metadata": {"labels": {
-                "app.kubernetes.io/name": "vp-gitops-applicationset-controller",
-                "app.kubernetes.io/component": "applicationset-controller"}}}]})
+            return json.dumps({"items": [
+                {"metadata": {"labels": {"app.kubernetes.io/name": "vp-gitops-applicationset-controller"}}},
+                {"metadata": {"labels": {"app.kubernetes.io/name": "vp-gitops-server"}}}]})
         if args[0].endswith("keycloak-host.sh"):
             return "keycloak.apps.cluster.example.test"
         if "exec" in args:

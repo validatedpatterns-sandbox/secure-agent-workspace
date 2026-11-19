@@ -223,6 +223,14 @@ def test_site_configuration_requires_pinned_sources_and_scoped_egress():
     assert facts["providerEgress"] is False
     assert facts["revisions"] is False
     assert facts["registry"] is False
+    development = site_config()
+    development["automaticEnrollment"]["autoApprove"] = True
+    for component in development["stack"].values():
+        component["revision"] = "configure-alice-custom-inference"
+    development["automaticEnrollment"]["revision"] = "main"
+    assert preflight.configuration_facts(development)["revisions"] is True
+    development["stack"]["gateway"]["revision"] = "-not-a-branch"
+    assert preflight.configuration_facts(development)["revisions"] is False
     missing_component = site_config()
     del missing_component["stack"]["audit"]
     assert preflight.configuration_facts(missing_component)["revisions"] is False

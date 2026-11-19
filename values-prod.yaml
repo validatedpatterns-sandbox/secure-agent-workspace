@@ -136,6 +136,10 @@ clusterGroup:
       namespace: rhdh
       path: charts/openshell-rhdh
       extraValueFiles:
+        # containerDefaults (the shared site for portal container requests)
+        # and portal.deploymentModes come from the same files as saw-users,
+        # including the site's container-network overlay where it has one.
+        - /overrides/saw-container-defaults.yaml
         - /overrides/saw-users.yaml
     governance-policy:
       name: governance-policy

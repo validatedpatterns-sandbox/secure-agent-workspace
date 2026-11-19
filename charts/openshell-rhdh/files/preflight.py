@@ -196,6 +196,11 @@ def check_observations(mode, observations):
     return tuple(required)
 
 
+# A full commit SHA pins the charts; a branch follows the pattern (saw-users and
+# portal defaults use global.targetRevision when a site sets no revision).
+GIT_REVISION = r"[a-f0-9]{40}|[A-Za-z0-9][A-Za-z0-9._/-]*"
+
+
 def configuration_facts(site):
     """Check site-owned inputs that do not require cluster access."""
     if not isinstance(site, dict):
@@ -206,14 +211,14 @@ def configuration_facts(site):
     required_components = ("identity", "policy", "proxy", "gateway", "audit")
     revision_pin = all(isinstance(stack.get(name), dict) for name in required_components) and all(
         isinstance(stack[name].get("revision"), str)
-        and re.fullmatch(r"[a-f0-9]{40}", stack[name]["revision"])
+        and re.fullmatch(GIT_REVISION, stack[name]["revision"])
         for name in required_components) and bool(revisions) and len(revisions) == len(stack) and all(
-        isinstance(value, str) and re.fullmatch(r"[a-f0-9]{40}", value) for value in revisions)
+        isinstance(value, str) and re.fullmatch(GIT_REVISION, value) for value in revisions)
     enrollment = site.get("automaticEnrollment") or {}
     if enrollment and not isinstance(enrollment, dict):
         revision_pin = False
     elif enrollment:
-        revision_pin = revision_pin and bool(re.fullmatch(r"[a-f0-9]{40}", str(enrollment.get("revision", ""))))
+        revision_pin = revision_pin and bool(re.fullmatch(GIT_REVISION, str(enrollment.get("revision", ""))))
 
     image_values = []
     storage_values = []

@@ -13,6 +13,11 @@
 projection:
   enabled: true
 
+# Self-service portal (openshell-rhdh reads this file too): offer Container next
+# to VM. Any Keycloak user may request it; their site is containerDefaults.
+portal:
+  deploymentModes: [vm, container, kata]
+
 containerDefaults:
   # The custom inference endpoint approved for custom-inference workspaces;
   # its host must be the only allowed provider host for that profile.

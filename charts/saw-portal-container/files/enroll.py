@@ -39,6 +39,16 @@ def once(x):
         return api("/api/v1/namespaces/"+namespace+"/"+plural+"/"+name)
     nsobj=obj("namespace",ns)["metadata"]
     if nsobj["labels"].get("saw.redhat.com/runtime-owner")!=ident or nsobj.get("deletionTimestamp"):raise ValueError("namespace ownership")
+    if x.get("autoApprove"):
+        # autoApprove publishes the first observation once. A rerun (new chart
+        # inputs) must not compare it with today's, which includes the running
+        # workspace; the reconciler still rejects later boundary changes.
+        published=api(f"/api/v1/namespaces/{t}/configmaps/saw-portal-enrollment")
+        binding=(published.get("data") or {}).get("binding.json")
+        if ((published["metadata"].get("labels") or {}).get("saw.redhat.com/runtime-owner")==ident
+                and binding and json.loads(binding).get("registration")==r):
+            print("Registration "+r+" is already enrolled",flush=True)
+            return
     if runtime:
         try:
             runtime_class=obj("runtimeclass",runtime["name"])

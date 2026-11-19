@@ -75,7 +75,7 @@ RHBK operator deploys Keycloak. A `KeycloakRealmImport` creates the `openshell` 
 
 - **Clients:**
   - `openshell-cli` — public client, PKCE with S256, device code flow, 24h token lifetime
-    (effective lifetime capped to 10h by the realm's SSO Session Max)
+    (effective lifetime is up to 24h, limited by the session's remaining lifetime)
   - `openshell-dashboard` — public client, PKCE, redirect URIs registered by the redirect registrar or an administrator (below)
 - **Users:** none by default; create real accounts before adding their workspace entries
 - **Roles:** `openshell-user`, `openshell-admin`
@@ -249,7 +249,7 @@ issuer needs `ownerSubject` because the Keycloak resolver cannot query it.
 ### Existing-install identity migration
 
 A new `KeycloakRealmImport` does not update an existing realm. Use the realm's
-admin console and `make keycloak-harden` for existing settings. Do not use a
+admin console and the commands below for existing settings. Do not use a
 chart render as proof that existing accounts or registration changed.
 
 1. Record the current realm and accounts. Confirm which accounts are real
@@ -273,6 +273,9 @@ chart render as proof that existing accounts or registration changed.
    console, also verify **Realm settings > Login > User registration** is
    off. Check password policy and brute-force settings. Do this explicitly:
    reapplying a `KeycloakRealmImport` does not change an existing realm.
+   Run `make keycloak-session-max` to set its SSO session maximum to the value
+   in the chart. This changes only the maximum and keeps the current idle
+   timeout.
 4. For each confirmed demo-only account, remove it from
    `accessControl.dashboardSupportUsers` and
    `sandboxUiProxy.allowedUsers` in every SAW where it has support access.

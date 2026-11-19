@@ -119,7 +119,7 @@ endif
         governance-interceptor-build governance-interceptor-build-local \
         keycloak-deploy keycloak-delete keycloak-check keycloak-issuer \
         keycloak-register keycloak-redirects keycloak-redirects-sync \
-        keycloak-passwords keycloak-harden keycloak-add-users keycloak-add-user keycloak-password keycloak-reset-password \
+        keycloak-passwords keycloak-harden keycloak-session-max keycloak-add-users keycloak-add-user keycloak-password keycloak-reset-password \
         login whoami logout saw-create saw-configure saw-list saw-logs saw-status \
         saw-restart saw-restart-pending saw-vm-ssh saw-ssh saw-tui saw-gui saw-delete \
         sandbox-pre-delete quickstart-delete status test test-deployment test-dependencies test-pattern-e2e test-pattern-e2e-install test-pattern-e2e-live test-pattern-e2e-cleanup test-harness-e2e lint \
@@ -353,6 +353,9 @@ keycloak-passwords: ## List users with passwords stored in Keycloak Secrets
 keycloak-harden: ## Apply password policy, lockout, and no self-registration to an existing realm
 	@DEMO_ENABLED=$(DEMO_ENABLED) $(SCRIPTS_DIR)/keycloak-users.sh ensure
 	@DEMO_ENABLED=$(DEMO_ENABLED) $(SCRIPTS_DIR)/keycloak-users.sh harden
+
+keycloak-session-max: ## Apply the chart's SSO session maximum to an existing realm
+	@$(SCRIPTS_DIR)/keycloak-users.sh session-max
 
 USERS_FILE ?= overrides/saw-users.yaml
 KC_USER    ?=

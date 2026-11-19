@@ -56,7 +56,7 @@ def test_help_lists_public_targets_once_without_make_warnings():
         "pattern-install pattern-uninstall uninstall pre-uninstall lint test test-deployment "
         "prereqs-check quickstart-prereqs-check ssh-key-generate sandbox-build cli-build gateway-build "
         "gateway-build-podman gateway-build-docker images-mirror keycloak-deploy "
-        "keycloak-delete keycloak-check keycloak-password login logout whoami "
+        "keycloak-delete keycloak-check keycloak-password keycloak-session-max login logout whoami "
         "saw-create saw-configure saw-list saw-logs saw-status saw-restart saw-restart-pending "
         "saw-vm-ssh saw-ssh saw-tui saw-gui saw-delete quickstart-delete "
         "governance-deploy governance-delete governance-profile-list "

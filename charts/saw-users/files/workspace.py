@@ -247,6 +247,10 @@ def _project_workspace(workspace, defaults, site, catalog, read=None):
         raise WorkspaceError("container requires one approved BOM profile")
     if not ws.get("registration") or not ws.get("installationID"):
         raise WorkspaceError("container requires a registration and installation identity")
+    # As the portal does at registration: a dedicated-endpoint profile (such as
+    # custom-inference) has no web-search credential unless the entry asks for it.
+    if "dedicatedEndpointSecrets" in catalog[selected] and "webSearch" not in ws:
+        ws["webSearch"] = {"enabled": False}
     overrides = site.get("profileImageOverrides", {}).get(selected, {})
     if overrides:
         ws["imageOverrides"] = overrides

@@ -131,6 +131,7 @@ def test_auto_approve_site_endpoint_defaults_custom_inference_url():
     assert projected["providerAllowHosts"] == ["api.inference.example"]
     assert "reference" not in projected["automaticEnrollment"]
     assert result["users"][0]["customInferenceURL"] == "https://api.inference.example/v1"
+    assert result["users"][0]["webSearch"] == {"enabled": False}  # dedicated endpoint, as in the portal
     owner["customInferenceURL"] = "https://elsewhere.example/v1"
     with pytest.raises(workspace.WorkspaceError, match="endpoint differs"):
         workspace.project_workspace(owner, {}, site, CATALOG, lambda _: {})

@@ -5,26 +5,20 @@
 # (make keycloak-user-info KC_USER=<name>) and the credential base path.
 # Credentials are read from <vaultPrefix>/saw-<name>/<registration>/inference.
 # Bump generation to start over with a fresh workspace.
-users:
-  - name: alice
-    # generation 2 = registration d2565216ccf6a6c0 (credentials at
-    # secret/data/hub/saw-alice/d2565216ccf6a6c0/inference). Generation 1
-    # (1f732dc2bd1766a0) was removed: its enrollment approved a gateway
-    # Service left over from her VM workspace.
-    generation: 2
-    ownerSubject: 9a30e84e-2a47-4b88-a2c2-7ba2bddc6dbf
-    profiles: [custom-inference]
-    vaultPrefix: secret/data/hub
-    modelInputs:
-      inference.model: rits/zai-org/glm-5-3   # public model name; the key stays in Vault
-    values:
-      deployment: {mode: container}
-
+#   - name: alice
+#     ownerSubject: <make keycloak-user-info KC_USER=alice>
+#     profiles: [custom-inference]
+#     vaultPrefix: secret/data/hub
+#     modelInputs:
+#       inference.model: <public model name>
+#     values:
+#       deployment: {mode: container}
+users: []
 
 # Opt in only for users of a configured custom-inference endpoint. Match
 # the hostname in overrides/governance-profiles/custom-inference.yaml.
-defaults:
-  openshellSaw:
-    egress:
-      extraAllow:
-        - api.inference.example.com
+# defaults:
+#   openshellSaw:
+#     egress:
+#       extraAllow:
+#         - api.inference.example.com

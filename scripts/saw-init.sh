@@ -116,5 +116,6 @@ fi
 cat <<'EOF'
 SAW init: the cluster is ready for container workspaces. After install, once Keycloak is up:
   - make keycloak-add-user KC_USER=<name>; make keycloak-user-info KC_USER=<name>  (ownerSubject)
-  - make container-topology > overrides/container-network.yaml  (network overlay; commit it)
+  - make container-topology > overrides/container-network.yaml  (network overlay; commit it on
+    your fork and list it after /overrides/saw-users.yaml in saw-users' extraValueFiles)
 EOF

@@ -8,6 +8,8 @@
 # by `make container-topology` into overrides/container-network.yaml, as are
 # storage classes left unset here (the cluster default for single-node volumes,
 # a shared-filesystem class such as CephFS for the audit exchange volume).
+# That overlay holds one cluster's addresses: commit it on your fork and list
+# it after /overrides/saw-users.yaml in saw-users' extraValueFiles.
 projection:
   enabled: true
 
@@ -23,9 +25,9 @@ containerDefaults:
   # Both profiles use the same source image.
   profileImageOverrides:
     data-science:
-      notebook: "image-registry.openshift-image-registry.svc:5000/saw-component-builds/saw-openclaw-896d1526ee29-amd64@sha256:5c923bbb2f244f0818e57c041370d10eea697204b4b63f558b7e907fb657f8e1"
+      notebook: "image-registry.openshift-image-registry.svc:5000/saw-component-builds/saw-openclaw-896d1526ee29-amd64@sha256:<digest printed by make container-notebook-image>"
     custom-inference:
-      notebook: "image-registry.openshift-image-registry.svc:5000/saw-component-builds/saw-openclaw-896d1526ee29-amd64@sha256:5c923bbb2f244f0818e57c041370d10eea697204b4b63f558b7e907fb657f8e1"
+      notebook: "image-registry.openshift-image-registry.svc:5000/saw-component-builds/saw-openclaw-896d1526ee29-amd64@sha256:<digest printed by make container-notebook-image>"
   imagePull:
     namespace: saw-component-builds
     streams: [saw-openclaw-896d1526ee29-amd64]
@@ -35,10 +37,9 @@ containerDefaults:
   automaticEnrollment:
     enabled: true
     autoApprove: true   # dev/demo cluster: enroll on first observation, no manual review
-    # CI build of main f582a118 in the sauagarwa fork (public, multi-arch);
-    # tag sha-f582a1183dc13ee15f8df4349e8467c981a39250. Switch to the
-    # validatedpatterns-sandbox package once it is public.
-    image: ghcr.io/sauagarwa/saw-kubernetes-runtime@sha256:78ea2cf9eebdbf6b350fff43175e034724f22def60bdf03b4fb014f54430221d
+    # The saw-kubernetes-runtime image, pinned by digest and pullable
+    # anonymously from inside the cluster (make saw-init checks this).
+    image: ghcr.io/validatedpatterns-sandbox/saw-kubernetes-runtime@sha256:<digest>
     buildNamespace: saw-component-builds
     resources:
       requests: {cpu: 500m, memory: 1Gi}

@@ -319,8 +319,10 @@ make saw-logs OPENSHELL_SAW_NAME=alice      # until "apply: Done"
 #       values: {deployment: {mode: container}}
 # Until ownerSubject is set the entry waits (ConfigMap saw-users-awaiting-owner)
 # without blocking other users. Once, after Keycloak is up, generate the network
-# overlay: make container-topology > overrides/container-network.yaml, then
-# commit it. See docs/container-installation.md#minimal-static-entries.
+# overlay: make container-topology > overrides/container-network.yaml, commit
+# it on your fork and list it after saw-users.yaml in saw-users'
+# extraValueFiles (it holds this cluster's addresses, so it is not in this
+# repository). See docs/container-installation.md#minimal-static-entries.
 # Without a fork: users create their own workspace in the self-service
 # portal (Red Hat Developer Hub, docs/rhdh-user-guide.md), or create one
 # outside GitOps with `make saw-create OPENSHELL_SAW_NAME=alice` (Option B).

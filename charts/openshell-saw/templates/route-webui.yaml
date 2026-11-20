@@ -12,6 +12,9 @@ metadata:
     saw.redhat.com/oidc-redirect: "true"
     {{- end }}
 spec:
+  {{- with include "openshell-sandbox.auxRouteHost" (list . "webui" .Values.route.webuiHost) }}
+  host: {{ . | quote }}
+  {{- end }}
   to:
     kind: Service
     name: {{ include "openshell-sandbox.fullname" . }}-gateway

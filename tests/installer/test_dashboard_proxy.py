@@ -3,6 +3,8 @@ import os
 from pathlib import Path
 import subprocess
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "charts/openshell-saw/files/installer/setup-dashboard.sh"
@@ -41,3 +43,11 @@ def test_proxy_can_read_only_the_explicit_user_allowlist(tmp_path):
     proxy_env = (config / "dashboard-proxy.env").read_text()
     assert "OAUTH2_PROXY_AUTHENTICATED_EMAILS_FILE=/etc/saw/dashboard-users" in proxy_env
     assert "OAUTH2_PROXY_EMAIL_DOMAINS=" not in proxy_env
+
+    # The BFF defaults to "user"; it must recognize the same standard role
+    # that the gateway reads from the existing user's token.
+    gateway_roles = yaml.safe_load((ROOT / "charts/openshell-saw/values.yaml").read_text())["oidc"]
+    dashboard_env = dict(line.split("=", 1) for line in (config / "dashboard.env").read_text().splitlines())
+    assert dashboard_env["USER_ROLE"] == gateway_roles["userRole"]
+    assert dashboard_env["ADMIN_ROLE"] == gateway_roles["adminRole"]
+    assert dashboard_env["AUTH_DISABLED"] == "false"

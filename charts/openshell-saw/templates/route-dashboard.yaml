@@ -6,6 +6,9 @@ metadata:
   labels:
     {{- include "openshell-sandbox.labels" . | nindent 4 }}
 spec:
+  {{- with include "openshell-sandbox.auxRouteHost" (list . "dashboard" .Values.route.dashboardHost) }}
+  host: {{ . | quote }}
+  {{- end }}
   to:
     kind: Service
     name: {{ include "openshell-sandbox.fullname" . }}-gateway

@@ -28,4 +28,31 @@ spec:
   {{- end }}
   proxy:
     headers: xforwarded
+  {{- if .Values.keycloak.waitForDatabase }}
+  # The operator can start Keycloak as soon as the Service exists, while a
+  # new PostgreSQL pod is still initializing. Wait for the database to accept
+  # connections before Keycloak creates its schema.
+  unsupported:
+    podTemplate:
+      spec:
+        initContainers:
+          - name: wait-for-postgres
+            image: {{ .Values.postgres.image }}
+            command:
+              - /bin/sh
+              - -ec
+              - |
+                until pg_isready -h keycloak-db -p 5432 -U "$POSTGRESQL_USER" -d "$POSTGRESQL_DATABASE"; do
+                  echo "waiting for Keycloak PostgreSQL"
+                  sleep 2
+                done
+            env:
+              - name: POSTGRESQL_USER
+                valueFrom:
+                  secretKeyRef:
+                    name: keycloak-db-secret
+                    key: username
+              - name: POSTGRESQL_DATABASE
+                value: {{ .Values.postgres.database | quote }}
+  {{- end }}
 {{- end }}

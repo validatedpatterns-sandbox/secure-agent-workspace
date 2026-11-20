@@ -36,6 +36,10 @@ def test_default_deploys_keycloak_database_and_realm():
     docs = render()
     kinds = {d["kind"] for d in docs}
     assert {"Keycloak", "KeycloakRealmImport", "Deployment"} <= kinds
+    (keycloak,) = [d for d in docs if d["kind"] == "Keycloak"]
+    init = keycloak["spec"]["unsupported"]["podTemplate"]["spec"]["initContainers"]
+    assert init[0]["name"] == "wait-for-postgres"
+    assert "pg_isready" in init[0]["command"][-1]
     (realm,) = [d for d in docs if d["kind"] == "KeycloakRealmImport"]
     assert realm["spec"]["keycloakCRName"] == "openshell-keycloak"
 

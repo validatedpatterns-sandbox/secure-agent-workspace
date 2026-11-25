@@ -570,18 +570,13 @@ def main(argv=None):
               for src in sorted(GOVERNANCE_PROFILES.glob("*.yaml"))}
     extra = [p for p in sorted(INSTALLER_PROFILES.glob("*.yaml")) if p not in mirror]
     lifecycle = TEMPLATE_OUTPUT.with_name("set-workspace-state.yaml")
-    # Independent Helm charts package the same reviewed broker renderer.
-    policy_template = ROOT / "charts/openshell-saw/templates/_governed-proxy-policy.tpl"
     policy_outputs = [
         (ROOT / "charts/openshell-rhdh/files/saw_keycloak_admin.py",
          (ROOT / "charts/openshell-keycloak/files/saw_keycloak_admin.py").read_text()),
         (ROOT / "charts/saw-workspace-relay/files/saw_ui_limit.py",
          (ROOT / "charts/openshell-saw/files/installer/saw_ui_limit.py").read_text()),
         (ROOT / "charts/openshell-rhdh/files/workspace.py",
-         (ROOT / "charts/saw-users/files/workspace.py").read_text()),
-        (ROOT / "charts/saw-users/templates/_governed-proxy-policy.tpl", policy_template.read_text()),
-        (ROOT / "charts/saw-users/files/governed-profiles.json", json.dumps(
-            {p.stem: load(p) for p in sorted(GOVERNANCE_PROFILES.glob("*.yaml"))}, sort_keys=True, indent=2) + "\n")]
+         (ROOT / "charts/saw-users/files/workspace.py").read_text())]
     if args.list:
         # Every path this script owns: the generated files, each mirror, and
         # the mirror directory itself, so `git add -A -- <list>` (the hook,

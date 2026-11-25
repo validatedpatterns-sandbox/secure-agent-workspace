@@ -33,7 +33,7 @@ OWN_IMAGES = {
 }
 CONTAINER_CHILD_CHARTS = {
     "openshell-saw-kubernetes", "saw-audit-writer", "saw-kubernetes-identity",
-    "saw-kubernetes-proxy", "saw-runtime-policies",
+    "saw-runtime-policies",
 }
 CONTAINER_APIS = (
     "agents.x-k8s.io/v1beta1/Sandbox",
@@ -105,6 +105,8 @@ def chart_args(chart: Path, mode="proxy") -> list[str]:
         return ["--set", "enabled=true", "--set-string", f"images[0]={image}"]
     if name == "agent-sandbox":
         return ["--namespace", "agent-sandbox-system", "--set", "enabled=true"]
+    if name == "saw-kata":
+        return ["--namespace", "openshift-sandboxed-containers-operator", "--set", "enabled=true"]
     if name == "saw-kubernetes-controller":
         return ["--namespace", "saw-ci-trusted", "-f",
                 str(ROOT / "tests/fixtures/saw-kubernetes-controller-values.yaml")]
@@ -130,7 +132,7 @@ def render_charts(result: Validation, output_dir: Path) -> None:
     portal_values = dict(
         owner="alice", ownerSubject=site["subject"], registration="a8cb6cbd0eb62f31",
         installationID="802fe583-9329-54b6-b5b4-7be58ec171f3", intentGeneration=1,
-        vaultPrefix="secret/data/hub/saw-alice/a8cb6cbd0eb62f31", site=site,
+        vaultPrefix="secret/data/hub/saw-alice", site=site,
         **{"global": {"repoURL": "https://github.com/example/secure-agent-workspace",
                       "targetRevision": "main", "vpArgoNamespace": "vp-gitops",
                       "clusterDomain": "cluster.example.test"}})

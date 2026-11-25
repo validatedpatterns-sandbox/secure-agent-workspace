@@ -34,10 +34,13 @@ def test_container_make_dispatch_never_calls_vm_operations(tmp_path, target, act
         'import os,sys\nfrom pathlib import Path\nPath(os.environ["MARKER"]).write_text(sys.argv[1])\n')
     for filename in ("sandbox-pre-delete.sh", "openshell-saw-create.sh", "saw-delete.sh"):
         executable(scripts / filename, "exit 99\n")
+    # saw-create checks the cluster first; the real saw-init.sh needs one.
+    executable(scripts / "saw-init.sh", 'touch "$MARKER.init"\n')
     result = run_make(target, "OPENSHELL_SAW_NAME=alice", "DEPLOYMENT_MODE=container",
                       "PYTHON=python3", f"SCRIPTS_DIR={scripts}", env=dict(os.environ, MARKER=str(marker)))
     assert result.returncode == 0, result.stderr
     assert marker.read_text() == action
+    assert (tmp_path / "called.init").exists() == (target == "saw-create")
 
 
 @pytest.mark.parametrize("target", ["saw-logs", "saw-vm-ssh", "saw-restart", "saw-restart-pending"])
@@ -296,7 +299,7 @@ def test_prereqs_distinguish_missing_operator_from_access_failure(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     executable(bindir / "uv", 'exit 0\n')
-    executable(bindir / "openshell", 'printf "openshell 0.1.6\\n"\n')
+    executable(bindir / "openshell", 'printf "openshell 0.1.10\\n"\n')
     executable(bindir / "oc", '''
 case "$*" in
   whoami) exit 0 ;;
@@ -333,7 +336,7 @@ def test_pattern_prereqs_do_not_require_operators(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     executable(bindir / "uv", 'exit 0\n')
-    executable(bindir / "openshell", 'printf "openshell 0.1.6\\n"\n')
+    executable(bindir / "openshell", 'printf "openshell 0.1.10\\n"\n')
     executable(bindir / "oc", '''
 case "$*" in
   whoami) exit 0 ;;
@@ -562,7 +565,7 @@ esac
             assert "push " not in calls
             assert "output.externalImage=ghcr.io" not in calls
         elif target == "governance-interceptor-build":
-            assert "output.externalImage=ghcr.io/example/governance-interceptor:v0.1.6" in calls
+            assert "output.externalImage=ghcr.io/example/governance-interceptor:v0.1.10" in calls
         else:
             assert "push " in calls and "ghcr.io/example" in calls
 

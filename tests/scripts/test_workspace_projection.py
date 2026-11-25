@@ -19,7 +19,8 @@ def inputs():
                  profiles=["data-science"], values={"deployment": {"mode": "container"}},
                  lifecycleVersion=1, initialModelInputs={"inference.model": "first"},
                  modelInputs={"inference.model": "second"}, desiredState="Running", restartGeneration=2)
-    site = dict(subject=owner["ownerSubject"], automaticEnrollment={"approvedProfiles": {"data-science": "b"*64}},
+    site = dict(subject=owner["ownerSubject"], auditReceipts=True,
+                automaticEnrollment={"approvedProfiles": {"data-science": "b"*64}},
                 profileImageOverrides={"data-science": {"default": {"notebook": "example/agent@sha256:"+"c"*64}}})
     return owner, site
 
@@ -84,7 +85,7 @@ def test_foundation_requires_no_synthetic_approval_hash():
 
 
 def auto_site(owner):
-    return dict(subject=owner["ownerSubject"], automaticEnrollment={
+    return dict(subject=owner["ownerSubject"], auditReceipts=True, automaticEnrollment={
         "autoApprove": True, "revision": "main", "image": "example/runtime@sha256:" + "d"*64,
         "buildNamespace": "saw-builds", "relay": {"revision": "main"}})
 
@@ -143,6 +144,22 @@ def test_custom_inference_uses_the_owners_own_url():
     del owner["modelInputs"]
     with pytest.raises(workspace.WorkspaceError, match="set modelInputs.inference.model"):
         workspace.project_workspace(owner, {}, site, CATALOG, lambda _: {})
+
+
+@pytest.mark.parametrize("receipts", [False, None])
+def test_mutable_models_are_rejected_before_reading_enrollment_without_receipts(receipts):
+    owner, site = inputs()
+    site.pop("auditReceipts")
+    if receipts is not None:
+        site["auditReceipts"] = receipts
+    def unexpected_read(_):
+        pytest.fail("invalid audit configuration must be rejected before enrollment reads")
+    with pytest.raises(workspace.WorkspaceError, match="model selection requires auditReceipts=true"):
+        workspace.project_workspace(owner, {}, site, CATALOG, unexpected_read)
+    # Fixed models keep the default best-effort audit path.
+    owner.pop("lifecycleVersion")
+    result = workspace.project_workspace(owner, {}, site, CATALOG)
+    assert all("modelInput" not in target for target in result["containerSites"]["alice"]["targets"].values())
 
 
 def test_only_an_endpoint_profile_takes_a_custom_inference_url():

@@ -814,8 +814,13 @@ By default audit is best-effort, as in upstream OpenShell. The gateway and each
 sandbox's supervisor export OCSF events (authentication, refused API calls,
 network and request decisions) over OTLP/gRPC to the collector in
 `openshell-agents` (`charts/saw-telemetry`, Red Hat build of OpenTelemetry).
-Its debug exporter writes them to the collector's log; replace it with your
-SIEM or log store in `charts/saw-telemetry/values.yaml`. Set
+The demonstration debug exporter writes complete event bodies, sandbox IDs and
+trace details to the collector's log, with detailed output and sampling disabled.
+Pod logs are not durable audit storage; replace the exporter with your SIEM or
+log store in `charts/saw-telemetry/values.yaml` for production. W6 inspects the
+demo collector's detailed logs and requires a fresh OCSF JSON body whose sandbox
+ID matches both the body and the log record's `openshell.sandbox.id` attribute.
+When using an external exporter, verify records in that backend separately. Set
 `telemetry.ocsfEndpoint: ""` in `containerDefaults` to turn export off.
 OpenShell drops events it cannot export, and nothing waits for the collector.
 OpenShell 0.1.6 does not export the agent's own tool calls; those are in the
@@ -839,4 +844,8 @@ run until its receipt arrives. The sandbox reaches the writer through a shared
 as a copy of the cluster's shared-filesystem class (an existing `saw-shared` is
 kept; set `stack.audit.values.exchangeStorageClass` for another class).
 Changing the model at run time (`lifecycleVersion: 1`) requires receipts.
+Static projection and portal requests reject model selection without
+`auditReceipts: true` before enrollment. Direct composition-chart values are
+rejected at render time. Fixed-model registrations using the default local
+audit log omit `lifecycleVersion: 1` and leave `modelLifecycle` disabled.
 Changing `auditReceipts` changes the enrolled boundary: recreate the workspace.

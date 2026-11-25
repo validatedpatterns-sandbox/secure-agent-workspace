@@ -2301,6 +2301,25 @@ def test_owner_state_change_is_generation_scoped_and_does_not_touch_vault(portal
     assert json.dumps(fake.vault, sort_keys=True) == vault_before
 
 
+@pytest.mark.parametrize("receipts", [False, True])
+def test_model_lifecycle_audit_is_checked_before_credentials_are_written(portal, world, monkeypatch, capsys, receipts):
+    fake, signer = world
+    site = synthetic_preflight_site(portal, {
+        "subject": "478fdd1f-8db9-41e8-97ad-b563215c89e9", "modelLifecycle": True,
+        "auditReceipts": receipts,
+        "automaticEnrollment": {"approvedProfiles": {"data-science": "a" * 64}},
+    })
+    monkeypatch.setenv("SAW_DEPLOYMENT_MODES", '["vm","container"]')
+    monkeypatch.setenv("SAW_CONTAINER_SITES", json.dumps({"alice": site}))
+    fake.request("saw-req-1", ds_request(signer, deploymentMode="container"))
+    assert (portal.main(["create", "saw-req-1"]) == 0) is receipts
+    if not receipts:
+        assert "model selection requires auditReceipts=true" in capsys.readouterr().out
+        assert not fake.vault and REGISTRY not in fake.objects
+    else:
+        assert portal.read_entry(fake.objects[REGISTRY])["lifecycleVersion"] == 1
+
+
 def test_custom_endpoint_is_validated_before_writing_vault(portal, world, monkeypatch):
     fake, signer = world
     url="https://models.fixture.test/v1"

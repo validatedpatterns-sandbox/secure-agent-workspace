@@ -15,7 +15,7 @@
 #       the turn also asks for one tool call, which the gate may deny)
 #   W5  container/kata: the tool gate recorded that turn's tool call
 #       (local log by default; receipts mode is reported, not checked here)
-#   W6  container/kata: OCSF events reached the pattern's collector
+#   W6  container/kata: a fresh OCSF body for this sandbox reached the collector
 #
 # Usage:
 #   scripts/e2e-workspace.sh --mode container|kata|vm --user NAME
@@ -34,6 +34,7 @@ KATA_CLASS="${KATA_CLASS:-saw-kata}" ARGO_NS="${ARGO_NAMESPACE:-vp-gitops}"
 COLLECTOR_NS="${COLLECTOR_NS:-openshell-agents}"
 COLLECTOR_SELECTOR="${COLLECTOR_SELECTOR:-app.kubernetes.io/name=saw-ocsf-collector}"
 TURN_TIMEOUT="${TURN_TIMEOUT:-180}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -121,7 +122,10 @@ if [[ "${MODE}" == vm ]]; then
   }
 else
   step "W2 sandbox Pods"
-  pod_of() { oc get pods -n "${NS}" -l "openshell.ai/boundary-role=$1" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true; }
+  SANDBOX_ID="$(oc get sandboxes.agents.x-k8s.io -n "${NS}" "${WORKSPACE}--${SANDBOX}" \
+    -o jsonpath='{.metadata.labels.openshell\.ai/sandbox-id}' 2>/dev/null || true)"
+  [[ -n "${SANDBOX_ID}" ]] || { fail "no sandbox identity for ${WORKSPACE}/${SANDBOX}"; exit 1; }
+  pod_of() { oc get pods -n "${NS}" -l "openshell.ai/boundary-role=$1,openshell.ai/boundary-pair=${SANDBOX_ID}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true; }
   WORKLOAD="$(pod_of workload)" SUPERVISOR="$(pod_of supervisor)"
   for pod in "${SUPERVISOR}" "${WORKLOAD}"; do
     if [[ -z "${pod}" ]]; then fail "missing supervisor or workload Pod in ${NS}"; continue; fi
@@ -180,9 +184,17 @@ if [[ "${MODE}" != vm ]]; then
   if [[ -z "${collector}" ]]; then
     fail "no OCSF collector Pod in ${COLLECTOR_NS}"
   else
-    batches="$(oc logs -n "${COLLECTOR_NS}" "${collector}" --since-time="${START}" 2>/dev/null | grep -c 'Logs' || true)"
-    (( batches > 0 )) && pass "collector received ${batches} log batch(es) since ${START}" \
-                      || fail "collector received nothing since ${START}"
+    found=0
+    for attempt in 1 2 3 4 5 6; do
+      if event="$(oc logs -n "${COLLECTOR_NS}" -l "${COLLECTOR_SELECTOR}" --tail=-1 --since-time="${START}" 2>/dev/null \
+          | python3 "${SCRIPT_DIR}/check-ocsf-record.py" --sandbox-id "${SANDBOX_ID}" --since "${START}")"; then
+        pass "collector preserved a fresh OCSF body: ${event}"
+        found=1
+        break
+      fi
+      (( attempt == 6 )) || sleep 5
+    done
+    (( found )) || fail "no fresh OCSF body for sandbox ${SANDBOX_ID}; W6 requires detailed collector log output"
   fi
 fi
 

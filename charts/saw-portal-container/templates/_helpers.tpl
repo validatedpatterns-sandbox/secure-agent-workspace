@@ -49,6 +49,11 @@ site's relay settings and build namespace; fill what the site left to the
 defaults, and let the relay follow the enrollment revision. Returns JSON. */}}
 {{- define "portal.site" -}}
 {{- $site := include "portal.deepMerge" (dict "base" .Values.siteDefaults "over" (.Values.site | default dict)) | fromJson -}}
+{{- if and (eq (int ($site.lifecycleVersion | default 0)) 1) (not ($site.auditReceipts | default false)) -}}
+{{- range $site.targets -}}
+{{- if .modelInput -}}{{ fail "model selection requires auditReceipts=true" }}{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- with $site.enrollment -}}
 {{- $a := $site.automaticEnrollment -}}
 {{- $_ := set . "relay" (include "portal.deepMerge" (dict "base" ($a.relay | default dict) "over" (.relay | default dict)) | fromJson) -}}

@@ -3,12 +3,14 @@
 # container site's telemetry.ocsfEndpoint points at.
 name: saw-ocsf
 replicas: 1
-# Where the events go. The debug exporter writes them to the collector's log
-# (oc logs deploy/saw-ocsf-collector); replace it with your SIEM or log store,
-# for example an otlp or otlphttp exporter.
+# Demonstration output: preserve event bodies, identities and trace details in
+# oc logs deploy/saw-ocsf-collector. Pod logs are not durable audit storage;
+# replace this exporter with your SIEM or log store for production.
 exporters:
   debug:
-    verbosity: basic
+    verbosity: detailed
+    sampling_thereafter: 1
+    use_internal_logger: false
 resources:
   requests: {cpu: 50m, memory: 128Mi}
   limits: {memory: 512Mi}

@@ -1801,6 +1801,10 @@ def handle(action, request_name):
                 models = public_model_inputs(catalog[profile], secrets)
                 previous = committed_entry(cm)
                 lifecycle = previous.get("lifecycleVersion") == 1 if previous else container_site(user).get("modelLifecycle") is True
+                try:
+                    _workspace.validate_model_audit(site, lifecycle, catalog[profile])
+                except _workspace.WorkspaceError as exc:
+                    raise PortalError(str(exc)) from exc
                 if previous and not lifecycle and previous.get("modelInputs", {}) != models:
                     raise PortalError("changing model selection requires a new container registration")
             check_namespace_is_ours(k8s, user)

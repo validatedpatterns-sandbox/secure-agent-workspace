@@ -236,6 +236,17 @@ def test_model_gate_claim_is_shared_only_for_the_publisher_and_agent():
     assert claims["workspace-"+U]["accessModes"] == claims[U+"-history"]["accessModes"] == ["ReadWriteOnce"]
 
 
+@pytest.mark.parametrize("receipts", [False, None])
+def test_model_selection_without_receipts_is_rejected_before_enrollment(receipts):
+    site = {**SITE, "lifecycleVersion": 1, "targets": {
+        "default/notebook": {"modelInput": "inference.model"}}}
+    site.pop("auditReceipts")
+    if receipts is not None:
+        site["auditReceipts"] = receipts
+    with pytest.raises(AssertionError, match="model selection requires auditReceipts=true"):
+        render("saw-portal-container", U, "saw-" + U, {"site": site})
+
+
 def app_values(application):
     source = application["spec"]["source"]["helm"]
     return source.get("valuesObject") or yaml.safe_load(source["values"])
@@ -675,6 +686,8 @@ def test_the_pattern_installs_the_collector():
     assert values["applications"]["saw-telemetry"]["path"] == "charts/saw-telemetry"
     collector, = render("saw-telemetry", "saw-telemetry", "openshell-agents", {})
     assert collector["metadata"]["name"] == "saw-ocsf"  # Service saw-ocsf-collector
+    assert collector["spec"]["config"]["exporters"]["debug"] == {
+        "verbosity": "detailed", "sampling_thereafter": 1, "use_internal_logger": False}
     pipelines = collector["spec"]["config"]["service"]["pipelines"]
     for signal in ("logs", "traces"):   # OCSF events and relayed agent traces
         assert pipelines[signal]["receivers"] == ["otlp"] and pipelines[signal]["exporters"] == ["debug"]

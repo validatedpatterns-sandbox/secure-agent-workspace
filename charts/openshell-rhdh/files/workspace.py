@@ -38,6 +38,13 @@ def enabled_catalog_sandboxes(profile):
                     yield workspace["name"], sandbox
 
 
+def validate_model_audit(site, lifecycle, profile):
+    """Reject mutable models without a receipt-backed gate before enrollment."""
+    if (lifecycle and site.get("auditReceipts") is not True
+            and any(sb.get("modelInput") for _, sb in enabled_catalog_sandboxes(profile))):
+        raise WorkspaceError("model selection requires auditReceipts=true")
+
+
 def sandbox_targets(user, registration, profile, *, model_lifecycle=False):
     """Expand the shared BOM catalog into isolated Kubernetes attachments."""
     enabled = list(enabled_catalog_sandboxes(profile))
@@ -283,6 +290,7 @@ def _project_workspace(workspace, defaults, site, catalog, read=None):
     if overrides:
         ws["imageOverrides"] = overrides
     managed = ws.get("lifecycleVersion") == 1
+    validate_model_audit(site, managed, catalog[selected])
     site = {**site,
             "targets": sandbox_targets(ws["name"], ws["registration"], catalog[selected],
                                        model_lifecycle=managed),

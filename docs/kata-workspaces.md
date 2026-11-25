@@ -1,8 +1,11 @@
 # Kata workspace qualification
 
 Kata is under private qualification. The application workload Pod uses the
-stock OpenShell Kubernetes driver and a local Kata RuntimeClass. The gateway
-and separate supervisor run as ordinary Pods. Each data-science slot is a
+stock OpenShell Kubernetes driver and a local Kata RuntimeClass. Its separate
+supervisor Pod runs in the same RuntimeClass, so every sandbox is two Kata VMs:
+the supervisor, which handles the agent's network traffic and credentials, never
+shares the workload's guest kernel (OpenShell 0.1.10 and later,
+`supervisor_runtime_class_name`). The gateway runs as an ordinary Pod. Each data-science slot is a
 separate workload Pod. The workspace BOM, images, storage, credential routing,
 relay and audit flows are shared with container workspaces.
 
@@ -11,10 +14,21 @@ relay and audit flows are shared with container workspaces.
 On 2026-11-17, one RHDH data-science Kata canary completed. Both workload
 Pods were Ready with the Kata RuntimeClass. Each Pod mapped to a different
 host QEMU process. The gateway and both supervisors used the default runtime.
-Both owner chat links returned fresh model replies. This result does not yet
-cover tool allow and deny rules, network denial, secret isolation, audit,
-persistence, restart, stop/start, deletion, GitOps, Make, a container
-regression, or two active owners. Keep the PR in draft until these checks pass.
+Both owner chat links returned fresh model replies.
+
+On 2026-11-25, on OpenShell 0.1.10, a GitOps-deployed Kata workspace (a
+custom-inference user bound to `saw-kata` automatically) passed
+`make e2e-workspace DEPLOYMENT_MODE=kata`, next to a container workspace on
+the same cluster: Argo CD healthy; the workload and the supervisor each in
+`saw-kata`, so two VMs; a real model turn through the custom inference
+endpoint; the tool gate denying and recording an `exec`; and OCSF events at
+the pattern's collector. Removing and recreating both workspaces through GitOps
+also worked.
+
+Not yet covered: network denial and secret isolation tests, persistence across
+a Pod restart, stop/start, VM-mode regression, two simultaneous Kata owners on
+one worker, and the self-service portal's Kata path (it still needs an
+explicit RuntimeClass binding).
 
 ## Check worker KVM access before installing OSC
 
@@ -41,12 +55,24 @@ before installing OSC. Creating a KataConfig can reboot workers.
 
 ## Prepare OpenShift sandboxed containers
 
-The qualification cluster installed the Red Hat OpenShift sandboxed containers
-Operator from OperatorHub in `openshift-sandboxed-containers-operator`. A GitOps
-installation uses a Namespace, an OperatorGroup scoped to that namespace, and a
-Subscription from `redhat-operators`. Select the channel supported by the
-cluster. Keep these platform resources outside the SAW workspace charts. Check
-that the Subscription has an installed CSV and that the CSV is `Succeeded`.
+The pattern installs the Red Hat OpenShift sandboxed containers Operator in
+`openshift-sandboxed-containers-operator` (`values-prod.yaml`: a Namespace, an
+OperatorGroup scoped to it, and a Subscription from `redhat-operators` on the
+`stable` channel). The operator alone changes no node. Check that the
+Subscription has an installed CSV and that the CSV is `Succeeded`.
+
+The `saw-kata` application (`charts/saw-kata`) creates the KataConfig below
+when enabled, selecting plain workers only (never control-plane nodes, even
+where they are schedulable). It is off by default because it reboots the
+selected nodes. Enable it per cluster with an override on that application:
+
+```yaml
+clusterGroup:
+  applications:
+    saw-kata:
+      overrides:
+        - {name: enabled, value: "true"}
+```
 See the [Red Hat installation procedure](https://docs.redhat.com/en/documentation/openshift_sandboxed_containers/1.12/html/deploying_openshift_sandboxed_containers_on_bare-metal_servers/install-osc-overview_metal-osc).
 
 Install the local Kata runtime on an approved worker pool with a platform-owned
@@ -68,11 +94,20 @@ spec:
 
 Wait for the selected nodes to complete their machine config updates and
 reboots. Check `oc get kataconfig`, `oc get mcp`, and
-`oc get runtimeclass kata -o yaml`. The operator creates the `kata` class. SAW
-uses a reviewed RuntimeClass YAML with the live handler, scheduling and overhead
-fields. Bind that class's name, UID and placement digest in the site YAML below.
-The class also needs `openshell.ai/sandbox-attachable=true`. Keep the class and
-the owner approval under platform control.
+`oc get runtimeclass kata saw-kata -o yaml`. The operator creates the `kata`
+class. The `saw-kata` application also creates `saw-kata`, a copy of it (same
+handler, pod overhead and `kata-oc` node selector) that carries the
+`openshell.ai/sandbox-attachable=true` label OpenShell requires, so nobody
+labels the operator's class by hand.
+
+Kata users run in `saw-kata` unless their site names another class
+(`kata.runtimeClassName` in saw-users changes the default). On an
+`autoApprove` site the workspace projector binds the user to that class's live
+UID and placement digest when it first projects the workspace, after the same
+checks a reviewed binding gets (Kata handler, attachable label, a node
+selector); enrollment then fails closed if the class is later replaced or its
+placement changes. A reviewed site binds the class explicitly, as shown in
+[Standalone workspace on an existing Kata pool](#standalone-workspace-on-an-existing-kata-pool).
 
 ## Verify a deployed worker
 
@@ -108,14 +143,14 @@ containing `handler`, `overhead` and `scheduling`. Missing optional fields hash
 as JSON null. The controller checks UID, the stock OpenShell attachable label,
 the `kata` handler and the placement digest before attaching resources. Ordinary
 container plans retain their original representation. The gateway reads only
-the selected class, and the admission policies require that class on both the
-Sandbox template and the workload Pod. The supervisor keeps the default
-runtime. The portal advertises Kata only when the platform administrator enables the
+the selected class, and the admission policies require that class on the
+Sandbox template, the workload Pod and the supervisor Pod. The controller also
+refuses a gateway whose configuration does not place the supervisor in it. The portal advertises Kata only when the platform administrator enables the
 mode and supplies a reviewed site class and approved profile.
 
 ### Allow time for Kata startup
 
-OpenShell 0.1.6 uses 300-second startup windows by default. Kata VM startup can
+OpenShell 0.1.10 uses 300-second startup windows by default. Kata VM startup can
 take longer. In Kata mode, the Kubernetes gateway chart sets the provisioning
 repair window, runtime bootstrap grace period and sandbox attach request timeout
 to 900 seconds. Set `kubernetes.startupTimeouts` to adjust these values. Each
@@ -254,7 +289,9 @@ containerSites:
       sha256: <placement digest>
 ```
 
-Manage the class in platform GitOps. The class name used by OpenShell must have
+A reviewed site (no `autoApprove`) must carry this binding; an `autoApprove`
+site may leave out `uid` and `sha256` and the projector fills them from the
+live class. Manage the class in platform GitOps. The class name used by OpenShell must have
 the label `openshell.ai/sandbox-attachable=true`. If you define a separate
 class for workspaces, copy the OSC class's handler, overhead and scheduling
 constraints when defining it. Inspect the live object before approving it.
@@ -277,7 +314,8 @@ controller drive both slots through the stock gateway.
 
 For each slot, inspect the workload Pod's runtime class, UID, SCC, node and
 Ready condition. Match its UID to the host-side Kata handler as above. Verify
-the associated supervisor Pod uses the default runtime. Finally sign in as the
+the associated supervisor Pod uses the same Kata RuntimeClass and maps to its
+own QEMU process. Finally sign in as the
 owner and send a fresh challenge through each slot's browser relay. Record the
 observed text independently for each slot. The CUDA slot name identifies a
 profile entry; this test exercises chat and does not qualify GPU passthrough.

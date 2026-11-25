@@ -191,6 +191,33 @@ in-cluster MCP services should use `credentialFree: true`, or expose keyed
 services through an HTTPS Route on port 443. HTTPS to a `.svc` host on another
 port is refused. Add any in-cluster peer to the proxy's NetworkPolicy too.
 
+#### Tool actions for the bundle's MCP tools
+
+SAW's tool gate refuses any tool its policy does not name. A bundle names
+what the gate may do with its own MCP tools, next to the server that
+provides them:
+
+```yaml
+spec:
+  mcpServers:
+    - name: mailpit_reader
+      governanceProfile: mailpit
+      tools:
+        - {name: saw_read_email, action: allow}     # or approval
+```
+
+Each entry becomes a gate rule for `<server>__<tool>`, the name OpenClaw
+gives an MCP tool, and OpenClaw's tool allowlist gets the same tools. A
+bundle can only name tools of servers in its own `mcp.json`, and only
+`allow` or `approval`; it cannot change built-in tools such as `exec` or
+another bundle's tools. The rules follow the base `tool-actions.yaml`, so
+where the base policy names the same tool, the base rule decides. They are
+part of the gate policy whose hash the gate checks, so changing them changes
+the bundle digest and the gate, like any other edit to the bundle.
+
+Container workspaces apply these rules today. VM workspaces still take their
+tool actions from the base `tool-actions.yaml` only.
+
 ### Tool plugins (`plugins/<id>/`)
 
 Plain ES modules (`.mjs`, or `.js` with `"type": "module"`), self-contained:

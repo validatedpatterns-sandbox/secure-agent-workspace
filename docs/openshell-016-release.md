@@ -81,8 +81,9 @@ remove it to bypass recovery. A configured agent can resume without a usable
 provider while retaining its model/credentials; unchanged reapply leaves it running.
 
 In OpenClaw 2026.9.6, `automations` aliases `cron`. Only `list`, `status`, `get`,
-`show` and `runs` need no approval; `add`, `edit`, `rm`, `enable`, `disable` and
-`run` require it. Unsupported aliases, mixed read/write `scratch`, unknown
+`show` and `runs` need no approval; `add`/`create`, `edit`, `rm`, `enable`,
+`disable` and `run` require it. Unsupported aliases (`remove`, `delete`), mixed
+read/write `scratch`, unknown
 commands and shell wrappers remain denied. Every `agents set-identity` call
 requires approval: its file/avatar inputs can reach outside the workspace and
 it rewrites configuration, beyond filesystem-tool confinement. Denial,

@@ -208,20 +208,32 @@ history kept outside the workspace, see
    make keycloak-user-info KC_USER=alice
    ```
 
-2. Add the user's inference key to `~/values-secret.yaml`, and load it:
+2. Create `~/values-secret-alice.yaml` for the user's inference key. Secret
+   names must be unique within a file, even with different `vaultPrefixes`;
+   do not append a second `inference` entry to the installation's secrets file.
 
    ```yaml
-   - name: inference
-     vaultPrefixes:
-       - hub/saw-alice
-     fields:
-       - name: api_key
-         path: ~/.alice-inference-key
+   version: "2.0"
+   secrets:
+     - name: inference
+       vaultPrefixes:
+         - hub/saw-alice
+       fields:
+         - name: api_key
+           path: ~/.alice-inference-key
    ```
 
+   If web search is enabled, also copy the `web-search` entry from
+   `values-secret.yaml.template` into this file with `vaultPrefixes:
+   [hub/saw-alice]`. Then load the user's file explicitly:
+
    ```bash
-   ./pattern.sh make load-secrets
+   VALUES_SECRET="$HOME/values-secret-alice.yaml" ./pattern.sh make load-secrets
    ```
+
+   To share an existing key instead, add `hub/saw-alice` to that entry's
+   `vaultPrefixes` (for example, `[hub, hub/saw-alice]`) and load the installation's
+   secrets file. One entry writes the same fields to every listed prefix.
 
 3. Add the entry:
 

@@ -1,5 +1,5 @@
-{{- $s := .Values.site | default dict }}
-{{- if $s.automaticEnrollment }}
+{{- $s := include "portal.site" . | fromJson }}
+{{- if (.Values.site | default dict).automaticEnrollment }}
 {{- $observer := $s.observer | default dict }}
 {{- $t := printf "saw-ctl-%s" .Values.registration }}
 {{- $targets := include "portal.targets" . | fromJson }}

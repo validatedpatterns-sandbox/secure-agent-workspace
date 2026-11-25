@@ -1,0 +1,20 @@
+# Development and demo clusters only. Never list this file in production
+# values: it skips the operator boundary review.
+#
+# List it after /overrides/saw-container-defaults.yaml in the saw-users and
+# openshell-rhdh extraValueFiles. Enrollment then publishes the first boundary
+# and BOM it observes instead of comparing them with a reviewed reference and
+# approvedProfiles digest, the portal offers Container and every catalog
+# profile, and chart revisions may follow the pattern's branch. Later boundary
+# changes still fail closed; start a new generation to re-enroll. A user can
+# opt back into review with
+# containerSites.<name>.automaticEnrollment.autoApprove: false.
+containerDefaults:
+  automaticEnrollment:
+    enabled: true
+    autoApprove: true
+
+# The self-service portal offers Container next to VM; any Keycloak user may
+# request it, and their site is containerDefaults.
+portal:
+  deploymentModes: [vm, container, kata]

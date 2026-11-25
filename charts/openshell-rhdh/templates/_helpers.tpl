@@ -170,7 +170,7 @@ from the release is enough and keeps renders stable.
 {{- if and .Values.portal.containerSites .Values.portal.containerSitesSecretName -}}
 {{- fail "set only one of portal.containerSites and portal.containerSitesSecretName" -}}
 {{- end -}}
-{{- if or .Values.portal.containerSites .Values.portal.containerSitesSecretName -}}true{{- else -}}false{{- end -}}
+{{- if or .Values.portal.containerSites .Values.portal.containerSitesSecretName .Values.containerDefaults -}}true{{- else -}}false{{- end -}}
 {{- end -}}
 
 {{- define "openshell-rhdh.containerSitesEnv" -}}
@@ -183,6 +183,13 @@ from the release is enough and keeps renders stable.
   {{- else }}
   value: {{ .Values.portal.containerSites | default dict | toJson | quote }}
   {{- end }}
+{{- /* Shared site for every owner without their own entry (saw-users'
+containerDefaults, from overrides/saw-container-defaults.yaml). Subjects come
+from the owner directory; unset chart revisions follow the pattern branch. */}}
+- name: SAW_CONTAINER_DEFAULTS
+  value: {{ .Values.containerDefaults | default dict | toJson | quote }}
+- name: SAW_TARGET_REVISION
+  value: {{ .Values.global.targetRevision | default "" | quote }}
 {{- end -}}
 
 {{/* Generated forms have vm as their safe default; project the administrator's
@@ -217,6 +224,18 @@ The server still verifies the authenticated owner's exact profile approval. */ -
 {{- end -}}
 {{- range $id, $digest := ($site.automaticEnrollment | default dict).approvedProfiles | default dict -}}
 {{- if regexMatch "^[0-9a-f]{64}$" (toString $digest) -}}{{- $_ := set (index $approved $mode) $id true -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- with $root.Values.containerDefaults -}}
+{{- /* The shared site serves every owner: autoApprove offers each catalog
+profile, otherwise its approvedProfiles. */ -}}
+{{- $a := .automaticEnrollment | default dict -}}
+{{- if has "container" $modes -}}
+{{- range $id := $step.properties.profile.enum -}}
+{{- if or (eq (toString ($a.autoApprove | default false)) "true") (hasKey ($a.approvedProfiles | default dict) $id) -}}
+{{- $_ := set (index $approved "container") $id true -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

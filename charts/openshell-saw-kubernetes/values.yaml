@@ -11,17 +11,20 @@ kubernetes:
     runtimeBootstrapGraceSeconds: 900
     sandboxAttachRequestTimeoutSeconds: 900
   gateway:
-    version: 0.1.6-rhaiv.4
-    image: quay.io/opendatahub/odh-openshell-gateway@sha256:bd2d7c9084b80b8d3d8ef92d00a27b963b35168fad84cd862b7f91fd9c488c3e
+    version: 0.1.10-rhaiv.0
+    image: quay.io/opendatahub/odh-openshell-gateway@sha256:e4b89770ef55238cc45d9880614eda64b8ab9a76be5e6c81c63a350889eb0717
     resources:
       requests: {cpu: 100m, memory: 256Mi}
       limits: {memory: 1Gi}
   supervisor:
-    image: quay.io/opendatahub/odh-openshell-supervisor@sha256:626b91a0f53393dac0d591c142b81100916aa66b4e65444b5527672b5533fe86
+    image: quay.io/opendatahub/odh-openshell-supervisor@sha256:c2c8e9d3d19a1612074df0f637078064cff45b92d35c74b116a72fb503b3c1bc
   workload:
     # Application image; set to an approved immutable sandbox image.
     image: ""
-    runtimeImage: quay.io/opendatahub/odh-openshell-sandbox@sha256:0cde11346e68485907c22d3c9b30802e52cf16e3853720a864ac8347bb68f6ef
+    # TEMPORARY carry (openshell-sandbox-carry/): the official
+    # odh-openshell-sandbox v0.1.10-rhaiv.0 panics on every connect on RHEL 9.
+    # Keep equal to saw-portal-container driverDefaults.runtimeImage.
+    runtimeImage: ghcr.io/sauagarwa/saw-openshell-sandbox@sha256:402b9727a690e8c8a10fb10c0cee21e96ea034b652d6c7d5b3f06eba916c9881
     runtimeClassName: ""
   identity:
     # Existing, retained identity; generated once outside Helm by its owner.
@@ -33,6 +36,8 @@ kubernetes:
     # key: key-encryption-key (stock gateway format)
     credentialKeySecret: ""
   storage:
+    # Empty uses the cluster's default StorageClass, as upstream OpenShell
+    # does for the gateway and workspace volumes. Use a block-backed class.
     className: ""
     gatewaySize: 5Gi
     workspaceSize: 20Gi
@@ -47,8 +52,10 @@ kubernetes:
   governance:
     endpoint: ""
   network:
-    # All gateway egress is explicit; no namespace-wide internet allowance.
-    # Include API Service + real backend IPs, DNS, OIDC, governance and proxy.
+    # All gateway egress is explicit: DNS, governance, proxy, and the OIDC
+    # issuer (HTTPS to any address is allowed for it). The Kubernetes API is
+    # opened separately, by an AdminNetworkPolicy to the control-plane nodes
+    # for pods labeled saw.redhat.com/kubernetes-api=allow.
     gatewayEgress: []
     # Trusted API reconciler Pods are selected by exact namespace AND label.
     reconcilerNamespace: ""
@@ -64,3 +71,11 @@ oidc:
 route:
   enabled: true
   host: ""
+
+telemetry:
+  # OTLP/gRPC collector for OCSF events from the gateway and its supervisors,
+  # e.g. http://saw-ocsf-collector.openshell-agents.svc:4317. Empty: no export.
+  ocsfEndpoint: ""
+  # Relay the agent's own OpenTelemetry traces through each supervisor to the
+  # same collector (OpenShell agent trace relay). Needs ocsfEndpoint.
+  agentTraces: false

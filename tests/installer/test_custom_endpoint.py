@@ -384,3 +384,54 @@ def test_reference_plan_shell_validates_regular_file_and_cleans_up(ab, tmp_path,
     assert [c['dryRun'] for c in calls] == ([True] if preflight_fails else [True, False])
     assert all(t['ref']['id'] == 'CUSTOM_INFERENCE_API_KEY' for t in calls[0]['plan']['targets'])
     assert not list(tmp_path.glob('saw-credential-ref.*'))
+
+
+def test_a_thinking_level_marks_the_model_as_reasoning_and_sets_its_default(
+        ab, fake_env, config, profiles, custom_secrets, governed_catalog):
+    """OpenClaw offers only default/off for a custom model unless its entry
+    says reasoning: true and lists the efforts; the level is then the model's
+    default (a chat's /think still overrides it)."""
+    notebook(profiles).inference["thinking"] = "medium"
+    creds = resolve(ab, profiles, custom_secrets)
+    ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
+    state = fake_env.openshell_state()
+    sb = state["sandboxes"]["default/notebook"]
+    model_id = f"custom-inference/{MODEL}"
+    assert sb["openclawConfig"]["agents.defaults.models"][model_id] == {"params": {"thinking": "medium"}}
+    # Onboarding wrote the model entry; a rerun marks it as a reasoning model.
+    sb["openclawConfig"]["models.providers.custom-inference.models"] = [
+        {"id": MODEL, "name": MODEL, "contextWindow": 128000}, {"id": "other"}]
+    fake_env.set_openshell_state(state)
+    ab.ProfileApplier(ab.Shell(), config, creds).apply(profiles)
+    models = fake_env.openshell_state()["sandboxes"]["default/notebook"]["openclawConfig"][
+        "models.providers.custom-inference.models"]
+    assert models == [{"id": MODEL, "name": MODEL, "contextWindow": 128000, "reasoning": True,
+                       "compat": {"supportedReasoningEfforts": ["low", "medium", "high"]}},
+                      {"id": "other"}]
+    # off marks the model as not reasoning, so no reasoning_effort is sent.
+    notebook(profiles).inference["thinking"] = "off"
+    ab.ProfileApplier(ab.Shell(), config, resolve(ab, profiles, custom_secrets)).apply(profiles)
+    cfg = fake_env.openshell_state()["sandboxes"]["default/notebook"]["openclawConfig"]
+    assert cfg["models.providers.custom-inference.models"][0] == {
+        "id": MODEL, "name": MODEL, "contextWindow": 128000, "reasoning": False}
+    assert cfg["agents.defaults.models"][model_id] == {"params": {"thinking": "off"}}
+    # Removing the level stops it applying.
+    del notebook(profiles).inference["thinking"]
+    ab.ProfileApplier(ab.Shell(), config, resolve(ab, profiles, custom_secrets)).apply(profiles)
+    assert fake_env.openshell_state()["sandboxes"]["default/notebook"]["openclawConfig"][
+        "agents.defaults.models"][model_id] == {}
+
+
+@pytest.mark.parametrize("level", ["max", "Medium", 1])
+def test_an_unknown_thinking_level_is_refused(ab, profiles, level):
+    sb = notebook(profiles)
+    sb.inference["thinking"] = level
+    assert any("thinking must be one of" in p for p in ab.sandbox_inference_problems(sb, {"custom-inference": "custom-inference"}))
+
+
+def test_an_unquoted_yaml_off_means_off(ab):
+    """YAML 1.1 reads `thinking: off` as false; it still means off."""
+    files = profile_files("custom-inference")
+    key = next(k for k in files if k.endswith("__sandbox.yaml"))
+    files[key] = files[key].replace('timeoutSeconds: "300"', 'timeoutSeconds: "300"\n        thinking: off')
+    assert notebook(ab.parse_profiles(files)).inference["thinking"] == "off"

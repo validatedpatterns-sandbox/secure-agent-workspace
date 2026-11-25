@@ -152,8 +152,8 @@ def test_exact_embedded_guard_behavior(builder, tmp_path):
 @pytest.mark.ci_external
 def test_builder_pins_and_runs_embedded_tests():
     values = yaml.safe_load((CHART / "values.yaml").read_text())
-    assert values["source"]["git"]["ref"] == "v0.1.6"
-    assert "ARG OPENSHELL_REF=v0.1.6" in DOCKERFILE.read_text()
+    assert values["source"]["git"]["ref"] == "v0.1.10"
+    assert "ARG OPENSHELL_REF=v0.1.10" in DOCKERFILE.read_text()
     texts = [DOCKERFILE.read_text()]
     if HELM:
         texts.append(inline_dockerfile())
@@ -214,7 +214,7 @@ def test_shared_recipe_preserves_both_runtime_variants():
 def test_default_build_output_is_internal_and_push_requires_explicit_destination():
     rendered = subprocess.check_output([HELM, "template", "image", str(CHART)], text=True)
     build = next(d for d in yaml.safe_load_all(rendered) if d and d["kind"] == "BuildConfig")
-    assert build["spec"]["output"]["to"] == {"kind": "ImageStreamTag", "name": "governance-interceptor:v0.1.6"}
+    assert build["spec"]["output"]["to"] == {"kind": "ImageStreamTag", "name": "governance-interceptor:v0.1.10"}
     assert "pushSecret" not in build["spec"]["output"]
     rendered = subprocess.check_output([HELM, "template", "image", str(CHART),
         "--set", "output.imageStreamTag=", "--set", "output.externalImage=ghcr.io/example/governance-interceptor:v0.1.6"], text=True)
@@ -222,17 +222,60 @@ def test_default_build_output_is_internal_and_push_requires_explicit_destination
     assert build["spec"]["output"]["to"]["name"] == "ghcr.io/example/governance-interceptor:v0.1.6"
 
 
-@pytest.mark.parametrize("filename", ["build-governance-interceptor.yml", "build-kubernetes-runtime.yml"])
+@pytest.mark.parametrize("filename", ["build-governance-interceptor.yml", "build-kubernetes-runtime.yml",
+                                      "build-openclaw-image.yml"])
 def test_pr_image_jobs_cannot_publish(filename):
     workflow = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())
     assert workflow["permissions"] == {"contents": "read"}
     jobs = workflow["jobs"]
     assert "permissions" not in jobs["build"]
-    assert jobs["build"]["if"] == "github.event_name == 'pull_request' || github.ref != 'refs/heads/main'"
+    main = "github.event_name != 'pull_request' && github.ref == 'refs/heads/main'"
+    if "publish" in (workflow[True].get("workflow_dispatch") or {}).get("inputs", {}):
+        # A maintainer's manual run may publish a branch; pull_request events
+        # carry no dispatch inputs, so a PR still never publishes.
+        assert workflow[True]["workflow_dispatch"]["inputs"]["publish"]["default"] is False
+        assert jobs["build"]["if"] == ("github.event_name == 'pull_request' || "
+                                       "(github.ref != 'refs/heads/main' && !inputs.publish)")
+        publish_if = f"({main}) || inputs.publish"
+    else:
+        assert jobs["build"]["if"] == "github.event_name == 'pull_request' || github.ref != 'refs/heads/main'"
+        publish_if = main
     for job in ("publish", "merge"):
-        assert jobs[job]["if"] == "github.event_name != 'pull_request' && github.ref == 'refs/heads/main'"
+        assert jobs[job]["if"] == publish_if
         assert jobs[job]["permissions"] == {"contents": "read", "packages": "write"}
     assert jobs["merge"]["needs"] == "publish"
     assert jobs["build"]["steps"] == jobs["publish"]["steps"]
     image = next(s for s in jobs["build"]["steps"] if s.get("uses") == "./.github/actions/build-push-image")
     assert "github.event_name != 'pull_request' && github.ref == 'refs/heads/main'" in image["with"]["registry_token"]
+
+
+def test_a_branch_publish_never_moves_shared_tags():
+    """Manual branch publishes are addressed by commit; :latest and the
+    OpenShell release tag move only from main."""
+    for action in ("build-push-image", "merge-image"):
+        text = (ROOT / ".github/actions" / action / "action.yml").read_text()
+        main_block = text[text.index('if [ "$REF" = refs/heads/main ]'):]
+        assert ":latest" in main_block and "EXTRA_TAG" in main_block
+        before = text[:text.index('if [ "$REF" = refs/heads/main ]')]
+        assert ":latest" not in before.split("tags")[-1]
+
+
+def test_every_pinned_personal_image_has_a_publishing_workflow():
+    """An image pinned from a fork owner's ghcr namespace must be rebuildable
+    by CI from this branch, not only from a laptop."""
+    import re
+    pinned = set()
+    for path in [*(ROOT / "charts").rglob("values*.yaml"), *(ROOT / "overrides").glob("*.yaml")]:
+        for owner, image in re.findall(r"ghcr\.io/([a-z0-9-]+)/([a-z0-9-]+)@sha256:", path.read_text()):
+            # The project's own namespace publishes from main; upstream
+            # vendors' images are not built here.
+            if owner not in {"validatedpatterns-sandbox", "openclaw", "nvidia"}:
+                pinned.add(image)
+    publishable = set()
+    for wf in (ROOT / ".github/workflows").glob("*.yml"):
+        workflow = yaml.safe_load(wf.read_text())
+        dispatch = (workflow.get(True) or {}).get("workflow_dispatch") or {}
+        if "publish" not in (dispatch.get("inputs") or {}):
+            continue
+        publishable |= set(re.findall(r"image_name: ([a-z0-9-]+)", wf.read_text()))
+    assert pinned <= publishable, sorted(pinned - publishable)

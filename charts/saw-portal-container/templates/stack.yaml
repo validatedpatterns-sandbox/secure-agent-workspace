@@ -1,8 +1,8 @@
 {{- /* The site supplies reviewed values for the stock charts. No tpl: owner input
        must never become a Helm program or choose a source, namespace or chart. */ -}}
-{{- $site := .Values.site | default dict }}
+{{- $site := include "portal.site" . | fromJson }}
 {{- $stack := $site.stack | default dict }}
-{{- if $stack }}
+{{- if .Values.site }}
 {{- $u := .Values.owner }}
 {{- $reg := .Values.registration }}
 {{- $runtime := .Release.Namespace }}
@@ -13,7 +13,11 @@
 {{- $ui := printf "saw-ui-%s" $reg }}
 {{- $map := dict "RUNTIME" $runtime "TRUSTED" $trusted "ARCHIVE" $archive "UI" $ui "OWNER" $u "SUBJECT" .Values.ownerSubject "INSTALLATION" $ownerID "DOMAIN" $g.clusterDomain }}
 {{- $targets := include "portal.targets" . | fromJson }}
-{{- $namespaces := dict $archive "retained" }}
+{{- /* auditReceipts (advanced): signed, fail-closed tool-gate receipts with a
+       retained history namespace. Off, the gate keeps a local audit log. */}}
+{{- $receipts := $site.auditReceipts | default false }}
+{{- $namespaces := dict }}
+{{- if $receipts }}{{- $_ := set $namespaces $archive "retained" }}{{- end }}
 {{- range $slot := $targets }}{{- if $slot.ui }}{{- $_ := set $namespaces (printf "saw-ui-%s" $slot.relayID) "ephemeral" }}{{- end }}{{- end }}
 {{- range $name, $dest := $namespaces }}
 ---
@@ -47,7 +51,7 @@ metadata: {name: identity-api, namespace: {{ $trusted }}}
 spec:
   podSelector: {matchLabels: {openshell.pattern/role: identity-bootstrap}}
   policyTypes: [Egress]
-  egress: {{ $stack.proxy.values.network.bootstrapEgress | toJson }}
+  egress: {{ required "site.stack.identity.values.network.bootstrapEgress is required" (dig "identity" "values" "network" "bootstrapEgress" nil $stack) | toJson }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -60,21 +64,45 @@ spec:
         - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ $runtime }}}}
           podSelector: {matchLabels: {app.kubernetes.io/instance: {{ $u }}, openshell.pattern/role: gateway}}
       ports: [{port: 18081, protocol: TCP}]
----
-apiVersion: v1
-kind: ConfigMap
-metadata: {name: {{ $u }}-proxy-policy, namespace: {{ $trusted }}}
-data:
-  config.json: |
-    {{ required "explicit governed provider policy required" $site.providerPolicy | toJson }}
-{{- $charts := dict "identity" (list "saw-kubernetes-identity" $trusted) "policy" (list "saw-runtime-policies" $runtime) "proxy" (list "saw-kubernetes-proxy" $trusted) "gateway" (list "openshell-saw-kubernetes" $runtime) }}
-{{- range $slot := $targets }}{{- $key := ternary "audit" (printf "audit-%s" $slot.relayID) (eq (len $targets) 1) }}{{- $_ := set $charts $key (list "saw-audit-writer" $archive $slot) }}{{- end }}
+
+{{- $charts := dict "identity" (list "saw-kubernetes-identity" $trusted) "policy" (list "saw-runtime-policies" $runtime) "gateway" (list "openshell-saw-kubernetes" $runtime) }}
+{{- range $slot := $targets }}{{- $key := ternary "audit" (printf "audit-%s" $slot.relayID) (eq (len $targets) 1) }}{{- $_ := set $charts $key (list "saw-audit-writer" (ternary $archive $runtime $receipts) $slot) }}{{- end }}
 {{- range $key, $c := $charts }}
 {{- $item := required (printf "missing site.stack.%s" $key) (get $stack (ternary "audit" $key (eq (len $c) 3))) }}
-{{- if not (regexMatch "^[a-f0-9]{40}$" ($item.revision | default "")) }}{{ fail "each infrastructure chart must be pinned to a Git commit" }}{{ end }}
+{{- if not (regexMatch (include "portal.revisionPattern" $) ($item.revision | default "")) }}{{ fail "each infrastructure chart must be pinned to a full Git commit SHA (only autoApprove sites may follow a branch)" }}{{ end }}
 {{- $values := $item.values | toJson }}
 {{- range $k, $v := $map }}
 {{- $values = replace (printf "@%s@" $k) $v $values }}
+{{- end }}
+{{- if eq $key "gateway" }}
+{{- /* The interceptor endpoint and the egress to reach it follow the site's
+       governance namespace; the default sandbox image is the first target's. */}}
+{{- $gateway := fromJson $values }}
+{{- $k := $gateway.kubernetes }}
+{{- $gov := $site.governanceNamespace }}
+{{- $_ := set $k "governance" (dict "endpoint" (printf "http://governance-interceptor.%s.svc:18081" $gov)) }}
+{{- $interceptor := dict "to" (list (dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" $gov)) "podSelector" (dict "matchLabels" (dict "app.kubernetes.io/name" "governance-interceptor")))) "ports" (list (dict "protocol" "TCP" "port" 18081)) }}
+{{- $network := $k.network | default dict }}
+{{- $_ := set $network "gatewayEgress" (prepend ($network.gatewayEgress | default list) $interceptor) }}
+{{- with $site.telemetry }}{{- if .ocsfEndpoint }}
+{{- $_ := set $gateway "telemetry" (dict "ocsfEndpoint" .ocsfEndpoint "agentTraces" (.agentTraces | default false)) }}
+{{- $collector := dict "to" (list (dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" .collector.namespace)) "podSelector" (dict "matchLabels" .collector.podLabels))) "ports" (list (dict "protocol" "TCP" "port" (int .collector.port))) }}
+{{- $_ := set $network "gatewayEgress" (append $network.gatewayEgress $collector) }}
+{{- end }}{{- end }}
+{{- $_ := set $k "network" $network }}
+{{- $workload := $k.workload | default dict }}
+{{- if not $workload.image }}
+{{- $first := index $targets (first (keys $targets | sortAlpha)) }}
+{{- $_ := set $workload "image" (required "sandbox targets must name an image" $first.image) }}
+{{- end }}
+{{- /* The admission policy pins these same images (below): give the gateway
+the identical resolved values instead of its own chart defaults. */}}
+{{- if not $workload.runtimeImage }}{{- $_ := set $workload "runtimeImage" $.Values.driverDefaults.runtimeImage }}{{- end }}
+{{- $_ := set $k "workload" $workload }}
+{{- $supervisor := $k.supervisor | default dict }}
+{{- if not $supervisor.image }}{{- $_ := set $supervisor "image" $.Values.driverDefaults.supervisorImage }}{{- end }}
+{{- $_ := set $k "supervisor" $supervisor }}
+{{- $values = toJson $gateway }}
 {{- end }}
 {{- if and (eq $key "gateway") $site.kataRuntimeClass }}
 {{- $gateway := fromJson $values }}
@@ -99,18 +127,17 @@ data:
 {{- $_ := set $policy "forwarderImage" $stack.audit.values.image }}
 {{- $_ := set $policy "serverTLSSecret" (replace "@OWNER@" $u $gw.identity.serverTlsSecret) }}
 {{- $_ := set $policy "supervisorImage" (dig "supervisor" "image" $.Values.driverDefaults.supervisorImage $gw) }}
-{{- $_ := set $policy "runtimeImage" ($gw.workload.runtimeImage | default $.Values.driverDefaults.runtimeImage) }}
-{{- $proxyURL := replace "@TRUSTED@" $trusted (replace "@OWNER@" $u $gw.proxy.url) }}
-{{- $_ := set $policy "supervisorCommand" (list "/openshell-supervisor" "--backend-descriptor-file" "/.openshell/supervisor/runtime-descriptor.json" "--auth-bundle-file" "/.openshell/supervisor/auth.json" "--workdir" "/sandbox" "--health-socket-path" "/run/openshell/health.sock" "--health-port" "5501" "--upstream-proxy" $proxyURL "--upstream-proxy-connect-by-hostname" "--upstream-proxy-ca-bundle" "/.openshell/supervisor/upstream-proxy-ca.pem") }}
+{{- $_ := set $policy "runtimeImage" (dig "workload" "runtimeImage" "" $gw | default $.Values.driverDefaults.runtimeImage) }}
+{{- $_ := set $policy "supervisorCommand" (list "/openshell-supervisor" "--backend-descriptor-file" "/.openshell/supervisor/runtime-descriptor.json" "--auth-bundle-file" "/.openshell/supervisor/auth.json" "--workdir" "/sandbox" "--health-socket-path" "/run/openshell/health.sock" "--health-port" "5501") }}
+{{- $_ := set $policy.network "publicHTTPS" true }}
+{{- with $site.telemetry }}{{- if .ocsfEndpoint }}
+{{- /* Supervisors export their own OCSF events to the same collector. */}}
+{{- $rule := dict "name" "ocsf-collector" "to" (list (dict "pods" (dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" .collector.namespace)) "podSelector" (dict "matchLabels" .collector.podLabels)))) "ports" (list (dict "portNumber" (dict "protocol" "TCP" "port" (int .collector.port)))) }}
+{{- $_ := set $policy.network "egress" (append $policy.network.egress $rule) }}
+{{- $_ := set $policy "ocsfEndpoint" .ocsfEndpoint }}
+{{- if .agentTraces }}{{- $_ := set $policy "agentTraceEndpoint" .ocsfEndpoint }}{{- end }}
+{{- end }}{{- end }}
 {{- $values = toJson $policy }}
-{{- end }}
-{{- if and (eq $key "proxy") $site.providerPolicy }}
-{{- $proxy := fromJson $values }}
-{{- $secrets := list }}
-{{- range $site.providerPolicy.bindings }}{{- $secrets = append $secrets .secret }}{{- end }}
-{{- $_ := set $proxy "credentialSecretNames" ($secrets | uniq | sortAlpha) }}
-{{- $_ := set $proxy "policyDigest" ($site.providerPolicy | toJson | sha256sum) }}
-{{- $values = toJson $proxy }}
 {{- end }}
 {{- $release := $u }}
 {{- if eq (len $c) 3 }}
@@ -119,6 +146,7 @@ data:
 {{- $v := $values | fromJson }}
 {{- if and $site.lifecycleVersion $slot.modelInput }}{{- $_ := set $v "shareGateForModelSelection" true }}{{- end }}
 {{- $_ := set $v.identity "workspace" $slot.workspace }}{{- $_ := set $v.identity "sandbox" $slot.sandbox }}
+{{- $_ := set $v "receipts" $receipts }}
 {{- $values = toJson $v }}
 {{- end }}
 {{- if regexMatch "@[A-Z_]+@" $values }}{{ fail "unknown site value placeholder" }}{{ end }}

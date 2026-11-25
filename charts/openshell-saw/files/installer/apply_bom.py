@@ -3976,7 +3976,11 @@ class ProfileApplier:
                 raise ValueError("expected a list of model IDs")
         except ValueError as exc:
             raise InstallerError(f"cannot read OpenClaw managed models: {exc}") from None
-        if (sb.inference_values or {}).get("models") or previous:
+        thinking = (sb.inference_values or {}).get("thinking", "")
+        if thinking:
+            self.mark_reasoning_model(exec_cmd, oc_env, provider.type, model_id,
+                                      reasoning=thinking != "off")
+        if (sb.inference_values or {}).get("models") or previous or thinking:
             current_models = self.cli(*exec_cmd, "sh", "-c",
                                      f"{oc_env} openclaw config get agents.defaults --json",
                                      quiet=True)
@@ -3989,7 +3993,9 @@ class ProfileApplier:
                     raise ValueError("expected a mapping")
             except ValueError as exc:
                 raise InstallerError(f"cannot read OpenClaw model choices: {exc}") from None
-            desired = {model_id: {}}
+            # The profile's thinking level is this model's default; /think in a
+            # chat still overrides it for that session.
+            desired = {model_id: {"params": {"thinking": thinking}} if thinking else {}}
             for name, selected_model in (sb.inference_values or {}).get("models", {}).items():
                 kind = next(p.type for p in ws.providers if p.name == name)
                 selected_id = (selected_model if selected_model.startswith(f"{kind}/")
@@ -4001,6 +4007,11 @@ class ProfileApplier:
                     choices.pop(name, None)
             for name, settings in desired.items():
                 choices.setdefault(name, {}).update(settings)
+            if not thinking and isinstance(choices[model_id].get("params"), dict):
+                # A thinking level removed from the profile stops applying.
+                choices[model_id]["params"].pop("thinking", None)
+                if not choices[model_id]["params"]:
+                    choices[model_id].pop("params")
             self.cli(*exec_cmd, "sh", "-c",
                      f"{oc_env} openclaw config set agents.defaults.models "
                      + shlex.quote(json.dumps(choices))
@@ -4056,6 +4067,42 @@ class ProfileApplier:
                                          providers=providers))
         self.clear_confinement_stop(ws, sb)
         self.install_keepalive(ws, sb)
+
+    def mark_reasoning_model(self, exec_cmd, oc_env, provider_type, model_id, reasoning=True):
+        """Set whether OpenClaw treats a custom provider's model as reasoning.
+
+        OpenClaw knows which of its own models reason; a custom model offers
+        only default and off unless its entry says reasoning: true and lists
+        the efforts the endpoint accepts (sent as reasoning_effort). Thinking
+        off marks it reasoning: false, so no effort is sent."""
+        key = f"models.providers.{shlex.quote(provider_type)}.models"
+        found = self.cli(*exec_cmd, "sh", "-c", f"{oc_env} openclaw config get {key} --json",
+                         check=False, quiet=True)
+        if self.sh.dry_run:
+            return
+        try:
+            models = json.loads(found.out) if found.ok else None
+        except ValueError:
+            models = None
+        bare = model_id.removeprefix(f"{provider_type}/")
+        entry = next((m for m in models or [] if isinstance(m, dict) and m.get("id") in (bare, model_id)), None)
+        if entry is None:
+            log(f"WARN: {provider_type} has no model entry for '{bare}'; its thinking level "
+                "applies only if OpenClaw already treats it as a reasoning model")
+            return
+        compat = entry.setdefault("compat", {})
+        efforts = REASONING_EFFORTS if reasoning else None
+        if entry.get("reasoning") is reasoning and compat.get("supportedReasoningEfforts") == efforts:
+            return
+        entry["reasoning"] = reasoning
+        if reasoning:
+            compat["supportedReasoningEfforts"] = REASONING_EFFORTS
+        else:
+            compat.pop("supportedReasoningEfforts", None)
+            if not compat:
+                entry.pop("compat")
+        self.cli(*exec_cmd, "sh", "-c",
+                 f"{oc_env} openclaw config set {key} {shlex.quote(json.dumps(models))}")
 
     def disable_provider_channels(self, ws, sb, exec_cmd, oc_env):
         """Keep OpenClaw's own chat channel off for a provider that shares

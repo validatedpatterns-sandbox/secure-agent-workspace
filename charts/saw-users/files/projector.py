@@ -85,11 +85,35 @@ class Publications:
         return workspace.previous_child(app, appset, owner)
 
 
+def bind_runtime_class(site, read):
+    """Bind an autoApprove Kata site to the live RuntimeClass it names.
+
+    autoApprove already trusts the first boundary enrollment observes, and
+    enrollment keeps failing closed on any later change. A reviewed site must
+    carry the operator's explicit {name, uid, sha256} approval instead.
+    """
+    approval = site.get("kataRuntimeClass") if isinstance(site, dict) else None
+    if not isinstance(approval, dict) or set(approval) != {"name"}:
+        return site  # explicit approval (or invalid input, rejected later)
+    automatic = site.get("automaticEnrollment") or {}
+    if automatic.get("enabled") is False or automatic.get("autoApprove") is not True:
+        raise preflight.PreflightError("RuntimeClassApprovalMissing")
+    if not callable(read):
+        raise preflight.PreflightError("RuntimeClassUnavailable")
+    observed = read("/apis/node.k8s.io/v1/runtimeclasses/" + approval["name"])
+    if not isinstance(observed, dict) or not observed:
+        raise preflight.PreflightError("RuntimeClassUnavailable")
+    bound = {"name": approval["name"], "uid": (observed.get("metadata") or {}).get("uid"),
+             "sha256": preflight.runtime_placement_digest(observed)}
+    preflight.check_runtime_class(bound, observed)
+    return {**site, "kataRuntimeClass": bound}
+
+
 def verify_gitops_preflight(owner, site, mode, read):
     """Stop ApplicationSet generation on a changed live Kata boundary."""
     automatic = site.get("automaticEnrollment", {})
-    if not automatic or automatic.get("enabled") is False:
-        return
+    if not automatic or automatic.get("enabled") is False or automatic.get("autoApprove") is True:
+        return  # autoApprove has no operator reference; enrollment checks the live boundary
     reference = automatic.get("reference")
     preflight.verify_boundary_reference(reference, mode)
     if mode == "kata":
@@ -186,6 +210,8 @@ def parameters(config, catalog, read):
         try:
             profile = (owner.get("profiles") or [None])[0]
             preflight.verify_profile_image_access(site, profile, catalog)
+            if owner.get("values", {}).get("deployment", {}).get("mode") == "kata":
+                site = bind_runtime_class(site, getattr(read, "preflight_resource", None))
             values = workspace.project_workspace(owner, defaults, site, catalog, read, getattr(read, "previous", None))
             live_read = getattr(read, "preflight_resource", None)
             if callable(live_read):

@@ -55,7 +55,7 @@ rules:
   - {apiGroups: [rbac.authorization.k8s.io], resources: [roles], resourceNames: [{{ $g }}-gateway], verbs: [get]}
   # Public trust only; no private administrator identity is stored in this Secret.
   - {apiGroups: [""], resources: [secrets], resourceNames: [{{ $g }}-client-ca], verbs: [get, update]}
-  - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $c.profile }}, {{ $c.intent }}, {{ $g }}-gateway-config, {{ $g }}-proxy-ca], verbs: [get]}
+  - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $c.profile }}, {{ $c.intent }}, {{ $g }}-gateway-config], verbs: [get]}
   - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $c.intent }}], verbs: [watch]}
   - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $c.status }}], verbs: [get, update]}
   - {apiGroups: [""], resources: [persistentvolumeclaims], resourceNames: {{ $.Values.claimNames | toJson }}, verbs: [get]}
@@ -64,9 +64,11 @@ rules:
   - {apiGroups: [networking.k8s.io], resources: [networkpolicies], resourceNames: [{{ $g }}-gateway, {{ $g }}-default-deny, openshell-sandbox-workloads, openshell-sandbox-supervisors], verbs: [get]}
 {{- else if eq $ns $t }}
   - {apiGroups: [""], resources: [pods], verbs: [get]}
-  - {apiGroups: [apps], resources: [deployments], resourceNames: [{{ $g }}-credential-proxy], verbs: [get]}
-  - {apiGroups: [networking.k8s.io], resources: [networkpolicies], resourceNames: [{{ $g }}-credential-proxy], verbs: [get]}
-  - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $c.proxyPolicy }}, {{ $g }}-gateway-ca], verbs: [get]}
+  - {apiGroups: [""], resources: [configmaps], resourceNames: [{{ $g }}-gateway-ca], verbs: [get]}
+{{- with $c.credentialSecrets }}
+  # Read only to hand each value to OpenShell when a provider is created or rotated.
+  - {apiGroups: [""], resources: [secrets], resourceNames: {{ toJson . }}, verbs: [get]}
+{{- end }}
 {{- else }}
   - {apiGroups: [apps], resources: [deployments], resourceNames: [governance-interceptor], verbs: [get]}
   - {apiGroups: [""], resources: [services], resourceNames: [governance-interceptor], verbs: [get]}
@@ -107,7 +109,7 @@ spec:
   selector: {matchLabels: {app.kubernetes.io/instance: {{ $g }}, openshell.pattern/role: reconciler}}
   template:
     metadata:
-      labels: {app.kubernetes.io/instance: {{ $g }}, openshell.pattern/role: reconciler}
+      labels: {app.kubernetes.io/instance: {{ $g }}, openshell.pattern/role: reconciler, saw.redhat.com/kubernetes-api: allow}
       annotations: {checksum/config: {{ $c | toJson | sha256sum | quote }}}
     spec:
       serviceAccountName: {{ $name }}

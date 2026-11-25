@@ -17,6 +17,7 @@ spec:
       labels:
         {{- include "saw-kubernetes.labels" . | nindent 8 }}
         openshell.pattern/role: gateway
+        saw.redhat.com/kubernetes-api: allow
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/gateway-config.yaml") . | sha256sum }}
     spec:
@@ -88,7 +89,9 @@ spec:
             - {name: client-ca, mountPath: /etc/openshell-tls/client-ca, readOnly: true}
             - {name: jwt, mountPath: /etc/openshell-jwt, readOnly: true}
             - {name: peer-token, mountPath: /var/run/secrets/openshell-peer, readOnly: true}
+{{- if $k.proxy.url }}
             - {name: proxy-ca, mountPath: /etc/openshell-tls/proxy-ca, readOnly: true}
+{{- end }}
             - {name: tmp, mountPath: /tmp}
             {{- if .Values.oidc.caConfigMap }}
             - {name: oidc-ca, mountPath: /etc/openshell-tls/oidc-ca, readOnly: true}
@@ -104,7 +107,9 @@ spec:
             secretName: {{ $k.identity.clientCaSecret | quote }}
             items: [{key: ca.crt, path: ca.crt}]
         - {name: jwt, secret: {secretName: {{ $k.identity.jwtSecret | quote }}, defaultMode: 0440}}
+{{- if $k.proxy.url }}
         - {name: proxy-ca, configMap: {name: {{ $k.proxy.caConfigMap | quote }}}}
+{{- end }}
         - {name: tmp, emptyDir: {}}
         {{- if .Values.oidc.caConfigMap }}
         - {name: oidc-ca, configMap: {name: {{ .Values.oidc.caConfigMap | quote }}}}
@@ -125,7 +130,9 @@ metadata:
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
 spec:
   accessModes: [ReadWriteOnce]
-  storageClassName: {{ $k.storage.className | quote }}
+  {{- with $k.storage.className }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
   resources:
     requests: {storage: {{ $k.storage.gatewaySize | quote }}}
 {{- end }}

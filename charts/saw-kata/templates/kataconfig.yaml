@@ -1,0 +1,31 @@
+{{- if .Values.enabled }}
+{{- if not .Values.poolSelector }}{{ fail "poolSelector is required: an empty selector installs Kata on every worker" }}{{ end }}
+# Installs the local Kata runtime (OSC creates the kata RuntimeClass). Nodes
+# reboot while their machine config pool updates.
+apiVersion: kataconfiguration.openshift.io/v1
+kind: KataConfig
+metadata:
+  name: {{ .Values.name }}
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  enablePeerPods: false
+  checkNodeEligibility: {{ .Values.checkNodeEligibility }}
+  kataConfigPoolSelector: {{ .Values.poolSelector | toJson }}
+{{- end }}
+{{- if .Values.enabled }}
+{{- with .Values.runtimeClass }}
+{{- if or (ne .handler "kata") (not .nodeSelector) }}{{ fail "runtimeClass needs the kata handler and a node selector for the Kata pool" }}{{ end }}
+---
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: {{ .name }}
+  labels:
+    openshell.ai/sandbox-attachable: "true"
+handler: {{ .handler }}
+overhead: {{ .overhead | toJson }}
+scheduling:
+  nodeSelector: {{ .nodeSelector | toJson }}
+{{- end }}
+{{- end }}

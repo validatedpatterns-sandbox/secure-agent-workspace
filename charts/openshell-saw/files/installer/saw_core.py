@@ -200,7 +200,7 @@ class Sandbox:
     # (the agent, and argv, can read these): those stay on providers.
     env: dict = field(default_factory=dict)
     # `inference:` -- how the agent reaches its model: {providerRef, protocol,
-    # baseUrl?, model, models?, timeoutSeconds?}. models maps optional native
+    # baseUrl?, model, models?, timeoutSeconds?, thinking?}. models maps optional native
     # provider names to additional chat model inputs. baseUrl/model/timeoutSeconds
     # is a literal or an input ({secretKeyRef: {name, key}, default?,
     # required?, title?}); inference_values is it resolved. The installer onboards the
@@ -418,6 +418,10 @@ def validate_profile_document(doc, kind, where="profile"):
                 raise InstallerError(f"{where}: inference.providerRef must be a string")
             if "protocol" in inference and not isinstance(inference["protocol"], str):
                 raise InstallerError(f"{where}: inference.protocol must be a string")
+            inference = _thinking_off(inference)
+            if "thinking" in inference and inference["thinking"] not in THINKING_LEVELS:
+                raise InstallerError(f"{where}: inference.thinking must be one of "
+                                     + ", ".join(THINKING_LEVELS))
             for field_name in ("model", "baseUrl", "timeoutSeconds"):
                 kinds = (str, int) if field_name == "timeoutSeconds" else (str,)
                 if field_name in inference:
@@ -511,7 +515,7 @@ def parse_profiles(files, *, strict=False, document_check=None):
                         harness_ref=dict(s.get("harnessRef") or {}),
                         ui=dict(s.get("ui") or {}),
                         env=s.get("env") if s.get("env") is not None else {},
-                        inference=s.get("inference") if s.get("inference") is not None else {},
+                        inference=_thinking_off(s.get("inference") if s.get("inference") is not None else {}),
                         gpu_enabled=gpu_enabled, gpu_count=gpu_count))
             profile.workspaces.append(ws)
         profiles.append(profile)
@@ -721,7 +725,19 @@ def secret_ref_problems(src):
     return out
 
 
-INFERENCE_KEYS = {"providerRef", "protocol", "baseUrl", "model", "models", "timeoutSeconds"}
+def _thinking_off(inference):
+    """YAML reads an unquoted `thinking: off` as false; it means off."""
+    if isinstance(inference, dict) and inference.get("thinking") is False:
+        return {**inference, "thinking": "off"}
+    return inference
+
+
+INFERENCE_KEYS = {"providerRef", "protocol", "baseUrl", "model", "models", "timeoutSeconds", "thinking"}
+# OpenClaw thinking levels a profile may make the model's default. A level
+# other than off also marks the model as a reasoning model that accepts
+# these efforts, which OpenClaw only assumes for its own known models.
+THINKING_LEVELS = ("off", "minimal", "low", "medium", "high")
+REASONING_EFFORTS = ["low", "medium", "high"]
 
 
 # A profile controls allowed credential destinations; the protocol controls
@@ -948,6 +964,8 @@ def resolve_inference(ws, sb, read_value, validate_endpoint, forbidden=()):
     if timeout and (not str(timeout).isdigit() or int(timeout) < 0):
         raise InstallerError(f"{where}: inference timeoutSeconds must be a non-negative integer")
     out["timeoutSeconds"] = int(timeout) if timeout else 0
+    if spec.get("thinking"):
+        out["thinking"] = spec["thinking"]
     if "models" in spec:
         out["models"] = {}
         for name, src in spec["models"].items():
@@ -1007,6 +1025,11 @@ def sandbox_inference_problems(sb, provider_types, declared_provider_types=None)
     for key in ("baseUrl", "model"):
         if key in spec:
             out += [f"inference {key} {p}" for p in input_problems(spec[key])]
+    if "thinking" in spec:
+        if spec["thinking"] not in THINKING_LEVELS:
+            out.append(f"inference thinking must be one of {', '.join(THINKING_LEVELS)}")
+        elif sb.type != "openclaw":
+            out.append("inference thinking is supported only for openclaw sandboxes")
     models = spec.get("models", {})
     if not isinstance(models, dict):
         out.append("inference models must be a mapping of provider names to model inputs")
@@ -1058,7 +1081,7 @@ __all__ = (
     'SANDBOX_TYPES', 'BASE_URL_CONFIG_KEYS', 'InstallerError', 'Provider', 'Sandbox', 'Workspace',
     'Profile', 'HarnessBundle', 'read_profile_files', '_yaml', 'parse_profiles', 'enabled_workspaces',
     'validate_profiles', 'ENV_NAME_RE', 'CREDENTIAL_NAME_RE', 'ENV_VALUE_LIMIT', 'SANDBOX_ENV_KEYS',
-    'INPUT_KEYS', 'secret_ref', 'secret_ref_problems', 'INFERENCE_KEYS', 'INFERENCE_PROTOCOLS',
+    'INPUT_KEYS', 'secret_ref', 'secret_ref_problems', 'INFERENCE_KEYS', 'INFERENCE_PROTOCOLS', 'THINKING_LEVELS', 'REASONING_EFFORTS',
     'PROVIDER_PROTOCOLS', 'check_env_value', 'sandbox_env_problems', 'input_problems',
     'check_base_url', 'resolve_bom_input', 'resolve_inference', 'inference_protocol', 'sandbox_inference_problems', 'harness_from_plan', 'profiles_from_plan',
     'validate_profile_document', 'apply_workspace_sequence', 'select_inference_provider',
@@ -1113,13 +1136,33 @@ def tool_gate_identity(owner, subject, workspace, sandbox):
             "sandbox": sandbox, "workspace": workspace}
 
 
-def tool_gate_bundle(here, identity, receipt_key=None):
-    """Build the identical policy, identity and OpenClaw extension for both runtimes."""
+def tool_gate_bundle(here, identity, receipt_key=None, harness_rules=()):
+    """Build the identical policy, identity and OpenClaw extension for both runtimes.
+
+    `harness_rules` are the enrolled harness's own tool rules
+    (harness_tool_rules). They follow the base rules, so where both name a
+    tool the base rule decides, and the pinned policy hash covers them.
+    """
     names = ("tool-actions.yaml", "tool-gate.mjs", "tool-gate-plugin.mjs")
     missing = [name for name in names if not (here / name).is_file()]
     if missing:
         raise InstallerError("tool gate files missing from the installer disk: " + ", ".join(missing))
     policy = (here / "tool-actions.yaml").read_bytes()
+    if harness_rules:
+        lines = [b"", b"  # From the enrolled harness bundle (its own MCP tools only)."]
+        for rule in harness_rules:
+            # Written into policy text, so check every field here as well as
+            # where the rules are built: only a <server>__<tool> rule with a
+            # harness action, in a charset the policy reads verbatim.
+            if (not isinstance(rule, dict) or set(rule) != {"id", "tool", "action"}
+                    or not all(isinstance(v, str) for v in rule.values())
+                    or not HARNESS_RULE_ID_RE.fullmatch(rule["id"])
+                    or not HARNESS_TOOL_RE.fullmatch(rule["tool"])
+                    or rule["action"] not in HARNESS_TOOL_ACTIONS):
+                raise InstallerError(f"invalid harness tool rule {rule!r}")
+            lines += [f"  - id: {rule['id']}".encode(), f"    tool: {rule['tool']}".encode(),
+                      f"    action: {rule['action']}".encode()]
+        policy = policy.rstrip(b"\n") + b"\n".join(lines) + b"\n"
     policy_hash = "sha256:" + hashlib.sha256(policy).hexdigest()
     plugin = (here / "tool-gate-plugin.mjs").read_bytes().replace(
         b"__SAW_POLICY_HASH__", policy_hash.encode())
@@ -1142,6 +1185,20 @@ def tool_gate_bundle(here, identity, receipt_key=None):
 
 # Inline harness parsing and OpenClaw registration are shared by both installers.
 HARNESS_MOUNT = "/sandbox/harness"
+# A bundle can allow its own MCP tools or ask for approval; refusing is the
+# default, and the site's tool-actions.yaml can still deny or require approval.
+HARNESS_TOOL_ACTIONS = ("allow", "approval")
+# A harness rule names only <server>__<tool> of its own MCP servers; both
+# parts are letters, digits, '_' or '-' (MCP_SERVER_NAME_RE), never a
+# newline or YAML syntax, and never a bare tool such as exec.
+HARNESS_PART = r"[A-Za-z0-9_-]{1,64}"
+HARNESS_TOOL_RE = re.compile(rf"{HARNESS_PART}__{HARNESS_PART}")
+HARNESS_RULE_ID_RE = re.compile(rf"harness-{HARNESS_PART}-{HARNESS_PART}")
+
+
+def harness_tool_rules(info):
+    """The tool-gate rules a described harness declares for its own MCP tools."""
+    return list(info.get("toolRules", []))
 
 
 # mcp.json env/header value: exactly ${VAR}, or Authorization-style
@@ -1286,6 +1343,33 @@ def describe_harness_tree(files, inline=False, *, warn=lambda _: None):
                     "governanceProfile in harness.yaml spec.mcpServers")
             governance.append({"kind": "MCP server", "name": server,
                                "governanceProfile": profile, "hosts": [host]})
+    tool_rules = []
+    for server, decl in sorted(declared.items()):
+        tools = decl.get("tools")
+        if tools is None:
+            continue
+        if not isinstance(server, str) or not re.fullmatch(HARNESS_PART, server):
+            raise InstallerError(
+                f"harness '{name}': mcp server name {server!r} must be 1-64 letters, digits, "
+                "'_' or '-' to declare tool actions")
+        if server not in mcp_server_names:
+            raise InstallerError(
+                f"harness '{name}': tools are declared for '{server}', which mcp.json does not "
+                "define; a bundle may only set actions for its own MCP servers' tools")
+        if not isinstance(tools, list):
+            raise InstallerError(f"harness '{name}': mcp server '{server}' tools must be a list")
+        for item in tools:
+            if (not isinstance(item, dict) or set(item) != {"name", "action"}
+                    or not isinstance(item["name"], str)
+                    or not re.fullmatch(HARNESS_PART, item["name"])
+                    or item["action"] not in HARNESS_TOOL_ACTIONS):
+                raise InstallerError(
+                    f"harness '{name}': mcp server '{server}' tools entries need exactly a name "
+                    "(letters, digits, '_' or '-') and an action of allow or approval")
+            tool_rules.append({"id": f"harness-{server}-{item['name']}",
+                               "tool": f"{server}__{item['name']}", "action": item["action"]})
+    if len({r["id"] for r in tool_rules}) != len(tool_rules):
+        raise InstallerError(f"harness '{name}': a tool is declared twice")
     bundle_id = name
     if "plugin.json" in files:
         try:
@@ -1303,6 +1387,7 @@ def describe_harness_tree(files, inline=False, *, warn=lambda _: None):
         "mcpConfigs": mcp_configs,
         "pluginDirs": plugin_dirs,
         "governance": governance,
+        "toolRules": tool_rules,
     }
 
 

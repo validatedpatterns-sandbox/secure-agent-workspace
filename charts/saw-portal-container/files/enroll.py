@@ -39,6 +39,16 @@ def once(x):
         return api("/api/v1/namespaces/"+namespace+"/"+plural+"/"+name)
     nsobj=obj("namespace",ns)["metadata"]
     if nsobj["labels"].get("saw.redhat.com/runtime-owner")!=ident or nsobj.get("deletionTimestamp"):raise ValueError("namespace ownership")
+    if x.get("autoApprove"):
+        # autoApprove publishes the first observation once. A rerun (new chart
+        # inputs) must not compare it with today's, which includes the running
+        # workspace; the reconciler still rejects later boundary changes.
+        published=api(f"/api/v1/namespaces/{t}/configmaps/saw-portal-enrollment")
+        binding=(published.get("data") or {}).get("binding.json")
+        if ((published["metadata"].get("labels") or {}).get("saw.redhat.com/runtime-owner")==ident
+                and binding and json.loads(binding).get("registration")==r):
+            print("Registration "+r+" is already enrolled",flush=True)
+            return
     if runtime:
         try:
             runtime_class=obj("runtimeclass",runtime["name"])
@@ -74,16 +84,20 @@ def once(x):
             ("validatingadmissionpolicies", "validatingadmissionpolicybindings"))
         verify_kata_platform(x, runtime_class, configs, nodes, api_readiness, cluster_version)
     cfg=dict(namespace=ns,namespaceUID=nsobj["uid"],ownerID=ident,mode=mode,trustedNamespace=t,
-             governanceNamespace=x["governance"],gateway=u,proxyPolicy=u+"-proxy-policy",slotKeys=sorted(x["targets"]))
+             governanceNamespace=x["governance"],gateway=u,slotKeys=sorted(x["targets"]))
     if runtime: cfg["workloadRuntimeClass"]=runtime["name"]
     cache={}
     def get(p):
         if p not in cache:cache[p]=api(p)
         return cache[p]
-    approved=capture(cfg,get)["approved"]
-    verify_contract(cfg,get,x["reference"])
+    approved=capture(cfg,get)["approved"]  # health, admission and network checks always run
     profile=obj("configmap","saw-bom-profiles")
-    if digest(profile["data"])!=x["profileSHA256"]:raise ValueError("unapproved BOM")
+    if not x.get("autoApprove"):
+        # Reviewed sites compare the live boundary and BOM with the operator's approval.
+        # autoApprove (an explicit cluster setting) publishes this first observation instead;
+        # later changes to the enrolled boundary still fail closed.
+        verify_contract(cfg,get,x["reference"])
+        if digest(profile["data"])!=x["profileSHA256"]:raise ValueError("unapproved BOM")
     def pvc(name,ro):
         return dict(claimName=name,uid=obj("persistentvolumeclaim",name)["metadata"]["uid"],readOnly=ro)
     harnesses = {}
@@ -98,10 +112,13 @@ def once(x):
     slots={}
     for key, target in x["targets"].items():
         base=target["base"]
-        slot={"workspace":pvc("workspace-"+base,False),
-              "toolGate":{"ownerLogin":u,"receiptKey":receipt_key(base,hist,"/writer-ca/service-ca.crt"),
-                          "trusted":pvc("saw-gate-"+base,True),"audit":pvc("saw-audit-"+base,False)},
-              "resources":x["resources"]}
+        gate={"ownerLogin":u,"trusted":pvc("saw-gate-"+base,True),"audit":pvc("saw-audit-"+base,False)}
+        if x.get("auditReceipts"):
+            # Fail-closed: each approved tool action waits for the writer's signed receipt.
+            gate["receiptKey"]=receipt_key(base,hist,"/writer-ca/service-ca.crt")
+        else:
+            gate["localAudit"]=True  # best-effort log on the sandbox's own audit volume
+        slot={"workspace":pvc("workspace-"+base,False),"toolGate":gate,"resources":x["resources"]}
         if x.get("lifecycleVersion") == 1 and target.get("modelInput"):
             slot["toolGate"]["modelSelector"] = True
         if key in harnesses:
@@ -115,10 +132,8 @@ def once(x):
     if runtime:
         bindings.update(workloadRuntimeClass=runtime["name"],workloadRuntimeClassUID=runtime["uid"],
                         workloadRuntimeClassDigest=runtime["sha256"])
-    if x.get("providerPolicy"):
-        bindings["proxyBindings"] = [{"secret": b["secret"], "key": b["key"], "type": typ,
-                                      "refresh": bool(b.get("refresh"))}
-                                     for b in x["providerPolicy"]["bindings"] for typ in b["providers"]]
+    if x.get("credentialBindings"):
+        bindings["credentialBindings"] = x["credentialBindings"]
     if x.get("customInferenceURL"):
         bindings["customInferenceURL"] = x["customInferenceURL"]
     if x.get("modelInputs"):

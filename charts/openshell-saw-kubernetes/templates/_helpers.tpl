@@ -21,14 +21,17 @@ app.kubernetes.io/part-of: secure-agent-workspace
 {{- range $name, $secret := $k.identity -}}
 {{- if or (not $secret) (gt (len $secret) 253) (not (regexMatch "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$" $secret)) -}}{{- fail (printf "kubernetes.identity.%s requires an existing retained Secret name" $name) -}}{{- end -}}
 {{- end -}}
-{{- if not $k.storage.className -}}{{- fail "kubernetes.storage.className must be explicit" -}}{{- end -}}
 {{- if and (eq .Values.deployment.mode "container") $k.workload.runtimeClassName -}}{{- fail "container mode must use the default workload runtime" -}}{{- end -}}
 {{- if and (eq .Values.deployment.mode "kata") (not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" $k.workload.runtimeClassName)) -}}{{- fail "kata requires an approved workload RuntimeClass name" -}}{{- end -}}
 {{- if not (regexMatch "^https://[^/?#@[:space:]]+(/[^?#[:space:]]*)?$" .Values.oidc.issuerUrl) -}}{{- fail "oidc.issuerUrl must be explicit HTTPS without userinfo, query or fragment" -}}{{- end -}}
 {{- if not (or (regexMatch "^https://[^/?#@[:space:]]+/?$" $k.governance.endpoint) (regexMatch "^http://[a-z0-9-]+\\.[a-z0-9-]+\\.svc(\\.cluster\\.local)?:[0-9]+$" $k.governance.endpoint)) -}}{{- fail "governance endpoint must be HTTPS without userinfo or the explicitly selected in-cluster HTTP gRPC Service" -}}{{- end -}}
-{{- if or (not (regexMatch "^https?://[^/?#@[:space:]]+:[0-9]+$" $k.proxy.url)) (not $k.proxy.caConfigMap) -}}{{- fail "configure the trusted credential proxy URL without userinfo and public CA ConfigMap" -}}{{- end -}}
+{{- if and $k.proxy.url (or (not (regexMatch "^https?://[^/?#@[:space:]]+:[0-9]+$" $k.proxy.url)) (not $k.proxy.caConfigMap)) -}}{{- fail "an upstream proxy needs a URL without userinfo and a public CA ConfigMap" -}}{{- end -}}
 {{- if or (not $k.network.reconcilerNamespace) (not $k.network.reconcilerLabels) -}}{{- fail "trusted reconciler namespace and exact Pod labels are required" -}}{{- end -}}
 {{- if eq $k.network.reconcilerNamespace .Release.Namespace -}}{{- fail "trusted reconciler identity must be outside the runtime namespace" -}}{{- end -}}
+{{- with .Values.telemetry.ocsfEndpoint -}}
+{{- if not (regexMatch "^https?://[a-z0-9.-]+:[0-9]+$" .) -}}{{- fail "telemetry.ocsfEndpoint must be http(s)://host:port (OTLP/gRPC)" -}}{{- end -}}
+{{- end -}}
+{{- if and .Values.telemetry.agentTraces (not .Values.telemetry.ocsfEndpoint) -}}{{- fail "telemetry.agentTraces relays to the telemetry.ocsfEndpoint collector; set it" -}}{{- end -}}
 {{- if not $k.network.gatewayEgress -}}{{- fail "explicit gateway API/DNS/OIDC/governance/proxy egress rules are required" -}}{{- end -}}
 {{- range $rule := $k.network.gatewayEgress -}}
 {{- if or (not $rule.to) (not $rule.ports) -}}{{- fail "gateway egress rules need nonempty destinations and ports" -}}{{- end -}}
@@ -37,7 +40,7 @@ app.kubernetes.io/part-of: secure-agent-workspace
 {{- if hasKey $peer "namespaceSelector" -}}
 {{- if and (empty $peer.namespaceSelector.matchLabels) (empty $peer.namespaceSelector.matchExpressions) -}}{{- fail "gateway egress must not select all namespaces" -}}{{- end -}}
 {{- end -}}
-{{- if and $peer.ipBlock (has $peer.ipBlock.cidr (list "0.0.0.0/0" "::/0")) (not $peer.ipBlock.except) -}}{{- fail "gateway egress must not allow all addresses" -}}{{- end -}}
+{{- if and $peer.ipBlock (has $peer.ipBlock.cidr (list "0.0.0.0/0" "::/0")) (not $peer.ipBlock.except) (ne (toJson $rule.ports) (toJson (list (dict "protocol" "TCP" "port" 443)))) -}}{{- fail "gateway egress may allow all addresses only for HTTPS (TCP 443)" -}}{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

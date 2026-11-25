@@ -42,6 +42,22 @@ data:
     admin_role = {{ .Values.oidc.adminRole | quote }}
     user_role = {{ .Values.oidc.userRole | quote }}
     dangerously_allow_insecure_http = false
+    {{- with .Values.telemetry.ocsfEndpoint }}
+    # Best-effort OCSF export over OTLP/gRPC. Supervisors receive the same
+    # endpoint and export their own events to it. No trace export.
+    [openshell.gateway.otlp]
+    [openshell.gateway.otlp.ocsf]
+    enabled = true
+    endpoint = {{ . | quote }}
+    {{- if $.Values.telemetry.agentTraces }}
+    # Agent trace relay: each supervisor forwards the workload's own OTLP/HTTP
+    # traces (sent to a reserved in-sandbox address) to the same collector,
+    # tagged openshell.telemetry.source=agent. Best-effort.
+    [openshell.gateway.otlp.agent]
+    enabled = true
+    endpoint = {{ . | quote }}
+    {{- end }}
+    {{- end }}
     [openshell.drivers.kubernetes]
     namespace = {{ .Release.Namespace | quote }}
     gateway_id = {{ .Release.Name | quote }}
@@ -54,6 +70,12 @@ data:
     # Driver projects only ca.crt: supervisors must trust the SERVER root.
     client_tls_secret_name = {{ .Values.kubernetes.identity.serverTlsSecret | quote }}
     default_runtime_class_name = {{ .Values.kubernetes.workload.runtimeClassName | quote }}
+    {{- if eq .Values.deployment.mode "kata" }}
+    # Kata: the supervisor gets its own Kata VM too (OpenShell >= 0.1.10),
+    # separate from the workload's, so agent traffic is handled behind a
+    # second guest kernel.
+    supervisor_runtime_class_name = {{ .Values.kubernetes.workload.runtimeClassName | quote }}
+    {{- end }}
     workspace_storage_class = {{ .Values.kubernetes.storage.className | quote }}
     workspace_default_storage_size = {{ .Values.kubernetes.storage.workspaceSize | quote }}
     allow_driver_config = true
@@ -62,10 +84,12 @@ data:
     supervisor_image_pull_policy = "IfNotPresent"
     sandbox_runtime_image_pull_policy = "IfNotPresent"
     image_pull_secrets = {{ .Values.kubernetes.imagePullSecrets | toJson }}
+{{- if .Values.kubernetes.proxy.url }}
     https_proxy = {{ .Values.kubernetes.proxy.url | quote }}
     # Stock SAW proxy accepts DNS:443 CONNECT targets, never literal IPs.
     proxy_connect_by_hostname = true
     proxy_ca_bundle = "/etc/openshell-tls/proxy-ca/ca.crt"
+{{- end }}
     [openshell.drivers.kubernetes.resource_admission]
     enabled = true
     [openshell.drivers.kubernetes.resource_admission.required_labels]

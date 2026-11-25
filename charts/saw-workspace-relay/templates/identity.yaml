@@ -107,7 +107,10 @@ metadata:
   {{- end }}
 spec:
   backoffLimit: 2
-  activeDeadlineSeconds: 300
+  # Creation waits in ContainerCreating until the Keycloak chart's
+  # saw-relay-provisioner Secret exists; Argo never recreates a failed Job,
+  # so a short deadline turned a slow dependency into a manual cleanup.
+  activeDeadlineSeconds: {{ if eq $action "delete" }}300{{ else }}1800{{ end }}
   template:
     spec:
       restartPolicy: Never

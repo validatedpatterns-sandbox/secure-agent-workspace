@@ -1,0 +1,198 @@
+{{- /*
+The workspace relay registrar (files/relay-provisioner.py). Container-mode
+browser relays register their own Keycloak clients with the credential this
+keeps in the saw-relay-provisioner Secret, so no relay Job needs the master
+admin. Re-verified every interval; the helper creates the Secret itself, so a
+GitOps self-heal never clears the generated credential.
+*/ -}}
+{{- if .Values.relayProvisioner.enabled }}
+{{- $r := .Values.relayProvisioner }}
+{{- $kc := .Values.keycloak.existing | default .Values.keycloak.name }}
+{{- if and $r.keycloakUrl (not (hasPrefix "https://" $r.keycloakUrl)) }}
+{{- fail "relayProvisioner.keycloakUrl must use HTTPS" }}
+{{- end }}
+{{- $name := "saw-relay-provisioner" }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+rules:
+  # Create cannot be limited by name; read and update only its own Secret.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ $name | quote }}]
+    verbs: ["get", "patch"]
+  - apiGroups: ["route.openshift.io"]
+    resources: ["routes"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}-{{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+rules:
+  - apiGroups: ["config.openshift.io"]
+    resources: ["ingresses"]
+    resourceNames: ["cluster"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}-{{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}-{{ .Release.Namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-{{ .Release.Namespace }}
+  namespace: openshift-config-managed
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["default-ingress-cert"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-{{ .Release.Namespace }}
+  namespace: openshift-config-managed
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}-{{ .Release.Namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-scripts
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+data:
+  ca-bundle.crt: |
+{{ $r.caBundle | default "" | indent 4 }}
+  saw_tls.py: |
+{{ .Files.Get "files/saw_tls.py" | indent 4 }}
+  relay-provisioner.py: |
+{{ .Files.Get "files/relay-provisioner.py" | indent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name }}
+      annotations:
+        checksum/script: {{ print (.Files.Get "files/relay-provisioner.py") (.Files.Get "files/saw_tls.py") ($r.caBundle | default "") | sha256sum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: provisioner
+          image: {{ $r.image | quote }}
+          command: ["python3", "/scripts/relay-provisioner.py"]
+          env:
+            - name: KC_URL
+              value: {{ $r.keycloakUrl | default "" | quote }}
+            - name: KEYCLOAK_NAME
+              value: {{ $kc | quote }}
+            - name: KEYCLOAK_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            {{- if $r.caBundle }}
+            - name: CA_FILE
+              value: /scripts/ca-bundle.crt
+            {{- end }}
+            - name: REALM
+              value: {{ .Values.keycloak.realm | quote }}
+            - name: AUDIENCE
+              value: {{ $r.audience | quote }}
+            - name: ADMIN_DIR
+              value: /admin
+            - name: INTERVAL
+              value: {{ $r.intervalSeconds | quote }}
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: admin
+              mountPath: /admin
+              readOnly: true
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 48Mi
+            limits:
+              memory: 128Mi
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ $name }}-scripts
+        - name: admin
+          secret:
+            secretName: {{ $r.adminSecret | default (printf "%s-initial-admin" $kc) }}
+            items:
+              - {key: username, path: username}
+              - {key: password, path: password}
+{{- end }}

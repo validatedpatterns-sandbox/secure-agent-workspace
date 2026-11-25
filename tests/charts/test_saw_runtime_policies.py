@@ -169,6 +169,40 @@ def test_supervisor_accepts_stock_gateway_names_only():
     assert "AWS_SECRET_ACCESS_KEY" not in rule
 
 
+def supervisor_rule(*args):
+    validations = render(*args)["ValidatingAdmissionPolicy"]["spec"]["validations"]
+    rule, = [" ".join(item["expression"].split()) for item in validations
+             if item["message"] == "Supervisor executable, TLS projection and token must match the stock contract."]
+    return rule
+
+
+def test_supervisor_may_carry_only_the_configured_ocsf_collector():
+    assert "OPENSHELL_OTLP" not in supervisor_rule()
+    rule = supervisor_rule("--set", "ocsfEndpoint=http://saw-ocsf-collector.openshell-agents.svc:4317")
+    assert "'OPENSHELL_OTLP_OCSF_ENDPOINT'" in rule
+    assert ("e.name != 'OPENSHELL_OTLP_OCSF_ENDPOINT' || "
+            "e.value == \"http://saw-ocsf-collector.openshell-agents.svc:4317\"") in rule
+    assert "OPENSHELL_OTLP_ENDPOINT'" not in rule  # traces stay off
+    assert "OPENSHELL_OTLP_AGENT_ENDPOINT" not in rule
+
+
+def test_supervisor_may_carry_only_the_configured_agent_trace_collector():
+    collector = "http://saw-ocsf-collector.openshell-agents.svc:4317"
+    rule = supervisor_rule("--set", "ocsfEndpoint=" + collector, "--set", "agentTraceEndpoint=" + collector)
+    assert "'OPENSHELL_OTLP_AGENT_ENDPOINT'" in rule
+    assert f"e.name != 'OPENSHELL_OTLP_AGENT_ENDPOINT' || e.value == \"{collector}\"" in rule
+    assert "OPENSHELL_OTLP_AGENT_PROTOCOL" not in rule   # gRPC: the gateway sets no protocol
+
+
+def test_supervisor_may_carry_a_numeric_attach_timeout():
+    """OpenShell 0.1.10 passes a configured attach timeout (Kata: 900 s) to the
+    supervisor; only a plain number of seconds is admitted."""
+    rule = supervisor_rule()
+    assert "'OPENSHELL_ATTACH_REQUEST_TIMEOUT_SECONDS'" in rule
+    assert ("e.name != 'OPENSHELL_ATTACH_REQUEST_TIMEOUT_SECONDS' || "
+            "(has(e.value) && e.value.matches('^[1-9][0-9]{0,4}$'))") in rule
+
+
 def test_identity_fences_cover_creation_and_label_removal_on_update():
     vap = render()["ValidatingAdmissionPolicy"]["spec"]
     variables = {item["name"]: item["expression"] for item in vap["variables"]}
@@ -255,5 +289,26 @@ def test_kata_enforces_reviewed_runtime_at_sandbox_and_pod():
         else:
             assert resource == "pods"
             assert any('object.spec.runtimeClassName == "saw-kata"' in check for check in checks)
-            assert any("variables.role != 'supervisor' || !has(object.spec.runtimeClassName)" in check
-                       for check in checks)
+            # The supervisor runs in a Kata VM of its own, never the default runtime.
+            assert any("variables.role != 'supervisor' || (has(object.spec.runtimeClassName) && "
+                       'object.spec.runtimeClassName == "saw-kata")' in check for check in checks)
+            assert not any("variables.role != 'supervisor' || !has(object.spec.runtimeClassName)" in check
+                           for check in checks)
+
+
+@pytest.mark.parametrize("packet,expected", [
+    ({"ip": "203.0.113.7"}, "Pass"),                       # a public provider API on 443
+    ({"ip": "203.0.113.7", "port": 80}, "Deny"),
+    ({"ip": "10.20.30.40"}, "Deny"),                       # private ranges stay closed
+    ({"ip": "172.16.0.9"}, "Deny"),
+    ({"ip": "192.168.1.1"}, "Deny"),
+    ({"ip": "169.254.169.254"}, "Deny"),                   # cloud metadata
+    ({"ip": "192.0.2.10"}, "Pass"),                        # explicit rules still apply first
+])
+def test_public_https_lets_supervisors_reach_providers_but_not_private_networks(packet, expected):
+    anp = render("--set", "network.publicHTTPS=true")["AdminNetworkPolicy"]
+    assert packet_action(anp, **packet) == expected
+
+
+def test_public_https_is_off_by_default():
+    assert packet_action(render()["AdminNetworkPolicy"], ip="203.0.113.7") == "Deny"

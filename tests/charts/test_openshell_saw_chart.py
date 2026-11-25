@@ -1030,7 +1030,14 @@ def test_pattern_puts_keycloak_and_each_saw_in_their_own_namespaces():
     users_app = apps["saw-users"]
     assert users_app["namespace"] == "openshell-agents"
     assert users_app["path"] == "charts/saw-users"
-    assert users_app["extraValueFiles"] == ["/overrides/saw-users.yaml"]
+    # Shared container defaults first, then the users; never the demo-only file.
+    assert users_app["extraValueFiles"] == ["/overrides/saw-container-defaults.yaml",
+                                            "/overrides/saw-users.yaml"]
+    for app in apps.values():
+        assert "/overrides/saw-container-demo.yaml" not in (app or {}).get("extraValueFiles", [])
+    defaults = yaml.safe_load((ROOT / "overrides/saw-container-defaults.yaml").read_text())
+    enrollment = defaults["containerDefaults"]["automaticEnrollment"]
+    assert enrollment["autoApprove"] is False and enrollment["enabled"] is False
     assert users_app["syncPolicy"]["automated"]["prune"] is True
     listed = yaml.safe_load((ROOT / "overrides/saw-users.yaml").read_text())["users"]
     assert listed == []

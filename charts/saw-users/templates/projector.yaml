@@ -1,14 +1,23 @@
 {{- if .Values.projection.enabled }}
 {{- $users := list }}
 {{- range $user := .Values.users }}
-{{- if has (dig "deployment" "mode" "vm" ($user.values | default dict)) (list "container" "kata") }}
-{{- $users = append $users $user }}
+{{- if and (has (dig "deployment" "mode" "vm" ($user.values | default dict)) (list "container" "kata")) $user.ownerSubject }}
+{{- $users = append $users (include "saw-users.containerUser" (dict "root" $ "user" $user) | fromJson) }}
 {{- end }}{{- end }}
 {{- $owner := printf "%s/%s" .Release.Namespace .Release.Name | sha256sum | trunc 20 }}
 {{- $name := printf "saw-projector-%s" $owner }}
 {{- $config := dict }}
 {{- if $users }}{{- $config = deepCopy .Values }}{{- end }}
 {{- $_ := set $config "users" $users }}
+{{- if $users }}
+{{- $sites := dict }}
+{{- range $user := $users }}
+{{- $resolved := include "saw-users.containerSite" (dict "root" $ "user" $user) | fromJson }}
+{{- if $resolved }}{{- $_ := set $sites $user.name $resolved }}{{- end }}
+{{- end }}
+{{- $_ := set $config "containerSites" $sites }}
+{{- $_ := unset $config "containerDefaults" }}
+{{- end }}
 {{- range $user := $users }}
 {{- $site := index $config.containerSites $user.name }}
 {{- if not $site }}{{ fail (printf "user %q: deployment.mode=container requires a containerSites entry" $user.name) }}{{ end }}
@@ -24,10 +33,11 @@ data:
 {{- $argo := include "saw-users.argoNamespace" . }}
 {{- if eq .Release.Namespace $argo }}{{ fail "workspace projection requires a dedicated namespace outside Argo CD" }}{{ end }}
 {{- if or (not .Values.projection.egress) (not (regexMatch "^.+@sha256:[a-f0-9]{64}$" .Values.projection.image)) }}{{ fail "projection requires a pinned helper image and explicit API/DNS egress" }}{{ end }}
-{{- if not .Values.projection.applicationSetControllerLabels }}{{ fail "projection requires the actual ApplicationSet controller Pod labels" }}{{ end }}
+{{- $appsetLabels := .Values.projection.applicationSetControllerLabels | default (dict "app.kubernetes.io/name" (printf "%s-applicationset-controller" $argo)) }}
 {{- $identity := dict "namespace" .Release.Namespace "argoNamespace" $argo "name" $name "owner" $owner }}
 {{- $identityCode := .Files.Get "files/projector_identity.py" }}
-{{- $bootstrapRevision := dict "config" $identity "source" $identityCode "image" .Values.projection.image | toJson | sha256sum | trunc 12 }}
+{{- /* Job templates are immutable: anything in the Pod template goes into the name. */}}
+{{- $bootstrapRevision := dict "config" $identity "source" $identityCode "image" .Values.projection.image "podLabels" "kubernetes-api" | toJson | sha256sum | trunc 12 }}
 {{- $bootstrap := printf "%s-%s" $name $bootstrapRevision }}
 ---
 apiVersion: v1
@@ -94,7 +104,7 @@ subjects: [{kind: ServiceAccount, name: {{ $name }}-identity, namespace: {{ .Rel
 {{- $classes := list }}
 {{- range $user := $users }}
 {{- if eq (dig "deployment" "mode" "vm" ($user.values | default dict)) "kata" }}
-{{- $classes = append $classes (dig "kataRuntimeClass" "name" "" (index $.Values.containerSites $user.name)) }}
+{{- $classes = append $classes (dig "kataRuntimeClass" "name" "" (index $config.containerSites $user.name)) }}
 {{- end }}
 {{- end }}
 apiVersion: rbac.authorization.k8s.io/v1
@@ -186,7 +196,7 @@ spec:
   backoffLimit: 3
   activeDeadlineSeconds: 300
   template:
-    metadata: {labels: {app.kubernetes.io/name: {{ $name }}}}
+    metadata: {labels: {app.kubernetes.io/name: {{ $name }}, saw.redhat.com/kubernetes-api: allow}}
     spec:
       serviceAccountName: {{ $name }}-identity
       automountServiceAccountToken: true
@@ -212,7 +222,7 @@ spec:
   selector: {matchLabels: {app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: projector}}
   template:
     metadata:
-      labels: {app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: projector}
+      labels: {app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: projector, saw.redhat.com/kubernetes-api: allow}
       annotations:
         checksum/source: {{ printf "%s%s%s%s" (.Files.Get "files/projector.py") (.Files.Get "files/workspace.py") (.Files.Get "files/preflight.py") (.Files.Get "files/profile-catalog.json") | sha256sum }}
     spec:
@@ -247,6 +257,25 @@ spec:
   selector: {app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/component: projector}
   ports: [{name: http, port: 4355, targetPort: http}]
 ---
+# The projector and its identity Job reach the Kubernetes API through the
+# control-plane nodes, selected by label: no cluster IPs.
+apiVersion: policy.networking.k8s.io/v1alpha1
+kind: AdminNetworkPolicy
+metadata:
+  name: {{ $name }}-kubernetes-api
+  annotations: {argocd.argoproj.io/sync-wave: "-11"}
+spec:
+  priority: {{ .Values.projection.kubernetesApi.priority }}
+  subject:
+    pods:
+      namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ .Release.Namespace }}}}
+      podSelector: {matchLabels: {app.kubernetes.io/name: {{ $name }}, saw.redhat.com/kubernetes-api: allow}}
+  egress:
+  - name: kubernetes-api
+    action: Allow
+    to: {{ .Values.projection.kubernetesApi.to | toJson }}
+    ports: [{portNumber: {protocol: TCP, port: {{ .Values.projection.kubernetesApi.port | default 6443 }}}}]
+---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata: {name: {{ $name }}}
@@ -256,7 +285,7 @@ spec:
   ingress:
   - from:
     - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ $argo }}}}
-      podSelector: {matchLabels: {{ .Values.projection.applicationSetControllerLabels | toJson }}}
+      podSelector: {matchLabels: {{ $appsetLabels | toJson }}}
     ports: [{protocol: TCP, port: 4355}]
   egress: {{ .Values.projection.egress | toJson }}
 ---

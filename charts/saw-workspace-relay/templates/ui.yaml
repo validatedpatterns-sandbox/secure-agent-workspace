@@ -34,7 +34,7 @@ spec:
   selector: {matchLabels: {app: {{ $n }}, role: relay}}
   template:
     metadata:
-      labels: {app: {{ $n }}, role: relay}
+      labels: {app: {{ $n }}, role: relay, saw.redhat.com/kubernetes-api: allow}
       annotations: {checksum/config: {{ printf "%s%s%s" ($v | toJson) (.Files.Get "files/token.py") (.Files.Get "files/saw_ui_limit.py") | sha256sum }}}
     spec:
       serviceAccountName: {{ $n }}

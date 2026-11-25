@@ -23,7 +23,9 @@ watches, not in whatever namespace this chart happens to be released into.
 {{- $seen := dict -}}
 {{- range .Values.users | default list -}}
 {{- $name := .name | default "" | toString -}}
+{{- if not (include "saw-users.awaitingOwner" (dict "root" $ "user" .)) -}}
 {{- include "saw-users.validateDeploymentMode" (dict "root" $ "user" .) -}}
+{{- end -}}
 {{- if and $.Values.ownerResolution.enabled (not (has (dig "deployment" "mode" "vm" (.values | default dict)) (list "container" "kata"))) -}}
 {{- $entryValues := .values | default dict -}}
 {{- $entryAccess := index $entryValues "accessControl" | default dict -}}
@@ -459,11 +461,11 @@ openshellValues. Keep omission as vm without changing existing rendered values. 
 {{- if not (has $mode (list "vm" "container" "kata")) -}}
 {{- fail "deployment.mode must be one of vm, container, kata" -}}
 {{- end -}}
-{{- if and (has $mode (list "container" "kata")) (hasKey (.root.Values.containerSites | default dict) .user.name) -}}
-{{- $u := .user -}}
-{{- $site := index .root.Values.containerSites $u.name -}}
+{{- if and (has $mode (list "container" "kata")) (or (hasKey (.root.Values.containerSites | default dict) .user.name) .root.Values.containerDefaults) -}}
+{{- $u := include "saw-users.containerUser" (dict "root" .root "user" .user) | fromJson -}}
+{{- $site := include "saw-users.containerSite" (dict "root" .root "user" $u) | fromJson -}}
 {{- if not (has (dig "deployment" "mode" "vm" ($u.values | default dict)) (list "container" "kata")) -}}{{- fail "deployment.mode=container must be explicit on each user" -}}{{- end -}}
-{{- $foundation := eq (dig "automaticEnrollment" "enabled" true $site | toString) "false" -}}
+{{- $foundation := or (eq (dig "automaticEnrollment" "enabled" true $site | toString) "false") (eq (dig "automaticEnrollment" "autoApprove" false $site | toString) "true") -}}
 {{- $catalog := (.root.Files.Get "files/profile-catalog.json" | fromJson).profiles -}}
 {{- $profile := first ($u.profiles | default list) | default "" -}}
 {{- $approved := or $foundation (hasKey (dig "automaticEnrollment" "approvedProfiles" dict $site) $profile) -}}
@@ -471,6 +473,105 @@ openshellValues. Keep omission as vm without changing existing rendered values. 
 {{- fail "container requires verified owner subject, scoped registration, approved BOM profile and foreground cleanup" -}}
 {{- end -}}
 {{- else if has $mode (list "container" "kata") -}}
-{{- fail (printf "user %q: deployment.mode=container requires a containerSites entry" .user.name) -}}
+{{- fail (printf "user %q: deployment.mode=container requires containerDefaults or a containerSites entry" .user.name) -}}
 {{- end -}}
+{{- end -}}
+
+{{/* installationID for a container user. An explicit value wins; otherwise
+it is uuid5(NAMESPACE_URL, "urn:saw:portal:<name>:<registration>"), the same
+ID the portal and inspect-boundary.py derive. Empty without a valid registration. */}}
+{{- define "saw-users.installationID" -}}
+{{- if .installationID -}}
+{{- .installationID -}}
+{{- else if regexMatch "^[0-9a-f]{16}$" (toString (.registration | default "")) -}}
+{{- $h := printf "%s%s" ("a6e4EZ2tEdGAtADAT9QwyA==" | b64dec) (printf "urn:saw:portal:%s:%s" .name .registration) | sha1sum -}}
+{{- $variant := index (dict "0" "8" "1" "9" "2" "a" "3" "b" "4" "8" "5" "9" "6" "a" "7" "b" "8" "8" "9" "9" "a" "a" "b" "b" "c" "8" "d" "9" "e" "a" "f" "b") (substr 16 17 $h) -}}
+{{- printf "%s-%s-5%s-%s%s-%s" (substr 0 8 $h) (substr 8 12 $h) (substr 13 16 $h) $variant (substr 17 20 $h) (substr 20 32 $h) -}}
+{{- end -}}
+{{- end -}}
+
+{{/* A container user with defaults filled in, so an entry needs only name,
+ownerSubject, profiles, vaultPrefix and values.deployment.mode:
+- registration: sha256("<name>:<generation>")[:16]; bump generation (default 1)
+  for a fresh workspace instead of reusing an old one's storage.
+- vaultPrefix: a base path (default defaults.vaultPrefix) gets /saw-<name>
+  appended, the same for every generation. A path already ending in
+  /saw-<name>, or in /saw-<name>/<registration> (the portal stores each
+  registration's keys there), is kept.
+- pruneOnRemove: true, intentGeneration: 1, installationID: derived.
+Explicit values always win. Returns JSON. */}}
+{{- define "saw-users.containerUser" -}}
+{{- $u := deepCopy .user -}}
+{{- if not $u.registration -}}
+{{- $_ := set $u "registration" (printf "%s:%v" $u.name ($u.generation | default 1) | sha256sum | trunc 16) -}}
+{{- end -}}
+{{- $base := $u.vaultPrefix | default .root.Values.defaults.vaultPrefix | default "secret/data/hub" | trimSuffix "/" -}}
+{{- if not (or (hasSuffix (printf "/saw-%s" $u.name) $base) (hasSuffix (printf "/saw-%s/%s" $u.name $u.registration) $base)) -}}
+{{- $base = printf "%s/saw-%s" $base $u.name -}}
+{{- end -}}
+{{- $_ := set $u "vaultPrefix" $base -}}
+{{- if not (hasKey $u "pruneOnRemove") }}{{ $_ := set $u "pruneOnRemove" true }}{{ end -}}
+{{- if not (hasKey $u "intentGeneration") }}{{ $_ := set $u "intentGeneration" 1 }}{{ end -}}
+{{- with include "saw-users.installationID" $u }}{{ $_ := set $u "installationID" . }}{{ end -}}
+{{- toJson $u -}}
+{{- end -}}
+
+{{/* Recursive merge of .over into .base by key presence: unlike Sprig's
+mergeOverwrite, a false, 0 or "" in .over replaces the base value. Maps merge;
+every other value (lists included) is replaced. Returns JSON. */}}
+{{- define "saw-users.deepMerge" -}}
+{{- $out := deepCopy (.base | default dict) -}}
+{{- range $key, $value := (.over | default dict) -}}
+{{- $current := index $out $key -}}
+{{- if and (kindIs "map" $value) (kindIs "map" $current) -}}
+{{- $_ := set $out $key (include "saw-users.deepMerge" (dict "base" $current "over" $value) | fromJson) -}}
+{{- else -}}
+{{- $_ := set $out $key $value -}}
+{{- end -}}
+{{- end -}}
+{{- toJson $out -}}
+{{- end -}}
+
+{{/* A container user's site: containerSites.<name> layered over the shared
+containerDefaults (site values win). subject defaults to the user's
+ownerSubject. On an autoApprove site every unset chart revision defaults to
+global.targetRevision, so the workspace follows the pattern's branch like VM
+users; reviewed sites must pin each revision to a commit SHA and are left
+unset so the chart and preflight fail instead. Merged by key presence
+(saw-users.deepMerge), so a per-user false or "" overrides a default, as in
+the portal. Returns JSON. */}}
+{{- define "saw-users.containerSite" -}}
+{{- $root := .root -}}{{- $u := .user -}}
+{{- $site := include "saw-users.deepMerge" (dict "base" ($root.Values.containerDefaults | default dict) "over" (index ($root.Values.containerSites | default dict) $u.name | default dict)) | fromJson -}}
+{{- if and $site (not $site.subject) }}{{ $_ := set $site "subject" $u.ownerSubject }}{{ end -}}
+{{- if and $site (eq (dig "deployment" "mode" "vm" ($u.values | default dict)) "kata") (not $site.kataRuntimeClass) -}}
+{{- $_ := set $site "kataRuntimeClass" (dict "name" (($root.Values.kata | default dict).runtimeClassName | default "saw-kata")) -}}
+{{- end -}}
+{{- $rev := $root.Values.global.targetRevision -}}
+{{- if eq (toString (dig "automaticEnrollment" "autoApprove" false $site)) "true" -}}
+{{- $stack := $site.stack | default dict -}}
+{{- range $key := list "identity" "policy" "gateway" "audit" -}}
+{{- $item := index $stack $key | default dict -}}
+{{- if and (kindIs "map" $item) (not $item.revision) }}{{ $_ := set $item "revision" $rev }}{{ end -}}
+{{- $_ := set $stack $key $item -}}
+{{- end -}}
+{{- $_ := set $site "stack" $stack -}}
+{{- with $site.automaticEnrollment -}}
+{{- if not .revision }}{{ $_ := set . "revision" $rev }}{{ end -}}
+{{- if and .relay (not .relay.revision) }}{{ $_ := set .relay "revision" $rev }}{{ end -}}
+{{- end -}}
+{{- end -}}
+{{- toJson $site -}}
+{{- end -}}
+
+{{/* "true" for a container or Kata user whose ownerSubject is not known yet
+(typically before the Keycloak account exists) on an installation configured
+for containers (containerDefaults or the user's containerSites entry). Such a
+user is left out of every rendered resource and listed in the
+saw-users-awaiting-owner ConfigMap, so VM users and the rest of the install
+still sync. Without any container configuration the entry still fails. */}}
+{{- define "saw-users.awaitingOwner" -}}
+{{- $u := .user -}}
+{{- $configured := or .root.Values.containerDefaults (hasKey (.root.Values.containerSites | default dict) ($u.name | default "")) -}}
+{{- if and $configured (has (dig "deployment" "mode" "vm" ($u.values | default dict)) (list "container" "kata")) (not $u.ownerSubject) -}}true{{- end -}}
 {{- end -}}

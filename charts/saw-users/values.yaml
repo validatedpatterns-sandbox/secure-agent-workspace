@@ -138,13 +138,47 @@ global:
   pattern: secure-agent-workspace
   vpArgoNamespace: vp-gitops
 
+# Container and Kata users (values.deployment.mode). A user entry needs only
+# name, ownerSubject, profiles and vaultPrefix (the credential base path);
+# registration, installationID, pruneOnRemove and intentGeneration have defaults
+# (see saw-users.containerUser in _helpers.tpl).
+#
+# containerDefaults: the cluster-wide site every container user gets, with
+# @OWNER@/@RUNTIME@/... placeholders. subject defaults to the user's
+# ownerSubject and every chart revision to global.targetRevision.
+# automaticEnrollment.autoApprove: true enrolls on first observation instead of
+# an operator-reviewed reference/approvedProfiles (dev and demo clusters).
+containerDefaults: {}
+# containerSites.<name>: per-user overrides layered over containerDefaults.
+containerSites: {}
+# RuntimeClass a Kata user runs in when their site names none: the one the
+# saw-kata application creates. On an autoApprove site the projector binds it
+# by its live UID and placement digest; a reviewed site sets
+# containerSites.<name>.kataRuntimeClass {name, uid, sha256} explicitly.
+kata:
+  runtimeClassName: saw-kata
+
 # Static container entries use the same workspace projector as the portal.
 # RHDH supplies already-projected values and leaves this disabled.
 projection:
   enabled: false
   image: registry.access.redhat.com/ubi9/python-311@sha256:a0bdb55576fc5b8d6704279307817828ef027e1065533ceba133fe9516003a6c
-  # Explicit API/DNS egress for the projector and its identity bootstrap.
-  egress: []
-  # Match the selected OpenShift GitOps instance's controller Pod, not a
-  # presumed instance name. Used together with the Argo namespace selector.
+  # DNS for the projector and its identity bootstrap. They reach the
+  # Kubernetes API through kubernetesApi below, so no cluster IPs are needed.
+  egress:
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openshift-dns}}
+          podSelector: {matchLabels: {dns.operator.openshift.io/daemonset-dns: default}}
+      ports: [{protocol: UDP, port: 5353}, {protocol: TCP, port: 5353}, {protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+  # An AdminNetworkPolicy that lets the projector's pods reach the API on the
+  # control-plane nodes. On a hosted control plane, list the API addresses
+  # instead: [{networks: ["<ip>/32"]}].
+  kubernetesApi:
+    priority: 70
+    port: 6443
+    to:
+      - nodes: {matchExpressions: [{key: node-role.kubernetes.io/control-plane, operator: Exists}]}
+  # The ApplicationSet controller Pod labels, used together with the Argo
+  # namespace selector. Empty means the OpenShift GitOps convention for an
+  # instance named after its namespace (<namespace>-applicationset-controller).
   applicationSetControllerLabels: {}

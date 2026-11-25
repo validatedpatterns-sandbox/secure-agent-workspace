@@ -64,7 +64,7 @@ def issue(authority, client, *, subject, crypto=openssl, erase=erase_ca_key):
     try:
         crypto("req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
                "-nodes", "-keyout", ca_key, "-out", ca, "-days", "1",
-               "-subj", "/O=openshell/OU=SAW-apply/CN=saw-apply-ca",
+               "-subj", "/O=openshell/OU=SAW-apply/CN=saw-apply-ca-" + secrets.token_hex(8),
                "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign")
         crypto("req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
                "-nodes", "-keyout", key, "-subj", subject, "-out", csr)

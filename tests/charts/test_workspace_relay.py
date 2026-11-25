@@ -152,3 +152,12 @@ def test_relay_replaces_spoofed_headers_and_requires_authenticated_subject(tmp_p
     for headers in [b"X-Forwarded-Email: reused-login", b"X-Forwarded-Email: owner-sub\r\nX-Forwarded-Email: foreign"]:
         with pytest.raises(ValueError):
             asyncio.run(request(headers))
+
+
+def test_identity_creation_waits_for_its_registrar_secret():
+    """A failed Job is never recreated by Argo; creation must outlast a
+    Keycloak chart that is still bringing up the registrar credential."""
+    import re
+    from pathlib import Path
+    source = (Path(__file__).resolve().parents[2] / "charts/saw-workspace-relay/templates/identity.yaml").read_text()
+    assert re.search(r'activeDeadlineSeconds: \{\{ if eq \$action "delete" \}\}300\{\{ else \}\}1800\{\{ end \}\}', source)

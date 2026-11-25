@@ -1,0 +1,40 @@
+# Cluster-wide settings for container and Kata workspaces, set once by the
+# platform admin; saw-users and the portal (openshell-rhdh) both read it. Users
+# only add an entry to overrides/saw-users.yaml; per-user changes go under
+# containerSites.<name>. Everything else a site needs is a default in
+# charts/saw-portal-container (siteDefaults).
+#
+# Nothing here is cluster specific: workspaces reach the Kubernetes API
+# through the control-plane nodes and DNS through the cluster DNS pods, and use
+# the cluster's default StorageClass plus saw-shared, which `make saw-init`
+# creates as a copy of its shared-filesystem class.
+projection:
+  enabled: true
+
+containerDefaults:
+  # OpenClaw with /sandbox searchable by OpenShift namespace UIDs, published by
+  # .github/workflows/build-openclaw-image.yml. Pin the src-<12 hex> tag that
+  # matches the BOM's source image (for now the amd64 build of 896d1526ee29).
+  # Disconnected clusters can build it in-cluster (make container-notebook-image).
+  profileImageOverrides:
+    data-science:
+      notebook: "ghcr.io/sauagarwa/saw-openclaw@sha256:05f17f3872f864e44231fb3cea30cd4dd2ba9887b382a67b261f068a234b79a2"
+    custom-inference:
+      notebook: "ghcr.io/sauagarwa/saw-openclaw@sha256:05f17f3872f864e44231fb3cea30cd4dd2ba9887b382a67b261f068a234b79a2"
+  automaticEnrollment:
+    # Enrollment stays off until an operator reviews a workspace's boundary;
+    # then set enabled: true, the reviewed reference and approvedProfiles
+    # digest under containerSites.<name>.automaticEnrollment, and pin chart
+    # revisions to commit SHAs (docs/container-installation.md). Demo clusters
+    # list overrides/saw-container-demo.yaml after this file instead.
+    enabled: false
+    autoApprove: false
+    # The saw-kubernetes-runtime image, pinned by digest and pullable
+    # anonymously from inside the cluster (make saw-init checks this).
+    # For now a multi-arch CI build of this branch (image tag sha-057e58ff), until
+    # .github/workflows/build-kubernetes-runtime.yml publishes it from main.
+    image: ghcr.io/sauagarwa/saw-kubernetes-runtime@sha256:519d559382a14b0e57ea0a10f54d5f2038089a0dcee065a8b2a24f6ab69882be
+    buildNamespace: saw-component-builds
+    relay:
+      keycloakNamespace: saw-keycloak
+      keycloakProvisionerSecret: saw-relay-provisioner

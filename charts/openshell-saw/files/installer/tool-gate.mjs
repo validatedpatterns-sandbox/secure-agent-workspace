@@ -102,6 +102,12 @@ export function parsePolicy(text) {
     ids.add(rule.id);
     if (typeof rule.tool !== "string" || !rule.tool) throw new Error(`rule ${rule.id} needs a tool`);
     if (!ACTIONS.has(rule.action)) throw new Error(`rule ${rule.id} has an unknown action`);
+    if (rule.allowAlways !== undefined) {
+      if (rule.allowAlways !== "true" || rule.action !== "approval") {
+        throw new Error(`rule ${rule.id}: allowAlways must be true on an approval rule`);
+      }
+      rule.allowAlways = true;
+    }
     if (rule.whenCommandMatches !== undefined) {
       if (!Array.isArray(rule.whenCommandMatches) || rule.whenCommandMatches.length === 0) {
         throw new Error(`rule ${rule.id} has an empty whenCommandMatches`);
@@ -147,6 +153,8 @@ export function commandText(params) {
 
 function normalizedExec(command) {
   if (!command.trim()) return { error: "exec-unreadable" };
+  // A trailing 2>&1 only merges stderr into stdout; agents add it out of habit.
+  command = command.replace(/(?:[ \t]+2>&1)+[ \t]*$/, "");
   if (/[;&|`\n\r<>]|\$\(|\$\{/.test(command)) return { error: "exec-opaque" };
   const words = command.trim().split(/\s+/);
   const assignments = [];
@@ -206,11 +214,43 @@ function baseRecord(input, extras) {
   };
 }
 
-function effectFor(action, tool, ruleId) {
+// Said back to the agent with a denial so it can retry in an accepted form
+// instead of guessing.
+const EXEC_HINTS = {
+  "exec-unreadable": "Send the command as one plain string.",
+  "exec-opaque": "Run one command per exec call, with no ;, &&, |, backticks, $(...), "
+    + "redirects or shell wrappers such as sh -c (a trailing 2>&1 is fine). "
+    + "Each command is checked on its own.",
+};
+
+// For an unlisted exec command, the accepted commands that start with the
+// same two words (such as `openclaw automations`), so the agent can use the
+// right spelling instead of giving up or guessing.
+function sameFamily(policy, command) {
+  const words = command.split(" ").slice(0, 2);
+  if (words.length < 2) return "";
+  const prefix = `${words.join(" ")} `;
+  const found = { allow: [], approval: [] };
+  for (const rule of policy.rules) {
+    if (rule.tool !== "exec" || !found[rule.action]) continue;
+    for (const needle of rule.whenCommandMatches || []) {
+      const normalized = needle.toLowerCase().replace(/\s+/g, " ").trim();
+      const verb = normalized.startsWith(prefix) ? normalized.slice(prefix.length) : "";
+      if (verb && !verb.includes(" ") && !found[rule.action].includes(verb)) found[rule.action].push(verb);
+    }
+  }
+  const parts = [];
+  if (found.allow.length) parts.push(`${found.allow.join(", ")} (run directly)`);
+  if (found.approval.length) parts.push(`${found.approval.join(", ")} (ask the user for approval)`);
+  return parts.length ? `. Accepted \`${words.join(" ")}\` commands: ${parts.join("; ")}` : "";
+}
+
+function effectFor(action, tool, ruleId, allowAlways = false, hint = "") {
   if (action === "allow") return { kind: "allow" };
   if (action === "deny") {
     const why = ruleId === "default"
-      ? `Tool ${tool} is denied by the default action`
+      ? `Tool ${tool} is denied by the default action${tool === "exec"
+        ? `: this command is not on the allowed list, so do not retry it in another form${hint}` : ""}`
       : `Tool ${tool} is denied by rule ${ruleId}`;
     return { kind: "deny", blockReason: why };
   }
@@ -221,7 +261,7 @@ function effectFor(action, tool, ruleId) {
       description: `Tool ${tool} matches ${ruleId} and needs approval before it runs.`,
       severity: "warning",
       timeoutMs: 120000,
-      allowedDecisions: ["allow-once", "deny"],
+      allowedDecisions: allowAlways ? ["allow-once", "allow-always", "deny"] : ["allow-once", "deny"],
     },
   };
 }
@@ -280,14 +320,27 @@ export function decide(input) {
   const task = { id: session, title };
   const rawCommand = commandText(input.params);
   const exec = tool === "exec" ? normalizedExec(rawCommand) : null;
-  if (exec?.error) return blocked(input, exec.error, `Tool call blocked: ${exec.error}`, task);
+  if (exec?.error) return blocked(input, exec.error, `Tool call blocked: ${exec.error}. ${EXEC_HINTS[exec.error]}`, task);
   const command = exec ? exec.command : rawCommand;
   const rule = policy.rules.find((item) => ruleMatches(item, tool, command));
   const action = rule ? rule.action : policy.defaultAction;
   const ruleId = rule ? rule.id : "default";
+  // "Allow always" on an allowAlways rule lets later matching calls run
+  // without asking while this gateway runs. Keyed by the policy hash, so a
+  // policy change asks again. Every call is still audited.
+  const rememberKey = rule && rule.allowAlways ? `${policyHash}:${ruleId}` : null;
+  if (rememberKey && input.remembered && input.remembered.has(rememberKey)) {
+    return {
+      record: { ...baseRecord(input, { task, rule: ruleId, policyHash, decision: "allow" }),
+        approval: { mode: "remembered", resolution: "allow-always" } },
+      effect: { kind: "allow" },
+    };
+  }
   return {
     record: baseRecord(input, { task, rule: ruleId, policyHash, decision: decisionName(action) }),
-    effect: effectFor(action, tool, ruleId),
+    effect: effectFor(action, tool, ruleId, Boolean(rememberKey),
+      exec && !rule ? sameFamily(policy, command) : ""),
+    rememberKey,
   };
 }
 
@@ -354,9 +407,13 @@ export function parseIdentity(text) {
   }
 }
 
+// Rules the signed-in user answered "Allow always" for, for this gateway process.
+const REMEMBERED = new Set();
+
 // The before_tool_call hook without the OpenClaw import. A thrown audit write
 // blocks the call. onResolution appends a second line and does not execute.
 export function evaluateToolCall(input) {
+  const remembered = input.remembered || REMEMBERED;
   const identity = input.identityText !== undefined ? parseIdentity(input.identityText) : input.identity;
   const decided = decide({
     policyText: input.policyText,
@@ -368,6 +425,7 @@ export function evaluateToolCall(input) {
     sessionKey: input.sessionKey,
     sessionId: input.sessionId,
     now: input.now,
+    remembered,
   });
   const append = input.appendRecord || (input.auditFile && (record => appendAudit(input.auditFile, record)));
   if (append) {
@@ -383,9 +441,16 @@ export function evaluateToolCall(input) {
     }
   }
   const hook = hookResult(decided, (resolution) => {
-    if (!append) return;
+    const remember = () => {
+      if (resolution === "allow-always" && decided.rememberKey) remembered.add(decided.rememberKey);
+    };
+    if (!append) {
+      remember();
+      return;
+    }
     try {
       append(resolutionRecord(decided.record, resolution));
+      remember();
     } catch {
       const record = { ...resolutionRecord(decided.record, resolution), auditWriteFailed: true };
       process.stderr.write(`${JSON.stringify(record)}\n`);

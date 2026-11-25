@@ -1,0 +1,15 @@
+{{- /* Container/Kata users left out until their ownerSubject is set; see
+saw-users.awaitingOwner. `oc get cm saw-users-awaiting-owner -o yaml` lists them. */ -}}
+{{- $waiting := list }}
+{{- range $user := .Values.users | default list }}
+{{- if include "saw-users.awaitingOwner" (dict "root" $ "user" $user) }}{{- $waiting = append $waiting $user.name }}{{- end }}
+{{- end }}
+{{- if $waiting }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: saw-users-awaiting-owner
+data:
+  users: {{ join "," $waiting | quote }}
+  next: "Create the Keycloak account (make keycloak-add-user KC_USER=<name>), read its subject (make keycloak-user-info KC_USER=<name>), set ownerSubject on the entry in overrides/saw-users.yaml and push."
+{{- end }}

@@ -5,6 +5,163 @@ vaultPrefix: ""
 secretStore: vault-backend
 
 driverDefaults:
-  gatewayVersion: 0.1.6-rhaiv.4
-  supervisorImage: quay.io/opendatahub/odh-openshell-supervisor@sha256:626b91a0f53393dac0d591c142b81100916aa66b4e65444b5527672b5533fe86
-  runtimeImage: quay.io/opendatahub/odh-openshell-sandbox@sha256:0cde11346e68485907c22d3c9b30802e52cf16e3853720a864ac8347bb68f6ef
+  gatewayVersion: 0.1.10-rhaiv.0
+  supervisorImage: quay.io/opendatahub/odh-openshell-supervisor@sha256:c2c8e9d3d19a1612074df0f637078064cff45b92d35c74b116a72fb503b3c1bc
+  # TEMPORARY carry of odh-openshell-sandbox v0.1.10-rhaiv.0 with the auxv
+  # warm-up fix (openshell-sandbox-carry/, CI image tag sha-e8bfde1f): the official
+  # build's network broker panics on every connect on RHEL 9 kernels. Return to
+  # quay.io/opendatahub/odh-openshell-sandbox once a fixed build is released.
+  runtimeImage: ghcr.io/sauagarwa/saw-openshell-sandbox@sha256:402b9727a690e8c8a10fb10c0cee21e96ea034b652d6c7d5b3f06eba916c9881
+
+# The wiring every container site shares. A site (saw-users containerDefaults
+# and containerSites, or the portal's) sets only what differs per cluster and
+# wins: maps merge, other values (lists included) replace.
+siteDefaults:
+  governanceNamespace: openshell-agents
+  # Best-effort audit: the gateway and each sandbox's supervisor export OCSF
+  # events over OTLP/gRPC to the pattern's collector (charts/saw-telemetry).
+  # ocsfEndpoint: "" turns export off.
+  telemetry:
+    ocsfEndpoint: http://saw-ocsf-collector.openshell-agents.svc:4317
+    # Also relay the agent's own OpenTelemetry traces through the supervisor
+    # to the same collector (needs ocsfEndpoint).
+    agentTraces: true
+    collector:
+      namespace: openshell-agents
+      podLabels:
+        app.kubernetes.io/name: saw-ocsf-collector
+        app.kubernetes.io/component: opentelemetry-collector
+      port: 4317
+  # How the workspace's platform pods reach the Kubernetes API. The default
+  # selects the control-plane nodes, so nothing is cluster specific. On a
+  # cluster whose API is not served from its own nodes (a hosted control
+  # plane), list the API addresses instead: [{networks: ["<ip>/32"]}].
+  kubernetesApi:
+    priority: 70
+    port: 6443
+    to:
+      - nodes: {matchExpressions: [{key: node-role.kubernetes.io/control-plane, operator: Exists}]}
+  automaticEnrollment:
+    # Enrollment policy (enabled, autoApprove), the runtime image, build
+    # namespace and relay Keycloak settings come from the site itself
+    # (saw-users containerDefaults), because the workspace projector reads and
+    # checks them before this chart's defaults are merged. Only the compute
+    # request for the enrollment Job defaults here.
+    resources:
+      requests: {cpu: 500m, memory: 1Gi}
+      limits: {cpu: "2", memory: 4Gi}
+    # The relay's egress besides its gateway: DNS, and HTTPS for the issuer.
+    # Its Kubernetes API access comes from kubernetesApi.
+    relay:
+      egress:
+        - to:
+            - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openshift-dns}}
+              podSelector: {matchLabels: {dns.operator.openshift.io/daemonset-dns: default}}
+          ports: [{protocol: UDP, port: 5353}, {protocol: TCP, port: 5353}, {protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+        - to: [{ipBlock: {cidr: 0.0.0.0/0}}]
+          ports: [{protocol: TCP, port: 443}]
+  stack:
+    identity:
+      values:
+        enabled: true
+        ownerID: '@INSTALLATION@'
+        # DNS only: the Kubernetes API is reached through kubernetesApi.
+        network:
+          bootstrapEgress:
+            - to:
+                - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openshift-dns}}
+                  podSelector: {matchLabels: {dns.operator.openshift.io/daemonset-dns: default}}
+              ports: [{protocol: UDP, port: 5353}, {protocol: TCP, port: 5353}, {protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+        targetNamespace: '@RUNTIME@'
+        gateway: '@OWNER@'
+        serverSans:
+          - '@OWNER@-gateway.@RUNTIME@.svc'
+          - '@OWNER@-gateway.@RUNTIME@.svc.cluster.local'
+    policy:
+      values:
+        enabled: true
+        targetNamespace: '@RUNTIME@'
+        gatewayId: '@OWNER@'
+        gatewayServiceAccount: '@OWNER@-gateway'
+        sandboxServiceAccount: '@OWNER@-sandbox'
+        mode: container
+        network:
+          # Each workspace policy selects only its own namespace, so workspaces
+          # can share a priority. The runtime refuses to start if any other
+          # policy covering the namespace comes at or before it.
+          priority: 51
+          egress:
+            - name: dns
+              to:
+                - pods:
+                    namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openshift-dns}}
+                    podSelector: {matchLabels: {dns.operator.openshift.io/daemonset-dns: default}}
+              ports:
+                - portNumber: {protocol: UDP, port: 53}
+                - portNumber: {protocol: TCP, port: 53}
+                - portNumber: {protocol: UDP, port: 5353}
+                - portNumber: {protocol: TCP, port: 5353}
+            - name: gateway
+              to:
+                - pods:
+                    namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: '@RUNTIME@'}}
+                    podSelector: {matchLabels: {app.kubernetes.io/instance: '@OWNER@', openshell.pattern/role: gateway}}
+              ports:
+                - portNumber: {protocol: TCP, port: 17670}
+            - name: workload-boundary
+              to:
+                - pods:
+                    namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: '@RUNTIME@'}}
+                    podSelector: {matchLabels: {openshell.ai/boundary-role: workload}}
+              ports:
+                - portNumber: {protocol: TCP, port: 5500}
+    gateway:
+      values:
+        deployment: {mode: container}
+        oidc:
+          issuerUrl: 'https://openshell-keycloak-ingress-saw-keycloak.apps.@DOMAIN@/realms/openshell'
+        kubernetes:
+          experimental: true
+          # workload.image defaults to the first sandbox's image (stack.yaml).
+          identity:
+            serverTlsSecret: '@OWNER@-server'
+            clientCaSecret: '@OWNER@-client-ca'
+            jwtSecret: '@OWNER@-jwt'
+            credentialKeySecret: '@OWNER@-kek'
+          storage:
+            gatewaySize: 1Gi
+            workspaceSize: 10Gi
+          network:
+            # DNS, and HTTPS for the OIDC issuer (any address: the issuer may
+            # sit behind a load balancer or an ingress virtual IP). The API
+            # comes from kubernetesApi; the interceptor rule is added by
+            # stack.yaml.
+            gatewayEgress:
+              - to:
+                  - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openshift-dns}}
+                    podSelector: {matchLabels: {dns.operator.openshift.io/daemonset-dns: default}}
+                ports: [{protocol: UDP, port: 5353}, {protocol: TCP, port: 5353}, {protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+              - to: [{ipBlock: {cidr: 0.0.0.0/0}}]
+                ports: [{protocol: TCP, port: 443}]
+            reconcilerNamespace: '@TRUSTED@'
+            reconcilerLabels:
+              app.kubernetes.io/instance: '@OWNER@'
+              openshell.pattern/role: reconciler
+        route: {enabled: false}
+    audit:
+      values:
+        enabled: true
+        trustedNamespace: '@ARCHIVE@'
+        runtimeNamespace: '@RUNTIME@'
+        ownerID: '@INSTALLATION@'
+        # The audit writer needs a pinned Node 24 runtime; the OpenClaw image has one.
+        image: ghcr.io/openclaw/openclaw@sha256:0a5ff5e682e62afa19149df126aa50063bf65ef885b5c94713ce32dc0eb12e15
+        # Volumes use the cluster's default class unless storageClass is set.
+        # The exchange volume needs a shared filesystem (ReadWriteMany):
+        # make saw-init creates saw-shared as a copy of the cluster's.
+        exchangeStorageClass: saw-shared
+        identity:
+          subject: '@SUBJECT@'
+          username: '@OWNER@'
+          workspace: agent
+          sandbox: audited

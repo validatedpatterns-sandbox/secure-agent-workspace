@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 PORTAL = ROOT / "charts" / "openshell-rhdh" / "files" / "portal.py"
@@ -240,6 +241,52 @@ def test_a_payload_edited_after_signing_is_refused(portal):
 @pytest.fixture(scope="module")
 def catalog(portal):
     return portal.load_catalog(CATALOG)
+
+
+def test_per_user_auto_approve_false_overrides_the_default(portal, monkeypatch):
+    # Same override as tests/charts/test_saw_users_chart.py: the portal and the
+    # saw-users chart must agree that a per-user false wins.
+    defaults = {"automaticEnrollment": {"autoApprove": True, "image": "runtime@sha256:" + "a" * 64}}
+    monkeypatch.setenv("SAW_CONTAINER_DEFAULTS", json.dumps(defaults))
+    monkeypatch.setenv("SAW_CONTAINER_SITES", json.dumps(
+        {"alice": {"automaticEnrollment": {"autoApprove": False}}}))
+    monkeypatch.delenv("SAW_TARGET_REVISION", raising=False)
+    alice = portal.container_site("alice", subject="11111111-1111-4111-8111-111111111111")
+    assert alice["automaticEnrollment"] == {"autoApprove": False, "image": "runtime@sha256:" + "a" * 64}
+    assert portal.auto_approved(alice) is False
+    assert portal.auto_approved(portal.container_site(
+        "bob", subject="22222222-2222-4222-8222-222222222222")) is True
+
+
+@pytest.mark.parametrize("auto_approve", [True, False])
+def test_only_auto_approve_sites_follow_the_pattern_branch(portal, monkeypatch, auto_approve):
+    # Same rule as the saw-portal-container chart (tests/charts/test_portal_container.py).
+    site = yaml.safe_load((ROOT / "tests/fixtures/container-site.yaml").read_text())["portal"]["containerSites"]["alice"]
+    for item in site["stack"].values():
+        item.pop("revision")
+    site["automaticEnrollment"].pop("revision")
+    site["automaticEnrollment"]["relay"].pop("revision")
+    site["automaticEnrollment"]["autoApprove"] = auto_approve
+    site["credentialBindings"] = []
+    monkeypatch.setenv("SAW_CONTAINER_DEFAULTS", json.dumps(site))
+    monkeypatch.setenv("SAW_CONTAINER_SITES", "{}")
+    monkeypatch.setenv("SAW_TARGET_REVISION", "main")
+    resolved = portal.container_site("alice", subject=site["subject"])
+    revisions = {item.get("revision") for item in resolved["stack"].values()}
+    assert revisions == ({"main"} if auto_approve else {None})
+    assert portal._preflight.configuration_facts(resolved)["revisions"] is auto_approve
+
+
+def test_preflight_gets_the_bindings_the_chart_renders(portal, catalog):
+    # Same list as saw-users.credentialBindings: nvidia also serves build,
+    # and a refreshable credential is marked for OpenShell's refresh flow.
+    assert portal.credential_bindings(catalog["personal-assistant"]) == [
+        {"secret": "gmail", "key": "access_token", "type": "gmail", "refresh": "oauth2_refresh_token"},
+        {"secret": "inference", "key": "api_key", "type": "nvidia"},
+        {"secret": "inference", "key": "api_key", "type": "build"},
+        {"secret": "slack", "key": "bot_token", "type": "slack"},
+    ]
+    assert portal.credential_bindings({}) == []
 
 
 def test_a_request_gets_the_profiles_secrets(portal, catalog):
@@ -2254,13 +2301,11 @@ def test_owner_state_change_is_generation_scoped_and_does_not_touch_vault(portal
     assert json.dumps(fake.vault, sort_keys=True) == vault_before
 
 
-def test_custom_endpoint_is_approved_before_writing_vault(portal, world, monkeypatch):
+def test_custom_endpoint_is_validated_before_writing_vault(portal, world, monkeypatch):
     fake, signer = world
     url="https://models.fixture.test/v1"
-    boundary={"allowHosts":["models.fixture.test"],"inferenceBaseURL":url}
     site=synthetic_preflight_site(portal, {
         "subject":"478fdd1f-8db9-41e8-97ad-b563215c89e9",
-        "profileBoundaries":{"custom-inference":boundary},
         "automaticEnrollment":{"approvedProfiles":{"custom-inference":"a"*64}},
     })
     monkeypatch.setenv("SAW_DEPLOYMENT_MODES",'["vm","container"]')
@@ -2271,7 +2316,10 @@ def test_custom_endpoint_is_approved_before_writing_vault(portal, world, monkeyp
         request.pop("web-search.api_key")
         fake.request(name,request)
         return portal.main(["create",name])
-    assert submit("saw-req-bad","https://elsewhere.example/v1") != 0
+    # A malformed URL is refused before any key reaches Vault. Which host may
+    # receive the key is the custom-inference governance profile's call, checked
+    # by the runtime controller (tests/kubernetes_runtime/test_provider_endpoints.py).
+    assert submit("saw-req-bad","http://models.fixture.test/v1") != 0
     assert not fake.vault and REGISTRY not in fake.objects
     assert submit("saw-req-good",url) == 0
     entry=portal.read_entry(fake.objects[REGISTRY])

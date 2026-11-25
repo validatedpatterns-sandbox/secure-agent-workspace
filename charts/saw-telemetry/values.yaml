@@ -1,0 +1,14 @@
+# The collector OpenShell gateways and sandbox supervisors send OCSF events to
+# (OTLP/gRPC on 4317). Its name gives the Service saw-ocsf-collector, which the
+# container site's telemetry.ocsfEndpoint points at.
+name: saw-ocsf
+replicas: 1
+# Where the events go. The debug exporter writes them to the collector's log
+# (oc logs deploy/saw-ocsf-collector); replace it with your SIEM or log store,
+# for example an otlp or otlphttp exporter.
+exporters:
+  debug:
+    verbosity: basic
+resources:
+  requests: {cpu: 50m, memory: 128Mi}
+  limits: {memory: 512Mi}

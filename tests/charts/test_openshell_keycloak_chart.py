@@ -358,3 +358,30 @@ def test_shared_admin_scope_helper_is_mounted_and_rolls_bootstraps(tmp_path):
     for name in names:
         dep = next(d for d in changed if d["kind"] == "Deployment" and d["metadata"]["name"] == name)
         assert dep["spec"]["template"]["metadata"]["annotations"]["checksum/script"] != checksums[name]
+
+
+def test_the_relay_provisioner_is_off_unless_container_workspaces_need_it():
+    assert not [d for d in render() if "relay-provisioner" in d["metadata"]["name"]]
+
+
+def test_the_relay_provisioner_runs_as_a_self_healing_deployment():
+    docs = render("--set", "relayProvisioner.enabled=true")
+    mine = [d for d in docs if "relay-provisioner" in d["metadata"]["name"]]
+    (deploy,) = [d for d in mine if d["kind"] == "Deployment"]
+    # The generated credential lives in a Secret Helm does not own, so a
+    # GitOps self-heal cannot clear it, and nothing runs against a deadline.
+    assert not [d for d in mine if d["kind"] == "Secret"]
+    assert not [d for d in mine if d["kind"] == "Job"]
+    spec = deploy["spec"]["template"]["spec"]
+    (admin,) = [v for v in spec["volumes"] if v["name"] == "admin"]
+    assert admin["secret"]["secretName"] == "openshell-keycloak-initial-admin"
+    (role,) = [d for d in mine if d["kind"] == "Role" and d["metadata"]["name"] == "saw-relay-provisioner"]
+    named = [r for r in role["rules"] if r.get("resourceNames")]
+    assert named == [{"apiGroups": [""], "resources": ["secrets"],
+                      "resourceNames": ["saw-relay-provisioner"], "verbs": ["get", "patch"]}]
+
+
+def test_the_pattern_enables_the_relay_provisioner():
+    values = yaml.safe_load((ROOT / "values-prod.yaml").read_text())
+    overrides = values["clusterGroup"]["applications"]["openshell-keycloak"]["overrides"]
+    assert {"name": "relayProvisioner.enabled", "value": "true"} in overrides

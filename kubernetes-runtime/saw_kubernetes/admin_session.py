@@ -26,6 +26,8 @@ SESSIONS = "saw.redhat.com/admin-sessions"
 OWNER = "saw.redhat.com/runtime-owner"
 NAME = re.compile(r"[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?\Z")
 OPERATOR_SUBJECT = "/O=openshell/OU=operator/CN=saw-installer"
+# Codes a probe sees while the gateway does not trust the session CA yet.
+TRUST_PENDING = frozenset({"UNAVAILABLE", "UNAUTHENTICATED", "DEADLINE_EXCEEDED", "UNKNOWN", "INTERNAL"})
 
 
 def encoded(raw):
@@ -200,7 +202,13 @@ class GatewaySessions:
                         gateway.call("GetGatewayInfo", {})
                         return True
                     except RpcError as exc:
-                        if exc.code not in {"UNAVAILABLE", "UNAUTHENTICATED"}: raise
+                        # Under TLS 1.3 the gateway rejects a not-yet-trusted
+                        # client certificate after the handshake, so the probe
+                        # sees a broken read (UNKNOWN/INTERNAL/DEADLINE_EXCEEDED)
+                        # rather than UNAUTHENTICATED. Re-raising here ended the
+                        # session and minted a fresh CA every cycle, which never
+                        # outran the kubelet's Secret propagation.
+                        if exc.code not in TRUST_PENDING: raise
                         return False
                 admin.wait_for_trust(accepted)
                 gateway.timeout = 20

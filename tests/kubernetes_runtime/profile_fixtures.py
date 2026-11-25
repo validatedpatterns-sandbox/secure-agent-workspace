@@ -41,10 +41,11 @@ def briefing_inputs(image=IMAGE):
     slot["toolGate"]["harness"] = {"name": bundle.name, "digest": bundle.digest}
     ws, = shared.parse_profiles(docs)[0].workspaces
     bindings = [{"secret":p.credential_secret,"key":p.credential_secret_key,"type":p.type,
-                 "refresh": bool(p.refresh_strategy)} for p in ws.providers if p.enabled]
+                 **({"refresh":p.refresh_strategy} if p.refresh_strategy else {})}
+                for p in ws.providers if p.enabled and not p.credential_free]
     cfg = dict(ownerID="b032b2e4-2cd5-47a7-8ef8-ac73e15700b1",namespace="saw-fixture",
                namespaceUID="fixture-ns",ownerSubject="fixture-subject",mode="container",gatewayVersion="0.1.2-rhaiv.6",
-               approvedCredentialFreeProviders=[],proxyBindings=bindings,bindings={"personal-assistant/assistant":slot})
+               approvedCredentialFreeProviders=[],credentialBindings=bindings,bindings={"personal-assistant/assistant":slot})
     return files, cfg
 
 
@@ -58,7 +59,7 @@ def fixture_inputs():
     cfg = dict(namespace="saw-fixture", namespaceUID="fixture", ownerSubject="fixture-owner", mode="container",
                ownerID="b032b2e4-2cd5-47a7-8ef8-ac73e15700b1", gatewayVersion="0.1.2-rhaiv.6",
                approvedCredentialFreeProviders=[],
-               proxyBindings=[{"type":"custom-inference","secret":"inference","key":"api_key","refresh":False}],
+               credentialBindings=[{"type":"custom-inference","secret":"inference","key":"api_key"}],
                customInferenceURL="https://models.fixture.test/v1", modelInputs={"inference.model":"fixture/model"},
                bindings={"default/notebook":browser_slot()})
     return yaml.safe_load(rendered)["data"], cfg

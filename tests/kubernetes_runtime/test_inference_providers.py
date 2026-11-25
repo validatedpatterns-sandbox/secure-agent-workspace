@@ -1,4 +1,4 @@
-"""All inference providers share BOM resolution and the VM's proxy profiles."""
+"""All inference providers share BOM resolution; OpenShell holds their keys."""
 import json
 import shutil
 import subprocess
@@ -25,7 +25,7 @@ def test_provider_compiles_native_protocol_and_placeholder_config(source, kind, 
     if native:
         sandbox(source, lambda s: s["inference"].pop("baseUrl"))
     workspace = compile_profile(*source)["workspaces"][0]
-    assert workspace["providers"][0]["credentials"] == {env:"saw-cred.inference.api_key"}
+    assert workspace["providers"][0]["credentialRef"] == {"secret": "inference", "key": "api_key"}
     command = workspace["sandboxes"][0]["spec"]["command"]
     assert "@SAW_" not in command[2]
     if not shutil.which("node"):
@@ -61,16 +61,9 @@ console.log(written);
 
 
 @pytest.mark.parametrize("kind,model,url,api,env", CASES)
-def test_provider_uses_shipped_host_and_credential_policy(source, kind, model, url, api, env):
+def test_provider_reads_its_placeholder_and_keeps_its_native_endpoint(source, kind, model, url, api, env):
     agent(source, kind, model)
-    credentials = compile_profile(*source)["workspaces"][0]["providers"][0]["credentials"]
-    slot, hosts = governed.requirements(kind)
-    assert slot["env_vars"] == [env]
-    policy = {"markerPrefix":"saw-cred", "profiles":{kind:hosts}, "allowHosts":hosts,
-              "bindings":[{"providers":[kind],"secret":"inference","key":"api_key"}]}
-    assert governed.check_policy(kind, credentials, policy)
-    assert not governed.check_policy(kind, credentials, {**policy,"allowHosts":[]})
-    assert not governed.check_policy(kind, {env:"saw-cred.foreign.api_key"}, policy)
+    assert governed.inference_key_env(kind) == env
     sandbox(source, lambda s: s["inference"].update(baseUrl="https://foreign.example/v1"))
     with pytest.raises(ContractError):
         compile_profile(*source)

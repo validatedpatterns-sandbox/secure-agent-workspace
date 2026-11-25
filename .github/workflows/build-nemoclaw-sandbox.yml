@@ -94,20 +94,18 @@ jobs:
           git checkout -q FETCH_HEAD
           echo "UPSTREAM_DIR=${UPSTREAM_DIR}" >> "${GITHUB_ENV}"
 
-      # NemoClaw v0.0.133 pins curl 8.14.1-2+deb13u5, but trixie-security now
-      # ships libcurl4t64 deb13u7, so apt cannot resolve the pair on a cold
-      # build cache. Apply NVIDIA/NemoClaw#13158 (released in v0.0.135); drop
-      # this step once source.git.ref is v0.0.135 or later.
-      - name: Align upstream curl pin with Debian security
+      # NemoClaw f4de239 and v0.0.133-v0.0.140 pin ca-certificates=20250419,
+      # which trixie replaced with 20250419+deb13u1. v0.0.133 also pins curl
+      # deb13u5, while trixie-security's libcurl4t64 requires deb13u7.
+      # Drop this step once source.git.ref pins ca-certificates=20250419+deb13u1
+      # and the matching curl version (NVIDIA/NemoClaw#13158).
+      - name: Align upstream Debian package pins with Debian security
         run: |
           dockerfile="${UPSTREAM_DIR}/Dockerfile"
-          if grep -qF 'curl=8.14.1-2+deb13u5' "${dockerfile}"; then
-            sed 's/curl=8\.14\.1-2+deb13u5/curl=8.14.1-2+deb13u7/g' "${dockerfile}" > "${dockerfile}.saw"
-            mv "${dockerfile}.saw" "${dockerfile}"
-            grep -nF 'curl=8.14.1-2+deb13u7' "${dockerfile}"
-          else
-            echo "::notice::NemoClaw no longer pins curl deb13u5; drop this step."
-          fi
+          sed -e 's/curl=8\.14\.1-2+deb13u5/curl=8.14.1-2+deb13u7/g' \
+              -e 's/ca-certificates=20250419\([[:space:]]\)/ca-certificates=20250419+deb13u1\1/g' \
+              "${dockerfile}" > "${dockerfile}.saw"
+          mv "${dockerfile}.saw" "${dockerfile}"
 
       - name: Inject reviewed runtimes into build context
         run: |

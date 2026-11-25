@@ -1,7 +1,7 @@
 source:
   git:
     uri: "https://github.com/NVIDIA/OpenShell.git"
-    ref: "v0.1.6"
+    ref: "v0.1.10"
 
 build:
   # For GitOps, give each new build recipe its own BuildConfig name.
@@ -9,8 +9,8 @@ build:
   # Default preserves the existing explicit Make build command.
   configChangeTrigger: false
   contextDir: "examples/governance-interceptor"
-  # OpenShell 0.1.x needs Rust 1.94 (rust-version in its Cargo.toml).
-  builderImage: "rust:1.94-bookworm"
+  # OpenShell 0.1.10 pins Rust 1.95 (its rust-toolchain.toml).
+  builderImage: "rust:1.95-bookworm"
   runtimeImage: "registry.access.redhat.com/ubi9-micro:latest"
   # Shared Dockerfile stage with Debian and its CA certificates installed.
   ghcrRuntimeImage: "debian-runtime"
@@ -23,4 +23,4 @@ output:
   pushSecretName: "ghcr-push-secret"
   # Build into the internal registry by default. To publish elsewhere, clear
   # this and explicitly set externalImage plus pushSecretName.
-  imageStreamTag: "governance-interceptor:v0.1.6"
+  imageStreamTag: "governance-interceptor:v0.1.10"

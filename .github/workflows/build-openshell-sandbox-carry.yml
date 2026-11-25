@@ -1,0 +1,75 @@
+name: Build and push openshell-sandbox carry image
+
+# TEMPORARY: rebuilds odh-openshell-sandbox v0.1.10-rhaiv.0 with the auxv
+# warm-up fix (openshell-sandbox-carry/). Remove with that directory.
+
+on:
+  # A push of the carry publishes it: workflow_dispatch only works once the
+  # workflow is on the default branch.
+  push:
+    paths:
+      - .github/workflows/build-openshell-sandbox-carry.yml
+      - openshell-sandbox-carry/**
+  pull_request:
+    paths:
+      - .github/workflows/build-openshell-sandbox-carry.yml
+      - openshell-sandbox-carry/**
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish this branch's build as ghcr.io/<owner>/saw-openshell-sandbox:sha-<commit>
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-openshell-sandbox-carry-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !inputs.publish)
+    strategy: &platforms
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps: &build_steps
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/build-push-image
+        with:
+          image_name: saw-openshell-sandbox
+          context: openshell-sandbox-carry
+          dockerfile: openshell-sandbox-carry/Dockerfile
+          cache_scope: saw-openshell-sandbox
+          extra_tag: v0.1.10-rhaiv.0-auxv
+          platform: ${{ matrix.platform }}
+          publish: ${{ (github.event_name == 'push' || inputs.publish) && 'true' || '' }}
+          registry_token: ${{ (github.event_name == 'push' || inputs.publish) && secrets.GITHUB_TOKEN || '' }}
+
+  publish:
+    if: github.event_name == 'push' || inputs.publish
+    permissions: {contents: read, packages: write}
+    strategy: *platforms
+    runs-on: ${{ matrix.runner }}
+    steps: *build_steps
+
+  merge:
+    needs: publish
+    permissions: {contents: read, packages: write}
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/merge-image
+        with:
+          image_name: saw-openshell-sandbox
+          extra_tag: v0.1.10-rhaiv.0-auxv
+          registry_token: ${{ secrets.GITHUB_TOKEN }}

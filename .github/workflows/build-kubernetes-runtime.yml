@@ -29,6 +29,11 @@ on:
       - .github/actions/merge-image/**
       - .github/actions/verify-public-image/**
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish this branch's build as ghcr.io/<owner>/saw-kubernetes-runtime:sha-<commit>
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -39,7 +44,7 @@ concurrency:
 
 jobs:
   build:
-    if: github.event_name == 'pull_request' || github.ref != 'refs/heads/main'
+    if: github.event_name == 'pull_request' || (github.ref != 'refs/heads/main' && !inputs.publish)
     strategy: &platforms
       fail-fast: false
       matrix:
@@ -58,9 +63,10 @@ jobs:
           dockerfile: kubernetes-runtime/Containerfile
           cache_scope: saw-kubernetes-runtime
           platform: ${{ matrix.platform }}
-          registry_token: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && secrets.GITHUB_TOKEN || '' }}
+          publish: ${{ inputs.publish && 'true' || '' }}
+          registry_token: ${{ ((github.event_name != 'pull_request' && github.ref == 'refs/heads/main') || inputs.publish) && secrets.GITHUB_TOKEN || '' }}
   publish:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') || inputs.publish
     permissions: {contents: read, packages: write}
     strategy: *platforms
     runs-on: ${{ matrix.runner }}
@@ -69,7 +75,7 @@ jobs:
   merge:
     needs: publish
     permissions: {contents: read, packages: write}
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') || inputs.publish
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

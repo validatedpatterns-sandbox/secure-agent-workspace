@@ -1,0 +1,15 @@
+# The stock OpenClaw image with /sandbox searchable by any UID.
+#
+# Its /sandbox is 0770 and owned by 1000:0, but OpenShift runs each workspace
+# as its namespace's UID, which then cannot reach the volumes SAW mounts under
+# /sandbox. This adds only the search bit (o+x); nothing else changes. The same
+# steps as make container-notebook-image, built in CI instead of in-cluster.
+#
+# SOURCE_IMAGE: the digest-pinned stock image (the notebook BOM's image).
+# IMAGE_USER: the stock image's own USER, restored after the change.
+ARG SOURCE_IMAGE
+FROM ${SOURCE_IMAGE}
+ARG IMAGE_USER
+USER 0
+RUN test -d /sandbox && chmod o+x /sandbox
+USER ${IMAGE_USER}

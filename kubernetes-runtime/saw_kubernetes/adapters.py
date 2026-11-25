@@ -12,8 +12,9 @@ from .reconcile import RpcError
 
 RPC_METHODS = {
     "GetGatewayInfo", "GetWorkspace", "CreateWorkspace", "ListWorkspaceMembers",
-    "AddWorkspaceMember", "GetProviderProfile", "GetProvider", "CreateProvider", "GetSandbox",
-    "CreateSandbox", "StartSandbox", "StopSandbox",
+    "AddWorkspaceMember", "GetProviderProfile", "ListProviderProfiles", "GetProvider",
+    "CreateProvider", "UpdateProvider", "ConfigureProviderRefresh", "RotateProviderCredential",
+    "GetProviderRefreshStatus", "GetSandbox", "CreateSandbox", "StartSandbox", "StopSandbox",
 }
 
 

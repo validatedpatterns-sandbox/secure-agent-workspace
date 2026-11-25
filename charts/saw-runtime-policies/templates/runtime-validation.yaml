@@ -177,7 +177,18 @@ spec:
         'OPENSHELL_SANDBOX_ID','OPENSHELL_SANDBOX','OPENSHELL_MAIN_PROCESS_SPEC','OPENSHELL_K8S_SA_TOKEN_FILE',
         'OPENSHELL_SSH_SOCKET_PATH','OPENSHELL_SSH_SOCKET_SHARED','OPENSHELL_PROXY_TLS_DIR','OPENSHELL_PROXY_CA_CERT',
         'OPENSHELL_PROXY_CA_KEY','OPENSHELL_LOG_LEVEL','OPENSHELL_TELEMETRY_ENABLED','OPENSHELL_NETWORK_RUNTIME_CAPABILITIES',
-        'OPENSHELL_TLS_CA','OPENSHELL_GATEWAY_TLS_SERVER_NAME','OPENSHELL_GATEWAY_NAME']) &&
+        'OPENSHELL_TLS_CA','OPENSHELL_GATEWAY_TLS_SERVER_NAME','OPENSHELL_GATEWAY_NAME',
+        'OPENSHELL_ATTACH_REQUEST_TIMEOUT_SECONDS'{{ if .Values.ocsfEndpoint }},
+        'OPENSHELL_OTLP_OCSF_ENDPOINT'{{ end }}{{ if .Values.agentTraceEndpoint }},
+        'OPENSHELL_OTLP_AGENT_ENDPOINT'{{ end }}]) &&
+        object.spec.containers[0].env.all(e, e.name != 'OPENSHELL_ATTACH_REQUEST_TIMEOUT_SECONDS' ||
+          (has(e.value) && e.value.matches('^[1-9][0-9]{0,4}$'))) &&
+        {{- if .Values.ocsfEndpoint }}
+        object.spec.containers[0].env.all(e, e.name != 'OPENSHELL_OTLP_OCSF_ENDPOINT' || e.value == {{ .Values.ocsfEndpoint | toJson }}) &&
+        {{- end }}
+        {{- if .Values.agentTraceEndpoint }}
+        object.spec.containers[0].env.all(e, e.name != 'OPENSHELL_OTLP_AGENT_ENDPOINT' || e.value == {{ .Values.agentTraceEndpoint | toJson }}) &&
+        {{- end }}
         object.spec.volumes.all(v, has(v.emptyDir) ||
           (v.name == 'bootstrap' && has(v.secret) && v.secret.secretName.matches('^os-supervisor-' + variables.pair + '-[a-f0-9]{12}$')) ||
           (v.name == 'client-tls' && has(v.secret) && v.secret.secretName == {{ .Values.serverTLSSecret | toJson }} &&
@@ -272,8 +283,13 @@ spec:
       message: Only this workspace gateway may create supervisor Pods.
       reason: Forbidden
     - expression: >-
+{{- if eq .Values.mode "kata" }}
+        variables.role != 'supervisor' || (has(object.spec.runtimeClassName) && object.spec.runtimeClassName == {{ .Values.workloadRuntimeClassName | toJson }})
+      message: Kata supervisors require the approved RuntimeClass, in a VM of their own.
+{{- else }}
         variables.role != 'supervisor' || !has(object.spec.runtimeClassName) || object.spec.runtimeClassName == ''
       message: Stock supervisor Pods must use the default container runtime.
+{{- end }}
       reason: Forbidden
     - expression: >-
 {{- if eq .Values.mode "kata" }}

@@ -25,6 +25,22 @@ spec:
       to: {{ .to | toYaml | nindent 8 }}
       ports: {{ .ports | toYaml | nindent 8 }}
 {{- end }}
+{{- if .Values.network.publicHTTPS }}
+    # The supervisor reaches providers itself and OpenShell enforces which
+    # hosts each sandbox may use (as OpenShell's own supervisor fence leaves
+    # egress open). Private ranges stay closed unless passed above.
+    - name: deny-private-networks
+      action: Deny
+      to:
+        - networks: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10",
+                     "169.254.0.0/16", "127.0.0.0/8", "0.0.0.0/8", "fc00::/7", "fe80::/10", "::1/128"]
+    - name: public-https
+      action: Pass
+      to:
+        - networks: ["0.0.0.0/0", "::/0"]
+      ports:
+        - portNumber: {protocol: TCP, port: 443}
+{{- end }}
     - name: deny-other-egress
       action: Deny
       to:

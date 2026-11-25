@@ -99,6 +99,58 @@ def test_gitops_kata_preflight_checks_live_runtime(projector):
         projector.verify_gitops_preflight(owner, site, "kata", read)
 
 
+KATA_CLASS = {"metadata": {"name": "saw-kata", "uid": "22222222-2222-4222-8222-222222222222",
+                            "labels": {"openshell.ai/sandbox-attachable": "true"}},
+              "handler": "kata", "overhead": {"podFixed": {"cpu": "250m", "memory": "350Mi"}},
+              "scheduling": {"nodeSelector": {"node-role.kubernetes.io/kata-oc": ""}}}
+
+
+def demo_site(**approval):
+    return {"automaticEnrollment": {"enabled": True, "autoApprove": True},
+            "kataRuntimeClass": {"name": "saw-kata", **approval}}
+
+
+def test_autoapprove_kata_binds_the_live_runtime_class(projector):
+    reads = []
+    def read(path):
+        reads.append(path)
+        return copy.deepcopy(KATA_CLASS)
+    site = demo_site()
+    bound = projector.bind_runtime_class(site, read)
+    assert reads == ["/apis/node.k8s.io/v1/runtimeclasses/saw-kata"]
+    approval = bound["kataRuntimeClass"]
+    assert approval["uid"] == KATA_CLASS["metadata"]["uid"]
+    assert approval["sha256"] == projector.preflight.runtime_placement_digest(KATA_CLASS)
+    assert site["kataRuntimeClass"] == {"name": "saw-kata"}  # input untouched
+
+
+def test_explicit_kata_approval_is_never_replaced(projector):
+    site = demo_site(uid="33333333-3333-4333-8333-333333333333", sha256="a" * 64)
+    assert projector.bind_runtime_class(site, lambda path: pytest.fail("no live read")) is site
+
+
+@pytest.mark.parametrize("change, reason", [
+    (lambda c: c["metadata"]["labels"].clear(), "RuntimeClassNotAttachable"),
+    (lambda c: c.update(handler="runc"), "RuntimeClassHandlerMismatch"),
+    (lambda c: c.update(scheduling=None), "RuntimeClassSchedulingInvalid"),
+    (lambda c: c.clear(), "RuntimeClassUnavailable"),
+])
+def test_autoapprove_still_refuses_an_unsuitable_class(projector, change, reason):
+    live = copy.deepcopy(KATA_CLASS)
+    change(live)
+    with pytest.raises(projector.preflight.PreflightError) as exc:
+        projector.bind_runtime_class(demo_site(), lambda path: live)
+    assert exc.value.reason == reason
+
+
+def test_a_reviewed_site_needs_an_explicit_kata_approval(projector):
+    site = demo_site()
+    site["automaticEnrollment"]["autoApprove"] = False
+    with pytest.raises(projector.preflight.PreflightError) as exc:
+        projector.bind_runtime_class(site, lambda path: copy.deepcopy(KATA_CLASS))
+    assert exc.value.reason == "RuntimeClassApprovalMissing"
+
+
 def test_gitops_preflight_reader_rejects_secret_paths(projector):
     reader = object.__new__(projector.Publications)
     with pytest.raises(projector.ProjectionError, match="outside the workspace scope"):
@@ -110,7 +162,7 @@ def config():
     user = dict(name="alice", ownerSubject=site["subject"], registration="a"*16,
                 installationID="22222222-2222-4222-8222-222222222222", profiles=["data-science"],
                 values={"deployment": {"mode": "container"}}, pruneOnRemove=True,
-                intentGeneration=1, vaultPrefix="secret/data/hub/saw-alice/"+"a"*16)
+                intentGeneration=1, vaultPrefix="secret/data/hub/saw-alice")
     return dict(users=[user], containerSites={"alice": site}, global_={})
 
 

@@ -1,0 +1,28 @@
+# Creating a KataConfig installs the Kata runtime on the selected nodes, which
+# reboots them one machine config pool at a time. Off by default: enable it on
+# clusters that run Kata workspaces (docs/kata-workspaces.md).
+enabled: false
+name: saw-kata-pool
+# The operator's node eligibility check needs Node Feature Discovery (the NFD
+# operator and a NodeFeatureDiscovery) to label the nodes; without NFD the
+# KataConfig never installs. Off: check KVM with make kata-worker-check instead.
+checkNodeEligibility: false
+# Plain workers only. On clusters whose control-plane nodes are also
+# schedulable workers, this keeps the API servers out of the Kata pool.
+poolSelector:
+  matchExpressions:
+    - {key: node-role.kubernetes.io/worker, operator: Exists}
+    - {key: node-role.kubernetes.io/control-plane, operator: DoesNotExist}
+    - {key: node-role.kubernetes.io/master, operator: DoesNotExist}
+# The RuntimeClass Kata workspaces use. It copies the operator's own "kata"
+# class (handler, pod overhead, the kata-oc pool's node selector) and carries
+# the label OpenShell requires before a sandbox may use a class, so no one has
+# to label the operator-owned class by hand. saw-users binds Kata users to it
+# by name (kata.runtimeClassName).
+runtimeClass:
+  name: saw-kata
+  handler: kata
+  overhead:
+    podFixed: {cpu: 250m, memory: 350Mi}
+  nodeSelector:
+    node-role.kubernetes.io/kata-oc: ""

@@ -69,13 +69,14 @@ def test_list_names_every_generated_file():
     mirrored = [p for p in listed if p.startswith("charts/openshell-saw/files/provider-profiles/")]
     shipped = sorted(p.name for p in (ROOT / "charts/governance-policy/profiles").glob("*.yaml"))
     # ... plus the mirror directory itself (so a removed mirror is staged too).
-    assert "charts/saw-users/templates/_governed-proxy-policy.tpl" in listed
-    assert "charts/saw-users/files/governed-profiles.json" in listed
+    for unused in ("charts/saw-users/templates/_governed-proxy-policy.tpl",
+                   "charts/saw-users/files/governed-profiles.json"):
+        assert unused not in listed
     assert "charts/openshell-rhdh/files/set-workspace-state.yaml" in listed
     assert "charts/openshell-rhdh/files/workspace.py" in listed
     assert "charts/openshell-rhdh/files/saw_keycloak_admin.py" in listed
     assert UI_MIRROR in listed
-    assert len(listed) == 12 + len(shipped) + 1
+    assert len(listed) == 10 + len(shipped) + 1
     assert sorted(p.rsplit("/", 1)[1] for p in mirrored) == shipped
     assert "charts/openshell-saw/files/provider-profiles" in listed
     assert "charts/openshell-rhdh/files/create-workspace.yaml" in listed

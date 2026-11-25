@@ -38,12 +38,15 @@ Additional requirements:
   destinations/resource kinds, and permission for Argo to manage the workload,
   control, UI and history namespaces. The standalone projector's namespace is
   separate from Argo CD and labelled `argocd.argoproj.io/managed-by`.
-- RWO storage for gateway state, workspace data, controller ledger and audit
-  history; a shared filesystem class for the preparation/audit exchange PVCs.
+- RWO storage for gateway state, workspace data, the controller ledger and the
+  tool gate's audit log. With [audit receipts](#audit-receipts), also a shared
+  filesystem class for the audit exchange.
 - Reachable DNS, Kubernetes API, trusted OIDC issuer, governance, registry and
-  approved provider endpoints. Use the [container topology preflight](#discover-and-review-container-egress)
-  to derive API, DNS and issuer rules, or supply those rules explicitly.
-  Allocate a distinct AdminNetworkPolicy priority for each workspace.
+  approved provider endpoints. No cluster addresses are configured: see
+  [Network access and storage](#network-access-and-storage).
+  Workspaces share one AdminNetworkPolicy priority (each policy selects only
+  its own namespace); enrollment refuses a workspace if any other policy
+  covering its namespace comes at or before it.
 - `oc`, Helm 3 and `uv` on the installation machine. Provider credentials stay
   in Vault; local files and Git contain references and public configuration.
 
@@ -86,21 +89,26 @@ For Kata workload placement, follow the [Kata installation and Developer Hub gui
 
 The same site object is used as `containerSites.<owner>` for static installs or
 `portal.containerSites.<owner>` for RHDH. It is administrator-owned, not a form
-field. Start from the component charts' values and schemas:
+field. The component wiring (namespaces, service accounts, SANs, the
+workspace egress policy, governance endpoint, enrollment build namespace,
+resources and relay Keycloak settings) defaults in
+[`siteDefaults`](../charts/saw-portal-container/values.yaml); a site sets only
+what differs, and its values win (maps merge, lists replace). Start from the
+component charts' values and schemas:
 
 | Site input | Contents / source |
 |---|---|
 | `subject` | Resolved Keycloak subject UUID matching the owner. Static inputs supply it explicitly; RHDH resolves the authenticated owner and requires a matching site. |
-| `stack.identity` | Pinned revision and [identity chart values](../charts/saw-kubernetes-identity/values.yaml): installation identity, gateway SANs and stock generator/helper images. Administrator sessions use the VM's shared temporary-identity mechanism; no administrator certificate or renewal input is supplied. |
-| `stack.policy` | Pinned revision and [admission/network values](../charts/saw-runtime-policies/values.yaml): runtime namespace, service accounts, explicit egress and unique priority. |
-| `stack.proxy` | Pinned revision and [credential-proxy values](../charts/saw-kubernetes-proxy/values.yaml): trusted namespace and egress. Provider bindings/digest derive from the shared catalog. |
+| `stack.identity` | Pinned revision and [identity chart values](../charts/saw-kubernetes-identity/values.yaml): installation identity, gateway SANs, stock generator/helper images and the bootstrap's egress (`network.bootstrapEgress`, DNS by default). Administrator sessions use the VM's shared temporary-identity mechanism; no administrator certificate or renewal input is supplied. |
+| `stack.policy` | Pinned revision and [admission/network values](../charts/saw-runtime-policies/values.yaml): runtime namespace, service accounts, explicit egress and priority. |
 | `stack.gateway` | Pinned revision and [gateway values](../charts/openshell-saw-kubernetes/values.yaml): stock gateway/driver images, storage, OIDC and network configuration. |
 | `stack.audit` | Pinned revision and [audit values](../charts/saw-audit-writer/values.yaml): history/exchange storage classes, image and owner identity. Targets derive from the BOM. |
-| `governanceNamespace`, `providerAllowHosts` | Shared governance location and permitted provider destinations. |
-| `automaticEnrollment` | `enabled`, pinned helper image/revision, build namespace, resource limits, approved profile digests and reviewed boundary reference. |
-| `automaticEnrollment.relay` | Pinned relay chart revision, issuer, Keycloak namespace and realm registrar Secret **name**, and explicit DNS, OIDC and Kubernetes API egress. See [relay values](../charts/saw-workspace-relay/values.yaml). |
-| `profileImageOverrides`, `profileBoundaries` | Optional per-profile pinned image overrides and explicit provider/boundary approval. Changing the profile requires its own approval. |
+| `governanceNamespace` | Shared governance location (default `openshell-agents`); the gateway's interceptor endpoint and egress follow it. |
+| `automaticEnrollment` | `enabled` (enrollment runs only when `true`), pinned helper image/revision, build namespace, resource limits, approved profile digests and reviewed boundary reference. |
+| `automaticEnrollment.relay` | Pinned relay chart revision, issuer (defaults to the cluster's Keycloak route), Keycloak namespace and realm registrar Secret **name**, and egress (DNS and HTTPS by default). See [relay values](../charts/saw-workspace-relay/values.yaml). |
+| `profileImageOverrides`, `profileBoundaries` | Optional per-profile pinned image overrides and reviewed boundary `reference`. Changing the profile requires its own approval. |
 | `imagePull` | Optional namespace and ImageStream names for access to an OpenShift internal registry. |
+| `customInferenceURL` (per user) | `custom-inference` only: the owner's OpenAI-compatible base URL (HTTPS, port 443, ending `/v1`), from the portal form or the user's entry in `overrides/saw-users.yaml`. Its host must be the only endpoint in `overrides/governance-profiles/custom-inference.yaml`, where OpenShell sends the API key; the runtime controller otherwise refuses the provider (`ProviderProfileMismatch`). |
 
 RHDH offers **Container** on the create form when `portal.deploymentModes`
 includes `container` and at least one configured owner site has a catalog profile
@@ -172,29 +180,20 @@ Match workload selectors and tolerations, and recheck after adding nodes or
 changing digests. Each node needs space for the selected images. Keep the
 holder running while the profile is in use.
 
-### One-time Keycloak registration setup
+### Keycloak registration setup
 
-Use a dedicated Keycloak realm. Run this once from the checkout with an
-explicit kubeconfig for the intended cluster. The bootstrap Job needs the
-existing master bootstrap Secret only during setup. If the issuer requires
-a private CA, supply `--ca-configmap NAME` with key `ca-bundle.crt`.
-
-```sh
-python3 scripts/portal-container/setup-relay-provisioner.py \
-  --namespace "$KEYCLOAK_NAMESPACE" --issuer "$KEYCLOAK_ISSUER" \
-  --bootstrap-secret "$PLATFORM_BOOTSTRAP_SECRET" |
-  oc --kubeconfig="$KUBECONFIG" apply --server-side -f -
-oc --kubeconfig="$KUBECONFIG" -n "$KEYCLOAK_NAMESPACE" wait \
-  --for=condition=Complete job/saw-relay-provisioner --timeout=4m
-```
-
-Setup creates a confidential service account with only the realm-management
-`create-client` permission. It registers an administrator-defined client scope
+No manual step. With `relayProvisioner.enabled` (on in `values-prod.yaml`),
+the `openshell-keycloak` chart runs a `saw-relay-provisioner` Deployment in the
+Keycloak namespace. It uses the operator's `<keycloak>-initial-admin` Secret to
+create a confidential service account with only the realm-management
+`create-client` permission, registers an administrator-defined client scope
 `saw-workspace-relay` for the OpenShell audience and user role, and allows that
-scope for authenticated dynamic registration. Its credential is stored in
-`saw-relay-provisioner` in the Keycloak namespace. Set
+scope for authenticated dynamic registration. It keeps the credential in the
+`saw-relay-provisioner` Secret, which it creates itself so a GitOps self-heal
+cannot clear it, and re-verifies every five minutes. Set
 `automaticEnrollment.relay.keycloakProvisionerSecret: saw-relay-provisioner`
-and use a full Git commit for `automaticEnrollment.relay.revision`.
+and use a full Git commit for `automaticEnrollment.relay.revision`. For an
+issuer with a private CA, set `relayProvisioner.caBundle`.
 
 The registrar can create clients in the workspace realm. The Job enforces the
 registration-specific client name. Protect the registrar Secret and restrict who
@@ -237,21 +236,16 @@ The composition substitutes these as data; it does not evaluate user input as
 Helm templates. Do not author `targets`, `enrollment`, `providerPolicy` or relay
 subjects manually; the common projector and trusted bootstrap derive them.
 
-`automaticEnrollment.relay.egress` must permit the cluster's Kubernetes API
-Service/backends and their ports, using the same approved destinations as the
-controller's bootstrap egress, as well as DNS and the OIDC issuer. The relay
-membership Job reads Pod identities and updates the named public client-trust
-Secret before connecting to OpenShell. DNS/OIDC access alone cannot complete
-that Job. The gateway can create the workspace before the reconciler grants the
-owner its administrator role. The binding Job waits up to 210 seconds after
-authentication for both observations, pins the workspace UUID once observed,
-and rejects a changed UUID or unexpected owner role. The browser relay has no Kubernetes token or trust-write RBAC. Changing
-the relay inputs creates a new input-hashed binding Job through GitOps.
-
-For sites with split-horizon DNS, run the [topology preflight](#discover-and-review-container-egress)
-from a trusted in-cluster Pod. The gateway and relay need the issuer address
-that Pod resolves on TCP 443. A successful browser login from the workstation
-does not test this path.
+The relay membership Job reads Pod identities and updates the named public
+client-trust Secret before connecting to OpenShell, so it reaches the
+Kubernetes API like the other platform pods
+([Network access and storage](#network-access-and-storage)). The gateway can
+create the workspace before the reconciler grants the owner its administrator
+role. The binding Job waits up to 210 seconds after authentication for both
+observations, pins the workspace UUID once observed, and rejects a changed UUID
+or unexpected owner role. The browser relay has no Kubernetes token or
+trust-write RBAC. Changing the relay inputs creates a new input-hashed binding
+Job through GitOps.
 
 Public trust publication is asynchronous: the Kubernetes Secret volume must
 refresh, then the stock gateway must reload it. Initial TLS failures, including
@@ -271,19 +265,17 @@ global:
   clusterDomain: cluster.example.com # ingress is apps.cluster.example.com
 projection:
   enabled: true
-  applicationSetControllerLabels:
-    app.kubernetes.io/name: <actual-applicationset-controller-pod-label>
-  egress: # explicit Kubernetes API and DNS NetworkPolicy rules
-    - to:
-        - ipBlock: {cidr: <api-address>/32}
-      ports: [{protocol: TCP, port: 6443}]
-    # Add the cluster's API Service and DNS paths as required by its networking.
+  # Defaults to <Argo namespace>-applicationset-controller; set it only for
+  # an instance named differently.
+  # applicationSetControllerLabels:
+  #   app.kubernetes.io/name: <applicationset-controller-pod-label>
 users:
   - name: alice
     ownerSubject: <keycloak-subject-uuid>
     registration: <16-lowercase-hex-characters>
-    installationID: <installation-uuid>
-    vaultPrefix: secret/data/hub/saw-alice/<same-registration>
+    # installationID: optional; defaults to the portal's
+    #   uuid5(NAMESPACE_URL, "urn:saw:portal:<name>:<registration>")
+    vaultPrefix: secret/data/hub/saw-alice
     profiles: [data-science]
     pruneOnRemove: true
     intentGeneration: 1
@@ -308,7 +300,8 @@ containerSites:
 ```
 
 This shows the input contract, not a runnable site with omitted fields. Generate
-unique registration/installation IDs and keep them stable for the installation.
+a unique registration and keep it stable for the installation. Omit
+`installationID` to use the derived value; set it only to keep an existing one.
 Never reuse an old registration to adopt retained storage or credentials.
 
 Enrollment also pins the initial compiled plan. A runtime/compiler change that
@@ -326,8 +319,8 @@ restricted to the image stream named by the configured digest-pinned image.
 
 The selected BOM determines provider Secret names and fields. For example, with
 the default NVIDIA-backed `data-science` profile, store its key in
-`secret/data/hub/saw-alice/<registration>/inference` as `api_key`. Configure any
-additional enabled provider inputs in the same registration prefix. RHDH uses
+`secret/data/hub/saw-alice/inference` as `api_key`. Configure any
+additional enabled provider inputs under the same per-user prefix. RHDH uses
 the existing request-to-Vault pipeline; standalone operators use their normal
 Vault provisioning. Neither the Make helper nor projector loads raw keys.
 
@@ -495,6 +488,87 @@ by per-workspace deletion. Provider material provisioned directly in Vault is
 operator-owned; deleting the standalone Helm release does not erase it.
 
 ## Pattern and RHDH enablement
+
+### Minimal static entries
+
+The pattern reads two files for `saw-users`. The platform admin sets the
+cluster-wide container settings once in `overrides/saw-container-defaults.yaml`
+(`projection` and `containerDefaults`, the site every container user gets).
+Users only add an entry to `overrides/saw-users.yaml`:
+
+```yaml
+users:
+  - name: alice
+    ownerSubject: <keycloak subject>   # make keycloak-user-info KC_USER=alice
+    profiles: [custom-inference]
+    vaultPrefix: secret/data/hub       # credential base path
+    values:
+      deployment: {mode: container}
+```
+
+The chart fills in the rest; an explicit value always wins:
+
+| Field | Default |
+|---|---|
+| `registration` | `sha256("<name>:<generation>")[:16]`; to start over, remove the entry and let Argo delete it, then add it back with a higher `generation` (default 1); two generations of a user cannot overlap |
+| `installationID` | `uuid5(NAMESPACE_URL, "urn:saw:portal:<name>:<registration>")` |
+| `vaultPrefix` | base path + `/saw-<name>`, the same for every generation; credentials go under it (for example `.../inference`) |
+| `pruneOnRemove`, `intentGeneration` | `true`, `1` |
+| site | `containerDefaults`, overlaid by `containerSites.<name>`; `subject` is the user's `ownerSubject` |
+| chart revisions | Reviewed sites: none. Set `stack.*.revision`, `automaticEnrollment.revision` and `relay.revision` to full commit SHAs; the workspace chart and preflight reject a branch or a missing revision. `autoApprove` sites: `global.targetRevision`, so they follow the pattern's branch like VM users. |
+
+Enrollment stays off unless a site sets `automaticEnrollment.enabled: true`
+(and `autoApprove` defaults to `false`): a new workspace deploys its foundation and waits for
+the reviewed flow below. After the review, set `enabled: true`, the reviewed
+`reference` and the `approvedProfiles` digest under
+`containerSites.<name>.automaticEnrollment`, and pin its chart revisions to
+full SHAs.
+
+Development and demo clusters can skip the review by listing
+`overrides/saw-container-demo.yaml` after `saw-container-defaults.yaml` in the
+`saw-users` and `openshell-rhdh` `extraValueFiles`. It sets `autoApprove: true`:
+the enrollment Job still runs its health, admission and network checks, then
+publishes the boundary and BOM it observes instead of comparing them with a
+reviewed `reference` and `approvedProfiles` digest. Later changes to an
+enrolled boundary still fail closed; start a new `generation` to re-enroll.
+`containerSites.<name>.automaticEnrollment.autoApprove: false` puts one user
+back on the reviewed flow. Never list the demo file in production values.
+
+**Upgrading from the credential-proxy controller.** Container workspaces
+enrolled before OpenShell-native providers cannot be upgraded in place: their
+approved boundary lists the removed proxy objects, and their controller state
+records proxy-era providers. They report `ReenrollRequired` and make no
+changes. Re-enroll each one by starting a new generation (`generation: <n+1>`
+in `overrides/saw-users.yaml`, or a new request in the portal), copying its
+credentials to the new registration's Vault path first. With
+`pruneOnRemove` (the default) the old registration's namespaces are removed.
+
+Before install, `make saw-init` checks the cluster for these entries: OVN-Kubernetes,
+AdminNetworkPolicy and ValidatingAdmissionPolicy and an anonymous pull of the
+runtime image from inside the cluster. With [audit receipts](#audit-receipts) it
+also needs a shared-filesystem (ReadWriteMany) StorageClass for the audit
+exchange, and creates `saw-shared`, the class name the charts use, as a copy of
+it. `pattern-install` and `make saw-create DEPLOYMENT_MODE=container|kata` run it
+first.
+
+With receipts and no ReadWriteMany class, `saw-init` stops and lists the options; it
+creates nothing unless asked. Install a real shared filesystem first (ODF
+CephFS, EFS, vendor NFS) and `saw-init` only adds its `saw-shared` copy. Two
+opt-ins:
+
+- `SAW_SHARED_STORAGE=efs` offers to create EFS on AWS (filesystem, mount
+  targets, security group, the AWS EFS CSI Driver Operator and StorageClass
+  `saw-efs`) with working `aws` credentials.
+- `SAW_SHARED_STORAGE=nfs`, for development and demo clusters only, creates a
+  privileged NFS server Pod on a default-class volume in namespace `saw-nfs`,
+  the upstream NFS subdirectory provisioner (with a cluster-scoped role) and
+  StorageClass `saw-nfs`, then verifies a read/write mount. It is a single Pod
+  with no replication.
+
+A container entry without `ownerSubject` waits: it renders nothing and is listed
+in the `saw-users-awaiting-owner` ConfigMap, so other users still sync. Set it
+from `make keycloak-user-info KC_USER=<name>` once the account exists. With
+`make saw-create`, an omitted `ownerSubject` is resolved from Keycloak.
 
 For static pattern users, put the same values under `overrides/saw-users.yaml`,
 enable `projection`, commit them and let the existing `saw-users` Application
@@ -703,77 +777,75 @@ The intent CLI accepts `--restart-generation`. When updating with
 including absence on legacy intents. The value ranges from zero through the
 intent generation and cannot decrease.
 
-### Discover and review container egress
+### Network access and storage
 
-The optional container topology preflight reuses the VM's API Service and ready
-EndpointSlice discovery. It also reads the OpenShift DNS Service and endpoint
-ports. It runs HTTPS discovery from an existing, administrator-selected Pod to
-find the issuer addresses in the cluster's DNS view. Use a trusted Pod with
-Python 3, the correct CA trust, DNS and HTTPS access. The caller needs read
-access to those cluster resources and exec access to that Pod. The probe sends
-no credentials, follows no redirects, and verifies the issuer hostname and
-discovery document at every IPv4 answer. IPv6 issuer answers are unsupported.
+Container workspaces need no cluster addresses. Each workspace namespace
+starts from default-deny, and its platform pods get only what they use:
 
-Keep governance, proxy and other administrator-approved rules in your base site
-file. When migrating an existing site, remove the hand-maintained API, issuer
-and DNS rules from the base lists first. Every base rule is preserved. A stale
-address left in the base remains allowed. Configure the gateway or relay issuer
-once, or omit both to discover the Keycloak host in the relay's configured
-namespace with the same helper used by VM Make. The default realm is
-`openshell`; set `KEYCLOAK_REALM` for another realm. Explicit gateway and relay
-issuer URLs must agree.
+- **Kubernetes API.** The gateway, controller, identity and enrollment Jobs,
+  relay and projector carry the label `saw.redhat.com/kubernetes-api: allow`.
+  An AdminNetworkPolicy (`saw-<registration>-kubernetes-api`, and one for the
+  projector) lets those pods, and no sandbox pod, reach the control-plane
+  nodes on port 6443. Its priority (70) comes after the runtime's own
+  supervisor policy (51). On a hosted control plane, set
+  `kubernetesApi.to` to the API addresses: `[{networks: ["<ip>/32"]}]`.
+- **DNS.** The cluster DNS pods, selected by label.
+- **OIDC issuer.** The gateway and relay may use HTTPS (TCP 443) to any
+  address, because the issuer can sit behind a load balancer or an ingress
+  virtual IP. The issuer URL defaults to the cluster's Keycloak route
+  (`https://openshell-keycloak-ingress-saw-keycloak.apps.<clusterDomain>/realms/openshell`);
+  set `stack.gateway.values.oidc.issuerUrl` and `automaticEnrollment.relay.issuer`
+  together for another issuer.
+- **Sandboxes** keep their own fences: OpenShell's workload policy and the
+  runtime's supervisor AdminNetworkPolicy, which allows only the hosts the
+  profile approves.
 
-```sh
-export SAW_USERS_VALUES_FILE="$PWD/container-users.yaml"   # base values
-# On a stock SAW platform, the portal generator has Python 3 and access to its issuer.
-PROBE_POD=$(oc -n saw-portal get pods -l app.kubernetes.io/name=saw-workspaces-generator -o json |
-  jq -er '[.items[] | select(.metadata.deletionTimestamp == null and
-    any(.status.conditions[]?; .type == "Ready" and .status == "True"))][0].metadata.name')
-export SAW_TOPOLOGY_PROBE="saw-portal/$PROBE_POD"
-export SAW_TOPOLOGY_CONTAINER=generator
-export SAW_TOPOLOGY_OVERLAY="$PWD/container-network.yaml"
-# Set SAW_TOPOLOGY_CONTAINER if the Pod has multiple containers.
-make container-topology > "$SAW_TOPOLOGY_OVERLAY.new" &&
-  mv "$SAW_TOPOLOGY_OVERLAY.new" "$SAW_TOPOLOGY_OVERLAY"
-make check-container-topology
-```
+Rules you add to the egress lists (governance, a proxy) still apply; the lists
+replace the defaults, so keep the DNS and HTTPS rules when you set one.
 
-For GitOps, commit the generated file and include it **after** the base file
-in the Application's Helm value files. Generate from `containerSites` for
-saw-users or `portal.containerSites` for RHDH. A base file containing both
-produces both sets of overrides. Run the check against the original base file
-and the committed overlay before enrollment and when DNS or API endpoints
-change. A mismatch exits nonzero. Review the regenerated diff before syncing.
+Storage needs no configuration either: volumes use the cluster's default
+StorageClass, as upstream OpenShell does. Set
+`stack.gateway.values.kubernetes.storage.className` or
+`stack.audit.values.storageClass` in `containerDefaults` to use another class.
 
-For a Pattern site with both sources, store the reviewed overlay at
-`overrides/container-network.yaml` and declare the value file order in the
-site's cluster-group values. Preserve any other value files the site already
-uses.
+### Audit events and receipts
 
-```yaml
-clusterGroup:
-  applications:
-    saw-users:
-      extraValueFiles: [/overrides/saw-users.yaml, /overrides/container-network.yaml]
-    openshell-rhdh:
-      extraValueFiles: [/overrides/saw-users.yaml, /overrides/container-network.yaml]
-```
+By default audit is best-effort, as in upstream OpenShell. The gateway and each
+sandbox's supervisor export OCSF events (authentication, refused API calls,
+network and request decisions) over OTLP/gRPC to the collector in
+`openshell-agents` (`charts/saw-telemetry`, Red Hat build of OpenTelemetry).
+The demonstration debug exporter writes complete event bodies, sandbox IDs and
+trace details to the collector's log, with detailed output and sampling disabled.
+Pod logs are not durable audit storage; replace the exporter with your SIEM or
+log store in `charts/saw-telemetry/values.yaml` for production. W6 inspects the
+demo collector's detailed logs and requires a fresh OCSF JSON body whose sandbox
+ID matches both the body and the log record's `openshell.sandbox.id` attribute.
+When using an external exporter, verify records in that backend separately. Set
+`telemetry.ocsfEndpoint: ""` in `containerDefaults` to turn export off.
+OpenShell drops events it cannot export, and nothing waits for the collector.
+OpenShell 0.1.6 does not export the agent's own tool calls; those are in the
+tool gate's log below.
 
-For standalone Make, keep the base and overlay paths for the installation.
-Run the Ready Pod selection above again before each `make saw-create`,
-including enrollment after the boundary review. A portal rollout can replace
-the probe Pod between those steps. Check the **existing** overlay against
-the current trusted Pod. Regenerate it only after reviewing a topology change.
-On first
-foundation apply (`automaticEnrollment.enabled: false`), Make can create the
-specified overlay if absent. Later applies require the saved values to match
-live discovery. Status and delete can use that file without contacting the
-issuer. Keep the file per installation. Existing deployments using explicit
-egress inputs can continue to use that workflow.
+#### Audit receipts
 
-Generated rules grant individual addresses and ports to the gateway and relay.
-API and DNS rules also go to bootstrap and, for static sites, the projector.
-Workload/supervisor policies, provider host approvals, storage and enrollment
-approval still come from their existing sources. This preflight validates the
-probe Pod's view; workload readiness after deployment verifies the actual
-gateway path.
+By default the agent's tool gate checks every tool call against its policy,
+asks for approval where the policy says so, and appends each decision to a
+best-effort log on the sandbox's own audit volume (`/sandbox/.saw/audit`), as
+VM workspaces do. The agent can modify that log, and it is removed with the
+workspace.
+
+Set `auditReceipts: true` in `containerDefaults` (or one owner's
+`containerSites` entry) for signed, fail-closed receipts instead. Each
+workspace then gets an audit writer in `saw-history-<registration>`, which keeps
+an append-only history outside the workload, kept after the workspace is
+deleted, and signs a receipt for each record. An approved tool action does not
+run until its receipt arrives. The sandbox reaches the writer through a shared
+(ReadWriteMany) exchange volume, named `saw-shared`: `make saw-init` creates it
+as a copy of the cluster's shared-filesystem class (an existing `saw-shared` is
+kept; set `stack.audit.values.exchangeStorageClass` for another class).
+Changing the model at run time (`lifecycleVersion: 1`) requires receipts.
+Static projection and portal requests reject model selection without
+`auditReceipts: true` before enrollment. Direct composition-chart values are
+rejected at render time. Fixed-model registrations using the default local
+audit log omit `lifecycleVersion: 1` and leave `modelLifecycle` disabled.
+Changing `auditReceipts` changes the enrolled boundary: recreate the workspace.

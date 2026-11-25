@@ -9,7 +9,6 @@ import hashlib
 import ipaddress
 import json
 import re
-import ssl
 from .boundary import BoundaryError, fingerprint, objects
 
 
@@ -24,19 +23,6 @@ def contract(config, get):
         if key.startswith("governance"):
             # Cluster installation is shared across registrations. Keep both UID and hash.
             output[key]={"uid":obj["metadata"]["uid"],"sha256":fingerprint(value)}
-            continue
-        if key=="publicCA":
-            source=get(f"/api/v1/namespaces/{trusted}/configmaps/{config['gateway']}-proxy-ca")
-            if obj.get("metadata",{}).get("labels",{}).get("saw.redhat.com/runtime-owner")!=owner or set(value)!={"ca.crt"} or value!=source.get("data") or source["metadata"].get("deletionTimestamp"):
-                raise BoundaryError("UntrustedProxyCA")
-            cert=value["ca.crt"]
-            if not re.fullmatch(r"-----BEGIN CERTIFICATE-----\s+[A-Za-z0-9+/=\s]+-----END CERTIFICATE-----\s*",cert):
-                raise BoundaryError("InvalidProxyCA")
-            try:
-                ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(cadata=cert)
-            except (ssl.SSLError,ValueError) as exc:
-                raise BoundaryError("InvalidProxyCA") from exc
-            output[key]="equals independent trusted proxy public CA"
             continue
         if key=="gatewayService":
             ips=value.get("clusterIPs")

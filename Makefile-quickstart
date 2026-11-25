@@ -18,7 +18,7 @@ MIRROR_IMAGES  ?= openshell-gateway
 IMAGE_TAG      ?= latest
 # OpenShell release the governance interceptor is built from (must match the
 # SAW gateways; image-builder-charts/helm/governance-interceptor-image).
-OPENSHELL_INTERCEPTOR_REF ?= v0.1.6
+OPENSHELL_INTERCEPTOR_REF ?= v0.1.10
 DEPLOYMENT_MODE ?= vm
 SAW_USERS_VALUES_FILE ?=
 SAW_INSTALL_NAMESPACE ?= saw-workspaces
@@ -119,10 +119,10 @@ endif
         governance-interceptor-build governance-interceptor-build-local \
         keycloak-deploy keycloak-delete keycloak-check keycloak-issuer \
         keycloak-register keycloak-redirects keycloak-redirects-sync \
-        keycloak-passwords keycloak-harden keycloak-session-max keycloak-add-users keycloak-add-user keycloak-password keycloak-reset-password \
+        keycloak-passwords keycloak-harden keycloak-session-max keycloak-add-users keycloak-add-user keycloak-password keycloak-reset-password keycloak-user-info saw-init \
         login whoami logout saw-create saw-configure saw-list saw-logs saw-status \
         saw-restart saw-restart-pending saw-vm-ssh saw-ssh saw-tui saw-gui saw-delete \
-        sandbox-pre-delete quickstart-delete status test test-deployment test-dependencies test-pattern-e2e test-pattern-e2e-install test-pattern-e2e-live test-pattern-e2e-cleanup test-harness-e2e lint \
+        sandbox-pre-delete quickstart-delete status test test-deployment test-dependencies test-pattern-e2e test-pattern-e2e-install test-pattern-e2e-live test-pattern-e2e-cleanup test-harness-e2e e2e-workspace lint \
         governance-profile-list governance-profile-add governance-profile-remove \
         governance-profile-create governance-deploy governance-delete governance-demo portal-vault-setup sandbox-ui \
         nemoclaw-tui openclaw-tui nemoclaw-gui openclaw-gui \
@@ -139,6 +139,9 @@ quickstart-prereqs-check: ## Check tools, capacity, CNV, and RHBK before quickst
 
 storage-class-check: ## Ensure a default StorageClass exists for the VM disks (offers to reuse one or enable HPP)
 	@$(SCRIPTS_DIR)/storage-class-check.sh
+
+saw-init: storage-class-check ## Prepare the cluster before install: storage, SSH keys, OIDC CA check, gateway image, container prerequisites
+	@$(SCRIPTS_DIR)/saw-init.sh
 
 check-oidc-ca: ## Check if the OIDC issuer needs a CA bundle
 	@$(SCRIPTS_DIR)/check-oidc-ca.sh
@@ -314,9 +317,6 @@ pre-uninstall: ## Drain GitOps writers, then delete owned VMs before framework u
 	@python3 $(SCRIPTS_DIR)/pattern-drain-applications.py
 	@$(SCRIPTS_DIR)/pattern-pre-uninstall.sh
 
-# Generate SSH keys before install. No deletions — safe to run repeatedly.
-pattern-install: ssh-key-generate
-
 # Handle a missing pattern CR without changing the framework install target.
 # OLM cleanup runs AFTER rhvp.cluster_utils.uninstall removes the ArgoCD apps
 # (including the openshift-cnv app that manages the Subscription). This prevents
@@ -372,6 +372,10 @@ keycloak-password: ## Copy a user's password to the clipboard / name its Secret 
 	@if [ -z "$(KC_USER)" ]; then echo "Error: KC_USER is required. Pass KC_USER=alice." >&2; exit 1; fi
 	@$(SCRIPTS_DIR)/keycloak-users.sh password $(if $(SHOW),--show) "$(KC_USER)"
 
+keycloak-user-info: ## Show a user's Keycloak subject (ownerSubject), enabled flag and email (KC_USER=alice)
+	@if [ -z "$(KC_USER)" ]; then echo "Error: KC_USER is required. Pass KC_USER=alice." >&2; exit 1; fi
+	@$(KC_USERS_ENV) $(SCRIPTS_DIR)/keycloak-users.sh user-info "$(KC_USER)"
+
 keycloak-reset-password: ## Reset one user's password in a Secret (KC_USER=alice)
 	@if [ -z "$(KC_USER)" ]; then echo "Error: KC_USER is required. Pass KC_USER=alice." >&2; exit 1; fi
 	@$(SCRIPTS_DIR)/keycloak-users.sh reset-password "$(KC_USER)"
@@ -425,16 +429,9 @@ keycloak-delete: ## Uninstall Keycloak and its database
 
 ##@ Sandbox Operations
 
-.PHONY: container-topology check-container-topology
-container-topology: ## Print the site network overlay discovered from OpenShift and a trusted Pod
-	@$(or $(PYTHON),uv run --locked python) $(SCRIPTS_DIR)/container_topology.py
-
-check-container-topology: ## Compare the reviewed site network overlay with live OpenShift observations
-	@test -n "$${SAW_TOPOLOGY_OVERLAY}" || { echo "Set SAW_TOPOLOGY_OVERLAY" >&2; exit 1; }
-	@$(or $(PYTHON),uv run --locked python) $(SCRIPTS_DIR)/container_topology.py --check "$${SAW_TOPOLOGY_OVERLAY}"
-
 saw-create: .check-saw-name .check-deployment-mode ## Provision one SAW using DEPLOYMENT_MODE=vm, container or kata
 	@if [ "$(DEPLOYMENT_MODE)" != vm ]; then \
+		$(SCRIPTS_DIR)/saw-init.sh && \
 		$(or $(PYTHON),uv run --locked python) $(SCRIPTS_DIR)/container-workspace.py apply; \
 	else $(SCRIPTS_DIR)/openshell-saw-create.sh; fi
 
@@ -590,6 +587,9 @@ git-hooks: ## Use the repo's git hooks (regenerate the catalogs on commit)
 
 test-deployment: ## Run the live OpenShift deployment test (read docs first)
 	@$(SCRIPTS_DIR)/test-deployment.sh
+
+e2e-workspace: .check-saw-name .check-deployment-mode ## Check one workspace end to end: Argo, sandbox, OpenClaw inference, audit, OCSF (OPENSHELL_SAW_NAME=alice DEPLOYMENT_MODE=container|kata|vm)
+	@$(SCRIPTS_DIR)/e2e-workspace.sh --mode "$(DEPLOYMENT_MODE)" --user "$(OPENSHELL_SAW_NAME)"
 
 test-dependencies: ## Validate rendered charts and deployment dependencies
 	@uv run --locked scripts/ci/deployment_validation.py --report deployment-validation.json

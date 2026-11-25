@@ -15,8 +15,8 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 
-from .core import shared
 from . import provider as governed
+from .core import shared
 
 from .compiler import ContractError, MANAGED, OWNER, REVISION, SOURCE_REVISION, digest, request_id
 
@@ -102,8 +102,12 @@ class Reconciler:
     providing a no-op in a deployment is not qualification.
     """
 
-    def __init__(self, rpc, state_directory, verify_resources, *, verify_shutdown=None):
+    def __init__(self, rpc, state_directory, verify_resources, *, verify_shutdown=None, read_credential=None):
         self.rpc = rpc
+        # read_credential(secret, key) -> (value, revision) from the trusted
+        # namespace; called only when a value is handed to OpenShell.
+        self.read_credential = read_credential
+        self.credential_env = {}
         self.store = StateStore(state_directory)
         if not callable(verify_resources):
             raise ContractError("resource verifier is required", safe_reason="InvalidPlan")
@@ -124,10 +128,13 @@ class Reconciler:
             raise ContractError("gateway returned an invalid object", safe_reason="GatewayMismatch")
         return response[field]
 
-    def _mutate(self, method, request, plan, generation):
+    def _mutate(self, method, request, plan, generation, identity=None):
         body = copy.deepcopy(request)
+        # `identity` replaces a request that carries a credential value, so the
+        # idempotency key never depends on the secret itself.
         body["request_id"] = request_id(plan["ownerID"], method,
-                                        {"request": request, "generation": generation})
+                                        {"request": request if identity is None else identity,
+                                         "generation": generation})
         try:
             return self.rpc.call(method, body)
         except RpcError as exc:
@@ -194,6 +201,11 @@ class Reconciler:
             if state and state.get("identity") != identity:
                 raise ContractError("workspace identity, owner and deployment mode are immutable",
                                     safe_reason="IdentityConflict")
+            if state.get("pendingProxyProviders") or state.get("proxyProviderRevisions"):
+                # Providers created through the removed credential proxy cannot
+                # be adopted: their revisions and credentials are not ours.
+                raise ContractError("workspace was enrolled with the SAW credential proxy; "
+                                    "start a new generation to re-enroll it", safe_reason="ReenrollRequired")
             previous = state.get("intent", {})
             intent = {"generation": generation, "revision": plan["revision"], "desiredState": desired_state}
             if previous.get("generation", 0) > generation or (previous.get("generation") == generation and previous != intent):
@@ -238,19 +250,18 @@ class Reconciler:
             # Resolve platform scope explicitly (workspace_scope omitted). A
             # workspace administrator's same-name custom profile is not enough.
             profile = self.rpc.call("GetProviderProfile", {"id": provider_type}).get("profile", {})
-            marker_provider = any(p.get("credentials") for w in plan["workspaces"] for p in w["providers"]
-                                  if p["type"] == provider_type)
-            if marker_provider:
+            credentialed = any(p.get("credentialRef") for w in plan["workspaces"] for p in w["providers"]
+                               if p["type"] == provider_type)
+            if credentialed:
+                # OpenShell attaches this credential only to the profile's
+                # endpoints, so those must be exactly the approved ones.
                 slots = profile.get("credentials", [])
-                endpoints = profile.get("endpoints", [])
-                slot, hosts = governed.requirements(provider_type, plan.get("customInferenceURL"))
-                if (profile.get("id") != provider_type
-                        or profile.get("source") != "interceptor/governance" or len(slots) != 1
-                        or slots[0].get("env_vars") != slot["env_vars"] or slots[0].get("name") != slot["name"]
-                        or sorted(e.get("host") for e in endpoints) != hosts
-                        or any(e.get("port") != 443 or e.get("enforcement") != "NETWORK_ENFORCEMENT_MODE_ENFORCE" for e in endpoints)):
-                    raise ContractError("provider profile differs from the approved inference boundary",
+                if (profile.get("id") != provider_type or len(slots) != 1
+                        or not slots[0].get("env_vars")):
+                    raise ContractError("provider profile must declare exactly one credential",
                                         safe_reason="ProviderProfileMismatch")
+                self._verify_profile_endpoints(plan, provider_type, profile)
+                self.credential_env[provider_type] = slots[0]["env_vars"][0]
                 continue
             if (profile.get("id") != provider_type or profile.get("credentials")
                     or not profile.get("source", "").startswith("interceptor/")):
@@ -269,6 +280,35 @@ class Reconciler:
         return self._status(plan, generation, "Pending" if pending else
                             ("GenericReady" if desired_state == "Running" else "Stopped"),
                             pending=pending, retry_after_seconds=5 if pending else 0)
+
+    @staticmethod
+    def _verify_profile_endpoints(plan, provider_type, profile):
+        """A credentialed profile may list only the approved endpoints, all enforced."""
+        try:
+            approved = governed.approved_endpoints(provider_type, plan.get("customInferenceURL"))
+        except (ValueError, TypeError):
+            approved = None
+        live = set()
+        for endpoint in profile.get("endpoints", []):
+            if (endpoint.get("enforcement") != "NETWORK_ENFORCEMENT_MODE_ENFORCE"
+                    or endpoint.get("allowed_ips") or not endpoint.get("host")):
+                approved = None
+                break
+            for port in endpoint.get("ports") or [endpoint.get("port", 443)]:
+                live.add((endpoint["host"], int(port)))
+        if not approved or live != approved:
+            raise ContractError("provider profile endpoints differ from the approved ones",
+                                safe_reason="ProviderProfileMismatch")
+        # Host and port say where the key goes; path, protocol, access and
+        # rules say what it may do there. A shipped profile must match exactly.
+        try:
+            specs = governed.approved_endpoint_specs(provider_type)
+        except (ValueError, TypeError):
+            specs = []
+        if specs is not None and sorted(governed.endpoint_spec(e, shipped=False)
+                                        for e in profile.get("endpoints", [])) != specs:
+            raise ContractError("provider profile endpoints differ from the approved ones",
+                                safe_reason="ProviderProfileMismatch")
 
     def _stop_pass(self, plan, state, generation):
         """Only stop previously observed IDs; never create or repair dependencies.
@@ -357,34 +397,48 @@ class Reconciler:
         scope = {"workspace_scope": {"workspace": ws["name"]}}
         pname = provider["metadata"]["name"]
         reference = f"{ws['name']}/{pname}"
+        ref = provider.get("credentialRef")
+        refresh = provider.get("refresh")
+        # Only OpenShell Provider fields go to the gateway; it rejects unknown ones.
+        request = {k: v for k, v in provider.items() if k not in ("credentialRef", "refresh")}
+        source = None
+        if ref:
+            if not callable(self.read_credential):
+                raise ContractError("no credential source configured", safe_reason="ProviderRejected")
+            if refresh:
+                # The Secret holds only refresh material; OpenShell mints the
+                # access token, so the provider starts without a value and the
+                # material's Secret revision is the source.
+                _, source = self.read_credential(ref["secret"], refresh["material"][0])
+            else:
+                value, source = self.read_credential(ref["secret"], ref["key"])
+                request["credentials"] = {self.credential_env[provider["type"]]: value}
+        # What we record and key requests on: the plan entry (a reference, never
+        # the value) plus the Secret revision the value came from.
+        identity = {"provider": provider, "source": source}
         existing = self._get("GetProvider", {**scope, "name": pname}, "provider")
         # Persist intent before the RPC: a committed create can outlive the
         # connection (or this process). The pinned gateway durably replays the
         # same caller/request ID/payload and checks the recorded object revision.
         # A subsequent GetProvider, even with our labels, is not a create receipt.
-        creations = state.setdefault("pendingProxyProviders", {})
+        creations = state.setdefault("pendingProviders", {})
         intent = creations.get(reference)
         if intent is not None and (not isinstance(intent, dict)
-                or intent.get("request") != digest(provider)
+                or intent.get("request") != digest(identity)
                 or type(intent.get("generation")) is not int or intent["generation"] < 1):
             raise ContractError("pending provider creation changed; explicit recovery is required",
                                 safe_reason="ProviderRejected")
+        revisions = state.setdefault("providerRevisions", {})
         if existing is None or intent is not None:
-            if provider.get("credentials") and intent is None:
-                intent = {"request": digest(provider), "generation": generation}
+            if ref and intent is None:
+                intent = {"request": digest(identity), "generation": generation}
                 creations[reference] = intent
                 self.store.save(state)
-            reply = self._mutate("CreateProvider", {**scope, "provider": provider}, plan,
-                                 intent["generation"] if intent else generation)
-            if provider.get("credentials") and reply:
-                created = reply.get("provider", {})
-                self._identity("provider", ws["name"], pname, created, plan, state)
-                meta = created["metadata"]
-                version = meta.get("resource_version")
-                if not version:
-                    raise ContractError("missing provider revision", safe_reason="ProviderRejected")
-                state.setdefault("proxyProviderRevisions", {})[reference] = {
-                    "version": version, "request": digest(provider)}
+            reply = self._mutate("CreateProvider", {**scope, "provider": request}, plan,
+                                 intent["generation"] if intent else generation,
+                                 identity=identity if ref else None)
+            if ref and reply:
+                self._record_provider(ws, pname, reply, plan, state, identity)
                 creations.pop(reference, None)
                 self.store.save(state)
             elif existing is not None:
@@ -395,17 +449,129 @@ class Reconciler:
                 return False
         self._identity("provider", ws["name"], pname, existing, plan, state)
         expected_credentials = {}
-        if provider.get("credentials"):
-            recorded = state.get("proxyProviderRevisions", {}).get(f"{ws['name']}/{pname}")
-            if recorded != {"version": existing["metadata"].get("resource_version"), "request": digest(provider)}:
-                raise ContractError("proxy provider ownership or credential revision requires explicit recovery",
+        updates = state.setdefault("pendingProviderUpdates", {})
+        update = updates.get(reference)
+        if ref and update is not None:
+            # A credential update was sent but its reply was lost. If the
+            # provider moved on from the version we updated, that update (or
+            # its replay) applied: record it, as long as the provider still has
+            # exactly our credential slot. Otherwise it is resent below.
+            current = existing["metadata"].get("resource_version")
+            if current != update.get("from"):
+                if (existing.get("type") != provider["type"] or existing.get("config")
+                        or existing.get("credentials", {}) != dict.fromkeys(request.get("credentials", {}), "REDACTED")
+                        or update.get("provider") != digest(provider)):
+                    raise ContractError("provider changed during a credential update; explicit recovery is required",
+                                        safe_reason="ProviderRejected")
+                revisions[reference] = {"version": current, "provider": digest(provider),
+                                        "source": update.get("source")}
+                updates.pop(reference)
+                self.store.save(state)
+        if ref:
+            recorded = revisions.get(reference, {})
+            # OpenShell rewrites a refreshed provider (each minted token bumps
+            # its version), so only a static credential pins the version.
+            if (recorded.get("provider") != digest(provider)
+                    or (not refresh and recorded.get("version") != existing["metadata"].get("resource_version"))):
+                raise ContractError("provider ownership or credential revision requires explicit recovery",
                                     safe_reason="ProviderRejected")
-            expected_credentials = dict.fromkeys(provider["credentials"], "REDACTED")
+            if recorded.get("source") != source and not refresh:
+                # The Secret rotated: hand OpenShell the new value. Persist the
+                # intent first, as for creates; a lost reply is resolved above.
+                updates[reference] = {"provider": digest(provider), "source": source,
+                                      "from": existing["metadata"].get("resource_version")}
+                self.store.save(state)
+                reply = self._mutate("UpdateProvider", {**scope, "provider": request}, plan, generation,
+                                     identity=identity)
+                if reply:
+                    self._record_provider(ws, pname, reply, plan, state, identity)
+                    updates.pop(reference, None)
+                    self.store.save(state)
+                pending.append(f"provider/{reference}")
+                return False
+            if refresh:
+                if not self._apply_refresh(ws, provider, plan, state, generation, source, pending):
+                    return False
+                # Either nothing yet or the one token OpenShell minted.
+                minted = {self.credential_env[provider["type"]]: "REDACTED"}
+                expected_credentials = minted if existing.get("credentials") else {}
+            else:
+                expected_credentials = dict.fromkeys(request["credentials"], "REDACTED")
         if (existing.get("type") != provider["type"] or existing.get("config") or existing.get("profile_workspace")
-                or existing.get("credentials", {}) != expected_credentials or existing.get("credential_handles")):
+                or existing.get("credentials", {}) != expected_credentials):
             raise ContractError("provider drift or unexpected credential state requires explicit recovery",
                                 safe_reason="ProviderRejected")
         return True
+
+    def _apply_refresh(self, ws, provider, plan, state, generation, source, pending):
+        """Hand OpenShell the refresh material once per Secret revision.
+
+        OpenShell then refreshes the access token itself and keeps any rotated
+        refresh token; re-sending the Secret's original one would undo that.
+        A revision counts as configured only once the gateway's refresh status
+        shows the credential without an error. Until then a missing status
+        entry is pending, and a configure whose reply was lost is sent again
+        (same request ID, so the gateway replays rather than repeats it).
+        """
+        scope = {"workspace_scope": {"workspace": ws["name"]}}
+        pname = provider["metadata"]["name"]
+        reference = f"{ws['name']}/{pname}"
+        key = self.credential_env[provider["type"]]
+        configured = state.setdefault("refreshConfigured", {})
+        sent = state.setdefault("refreshSent", {})
+        if configured.get(reference) != source:
+            attempt = sent.get(reference) or {}
+            if attempt.get("source") != source or not attempt.get("acknowledged"):
+                ref, refresh = provider["credentialRef"], provider["refresh"]
+                material = {}
+                for name in refresh["material"]:
+                    value, revision = self.read_credential(ref["secret"], name)
+                    if revision != source:
+                        pending.append(f"provider/{reference}")
+                        return False  # the Secret changed while reading; next pass
+                    material[name] = value
+                request = {**scope, "provider": pname, "credential_key": key,
+                           "strategy": "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_" + refresh["strategy"].upper(),
+                           "material": material, "secret_material_keys": sorted(material)}
+                identity = {"refresh": provider, "source": source}
+                configure = self._mutate("ConfigureProviderRefresh", request, plan, generation, identity=identity)
+                rotate = self._mutate("RotateProviderCredential",
+                                      {**scope, "provider": pname, "credential_key": key},
+                                      plan, generation, identity=identity)
+                # Both returned: a reply, or ALREADY_EXISTS (_mutate returns None
+                # for that only; every other failure raises before this line,
+                # so a lost reply is resent with the same request ID). Observe
+                # the refresh status from here on; never resend into ALREADY_EXISTS.
+                sent[reference] = {"source": source, "acknowledged": True}
+                self.store.save(state)
+                pending.append(f"provider/{reference}")
+                return False
+        status = self.rpc.call("GetProviderRefreshStatus", {**scope, "provider": pname, "credential_key": key})
+        entries = [c for c in status.get("credentials", []) if c.get("credential_key") == key]
+        if any(c.get("last_error") or c.get("failure_code") for c in entries):
+            raise ContractError("provider credential refresh is failing; see the gateway's refresh status",
+                                safe_reason="ProviderRefreshFailed")
+        if not entries:
+            if configured.get(reference) == source:
+                # It was working and the gateway no longer has it: refreshing stopped.
+                raise ContractError("provider credential refresh is no longer configured at the gateway",
+                                    safe_reason="ProviderRefreshFailed")
+            pending.append(f"provider/{reference}")   # status not populated yet
+            return False
+        if configured.get(reference) != source:
+            configured[reference] = source
+            sent.pop(reference, None)
+            self.store.save(state)
+        return True
+
+    def _record_provider(self, ws, pname, reply, plan, state, identity):
+        created = reply.get("provider", {})
+        self._identity("provider", ws["name"], pname, created, plan, state)
+        version = created.get("metadata", {}).get("resource_version")
+        if not version:
+            raise ContractError("missing provider revision", safe_reason="ProviderRejected")
+        state.setdefault("providerRevisions", {})[f"{ws['name']}/{pname}"] = {
+            "version": version, "provider": digest(identity["provider"]), "source": identity["source"]}
 
     def _apply_sandbox(self, ws, sandbox, plan, state, generation, desired_state, pending):
         scope = {"workspace_scope": {"workspace": ws["name"]}}

@@ -358,8 +358,10 @@ class Controller:
             if intent["desiredState"] == "Running":
                 try:
                     self.verify_boundary(plan)
-                except Exception:
-                    raise InputError("BoundaryRejected") from None
+                except Exception as exc:
+                    # Only the proxy-era approval gets its own reason: the fix is a re-enrollment.
+                    reason = "ReenrollRequired" if str(exc) == "ReenrollRequired" else "BoundaryRejected"
+                    raise InputError(reason) from None
             # Stopped delegates to the core's identity-checked shutdown path.
             # Renewed network/attachment approval must not prevent stopping an
             # already recorded sandbox. Input fencing above remains mandatory.

@@ -196,24 +196,33 @@ def check_observations(mode, observations):
     return tuple(required)
 
 
+# Reviewed sites pin every chart to a full commit SHA. An autoApprove
+# (development) site may follow a branch instead: saw-users and portal defaults
+# use global.targetRevision when a site sets no revision.
+PINNED_REVISION = r"[a-f0-9]{40}"
+BRANCH_REVISION = r"[a-f0-9]{40}|[A-Za-z0-9][A-Za-z0-9._/-]*"
+
+
 def configuration_facts(site):
     """Check site-owned inputs that do not require cluster access."""
     if not isinstance(site, dict):
         return {key: False for key in ("network", "storage", "secrets", "registry",
                                         "providerEgress", "revisions")}
     stack = site.get("stack") if isinstance(site.get("stack"), dict) else {}
+    enrollment = site.get("automaticEnrollment") or {}
+    revision_pattern = BRANCH_REVISION if isinstance(enrollment, dict) and enrollment.get(
+        "autoApprove") is True else PINNED_REVISION
     revisions = [item.get("revision") for item in stack.values() if isinstance(item, dict)]
-    required_components = ("identity", "policy", "proxy", "gateway", "audit")
+    required_components = ("identity", "policy", "gateway", "audit")
     revision_pin = all(isinstance(stack.get(name), dict) for name in required_components) and all(
         isinstance(stack[name].get("revision"), str)
-        and re.fullmatch(r"[a-f0-9]{40}", stack[name]["revision"])
+        and re.fullmatch(revision_pattern, stack[name]["revision"])
         for name in required_components) and bool(revisions) and len(revisions) == len(stack) and all(
-        isinstance(value, str) and re.fullmatch(r"[a-f0-9]{40}", value) for value in revisions)
-    enrollment = site.get("automaticEnrollment") or {}
+        isinstance(value, str) and re.fullmatch(revision_pattern, value) for value in revisions)
     if enrollment and not isinstance(enrollment, dict):
         revision_pin = False
     elif enrollment:
-        revision_pin = revision_pin and bool(re.fullmatch(r"[a-f0-9]{40}", str(enrollment.get("revision", ""))))
+        revision_pin = revision_pin and bool(re.fullmatch(revision_pattern, str(enrollment.get("revision", ""))))
 
     image_values = []
     storage_values = []
@@ -233,28 +242,20 @@ def configuration_facts(site):
                 walk(child, path)
     walk(site)
 
-    declared_hosts = site.get("providerAllowHosts")
-    policy = site.get("providerPolicy")
-    clean_hosts = (isinstance(declared_hosts, list) and bool(declared_hosts)
-                   and all(isinstance(host, str) and host and "*" not in host
-                           for host in declared_hosts)
-                   and (policy is None or (isinstance(policy, dict)
-                        and isinstance(policy.get("allowHosts"), list)
-                        and all(isinstance(host, str) for host in policy["allowHosts"])
-                        and set(policy["allowHosts"]) == set(declared_hosts))))
-    proxy = stack.get("proxy") or {}
-    proxy_values = proxy.get("values") or {} if isinstance(proxy, dict) else {}
-    bootstrap_egress = ((proxy_values.get("network") or {}).get("bootstrapEgress")
-                        if isinstance(proxy_values, dict) else None)
+    # OpenShell decides where each credential may go (provider profiles); the
+    # site only lists which Secret backs which provider type.
+    bindings = site.get("credentialBindings")
+    clean_bindings = (isinstance(bindings, list) and all(
+        isinstance(b, dict) and {"secret", "key", "type"} <= set(b) <= {"secret", "key", "type", "refresh"}
+        and all(isinstance(v, str) and v for v in b.values()) for b in bindings))
     storage_ok = bool(storage_values) and all(value.strip() for value in storage_values)
     return {
-        "network": bool(stack.get("policy")) and isinstance(bootstrap_egress, list)
-                   and bool(bootstrap_egress),
+        "network": bool(stack.get("policy")),
         "storage": storage_ok,
         "secrets": isinstance(site.get("secretStore", "vault-backend"), str)
                    and bool(site.get("secretStore", "vault-backend")),
         "registry": bool(image_values) and all("@sha256:" in image for image in image_values),
-        "providerEgress": clean_hosts,
+        "providerEgress": clean_bindings,
         "revisions": revision_pin,
     }
 

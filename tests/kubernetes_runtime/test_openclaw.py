@@ -13,7 +13,7 @@ def agent(source, kind="openai", model="gpt-4.1-mini-2025-04-14"):
                 shared.NATIVE_BASE_URLS.get(kind) or shared.PROTOCOL_NATIVE_BASE_URLS[protocol])
     if kind == "custom-inference":
         source[1]["customInferenceURL"] = endpoint
-    source[1]["proxyBindings"] = [{"type":kind, "secret":"inference", "key":"api_key", "refresh":False}]
+    source[1]["credentialBindings"] = [{"type":kind, "secret":"inference", "key":"api_key"}]
     mutate(source, "providers.yaml", lambda d: d["spec"]["providers"].append(
         {"name": kind, "type": kind, "credentialSecret": "inference"}))
     sandbox(source, lambda s: s.update(type="openclaw", providers=[kind], inference={
@@ -48,13 +48,14 @@ def test_mutable_model_compiles_and_startup_accepts_published_selection(source, 
             assert result.stdout.strip() == model
 
 
-def test_openclaw_pinned_proxy_contract(source):
+def test_openclaw_reads_its_key_from_the_openshell_placeholder(source):
     agent(source)
     ws = compile_profile(*source)["workspaces"][0]
-    assert ws["providers"][0]["credentials"] == {"OPENAI_API_KEY": "saw-cred.inference.api_key"}
+    assert ws["providers"][0]["credentialRef"] == {"secret": "inference", "key": "api_key"}
+    assert "credentials" not in ws["providers"][0]
     command = ws["sandboxes"][0]["spec"]["command"]
     assert command[-1] == "gpt-4.1-mini-2025-04-14"
-    assert "saw-cred" not in json.dumps(command)
+    assert "OPENAI_API_KEY" in command[2]
     assert "loopback" in command[2]
 
 
@@ -62,7 +63,7 @@ def test_openclaw_pinned_proxy_contract(source):
 def test_openclaw_rejects_unapproved_bindings(source, change):
     agent(source)
     if change == "absent":
-        source[1].pop("proxyBindings")
+        source[1].pop("credentialBindings")
     else:
         update = {"alternative-url": {"baseUrl": "https://example.com/v1"},
                   "shell": {"model": "$(id)"}, "unknown-input": {"model": {"secretKeyRef": {"name":"private","key":"key"}}}}
@@ -77,7 +78,9 @@ def test_redacted_provider_refuses_changed_revision(source, tmp_path):
     ws = plan["workspaces"][0]
     provider = ws["providers"][0]
     gateway = FakeGateway()
-    core = Reconciler(gateway, tmp_path / "ledger", lambda plan: None)
+    core = Reconciler(gateway, tmp_path / "ledger", lambda plan: None,
+                      read_credential=lambda secret, key: ("real-key", "1"))
+    core.credential_env["openai"] = "OPENAI_API_KEY"
     real_call = gateway.call
     def call(method, body):
         result = real_call(method, body)

@@ -42,6 +42,9 @@
           "items": {
             "$ref": "#/definitions/egressRule"
           }
+        },
+        "publicHTTPS": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -122,6 +125,14 @@
         ],
         "additionalProperties": false
       }
+    },
+    "agentTraceEndpoint": {
+      "type": "string",
+      "pattern": "^(https?://[a-z0-9.-]+:[0-9]+)?$"
+    },
+    "ocsfEndpoint": {
+      "type": "string",
+      "pattern": "^(https?://[a-z0-9.-]+:[0-9]+)?$"
     },
     "supervisorCommand": {
       "type": "array",

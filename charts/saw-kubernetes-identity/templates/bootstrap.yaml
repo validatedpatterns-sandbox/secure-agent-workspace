@@ -111,6 +111,7 @@ spec:
     metadata:
       labels:
         openshell.pattern/role: identity-bootstrap
+        saw.redhat.com/kubernetes-api: allow
     spec:
       restartPolicy: Never
       serviceAccountName: {{ $name }}

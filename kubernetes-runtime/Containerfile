@@ -17,6 +17,8 @@ COPY charts/openshell-saw/files/provider-profiles/ charts/openshell-saw/files/pr
 COPY charts/saw-users/files/workspace.py /opt/saw/kubernetes-runtime/saw_workspace.py
 COPY kubernetes-runtime/saw_kubernetes kubernetes-runtime/saw_kubernetes
 ENV PYTHONPATH=/opt/saw/kubernetes-runtime:/opt/saw/sdk PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
-RUN python3 -c 'from openshell._proto import openshell_pb2_grpc; from saw_kubernetes import serve'
+# COPY keeps the builder's file modes; the runtime runs as a non-root UID.
+RUN chmod -R a+rX,go-w /opt/saw
 USER 1001
+RUN python3 -c 'from openshell._proto import openshell_pb2_grpc; from saw_kubernetes import serve'
 ENTRYPOINT ["python3", "-m", "saw_kubernetes.serve"]

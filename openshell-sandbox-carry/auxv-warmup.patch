@@ -1,0 +1,31 @@
+diff --git a/crates/openshell-sandbox/Cargo.toml b/crates/openshell-sandbox/Cargo.toml
+index 0ccc79af8..7e25438da 100644
+--- a/crates/openshell-sandbox/Cargo.toml
++++ b/crates/openshell-sandbox/Cargo.toml
+@@ -67,7 +67,7 @@ tracing-subscriber = { workspace = true }
+ 
+ [target.'cfg(unix)'.dependencies]
+ libc = "0.2"
+-rustix = { workspace = true, features = ["termios", "fs", "process", "net", "event"] }
++rustix = { workspace = true, features = ["termios", "fs", "process", "net", "event", "param"] }
+ russh-sftp = "3.0"
+ uuid = { workspace = true }
+ 
+diff --git a/crates/openshell-sandbox/src/main.rs b/crates/openshell-sandbox/src/main.rs
+index 8978659ba..0d71edbdd 100644
+--- a/crates/openshell-sandbox/src/main.rs
++++ b/crates/openshell-sandbox/src/main.rs
+@@ -1813,6 +1813,13 @@ fn run_boundary(_bootstrap: &Path, _log_level: &str) -> Result<()> {
+ }
+ 
+ fn main() -> Result<()> {
++    // SAW carry: cache rustix's aux vector before anything makes this process
++    // nondumpable. rustix reads it with prctl(PR_GET_AUXV) (Linux 6.4+) or
++    // /proc/self/auxv, which a nondumpable non-root process cannot read, so on
++    // RHEL 9 (5.14) the network broker's first clock_ticks_per_second() call
++    // (openshell-binary-identity) panicked on every connect.
++    #[cfg(target_os = "linux")]
++    let _ = rustix::param::clock_ticks_per_second();
+     let raw_args = std::env::args().collect::<Vec<_>>();
+     if raw_args.get(1).map(String::as_str) == Some(COPY_SELF_SUBCOMMAND) {
+         let dest = raw_args.get(2).ok_or_else(|| {

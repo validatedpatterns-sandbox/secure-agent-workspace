@@ -1,4 +1,9 @@
 enabled: false
+# Signed, fail-closed audit receipts: a writer in trustedNamespace keeps the
+# history, and the sandbox reaches it through a shared (ReadWriteMany)
+# exchange volume. false keeps only a best-effort audit log on the sandbox's
+# own volume.
+receipts: true
 trustedNamespace: ""
 runtimeNamespace: ""
 image: ""

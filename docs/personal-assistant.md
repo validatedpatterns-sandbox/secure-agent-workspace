@@ -4,7 +4,7 @@ The `personal-assistant` profile creates a NemoClaw sandbox with the
 `daily-briefing` harness enabled. It reads Slack and Gmail and saves a briefing
 under `/sandbox/briefing/<YYYY-MM-DD>/briefing.md`.
 
-Deploy with README [Option A: Validated Pattern](../README.md#option-a-validated-pattern-automated-gitops).
+Deploy with README [Installation](../README.md#installation).
 The chart defaults to the published, digest-pinned credential proxy image;
 override it only for a mirror or custom build (see [container images](container-images.md)).
 Create the portal user's Keycloak account before signing in:
@@ -64,6 +64,12 @@ Slack remains a static bot token. Check:
 ```bash
 openshell provider refresh status gmail --workspace personal-assistant
 ```
+
+Container workspaces sync only the Gmail OAuth material (client ID, client
+secret, refresh token) from Vault; no access token is stored. The runtime
+controller creates the OpenShell provider without a credential value and
+configures refresh, and OpenShell mints and rotates the access token. Check it
+with the same `openshell provider refresh status` command.
 
 The token URL host must stay in `egress.allow`. A token-only Gmail Secret is
 accepted with a warning and needs manual renewal. Mode switches preserve

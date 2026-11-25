@@ -159,12 +159,12 @@ test("identity configuration always requires approval, including file and avatar
 
 test("both automation aliases allow only inspection and hold mutations for approval", () => {
   for (const group of ["cron", "automations"]) {
-    for (const verb of ["list", "status", "get", "show", "runs"]) {
+    for (const verb of ["list", "status", "get", "show", "runs", "--help", "edit --help", "rm --help"]) {
       const result = call({ params: { command: `openclaw ${group} ${verb} --json` } });
       assert.equal(result.effect.kind, "allow");
       assert.equal(result.record.rule, "exec-openclaw-automation-inspect");
     }
-    for (const verb of ["add", "edit", "rm", "enable", "disable", "run"]) {
+    for (const verb of ["add", "create", "edit", "rm", "remove", "delete", "enable", "disable", "run"]) {
       const result = call({ params: { command: `openclaw ${group} ${verb} job-id` } });
       assert.equal(result.effect.kind, "approval");
       assert.equal(result.record.rule, "exec-openclaw-automation-change");
@@ -175,7 +175,7 @@ test("both automation aliases allow only inspection and hold mutations for appro
       }
     }
     // Unsupported aliases, mixed read/write surfaces and unknown verbs stay denied.
-    for (const verb of ["", "create", "remove", "delete", "scratch", "listx", "runsx", "run-all"]) {
+    for (const verb of ["", "scratch", "bind", "listx", "runsx", "run-all", "removex"]) {
       assert.equal(call({ params: { command: `openclaw ${group} ${verb}` } }).effect.kind, "deny");
     }
     for (const command of [
@@ -519,4 +519,81 @@ test("an unavailable audit file blocks an otherwise allowed call", () => {
   assert.equal(result.record.decision, "deny");
   assert.equal(result.record.rule, "audit-unwritable");
   assert.equal(result.hook.block, true);
+});
+
+test("allow always skips later automation approvals but never other rules", () => {
+  const remembered = new Set();
+  const records = [];
+  const run = (command) => evaluateToolCall({
+    policyText, identity, toolName: "exec", params: { command }, sessionKey: "session-1",
+    appendRecord: (record) => records.push(record), remembered,
+  });
+  const first = run("openclaw cron rm job-1");
+  assert.deepEqual(first.hook.requireApproval.allowedDecisions, ["allow-once", "allow-always", "deny"]);
+  // Allow once remembers nothing.
+  first.hook.requireApproval.onResolution("allow-once");
+  assert.ok(run("openclaw cron edit job-1").hook.requireApproval);
+  run("openclaw cron add --name x").hook.requireApproval.onResolution("allow-always");
+  // Later automation changes run, in any session, and are still audited.
+  for (const command of ["openclaw cron rm job-1", "openclaw automations edit job-2"]) {
+    records.length = 0;
+    assert.equal(run(command).hook, undefined);
+    assert.equal(records[0].decision, "allow");
+    assert.equal(records[0].rule, "exec-openclaw-automation-change");
+    assert.deepEqual(records[0].approval, { mode: "remembered", resolution: "allow-always" });
+  }
+  // Other approval rules still ask, and offer no allow always.
+  const push = run("git push");
+  assert.deepEqual(push.hook.requireApproval.allowedDecisions, ["allow-once", "deny"]);
+  push.hook.requireApproval.onResolution("allow-always");
+  assert.ok(run("git push").hook.requireApproval);
+  // Unmatched commands are still denied.
+  assert.equal(run("openclaw cron update job-1").hook.block, true);
+});
+
+test("allow always is forgotten when the policy changes or the answer is not recorded", () => {
+  const remembered = new Set();
+  const changed = policyText.replace("defaultAction: deny", "defaultAction: deny\n# changed");
+  const run = (text, append) => evaluateToolCall({
+    policyText: text, identity, toolName: "exec", params: { command: "openclaw cron rm job-1" },
+    sessionKey: "session-1", appendRecord: append, remembered,
+  });
+  run(policyText, () => {}).hook.requireApproval.onResolution("allow-always");
+  assert.equal(run(policyText, () => {}).hook, undefined);
+  assert.ok(run(changed, () => {}).hook.requireApproval);
+  const unrecorded = new Set();
+  const failing = evaluateToolCall({
+    policyText, identity, toolName: "exec", params: { command: "openclaw cron rm job-1" },
+    sessionKey: "session-1", remembered: unrecorded,
+    appendRecord: (record) => { if (record.approval) throw new Error("down"); },
+  });
+  failing.hook.requireApproval.onResolution("allow-always");
+  assert.equal(unrecorded.size, 0);
+});
+
+test("allowAlways is only valid as true on an approval rule", () => {
+  const rule = (action, value) => `version: 1\ndefaultAction: deny\nrules:\n  - id: r\n    tool: exec\n    action: ${action}\n    allowAlways: ${value}\n`;
+  assert.equal(parsePolicy(rule("approval", "true")).rules[0].allowAlways, true);
+  assert.throws(() => parsePolicy(rule("allow", "true")), /allowAlways/);
+  assert.throws(() => parsePolicy(rule("approval", "yes")), /allowAlways/);
+});
+
+test("a trailing 2>&1 is accepted, and blocked exec calls say how to retry", () => {
+  for (const command of ["openclaw automations list --all 2>&1", "git status 2>&1 2>&1", "git status\t2>&1 "]) {
+    assert.equal(call({ params: { command } }).effect.kind, "allow", command);
+  }
+  // Only a trailing stderr merge: any other redirect or chain is still opaque.
+  for (const command of ["git status 2>&1 | head", "git status > /tmp/x 2>&1", "git status 2>&1; rm -rf /",
+    "git status 2>/tmp/x", "git status 2>&1\nrm -rf /", "git status &>/tmp/x"]) {
+    assert.equal(call({ params: { command } }).record.rule, "exec-opaque", command);
+  }
+  const opaque = call({ params: { command: "openclaw automations show a; openclaw automations show b" } });
+  assert.match(opaque.effect.blockReason, /exec-opaque\. Run one command per exec call/);
+  const unlisted = call({ params: { command: "openclaw automations scratch" } });
+  assert.match(unlisted.effect.blockReason, /not on the allowed list/);
+  // A wrong spelling learns the accepted ones for the same command family.
+  const remove = call({ params: { command: "openclaw automations update 69f1c7c1" } }).effect.blockReason;
+  assert.match(remove, /Accepted `openclaw automations` commands: list, status, get, show, runs, --help \(run directly\); add, create, edit, rm, remove, delete, enable, disable, run \(ask the user for approval\)$/);
+  assert.doesNotMatch(call({ params: { command: "curl https://x" } }).effect.blockReason, /Accepted/);
+  assert.match(call({ toolName: "web_fetch", params: {} }).effect.blockReason, /^Tool web_fetch is denied by the default action$/);
 });

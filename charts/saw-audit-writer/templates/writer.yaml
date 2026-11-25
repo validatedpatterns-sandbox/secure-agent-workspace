@@ -1,19 +1,27 @@
 {{- if .Values.enabled }}
-{{- $tn := required "trustedNamespace required" .Values.trustedNamespace }}
+{{- $receipts := .Values.receipts }}
 {{- $rn := required "runtimeNamespace required" .Values.runtimeNamespace }}
+{{- $tn := "" }}
+{{- if $receipts }}
+{{- $tn = required "trustedNamespace required" .Values.trustedNamespace }}
 {{- if eq $tn $rn }}{{ fail "writer history requires a separate trusted namespace" }}{{ end }}
+{{- end }}
 {{- $image := required "pinned Node 24 image required" .Values.image }}
 {{- if not (regexMatch "@sha256:[0-9a-f]{64}$" $image) }}{{ fail "image must be digest pinned" }}{{ end }}
 {{- $id := .Values.identity }}
 {{- range $f := list "subject" "username" "workspace" "sandbox" }}{{- $_ := required $f (get $id $f) }}{{- end }}
 {{- $base := .Release.Name }}
-{{- range $name, $ns := dict "history" $tn "exchange" $rn "gate" $rn "workspace" $rn }}
+{{- /* Without receipts the sandbox keeps a best-effort local audit log on its
+       own ReadWriteOnce volume: no history, exchange, forwarder or writer. */}}
+{{- $claims := dict "audit" $rn "gate" $rn "workspace" $rn }}
+{{- if $receipts }}{{- $claims = dict "history" $tn "exchange" $rn "gate" $rn "workspace" $rn }}{{- end }}
+{{- range $name, $ns := $claims }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   namespace: {{ $ns }}
-  name: {{ if eq $name "exchange" }}saw-audit-{{ $base }}{{ else if eq $name "gate" }}saw-gate-{{ $base }}{{ else if eq $name "workspace" }}workspace-{{ $base }}{{ else }}{{ $base }}-{{ $name }}{{ end }}
+  name: {{ if or (eq $name "exchange") (eq $name "audit") }}saw-audit-{{ $base }}{{ else if eq $name "gate" }}saw-gate-{{ $base }}{{ else if eq $name "workspace" }}workspace-{{ $base }}{{ else }}{{ $base }}-{{ $name }}{{ end }}
   annotations: {argocd.argoproj.io/sync-options: 'Prune=false,Delete=false'}
   {{- if ne $name "history" }}
   labels:
@@ -22,10 +30,15 @@ metadata:
     saw.redhat.com/runtime-owner: {{ $.Values.ownerID }}
   {{- end }}
 spec:
-  storageClassName: {{ if or (eq $name "exchange") (and (eq $name "gate") $.Values.shareGateForModelSelection) }}{{ required "exchangeStorageClass required" $.Values.exchangeStorageClass }}{{ else }}{{ required "storageClass required" $.Values.storageClass }}{{ end }}
+  {{- if or (eq $name "exchange") (and (eq $name "gate") $.Values.shareGateForModelSelection) }}
+  storageClassName: {{ required "exchangeStorageClass required" $.Values.exchangeStorageClass }}
+  {{- else if $.Values.storageClass }}
+  storageClassName: {{ $.Values.storageClass }}
+  {{- end }}
   accessModes: [{{ if or (eq $name "exchange") (and (eq $name "gate") $.Values.shareGateForModelSelection) }}ReadWriteMany{{ else }}ReadWriteOnce{{ end }}]
   resources: {requests: {storage: 1Gi}}
 {{- end }}
+{{- if $receipts }}
 ---
 apiVersion: v1
 kind: Service
@@ -126,5 +139,6 @@ spec:
       - {name: data, persistentVolumeClaim: {claimName: saw-audit-{{ $base }}}}
       - {name: trust, configMap: {name: {{ $base }}-ca}}
       {{- end }}
+{{- end }}
 {{- end }}
 {{- end }}

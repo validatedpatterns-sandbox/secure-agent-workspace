@@ -1,0 +1,6 @@
+apiVersion: v2
+name: saw-kata
+description: KataConfig for Kata container workspaces (OpenShift sandboxed containers)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

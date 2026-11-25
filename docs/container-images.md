@@ -18,7 +18,7 @@ those deployment overrides local when preparing changes for upstream.
 | `openshell-gateway-docker` | `latest`, `sha-<commit>` | x86_64-only Docker VM disk, `make gateway-build-docker` |
 | `nemoclaw-cli` | `latest`, `sha-<commit>` | Installer BOM `spec.nemoclaw.cliImage` |
 | `nemoclaw-sandbox` | `latest`, `sha-<commit>` | Data-science default and CUDA profiles |
-| `governance-interceptor` | `latest`, `sha-<commit>`, OpenShell ref (currently `v0.1.6`) | Interceptor deployment and image builder |
+| `governance-interceptor` | `latest`, `sha-<commit>`, OpenShell ref (currently `v0.1.10`) | Interceptor deployment and image builder |
 | `saw-credential-proxy` | `latest`, `sha-<commit>` (multi-arch) | Chart default `credentialProxy.image` (digest pinned in `charts/openshell-saw/values.yaml`) |
 | `saw-kubernetes-runtime` | `latest`, `sha-<commit>` (multi-arch) | Container reconciler, preparation/enrollment helpers, standalone projector and relay membership Job; operator site values pin the manifest digest. |
 | `saw-harness-<bundle>` | Bundle version, `sha-<commit>` | Optional digest-pinned `harnessRef.image` |
@@ -31,8 +31,8 @@ the arm64 Podman disk ([arm64 guide](arm64.md)). The legacy
 `openshell-gateway-docker` disk is x86_64 only and publishes its tags directly;
 ARM clusters use the default Podman runtime.
 
-The OpenShell 0.1.6 public interceptor is published and pinned in
-`charts/governance-interceptor/values.yaml`.
+The OpenShell 0.1.10 interceptor (with the SAW extension) is published and
+pinned in `charts/governance-interceptor/values.yaml`.
 The credential and guest-shutdown corrections in #162/#164 are merged.
 Build provenance and validation are in the [release record](openshell-016-release.md).
 
@@ -254,7 +254,18 @@ published image blobs while any site references their digests.
 The shipped notebook image sets `WORKDIR /sandbox` with mode `0770` and
 ownership `1000:0`. Container workspaces run with the OpenShift namespace UID
 and group. They need search permission on this directory to start the sandbox
-entrypoint. Prepare the image once in the same build namespace as the runtime:
+entrypoint.
+
+CI publishes the prepared image: `.github/workflows/build-openclaw-image.yml`
+builds `images/saw-openclaw/Containerfile` from the notebook BOM's pinned
+image and pushes `ghcr.io/<repository owner>/saw-openclaw` (linux/amd64 and
+linux/arm64), tagged
+`src-<first 12 hex of the source digest>`. Pin that tag's digest in
+`containerDefaults.profileImageOverrides` (public, so no `imagePull` is
+needed). A changed source digest in the BOM publishes a new tag.
+
+Disconnected clusters can prepare the image once in the same build namespace
+as the runtime instead:
 
 ```sh
 make container-notebook-image BUILD_NS="$BUILD_NS" BUILD_ARCH=amd64 > notebook-site.yaml

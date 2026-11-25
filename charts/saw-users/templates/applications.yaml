@@ -1,7 +1,8 @@
 {{- include "saw-users.validate" . -}}
 {{- range $user := .Values.users | default list }}
-{{- if not (and $.Values.projection.enabled (has (dig "deployment" "mode" "vm" ($user.values | default dict)) (list "container" "kata"))) }}
+{{- if and (not (include "saw-users.awaitingOwner" (dict "root" $ "user" $user))) (not (and $.Values.projection.enabled (has (dig "deployment" "mode" "vm" ($user.values | default dict)) (list "container" "kata")))) }}
 {{- $container := has (dig "deployment" "mode" "vm" ($user.values | default dict)) (list "container" "kata") }}
+{{- if $container }}{{- $user = include "saw-users.containerUser" (dict "root" $ "user" $user) | fromJson }}{{- end }}
 {{- if not $container }}
 ---
 {{ include "saw-users.application" (dict
@@ -26,14 +27,24 @@
 ) }}
 ---
 {{- if $container }}
-{{- $site := deepCopy (index $.Values.containerSites $user.name | default dict) }}
+{{- $site := include "saw-users.containerSite" (dict "root" $ "user" $user) | fromJson }}
 {{- $mode := dig "deployment" "mode" "vm" ($user.values | default dict) }}
 {{- if ne (eq $mode "kata") (not (empty $site.kataRuntimeClass)) }}{{ fail "registration placement differs from the site RuntimeClass approval" }}{{- end }}
-{{- with $site.providerAllowHosts }}
+{{- /* Which Secret backs which provider type; OpenShell's provider profiles
+       decide where each credential may be used. */}}
 {{- $scope := dict "root" $ "user" $user }}
-{{- $policy := include "saw.governedProxyPolicy" (dict "catalog" ($.Files.Get "files/governed-profiles.json" | fromJson) "bindings" (include "saw-users.credentialBindings" $scope | fromJsonArray) "attached" (include "saw-users.secretNames" $scope | fromJsonArray) "allowHosts" .) | fromJson }}
-{{- $_ := set $site "providerPolicy" $policy }}
+{{- $attached := include "saw-users.secretNames" $scope | fromJsonArray }}
+{{- $credentials := list }}
+{{- range $binding := include "saw-users.credentialBindings" $scope | fromJsonArray }}
+{{- if has $binding.name $attached }}
+{{- range $type := $binding.providers }}
+{{- $credential := dict "secret" $binding.name "key" $binding.key "type" $type }}
+{{- if $binding.refresh }}{{- $_ := set $credential "refresh" "oauth2_refresh_token" }}{{- end }}
+{{- $credentials = append $credentials $credential }}
 {{- end }}
+{{- end }}
+{{- end }}
+{{- $_ := set $site "credentialBindings" $credentials }}
 {{ $values := dict "owner" $user.name "ownerSubject" $user.ownerSubject "registration" $user.registration "vaultPrefix" $user.vaultPrefix "installationID" $user.installationID "intentGeneration" $user.intentGeneration "site" $site "global" $.Values.global }}
 {{ include "saw-users.application" (dict "root" $ "user" $user "appName" (printf "saw-%s" $user.name) "wave" $.Values.syncWave.sandbox "path" "charts/saw-portal-container" "release" $user.name "values" (toYaml $values)) }}
 {{- else }}

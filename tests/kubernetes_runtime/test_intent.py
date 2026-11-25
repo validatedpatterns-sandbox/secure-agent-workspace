@@ -225,7 +225,7 @@ def test_helm_lifecycle_intent_round_trips_through_cli_and_controller(source, in
                                 buildNamespace=auto["buildNamespace"], approved={},
                                 intent=json.loads(original["data"]["intent.json"])))
     values = {"site": site, "owner": "alice", "ownerSubject": site["subject"], "installationID": bindings["ownerID"],
-              "registration": reg, "intentGeneration": 2, "vaultPrefix": "secret/data/hub/saw-alice/"+reg,
+              "registration": reg, "intentGeneration": 2, "vaultPrefix": "secret/data/hub/saw-alice",
               "global": {"repoURL":"https://example.test/repo", "targetRevision":"test",
                          "clusterDomain":"cluster.example.test", "vpArgoNamespace":"vp-gitops"}}
     rendered = subprocess.run(["helm","template","alice",str(root/"charts/saw-portal-container"),

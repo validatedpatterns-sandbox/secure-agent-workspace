@@ -5,6 +5,7 @@ installation binding. Callers own authentication, credential storage, reads and
 resource application. This module never discovers or changes cluster state.
 """
 import hashlib
+import ipaddress
 import json
 import re
 import urllib.parse
@@ -18,9 +19,9 @@ class WorkspaceError(ValueError):
 SAFE_FAILURE_REASONS = frozenset({
     "ProfileRejected", "InvalidPlan", "PlacementRejected", "IdentityConflict",
     "InvalidIntent", "StaleIntent", "ReconcilerStateRejected", "GatewayMismatch",
-    "ProviderProfileMismatch", "WorkspaceRejected", "ProviderRejected",
+    "ProviderProfileMismatch", "ProviderRefreshFailed", "WorkspaceRejected", "ProviderRejected",
     "SandboxRejected", "SandboxStateMismatch", "SandboxDrift", "CoreRejected",
-    "CoreFailure",
+    "CoreFailure", "ReenrollRequired",
 })
 SAFE_RPC_CODES = frozenset({
     "NOT_FOUND", "ALREADY_EXISTS", "UNAVAILABLE", "DEADLINE_EXCEEDED", "ABORTED",
@@ -35,6 +36,13 @@ def enabled_catalog_sandboxes(profile):
             for sandbox in workspace.get("sandboxes", []):
                 if sandbox.get("enabled"):
                     yield workspace["name"], sandbox
+
+
+def validate_model_audit(site, lifecycle, profile):
+    """Reject mutable models without a receipt-backed gate before enrollment."""
+    if (lifecycle and site.get("auditReceipts") is not True
+            and any(sb.get("modelInput") for _, sb in enabled_catalog_sandboxes(profile))):
+        raise WorkspaceError("model selection requires auditReceipts=true")
 
 
 def sandbox_targets(user, registration, profile, *, model_lifecycle=False):
@@ -82,24 +90,40 @@ def public_model_inputs(profile, secrets):
     return values
 
 
-def approved_endpoint(profile, secrets, boundary):
+CUSTOM_INFERENCE_URL = re.compile(r"https://[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::443)?(?:/[A-Za-z0-9_-]+)*/v1")
+
+
+def custom_inference_url(endpoint):
+    """The workspace's own OpenAI-compatible base URL: HTTPS, a DNS name, port 443, ending /v1.
+
+    Which host may receive the API key is not decided here: the custom-inference
+    governance profile names it, and the runtime controller refuses a workspace
+    whose URL host is not that profile's only endpoint (ProviderProfileMismatch).
+    """
+    if not isinstance(endpoint, str) or not CUSTOM_INFERENCE_URL.fullmatch(endpoint):
+        raise WorkspaceError("custom inference needs an HTTPS base URL ending in /v1")
+    try:
+        ipaddress.ip_address(urllib.parse.urlsplit(endpoint).hostname)
+    except ValueError:
+        return endpoint
+    raise WorkspaceError("custom inference needs an HTTPS base URL ending in /v1, with a DNS name")
+
+
+def approved_endpoint(profile, secrets):
+    """The endpoint URL the owner entered (public metadata), if the profile takes one."""
     refs = {sb["endpointInput"] for _, sb in enabled_catalog_sandboxes(profile) if sb.get("endpointInput")}
     if not refs:
         return None
-    endpoint = boundary.get("inferenceBaseURL", "")
-    if not isinstance(endpoint, str) or not re.fullmatch(
-            r"https://[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::443)?(?:/[A-Za-z0-9_-]+)*/v1", endpoint):
-        raise WorkspaceError("site has no approved custom inference endpoint")
-    if boundary.get("allowHosts") != [urllib.parse.urlsplit(endpoint).hostname]:
-        raise WorkspaceError("custom inference requires a dedicated broker host")
+    endpoints = set()
     for ref in refs:
         secret, key = ref.split(".", 1)
         fields = profile["secrets"][secret]["fields"]
         if not any(f["key"] == key and f["kind"] == "url" for f in fields):
             raise WorkspaceError("endpoint input must be public URL metadata")
-        if secrets.get(secret, {}).get(key, "").rstrip("/") != endpoint:
-            raise WorkspaceError("endpoint differs from the site-approved custom inference URL")
-    return endpoint
+        endpoints.add(secrets.get(secret, {}).get(key, "").rstrip("/"))
+    if len(endpoints) != 1:
+        raise WorkspaceError("custom inference endpoint inputs disagree")
+    return custom_inference_url(endpoints.pop())
 
 
 def enrolled_site(site, ws, read):
@@ -123,17 +147,18 @@ def enrolled_site(site, ws, read):
         if data:
             raise WorkspaceError("cannot disable enrollment of a bound workspace; use desiredState")
         return fresh
-    for key, kind in (("reference", dict), ("relay", dict), ("revision", str),
-                      ("image", str), ("buildNamespace", str)):
+    auto = a.get("autoApprove") is True
+    for key, kind in ((() if auto else (("reference", dict),)) + (("relay", dict), ("revision", str),
+                      ("image", str), ("buildNamespace", str))):
         if not isinstance(a.get(key), kind) or not a[key]:
             raise WorkspaceError(f"container site for {ws['name']} requires automaticEnrollment.{key}")
     if not data:
         return fresh
     bound=json.loads(data["binding.json"])
-    if set(bound)!={"registration","intent","approved","gatewayCA"} or bound["registration"]!=reg or set(bound["approved"])!=set(a["reference"]):
+    if set(bound)!={"registration","intent","approved","gatewayCA"} or bound["registration"]!=reg or (not auto and set(bound["approved"])!=set(a["reference"])):
         raise WorkspaceError("invalid published enrollment")
     intent=bound["intent"]
-    if intent["bindings"]["ownerID"]!=install or intent["bindings"]["namespace"]!="saw-"+ws["name"] or intent["bindings"]["ownerSubject"]!=ws["ownerSubject"] or intent["profileRef"]["sha256"]!=site.get("selectedDigest",a.get("profileSHA256")):
+    if intent["bindings"]["ownerID"]!=install or intent["bindings"]["namespace"]!="saw-"+ws["name"] or intent["bindings"]["ownerSubject"]!=ws["ownerSubject"] or (not auto and intent["profileRef"]["sha256"]!=site.get("selectedDigest",a.get("profileSHA256"))):
         raise WorkspaceError("published intent does not belong to this workspace")
     subjects = {target["subjectMap"]:publication(target["subjectMap"]).get("subject", "")
                 for target in site.get("targets",{}).values() if target["ui"]}
@@ -204,7 +229,7 @@ def project_workspace(workspace, defaults, site, catalog, read=None, previous=No
         # Inputs include operator configuration and immutable API publications.
         # Do not include arbitrary values (especially JSON bodies) in diagnostics.
         detail = f"missing {exc.args[0]}" if isinstance(exc, KeyError) and exc.args[0] in {
-            "subject", "registration", "installationID", "reference", "allowHosts", "bindings",
+            "subject", "registration", "installationID", "reference", "bindings",
             "binding.json", "profileRef", "sha256", "initialModelInputs"} else "invalid site or publication"
         raise WorkspaceError(f"workspace {workspace.get('name', '?')}: {detail}") from None
 
@@ -241,15 +266,31 @@ def _project_workspace(workspace, defaults, site, catalog, read=None):
     validate_runtime_placement(mode, site)
     automatic = site.get("automaticEnrollment", {})
     selected, *extra = ws.get("profiles", []) or [None]
-    foundation = automatic.get("enabled") is False
+    foundation = automatic.get("enabled") is False or automatic.get("autoApprove") is True
     if extra or selected not in catalog or not foundation and selected not in automatic.get("approvedProfiles", {}):
         raise WorkspaceError("container requires one approved BOM profile")
     if not ws.get("registration") or not ws.get("installationID"):
         raise WorkspaceError("container requires a registration and installation identity")
+    # As the portal does at registration: a dedicated-endpoint profile (such as
+    # custom-inference) has no web-search credential unless the entry asks for it.
+    if "dedicatedEndpointSecrets" in catalog[selected] and "webSearch" not in ws:
+        ws["webSearch"] = {"enabled": False}
+    # The runtime compiles the model from public inputs, never from the Secret.
+    # The portal reads it from the form; a static entry must name it.
+    given = ws.get("initialModelInputs") if ws.get("lifecycleVersion") == 1 else ws.get("modelInputs")
+    for _, sandbox in enabled_catalog_sandboxes(catalog[selected]):
+        key = sandbox.get("modelInput")
+        if not key:
+            continue
+        secret, field = key.split(".", 1)
+        definition = next((f for f in catalog[selected]["secrets"][secret]["fields"] if f["key"] == field), {})
+        if definition.get("required") and not definition.get("default") and not (given or {}).get(key):
+            raise WorkspaceError(f"{ws['name']}: set modelInputs.{key} (the model this profile requires)")
     overrides = site.get("profileImageOverrides", {}).get(selected, {})
     if overrides:
         ws["imageOverrides"] = overrides
     managed = ws.get("lifecycleVersion") == 1
+    validate_model_audit(site, managed, catalog[selected])
     site = {**site,
             "targets": sandbox_targets(ws["name"], ws["registration"], catalog[selected],
                                        model_lifecycle=managed),
@@ -259,12 +300,19 @@ def _project_workspace(workspace, defaults, site, catalog, read=None):
         target["image"] = overrides.get(target["sandbox"], target["image"])
     boundary = site.get("profileBoundaries", {}).get(selected)
     if boundary:
-        site = {**site, "providerAllowHosts": boundary["allowHosts"],
-                "automaticEnrollment": {**automatic, "reference": boundary["reference"]}}
-    if ws.get("customInferenceURL"):
-        if not boundary or boundary.get("inferenceBaseURL") != ws["customInferenceURL"]:
-            raise WorkspaceError("endpoint differs from the site-approved custom inference URL")
-        site["customInferenceURL"] = ws["customInferenceURL"]
+        # autoApprove sites have no operator-reviewed reference to pin.
+        reviewed = {"reference": boundary["reference"]} if "reference" in boundary or \
+            automatic.get("autoApprove") is not True else {}
+        site = {**site, "automaticEnrollment": {**automatic, **reviewed}}
+    # A profile with an endpoint input (custom-inference) uses the owner's own
+    # URL: the portal form value, or customInferenceURL in a static entry. The
+    # custom-inference governance profile approves its host at run time.
+    if any(sb.get("endpointInput") for _, sb in enabled_catalog_sandboxes(catalog[selected])):
+        if not ws.get("customInferenceURL"):
+            raise WorkspaceError(f"{ws['name']}: set customInferenceURL (the inference server's base URL)")
+        site["customInferenceURL"] = custom_inference_url(ws["customInferenceURL"])
+    elif ws.get("customInferenceURL"):
+        raise WorkspaceError("only a profile with an endpoint input takes customInferenceURL")
     if managed:
         site.update(lifecycleVersion=1, modelInputs=ws["initialModelInputs"],
                     requestedModels=ws.get("modelInputs", {}), desiredState=ws["desiredState"],

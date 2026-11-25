@@ -1,0 +1,35 @@
+{{- if not .Values.exporters }}{{ fail "at least one exporter is required" }}{{ end }}
+# Managed by the Red Hat build of OpenTelemetry operator. Best-effort: OpenShell
+# drops events it cannot export, and nothing waits for this collector.
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: {{ .Values.name }}
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  mode: deployment
+  replicas: {{ .Values.replicas }}
+  resources: {{ .Values.resources | toJson }}
+  config:
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+    processors:
+      batch: {}
+    exporters: {{ .Values.exporters | toJson }}
+    service:
+      pipelines:
+        # OCSF events from gateways and supervisors.
+        logs:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: {{ keys .Values.exporters | sortAlpha | toJson }}
+        # Agent traces from the OpenShell agent trace relay, tagged
+        # openshell.telemetry.source=agent and openshell.sandbox.id.
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: {{ keys .Values.exporters | sortAlpha | toJson }}

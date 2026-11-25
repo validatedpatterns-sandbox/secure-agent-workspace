@@ -6,6 +6,8 @@ portal:
   containerSites:
     alice:
       modelLifecycle: true
+      # Most chart tests cover signed receipts; tests of the default remove this.
+      auditReceipts: true
       governanceNamespace: saw-builds
       subject: 11111111-1111-4111-8111-111111111111
       stack:
@@ -19,6 +21,38 @@ portal:
             serverSans:
             - '@OWNER@-gateway.@RUNTIME@.svc'
             - '@OWNER@-gateway.@RUNTIME@.svc.cluster.local'
+            network:
+              bootstrapEgress:
+              - to:
+                - ipBlock:
+                    cidr: 192.0.2.10/32
+                - ipBlock:
+                    cidr: 192.0.2.10/32
+                - ipBlock:
+                    cidr: 192.0.2.10/32
+                - ipBlock:
+                    cidr: 192.0.2.10/32
+                ports:
+                - protocol: TCP
+                  port: 443
+                - protocol: TCP
+                  port: 6443
+              - to:
+                - namespaceSelector:
+                    matchLabels:
+                      kubernetes.io/metadata.name: openshift-dns
+                  podSelector:
+                    matchLabels:
+                      dns.operator.openshift.io/daemonset-dns: default
+                ports:
+                - protocol: UDP
+                  port: 53
+                - protocol: UDP
+                  port: 5353
+                - protocol: TCP
+                  port: 53
+                - protocol: TCP
+                  port: 5353
         policy:
           revision: '1111111111111111111111111111111111111111'
           values:
@@ -80,97 +114,6 @@ portal:
                 - portNumber:
                     protocol: TCP
                     port: 5500
-              - name: credential-proxy
-                to:
-                - pods:
-                    namespaceSelector:
-                      matchLabels:
-                        kubernetes.io/metadata.name: '@TRUSTED@'
-                    podSelector:
-                      matchLabels:
-                        app.kubernetes.io/instance: '@OWNER@'
-                        openshell.pattern/role: credential-proxy
-                ports:
-                - portNumber:
-                    protocol: TCP
-                    port: 3128
-        proxy:
-          revision: '1111111111111111111111111111111111111111'
-          values:
-            enabled: true
-            ownerID: '@INSTALLATION@'
-            gateway: '@OWNER@'
-            targetNamespace: '@RUNTIME@'
-            policyConfigMap: '@OWNER@-proxy-policy'
-            policyDigest: 3601c933b11c60e7d693c4635ed14c626e32c29c9a9e8920a144f852dcba184d
-            credentialSecretNames:
-            - inference
-            network:
-              bootstrapEgress:
-              - to:
-                - ipBlock:
-                    cidr: 192.0.2.10/32
-                - ipBlock:
-                    cidr: 192.0.2.10/32
-                - ipBlock:
-                    cidr: 192.0.2.10/32
-                - ipBlock:
-                    cidr: 192.0.2.10/32
-                ports:
-                - protocol: TCP
-                  port: 443
-                - protocol: TCP
-                  port: 6443
-              - to:
-                - namespaceSelector:
-                    matchLabels:
-                      kubernetes.io/metadata.name: openshift-dns
-                  podSelector:
-                    matchLabels:
-                      dns.operator.openshift.io/daemonset-dns: default
-                ports:
-                - protocol: UDP
-                  port: 53
-                - protocol: UDP
-                  port: 5353
-                - protocol: TCP
-                  port: 53
-                - protocol: TCP
-                  port: 5353
-              proxyEgress:
-              - to:
-                - namespaceSelector:
-                    matchLabels:
-                      kubernetes.io/metadata.name: openshift-dns
-                  podSelector:
-                    matchLabels:
-                      dns.operator.openshift.io/daemonset-dns: default
-                ports:
-                - protocol: UDP
-                  port: 53
-                - protocol: UDP
-                  port: 5353
-                - protocol: TCP
-                  port: 53
-                - protocol: TCP
-                  port: 5353
-              - to:
-                - ipBlock:
-                    cidr: 0.0.0.0/0
-                    except:
-                    - 0.0.0.0/8
-                    - 10.0.0.0/8
-                    - 100.64.0.0/10
-                    - 127.0.0.0/8
-                    - 169.254.0.0/16
-                    - 172.16.0.0/12
-                    - 192.168.0.0/16
-                    - 224.0.0.0/4
-                    - 240.0.0.0/4
-                    - 192.0.2.0/24
-                ports:
-                - protocol: TCP
-                  port: 443
         gateway:
           revision: '1111111111111111111111111111111111111111'
           values:
@@ -189,9 +132,6 @@ portal:
                 className: block
                 gatewaySize: 1Gi
                 workspaceSize: 1Gi
-              proxy:
-                url: http://@OWNER@-credential-proxy.@TRUSTED@.svc:3128
-                caConfigMap: '@OWNER@-proxy-ca'
               governance:
                 endpoint: http://governance-interceptor.saw-builds.svc:18081
               network:
@@ -256,17 +196,6 @@ portal:
                   ports:
                   - protocol: TCP
                     port: 18081
-                - to:
-                  - namespaceSelector:
-                      matchLabels:
-                        kubernetes.io/metadata.name: '@TRUSTED@'
-                    podSelector:
-                      matchLabels:
-                        app.kubernetes.io/instance: '@OWNER@'
-                        openshell.pattern/role: credential-proxy
-                  ports:
-                  - protocol: TCP
-                    port: 3128
             oidc:
               issuerUrl: https://openshell-keycloak-ingress-saw-keycloak.apps.@DOMAIN@/realms/openshell
             route:
@@ -327,10 +256,6 @@ portal:
           governanceProfiles:
             uid: 22222222-2222-4222-8222-222222222222
             sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-          proxy: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-          proxyNetwork: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-          proxyPolicy: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-          publicCA: equals independent trusted proxy public CA
         relay:
           keycloakNamespace: saw-keycloak
           keycloakProvisionerSecret: saw-relay-provisioner
@@ -388,17 +313,7 @@ portal:
           relayID: a8cb6cbd0eb62f31
           subjectMap: saw-portal-relay-subject
       selectedDigest: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-      providerAllowHosts:
-      - api.openai.com
-      providerPolicy:
-        allowHosts:
-        - api.openai.com
-        bindings:
-        - secret: inference
-          key: api_key
-          providers:
-          - openai
-        markerPrefix: saw-cred
-        profiles:
-          openai:
-          - api.openai.com
+      credentialBindings:
+      - secret: inference
+        key: api_key
+        type: openai

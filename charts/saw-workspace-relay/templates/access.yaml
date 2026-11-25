@@ -34,6 +34,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata: {name: {{ $n }}}
 automountServiceAccountToken: false
+{{- if $v.imageBuildNamespace }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -42,6 +43,7 @@ roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: system:i
 subjects:
 - {kind: ServiceAccount, name: {{ $n }}, namespace: {{ $ui }}}
 - {kind: ServiceAccount, name: {{ $n }}, namespace: {{ $v.trustedNamespace }}}
+{{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -90,7 +92,7 @@ spec:
   backoffLimit: 2
   activeDeadlineSeconds: 510
   template:
-    metadata: {labels: {app: {{ $n }}, role: bind}}
+    metadata: {labels: {app: {{ $n }}, role: bind, saw.redhat.com/kubernetes-api: allow}}
     spec:
       serviceAccountName: {{ $n }}
       automountServiceAccountToken: false

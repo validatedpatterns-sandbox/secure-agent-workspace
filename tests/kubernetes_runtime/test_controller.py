@@ -263,6 +263,14 @@ def test_boundary_failure_is_sanitized_and_prevents_core(setup):
     assert not calls and "secret-token" not in canonical(api.objects[c.scope.status_name])
 
 
+def test_proxy_era_approval_asks_for_reenrollment(setup):
+    from saw_kubernetes.boundary import BoundaryError
+    c, api, _, _, calls, _ = setup
+    c.verify_boundary = lambda _: (_ for _ in ()).throw(BoundaryError("ReenrollRequired"))
+    assert c.reconcile_once()["reason"] == "ReenrollRequired"
+    assert not calls
+
+
 def test_ambiguous_core_failure_retains_intent_and_does_not_publish_exception(setup):
     c, api, *_ = setup
     c.core_pass = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("private-request-body"))

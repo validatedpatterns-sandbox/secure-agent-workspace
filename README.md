@@ -1,602 +1,375 @@
 # Secure Agent Workspace
 
-Deploy isolated, per-user AI agent sandboxes on OpenShift with OIDC authentication and policy-controlled access. VM is the default backend; container workspaces use the stock OpenShell Kubernetes driver.
+Secure Agent Workspace (SAW) gives each user an isolated AI agent workspace on
+OpenShift. Every workspace runs NVIDIA OpenShell with an OpenClaw or NemoClaw
+agent. Keycloak handles sign-in, only the owner can reach a workspace, and
+provider keys stay outside the agent.
 
-For container mode, see [architecture and data flows](docs/container-workspaces.md)
-and [installation, inputs and enablement](docs/container-installation.md).
-The VM procedures below remain the default. Container Make installations use
-the shared GitOps services described in their installation guide.
+A workspace runs on one of three backends:
 
-**Existing SAW deployments using OpenShell older than 0.1.6 must deploy SAW
-fresh.** In-place upgrades from those versions are not supported. Back up the
-workspace files you need before retiring the old deployment. See the
-[OpenShell 0.1.6 release record](docs/openshell-016-release.md) for deployment
-guidance and validation results.
-
-## Upgrade: stage network isolation per user
-
-This release adds default-deny NetworkPolicy to each SAW. The `openshell-saw`
-chart enables it by default and requires the target cluster's pod and Service
-CIDRs plus the Kubernetes API Service IP and exact EndpointSlice backend IPs
-and ports. A direct Helm render fails until these values are supplied.
-`make saw-create` discovers them before changing the cluster.
-
-The GitOps `saw-users` chart stages NetworkPolicy **off** for existing and new
-users. Before enabling one user, audit its in-cluster inference, MCP, and
-package-mirror destinations; add narrow `networkPolicy.extraEgress` rules; run
-`make prereqs-check` and paste its live topology snippet under
-`defaults.openshellSaw` in `overrides/saw-users.yaml`; then set that user's
-`values.networkPolicy.enabled: true` and sync it. Test that user before
-continuing to the next. Re-run the check after API endpoint rotation. Argo CD
-cannot discover cluster topology while rendering. See the
-[rollout procedure](docs/deployment-guide.md#networkpolicy-upgrade-procedure).
-
-## Table of Contents
-
-- [Secure Agent Workspace](#secure-agent-workspace)
-  - [Upgrade: stage network isolation per user](#upgrade-stage-network-isolation-per-user)
-  - [Table of Contents](#table-of-contents)
-  - [Overview](#overview)
-  - [Detailed description](#detailed-description)
-    - [Architecture diagrams](#architecture-diagrams)
-      - [Reference Architecture](#reference-architecture)
-      - [GitOps Policy Model](#gitops-policy-model)
-      - [Storage Layout](#storage-layout)
-      - [Implementation Overview](#implementation-overview)
-  - [Requirements](#requirements)
-    - [Minimum hardware requirements](#minimum-hardware-requirements)
-    - [Minimum software requirements](#minimum-software-requirements)
-    - [Required user permissions](#required-user-permissions)
-  - [Deploy](#deploy)
-    - [Prerequisites](#prerequisites)
-    - [Installation](#installation)
-      - [Option A: Validated Pattern (automated, GitOps)](#option-a-validated-pattern-automated-gitops)
-      - [Option B: Quickstart (manual, step-by-step)](#option-b-quickstart-manual-step-by-step)
-      - [Supported inference providers](#supported-inference-providers)
-      - [Custom inference provider](#custom-inference-provider)
-      - [Governance with APF (optional)](#governance-with-apf-optional)
-    - [Validating the deployment](#validating-the-deployment)
-    - [Delete](#delete)
-  - [Repository structure](#repository-structure)
-  - [References](#references)
-  - [Technical details](#technical-details)
-    - [Security model](#security-model)
-    - [Keycloak production and demo users](#keycloak-production-and-demo-users)
-    - [Web UI sign-in (redirect URIs)](#web-ui-sign-in-redirect-uris)
-    - [Namespace modes](#namespace-modes)
-    - [OIDC issuer resolution](#oidc-issuer-resolution)
-  - [Tags](#tags)
-
-## Overview
-
-Secure Agent Workspace provisions dedicated KubeVirt virtual machines for each user, running NVIDIA OpenShell with NemoClaw/OpenClaw AI agents. Each sandbox is isolated at the VM level, authenticated via OIDC, and connected to the user's chosen inference provider. The platform supports both a GitOps-driven Validated Pattern deployment and a manual quickstart flow.
-
-## Detailed description
-
-Organizations adopting AI coding and knowledge agents need strong isolation guarantees: each user's agent must run in its own boundary, with auditable access to enterprise systems, controlled network egress, and centralized identity management. Traditional container-based isolation is insufficient when agents can execute arbitrary code and tool calls.
-
-This quickstart implements NVIDIA's [Secure Agent Workspace reference architecture](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html) on Red Hat OpenShift. Each user gets a dedicated Fedora 44 VM running the OpenShell gateway and an AI agent (OpenClaw, Hermes, or Deep Agents Code). The VM provides process-level and network-level isolation. OIDC authentication (via Red Hat Build of Keycloak) ensures only the sandbox owner can access their workspace. Provider keys flow through Vault and External Secrets into a per-namespace credential proxy (the reference design's external credential placement); the VM receives nonsecret markers and metadata by default. Optional direct mode (`credentialProxy.enabled: false`) mounts full Secrets in the VM. See [Credential isolation](docs/credential-isolation.md).
-
-The system supports multiple inference providers (Gemini, Anthropic, OpenAI, NVIDIA Build, OpenRouter, Ollama, or custom endpoints) and optional web search integration (Tavily, Brave). A bootc-based golden image pipeline pre-bakes all packages into a container image that CDI imports directly, enabling fast VM provisioning without cloud-init package installation.
-
-For a self-hosted OpenAI-compatible endpoint (vLLM, Ollama, ...), see [Custom inference provider](#custom-inference-provider).
-
-### Architecture diagrams
-
-The first diagram shows an OpenShift Virtualization and APF governance reference
-architecture. It shows conceptual Phase I and Phase II workspaces. APF is an
-optional governance engine in this repository; the OpenShell governance
-interceptor is the default. The two diagrams that follow also illustrate the
-[NVIDIA Secure Agent Workspace OpenShift Virtualization reference design](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html).
-
-#### OpenShift Virtualization and APF reference architecture
-
-![Reference architecture with an endpoint, Phase I and Phase II workspace VMs, APF governance, and corporate services](docs/images/openshift-reference-shape.png)
-
-#### Reference design: GitOps policy model
-
-![GitOps Policy Model — End-to-End Policy Flow](docs/images/gitops-policy-model.png)
-
-#### Reference design: storage layout
-
-![NFS storage layout for policy bundles and workspace persistence](docs/images/nfs-storage-layout.png)
-
-#### Implementation Overview
-
-```
-                     OpenShift Cluster
-┌──────────────────────────────────────────────────────────┐
-│                                                          │
-│  Operators (deployed by Validated Pattern or manually):  │
-│  ┌──────────────────┐  ┌──────────────────┐              │
-│  │ OpenShift        │  │ Red Hat Build    │              │
-│  │ Virtualization   │  │ of Keycloak      │              │
-│  └──────────────────┘  └──────────────────┘              │
-│                                                          │
-│  Infrastructure (ArgoCD-managed):                        │
-│  ┌──────────┐ ┌──────────┐ ┌──────────────────────────┐  │
-│  │ Vault    │ │ ESO      │ │ Keycloak (OIDC provider) │  │
-│  └──────────┘ └──────────┘ └──────────────────────────┘  │
-│       │                              │                   │
-│       │ secrets sync                 │ JWKS validation   │
-│       ▼                              ▼                   │
-│  ┌──────────────────────────────────────────┐            │
-│  │ Golden Image (bootc)                     │            │
-│  │ Fedora 44 + OpenShell + podman + nodejs  │            │
-│  │ Built via BuildConfig → image registry   │            │
-│  └─────────────────┬────────────────────────┘            │
-│                    │ CDI import per user                 │
-│       ┌────────────┼────────────┐                        │
-│       ▼            ▼            ▼                        │
-│  ┌─────────┐ ┌─────────┐ ┌─────────┐                     │
-│  │ alice   │ │ bob     │ │ carol   │  Per-user VMs       │
-│  │ sandbox │ │ sandbox │ │ sandbox │  with gateway +     │
-│  │  VM     │ │  VM     │ │  VM     │  agent + routes     │
-│  └─────────┘ └─────────┘ └─────────┘                     │
-│       │            │            │                        │
-│       └────────────┼────────────┘                        │
-│                    │                                     │
-│  Routes:  TLS passthrough (gRPC) + edge (dashboard)      │
-└──────────────────────────────────────────────────────────┘
-        │
-        ▼
-   User (openshell CLI / browser)
-```
-
-| Component | Technology | Purpose |
+| Backend | Runs as | Use it when |
 |---|---|---|
-| VM isolation | OpenShift Virtualization (KubeVirt) | One VM per user with process and network isolation |
-| Identity | Red Hat Build of Keycloak (RHBK) | OIDC authentication, user management, SSO |
-| Agent runtime | NVIDIA OpenShell + OpenClaw/NemoClaw | AI coding and knowledge agents inside sandbox |
-| Gateway | OpenShell Gateway (gRPC over TLS) | Sandbox lifecycle, SSH proxy, inference routing |
-| Golden image | Bootc (Fedora 44) + CDI | Pre-baked VM image for fast provisioning |
-| Secrets | Vault + External Secrets Operator + credential proxy | Provider API keys stay outside the VM; SSH public keys grant guest access |
-| GitOps | ArgoCD (Validated Patterns) | Declarative cluster configuration |
-| Access control | Dashboard token + OIDC gateway validation | Per-user access via application-level tokens |
+| **VM** (default) | One OpenShift Virtualization VM per user | You want the strongest isolation and the most tested path |
+| **Container** | Pods in per-user namespaces, using the OpenShell Kubernetes driver | You don't have virtualization or want faster starts |
+| **Kata** | Container workspaces in OpenShift sandboxed containers | You want container workspaces with VM-backed pod isolation |
 
-## Requirements
-
-### Minimum hardware requirements
-
-| Resource | Per sandbox VM | Cluster overhead |
-|---|---|---|
-| CPU | 4 cores | 8 cores (operators, Keycloak, Vault) |
-| Memory | 8 GiB | 16 GiB |
-| Storage | 40 GiB (VM disk) | 50 GiB (golden image, registry) |
-
-### Minimum software requirements
-
-| Software | Version |
-|---|---|
-| Red Hat OpenShift | 4.22+ |
-| Cluster architecture | x86_64 or arm64 ([arm64 notes](docs/arm64.md)) |
-| Network plugin | OVN-Kubernetes (the OpenShift default), for each workspace's egress firewall; set `egress.enabled: false` otherwise |
-| OpenShift Virtualization operator | stable channel |
-| Red Hat Build of Keycloak operator | stable-v26 channel |
-| Helm CLI | 3.x |
-| oc CLI | matching cluster version |
-| openshell CLI | [a release from the gateway's release series](https://github.com/NVIDIA/OpenShell/releases) (0.1.x for this BOM) |
-| jq, curl, openssl | required by `make login` |
-| uv | required for local deployment commands and Python tests; uses the root `pyproject.toml` and `uv.lock` |
-
-### Required user permissions
-
-**Cluster admin** is required for the initial deployment (operator installation, namespace creation). After setup, end users interact only via the `openshell` CLI and their OIDC credentials — no OpenShift access needed.
-
-## Deploy
-
-### Prerequisites
-
-1. An OpenShift 4.22+ cluster with the required operators installed (see Requirements)
-2. `oc` CLI logged in with cluster-admin
-3. `helm` 3.x installed
-4. An API key for at least one inference provider (Gemini, Anthropic, OpenAI, NVIDIA, OpenRouter)
-5. The `openshell` CLI installed at the API version pinned by the gateway BOM
-   (`0.1.6` for the current `0.1.6-rhaiv.4` image;
-   [releases](https://github.com/NVIDIA/OpenShell/releases))
-
-Verify prerequisites:
-
-```bash
-make prereqs-check
-```
-
-### Installation
-
-Two deployment paths are available:
+This repository implements NVIDIA's
+[Secure Agent Workspace reference design](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html)
+as a Red Hat Validated Pattern.
 
 **Video walkthrough: from cluster installation to a working workspace**
 
-Follow the Validated Pattern installation, inspect the applications deployed by
-Argo CD, and create a Keycloak user. The walkthrough then provisions a workspace
-through Red Hat Developer Hub, compares the GitOps and manual quickstart paths,
-and configures a custom inference endpoint. Follow the steps below for the
-current commands, or see the [Developer Hub user guide](docs/rhdh-user-guide.md)
-for the portal flow and [Custom inference provider](#custom-inference-provider)
-for endpoint configuration.
-
 https://github.com/user-attachments/assets/6858c0b1-239a-4a6a-b0e4-5872796dcc32
 
-#### Option A: Validated Pattern (automated, GitOps)
+## Contents
 
-Run `./pattern.sh` from a host that can execute the Validated Patterns utility
-image natively. For a `linux/amd64` utility image, use an x86_64 Linux bastion
-with Podman and the target cluster's kubeconfig. An Apple Silicon host can
-manage the cluster with `oc` while the install command runs on that bastion.
+- [Secure Agent Workspace](#secure-agent-workspace)
+  - [Contents](#contents)
+  - [How it works](#how-it-works)
+  - [Requirements](#requirements)
+  - [Installation](#installation)
+    - [1. Fork and clone](#1-fork-and-clone)
+    - [2. Log in to the cluster](#2-log-in-to-the-cluster)
+    - [3. Prepare the cluster](#3-prepare-the-cluster)
+    - [4. Add your keys](#4-add-your-keys)
+    - [5. Deploy](#5-deploy)
+  - [Add a user](#add-a-user)
+    - [VM workspace](#vm-workspace)
+    - [Container workspace](#container-workspace)
+    - [Kata workspace](#kata-workspace)
+    - [Remove a user or start over](#remove-a-user-or-start-over)
+  - [Use your workspace](#use-your-workspace)
+  - [Inference providers](#inference-providers)
+    - [Supported inference providers](#supported-inference-providers)
+    - [Custom inference provider](#custom-inference-provider)
+  - [Governance with APF (optional)](#governance-with-apf-optional)
+  - [Quickstart without GitOps](#quickstart-without-gitops)
+  - [Uninstall](#uninstall)
+  - [Testing](#testing)
+  - [Security model](#security-model)
+  - [Keycloak production and demo users](#keycloak-production-and-demo-users)
+  - [Web UI sign-in (redirect URIs)](#web-ui-sign-in-redirect-uris)
+  - [Repository structure](#repository-structure)
+  - [References](#references)
+  - [Tags](#tags)
 
-Deploys the platform — operators, Vault, ESO, Keycloak, and secrets — via Argo CD. No workspace VM is created until you add a user in step 7 or request a workspace through the portal.
+## How it works
 
-On a fresh cluster, the Make target installs the Red Hat OpenShift GitOps
-Operator through OLM and waits for its deployment before creating the Pattern.
-It uses the channel and catalog from the framework's rendered configuration.
-This prevents a temporary default Argo CD instance from receiving a second
-root Application. Existing GitOps installations keep their operator configuration.
-The framework's normal sync and health checks run at the end.
-[OpenShift GitOps default-instance configuration](https://docs.redhat.com/en/documentation/red_hat_openshift_gitops/1.21/html/argo_cd_instance/setting-up-argocd-instance).
+![Reference architecture with an endpoint, Phase I and Phase II workspace VMs, APF governance, and corporate services](docs/images/openshift-reference-shape.png)
+
+Argo CD deploys the platform from your fork: operators, Vault, External
+Secrets, Keycloak, the governance service and the self-service portal. Each
+entry in `overrides/saw-users.yaml` becomes a workspace. Users can also create
+their own in Red Hat Developer Hub.
+
+| Component | Technology | Purpose |
+|---|---|---|
+| Isolation | OpenShift Virtualization, or pods (optionally Kata) | One boundary per user |
+| Identity | Red Hat Build of Keycloak | OIDC sign-in for the CLI and web UIs |
+| Agent runtime | NVIDIA OpenShell + OpenClaw / NemoClaw | Sandboxes, gateway, inference routing |
+| Secrets | Vault + External Secrets | Provider keys stay outside the sandbox |
+| Governance | OpenShell governance interceptor, or APF | Fail-closed approval of gateway operations |
+| GitOps | Argo CD (Validated Patterns) | Everything, including users, comes from Git |
+
+| Namespace | Contents |
+|---|---|
+| `saw-<name>` | The user's workspace: the gateway VM, or the container sandbox and gateway |
+| `saw-ctl-<id>`, `saw-ui-<id>` | Container workspaces only: controller and browser relay |
+| `saw-history-<id>` | Container workspaces with audit receipts only: signed audit history, kept after deletion |
+| `openshell-agents` | Golden VM image, image builds, governance service |
+| `saw-keycloak` | Keycloak |
+| `vp-gitops` | Argo CD applications, one set per user |
+
+More detail: [deployment guide](docs/deployment-guide.md),
+[container architecture](docs/container-workspaces.md),
+[GitOps policy model](docs/images/gitops-policy-model.png),
+[storage layout](docs/images/nfs-storage-layout.png).
+
+## Requirements
+
+| Resource | Per VM workspace | Platform |
+|---|---|---|
+| CPU | 4 cores | 8 cores |
+| Memory | 8 GiB | 16 GiB |
+| Storage | 40 GiB | 50 GiB |
+
+- OpenShift 4.22+ on x86_64 or arm64 ([arm64 notes](docs/arm64.md)), with
+  OVN-Kubernetes.
+- Cluster-admin for the install. End users only need their Keycloak account
+  and the `openshell` CLI.
+- On your machine: `oc`, `helm` 3.x, `jq`, `curl`, `openssl`, `uv`, Podman,
+  and the [`openshell` CLI](https://github.com/NVIDIA/OpenShell/releases)
+  0.1.x.
+- A key for at least one inference provider, or your own OpenAI-compatible
+  endpoint.
+- Kata workspaces also need OpenShift sandboxed containers
+  ([Kata guide](docs/kata-workspaces.md)).
+
+## Installation
+
+Run `./pattern.sh` from a host that can run the Validated Patterns utility
+image natively (for example, an x86_64 Linux machine with Podman).
+
+### 1. Fork and clone
+
+Argo CD deploys from your fork, because users and settings are files in it.
+[Fork the repository](https://github.com/validatedpatterns-sandbox/secure-agent-workspace/fork),
+then:
 
 ```bash
-# 1. Fork, then clone your fork. Argo CD deploys from the branch you push
-# (users, profiles, endpoints are files in this repository), so GitOps
-# changes need a remote you can write to:
-# https://github.com/validatedpatterns-sandbox/secure-agent-workspace/fork
-# (Cloning upstream directly also installs; then add users outside git,
-# see step 7.)
 git clone https://github.com/<your-github-user>/secure-agent-workspace.git
 cd secure-agent-workspace
-git remote add upstream https://github.com/validatedpatterns-sandbox/secure-agent-workspace.git
+```
 
-# 2. Log in to OpenShift with cluster-admin
-oc login --server=https://api.<cluster>:6443 -u <user>
+### 2. Log in to the cluster
 
-# 3. Generate SSH keys (used for on-demand SSH into the gateway VM)
-make ssh-key-generate
+```bash
+oc login --server=https://api.<cluster>:6443 -u <admin-user>
+```
 
-# 4. Configure secrets
-# make ssh-key-generate (step 3) already created ~/values-secret.yaml from the
-# template; edit it to add your inference and web-search keys. The Validated
-# Patterns framework reads ~/values-secret-secure-agent-workspace.yaml before ~/values-secret.yaml,
-# so the pattern-named file wins when both exist.
-# The default profile needs an NVIDIA key; the Brave Search key is optional
-# when web search is off (omit its whole entry from the secrets file):
-#   ~/.nvidia-api-key and ~/.brave-api-key (one line each, chmod 600)
+### 3. Prepare the cluster
 
-# 5. Copy pre-built images to the cluster (~5 min)
-# Mirrors images from ghcr.io/validatedpatterns-sandbox to the internal registry.
-# No build needed — images are pre-built by maintainers.
-make images-mirror
+```bash
+make saw-init
+```
 
-# 5b. Optional: check whether workspace VMs will trust Keycloak's
-# certificate. On a cluster with OpenShift's self-signed *.apps certificate the
-# pattern trusts the cluster's ingress CA by itself (saw-ingress-ca imperative
-# job); for an external issuer with a private CA (ISSUER=<url>) it prints the
-# oidc.caBundle snippet to add to overrides/saw-users.yaml.
-make check-oidc-ca
+This creates your SSH keys and `~/values-secret.yaml`, mirrors the VM image,
+and checks storage, the OIDC certificate and the container prerequisites. It
+is safe to run again.
 
-# 5c. Proxy mode defaults to the published, digest-pinned multi-arch GHCR image.
-# Only for a mirror or custom build, override in overrides/saw-users.yaml:
-# defaults:
-#   openshellSaw:
-#     credentialProxy:
-#       image: <repo>/saw-credential-proxy@sha256:<multi-arch-index-digest>
-# To disable globally: defaults.openshellSaw.credentialProxy.enabled: false
-# To disable for one user: users[].values.credentialProxy.enabled: false
-# Direct mode needs no proxy image and exposes keys to VM root; see
-# docs/credential-isolation.md for migrations and required key rotation.
-# See docs/container-images.md for published images, releases and mirroring.
+### 4. Add your keys
 
-# 6. Deploy the pattern (runs inside the VP utility container)
-# NOTE: The deploying branch must exist on your fork (origin): the Pattern
-# CR points Argo CD at it, and every later change (steps 7+) is a push there.
-# pattern.sh forwards TARGET_BRANCH and TARGET_ORIGIN (not TARGET_REVISION).
-#   export TARGET_BRANCH=main TARGET_ORIGIN=origin
+Put each key in a file, one line with no trailing newline:
+
+- `~/.nvidia-api-key`: used by the default profile.
+- `~/.brave-api-key`: optional, for web search.
+
+`~/values-secret.yaml` already points at these files.
+
+### 5. Deploy
+
+```bash
 ./pattern.sh make install
-# Without a Brave Search key, use this instead:
-# ./pattern.sh make install WEB_SEARCH_ENABLED=false
-# A user's webSearch.enabled in overrides/saw-users.yaml overrides the global switch.
+```
 
-# 7. Add your first user. The pattern ships overrides/saw-users.yaml with
-# `users: []`, so no workspace VM exists yet. Add an entry for the account
-# (a lowercase DNS label, at most 19 characters), push it to the deploying
-# branch, and create the Keycloak account; Argo CD then builds saw-<name>.
-#   users:
-#     - name: alice
-git add overrides/saw-users.yaml && git commit -m "Add alice" && git push
-make keycloak-add-users       # creates the account; password in a Secret
-oc -n vp-gitops get application saw-alice   # wait until Synced/Healthy
-make saw-logs OPENSHELL_SAW_NAME=alice      # until "apply: Done"
-# Without a fork: users create their own workspace in the self-service
-# portal (Red Hat Developer Hub, docs/rhdh-user-guide.md), or create one
-# outside GitOps with `make saw-create OPENSHELL_SAW_NAME=alice` (Option B).
+Without a Brave key, add `WEB_SEARCH_ENABLED=false`. Argo CD follows the branch
+you install from, so keep it pushed. To use a branch other than the one checked
+out, set `TARGET_BRANCH` and `TARGET_ORIGIN`.
 
-# 8. Authenticate and configure the CLI
-make login                    # Opens the browser for Keycloak sign-in
-export OPENSHELL_SAW_NAME=alice          # VM alice in namespace saw-alice
-make saw-configure
-openshell gateway login $OPENSHELL_SAW_NAME   # Authenticate CLI with gateway
+No SAW user workspace exists yet. Next, [add a user](#add-a-user).
 
-# 9. Verify
-# The first command lists the default workspace; the second lists cuda-dev.
+## Add a user
+
+Add the user to `overrides/saw-users.yaml`, then commit and push. Names are
+lowercase and at most 19 characters. Each user gets a Keycloak account and a
+workspace in namespace `saw-<name>`.
+
+### VM workspace
+
+1. Add the entry:
+
+   ```yaml
+   users:
+     - name: alice
+   ```
+
+2. Create the Keycloak account and push:
+
+   ```bash
+   make keycloak-add-users
+   git add overrides/saw-users.yaml
+   git commit -m "Add alice"
+   git push
+   ```
+
+3. Wait until the workspace is Synced and Healthy, then until the installer
+   inside the VM is done:
+
+   ```bash
+   oc -n vp-gitops get application saw-alice
+   make saw-logs OPENSHELL_SAW_NAME=alice     # wait for apply: Done
+   ```
+
+### Container workspace
+
+**Audit:** the gateway and each sandbox send OCSF security events (sign-ins,
+refused API calls, network decisions) to an OpenTelemetry collector the pattern
+installs in `openshell-agents`. Its log shows them
+(`oc -n openshell-agents logs deploy/saw-ocsf-collector`); point it at your
+SIEM in `charts/saw-telemetry/values.yaml`. The agent's tool gate also keeps a
+log of tool calls in the workspace. For signed, fail-closed receipts with
+history kept outside the workspace, see
+[Audit receipts](docs/container-installation.md#audit-receipts) (advanced).
+
+1. Create the Keycloak account and get its subject:
+
+   ```bash
+   make keycloak-add-users
+   make keycloak-user-info KC_USER=alice
+   ```
+
+2. Create `~/values-secret-alice.yaml` for the user's inference key. Secret
+   names must be unique within a file, even with different `vaultPrefixes`;
+   do not append a second `inference` entry to the installation's secrets file.
+
+   ```yaml
+   version: "2.0"
+   secrets:
+     - name: inference
+       vaultPrefixes:
+         - hub/saw-alice
+       fields:
+         - name: api_key
+           path: ~/.alice-inference-key
+   ```
+
+   If web search is enabled, also copy the `web-search` entry from
+   `values-secret.yaml.template` into this file with `vaultPrefixes:
+   [hub/saw-alice]`. Then load the user's file explicitly:
+
+   ```bash
+   VALUES_SECRET="$HOME/values-secret-alice.yaml" ./pattern.sh make load-secrets
+   ```
+
+   To share an existing key instead, add `hub/saw-alice` to that entry's
+   `vaultPrefixes` (for example, `[hub, hub/saw-alice]`) and load the installation's
+   secrets file. One entry writes the same fields to every listed prefix.
+
+3. Add the entry:
+
+   ```yaml
+   users:
+     - name: alice
+       ownerSubject: <subject from step 1>
+       profiles: [custom-inference]
+       vaultPrefix: secret/data/hub
+       customInferenceURL: https://<inference host>/v1
+       modelInputs:
+         inference.model: <model name>
+       values:
+         deployment: {mode: container}
+   ```
+
+4. Push and check:
+
+   ```bash
+   git add overrides/
+   git commit -m "Add alice (container)"
+   git push
+   oc -n vp-gitops get applications.argoproj.io | grep -E 'saw-alice|saw-c-'
+   ```
+
+New container workspaces wait for an operator review before they start. On a
+demo or development cluster, skip the review by listing
+`/overrides/saw-container-demo.yaml` after `/overrides/saw-container-defaults.yaml`.
+Never do this in production. For the review flow and all entry fields, see
+[Installing container workspaces](docs/container-installation.md#minimal-static-entries).
+
+### Kata workspace
+
+Kata workspaces are container workspaces that run in OpenShift sandboxed
+containers: the agent and its supervisor each get their own Kata VM.
+
+1. Turn on the Kata runtime for the cluster's workers. The pattern already
+   installs the OpenShift sandboxed containers operator; enabling the
+   `saw-kata` application reboots the workers once. See
+   [Prepare OpenShift sandboxed containers](docs/kata-workspaces.md#prepare-openshift-sandboxed-containers).
+   It also creates the `saw-kata` RuntimeClass the workspaces run in; on
+   demo clusters (`autoApprove`) users are bound to it automatically.
+2. Follow the [container workspace](#container-workspace) steps, with
+   `mode: kata`:
+
+   ```yaml
+       values:
+         deployment: {mode: kata}
+   ```
+
+### Remove a user or start over
+
+- **Remove:** delete the entry and push. Container and Kata workspaces are
+  removed with it (with audit receipts, their history namespace is kept). A VM entry only
+  removes its Argo CD applications and leaves the VM running. To delete the VM
+  too, first set `pruneOnRemove: true` on the entry and push, then remove the
+  entry.
+- **Start over (container and Kata):** remove the entry and push. Wait until
+  Argo CD has deleted `saw-<name>`, then add the entry back with a higher
+  `generation:` (for example `generation: 2`) and push.
+- **Self-service:** users can create and delete their own workspaces in Red Hat
+  Developer Hub. See the [Developer Hub user guide](docs/rhdh-user-guide.md)
+  and [self-service portal](docs/self-service-portal.md).
+
+## Use your workspace
+
+Sign in and connect the CLI to your workspace:
+
+```bash
+make login                               # opens the browser for Keycloak sign-in
+export OPENSHELL_SAW_NAME=alice
+make saw-configure                       # registers the gateway and signs you in
 openshell sandbox list
 openshell sandbox list --workspace cuda-dev
 ```
 
-`make logout` clears the local OIDC token and stored credentials for all
-registered OpenShell gateways. Set `OPENSHELL_SAW_NAME` to clear one gateway.
-Local cleanup still runs if the issuer cannot confirm token revocation;
-the command then reports a failure.
+To get the user's password for the sign-in, run
+`make keycloak-password KC_USER=alice`. It copies the password without printing
+it.
 
-Add or remove one `users:` entry in `overrides/saw-users.yaml` and push; Argo CD creates or removes `saw-<name>`.
-Each user's virtual machine is named after them, in namespace `saw-<name>` (Alice's machine is `alice` in `saw-alice`, not `openshell-saw`), the same layout as `make saw-create OPENSHELL_SAW_NAME=alice`.
-Set `OPENSHELL_SAW_NAME` to the user name; `SAW_NS` defaults to `saw-<name>`.
-Removing an entry deletes that user's Argo apps and leaves the VM running.
-To delete the namespace and the VM as well, first set `pruneOnRemove: true` on that user's entry and push, then remove the entry and push.
-Upgrading an install that still has the `openshell-saw` VM: see [Upgrading from the single-user layout](docs/deployment-guide.md#upgrading-from-the-single-user-layout).
-
-#### Option B: Quickstart (manual, step-by-step)
-
-Install operators from OperatorHub first, then deploy components manually. After the OpenShift Virtualization operator is installed, create a `HyperConverged` resource, or no node can run VMs; External Secrets is only needed for Option A. See [Quickstart notes](docs/deployment-guide.md#quickstart-notes). The images-mirror step mirrors CI-built GHCR images using the exact `IMAGE_TAG` (`latest` by default); see [Golden image tag](docs/deployment-guide.md#golden-image-tag). RHBK must be installed in the `saw-keycloak` namespace (step 3 sets `KEYCLOAK_NS`; point it at another namespace to reuse a Keycloak your cluster already has). Each sandbox gets its own namespace, `saw-<name>`.
+Open an agent:
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/validatedpatterns-sandbox/secure-agent-workspace.git
-cd secure-agent-workspace
-
-# 2. Log in to OpenShift with cluster-admin
-oc login --server=https://api.<cluster>:6443 -u <user>
-# Lab clusters with a self-signed API certificate: add --insecure-skip-tls-verify (disposable clusters only)
-
-# 3. Set the variables the following targets read (set them again in every new terminal)
-export KEYCLOAK_NS=saw-keycloak     # or the namespace of a Keycloak your cluster already runs
-export OPENSHELL_SAW_NAME=alice     # the user VM, deployed into namespace saw-alice
-
-# 4. Verify prerequisites after CNV and RHBK are installed
-make quickstart-prereqs-check
-# This check does not change the cluster. It can save ingress-ca.pem here.
-# make images-mirror enables the registry route.
-
-# 5. Generate SSH keys
-make ssh-key-generate
-
-# 6. Copy pre-built images to the cluster
-make images-mirror
-
-# 7. Deploy Keycloak (if one is already running in KEYCLOAK_NS, it is used;
-#    you are asked before the OpenShell realm is imported into it;
-#    set USE_EXISTING_KEYCLOAK=yes to import the realm without the prompt)
-#    A fresh deploy waits for both the server and the openshell-keycloak-realm
-#    import. The OIDC endpoints are needed by the next two commands.
-make keycloak-deploy
-
-# 8. Verify Keycloak (realm, openshell-cli client, roles)
-make keycloak-check
-make keycloak-issuer
-
-# 9. Deploy governance policy and interceptor
-make governance-deploy
-
-# 10. Authenticate
-make login                    # Opens the browser for Keycloak sign-in
-make whoami                   # Verify identity
-
-# 11. Create the user VM (deploys into namespace saw-$OPENSHELL_SAW_NAME)
-#     CREDENTIAL_PROXY_IMAGE is optional: a digest-pinned mirror/custom override.
-#     Keys come from files so they stay out of the shell history.
-#     WEB_SEARCH_API_KEY is optional. Without it (and without an existing
-#     web-search Secret), saw-create disables the Brave Search provider.
-#     The target asks "Press Enter to set owner to '<you>', ..."; press Enter.
-#     For another local Keycloak user, first run make keycloak-add-user KC_USER=<name>,
-#     then pass OWNER=<name>; the target resolves and verifies their user ID.
-#     For another owner with an external issuer, also pass a verified
-#     OWNER_SUBJECT=<keycloak-user-id>.
-# Optional, to enable web search:
-# read -r WEB_SEARCH_API_KEY < "$HOME/.brave-api-key"
-# export WEB_SEARCH_API_KEY
-read -r API_KEY < "$HOME/.nvidia-api-key"
-export API_KEY
-make saw-create \
-  PROVIDER=build \
-  MODEL=nvidia/nemotron-3.5-lightning-30b-a3b
-unset API_KEY WEB_SEARCH_API_KEY
+make sandbox-ui                                   # browser URLs for profile UIs
+SANDBOX_NAME=notebook make openclaw-tui           # terminal UI
+SANDBOX_NAME=notebook GUI_PORT=18790 make openclaw-gui
+SANDBOX_NAME=cuda-sandbox WORKSPACE=cuda-dev make nemoclaw-tui
+openshell sandbox exec -n notebook -- sh          # a shell in the sandbox
 ```
 
-> **OIDC issuer:** `make saw-create` stops before changing the cluster if it cannot find Keycloak in `KEYCLOAK_NS`. Set `OIDC_ISSUER` to use a different issuer. Set `OIDC_ISSUER=none` only when you intend to deploy without OIDC. This sets chart `oidc.enabled: false`, even when `global.clusterDomain` is set, and disables the dashboard and sandbox UI routes. An external issuer disables these routes by default. Set `DASHBOARD=true` with an external issuer only after you register its redirect URIs yourself.
+- **Signed out?** Tokens last up to 24 hours. Run
+  `openshell gateway login $OPENSHELL_SAW_NAME` again.
+- **Sign out:** run `make logout`.
+- **GUI tunnel password:** enter `gateway.auth.password` from the sandbox's
+  `/sandbox/.openclaw/openclaw.json`.
+- **Known limits:** web search does not work in the default `notebook` sandbox
+  ([details](docs/deployment-guide.md#web-search-in-the-default-sandbox)).
+  `openshell sandbox connect` shows nothing; use `exec`
+  ([details](docs/deployment-guide.md#shell-access)).
 
-Updating the create script does not fix a gateway deployed earlier without OIDC. Check its effective `oidc.enabled` and `oidc.issuerUrl` Helm values and the rendered gateway configuration. Reapply that workspace with the intended issuer, then verify owner access and rejection without credentials.
+**Video walkthrough: sandbox UIs and the OpenShell CLI**
 
-```bash
-# 12. Follow the in-VM installer (in another terminal)
-make saw-logs
+https://github.com/user-attachments/assets/d1e93830-ce8b-47c0-9b78-761971ee6067
 
-# 13. Check status
-make saw-list
-make status
+## Inference providers
 
-# 14. Wait for the installer to finish
-#     saw-status adds your public key to the VM's access Secret,
-#     then reaches the VM over SSH to read the installer status.
-make saw-status
-# Wait for "install" and "apply" to show "phase": "Done"
-
-# 15. Configure the openshell CLI: registers the gateway and signs you in
-#     through the browser (log in with a test account).
-make saw-configure
-#     openshell gateway login $OPENSHELL_SAW_NAME
-#     Only needed when a device-code sign-in (OPENSHELL_NO_BROWSER=1) did not
-#     finish, or the token expired.
-
-# 16. Verify sandboxes
-# sandbox list without --workspace only shows workspace "default"
-openshell sandbox list
-openshell sandbox list --workspace cuda-dev
-
-# 17. Launch TUI (pick one)
-# At OpenShell 0.1.x, cuda-sandbox runs plain OpenClaw (NemoClaw onboarding stops in its preflight checks).
-SANDBOX_NAME=cuda-sandbox \
-WORKSPACE=cuda-dev \
-make nemoclaw-tui # NemoClaw
-SANDBOX_NAME=notebook \
-make openclaw-tui # OpenClaw
-
-# 18. Launch GUI (pick one): make ...-gui port-forwards to the sandbox UI.
-#     make sandbox-ui lists owner-restricted routes for enabled profile UIs.
-make sandbox-ui
-SANDBOX_NAME=cuda-sandbox \
-WORKSPACE=cuda-dev \
-GUI_PORT=18789 \
-make nemoclaw-gui # NemoClaw
-SANDBOX_NAME=notebook \
-GUI_PORT=18790 \
-make openclaw-gui # OpenClaw
-```
-
-> **Token expiry:** A fresh OIDC access token can last up to 24 hours. The `openshell-cli` client and realm SSO Session Max are both set to 24 hours; session age can shorten the token, and the refresh token expires after 30 minutes without use. A chart import does not update an existing realm, so run `make keycloak-session-max` after upgrading. If the gateway token expires, run `openshell gateway login $OPENSHELL_SAW_NAME` to sign in again. Use `make saw-configure` if the gateway configuration is missing.
-
-> **Shell in a sandbox:** `openshell sandbox connect` attaches to the sandbox's main process, which in SAW sandboxes is `sleep infinity` with no terminal, so it shows nothing. Open a shell with `openshell sandbox exec -n notebook -- sh` (use `--workspace cuda-dev` for `cuda-sandbox`). See [Shell access](docs/deployment-guide.md#shell-access).
-
-> **Agent UI:** `make openclaw-gui` and `make nemoclaw-gui` port-forward to the sandbox UI. `make saw-create` now also gives each enabled profile UI its own owner-restricted Route when it uses local Keycloak. The `<name>-dashboard` Route does not reach the sandbox UI on OpenShell 0.1.x. See [OpenClaw UI and the dashboard Route](docs/deployment-guide.md#openclaw-ui-and-the-dashboard-route). Web search and web fetch do not work in the default `notebook` sandbox; see [Web search in the default sandbox](docs/deployment-guide.md#web-search-in-the-default-sandbox).
-
-You can set `OPENSHELL_SAW_NAME` once via `export` and all `saw-*` targets will use it automatically. The sandbox namespace defaults to `saw-$OPENSHELL_SAW_NAME`; set `SAW_NS` if it differs (the pattern's default sandbox is `alice` in `saw-alice`).
-
-> **Sandbox name limit:** `OPENSHELL_SAW_NAME` must be **19 characters or fewer**. OpenShell rejects longer names with "name exceeds maximum length". The Helm chart and `make saw-create` will both fail fast with a clear error if this limit is exceeded.
-
-### Make target migration
-
-The old names remain as aliases for one release. Each alias prints its
-replacement. Use `make help` to see all commands.
-
-| Previous target | Current target |
-|---|---|
-| `check-prereqs` | `prereqs-check` |
-| `generate-keys` | `ssh-key-generate` |
-| `build-nemoclaw` | `sandbox-build` |
-| `build-nemoclaw-cli` | `cli-build` |
-| `build-gateway-podman` | `gateway-build-podman` |
-| `build-gateway-docker` | `gateway-build-docker` |
-| `build-governance-interceptor` | `governance-interceptor-build` |
-| `build-governance-interceptor-local` | `governance-interceptor-build-local` |
-| `copy-images` | `images-mirror` |
-| `keycloak` | `keycloak-deploy` |
-| `delete-keycloak` | `keycloak-delete` |
-| `delete-all` | `quickstart-delete` |
-| `openshell-saw-create` | `saw-create` |
-| `openshell-saw-configure-gateway` | `saw-configure` |
-| `openshell-saw-list` | `saw-list` |
-| `openshell-saw-logs` | `saw-logs` |
-| `openshell-saw-status` | `saw-status` |
-| `openshell-saw-vm-ssh` | `saw-vm-ssh` |
-| `openshell-saw-restart` | `saw-restart` |
-| `openshell-saw-ssh` | `saw-ssh` |
-| `openshell-saw-tui` | `saw-tui` |
-| `openshell-saw-gui` | `saw-gui` |
-| `openshell-saw-delete` | `saw-delete` |
-| `governance-list-profiles` | `governance-profile-list` |
-| `governance-add-profile` | `governance-profile-add` |
-| `governance-remove-profile` | `governance-profile-remove` |
-| `governance-create-profile` | `governance-profile-create` |
-
-`make gateway-build` selects Podman by default. Set
-`CONTAINER_RUNTIME=docker` for Docker. Other values fail before a build starts.
-`make pattern-uninstall` calls the standard `uninstall` target. The old
-`ssh-secret` target is gone. The chart creates a public key Secret for each
-SAW, and `saw-vm-ssh` updates it when needed.
-
-`saw-create`, `saw-delete`, `saw-status`, `saw-logs`, `saw-configure`, and
-user access targets require `OPENSHELL_SAW_NAME`. `saw-list`, `status`, and
-`governance-profile-list` work without it. The defaults are `NS=openshell-agents`,
-`BUILD_NS=openshell-agents`, `KEYCLOAK_NS=saw-keycloak`, and
-`SAW_NS=saw-$OPENSHELL_SAW_NAME`. Manual builds stay in-cluster by default. To push, explicitly set
-`IMAGE_REPO` to your own namespace and `IMAGE_TAG` as needed; the upstream
-CI namespace is refused. For `saw-create`, set `PROVIDER`, `MODEL`, and
-`API_KEY` in the environment for keyed providers; `OWNER` and `OWNER_SUBJECT` select another owner. The chart defaults to the published proxy image. Optionally set `CREDENTIAL_PROXY_IMAGE`, or `credentialProxy.image` through `SAW_VALUES_FILE`, to a digest-pinned mirror or custom build. A new inference Secret needs `PROVIDER` and `MODEL`; `API_KEY` may be empty for a keyless provider. A repeat `saw-create` keeps an existing inference Secret when `API_KEY` is empty.
-
-`IMAGE_TAG=latest` selects the CI-built gateway disk used by `images-mirror`;
-`IMAGE_TAG=sha-<commit>` selects a particular CI build. The chart's in-VM BOM
-separately pins OpenShell `0.1.6-rhaiv.4` by digest. See
-[the deployment guide](docs/deployment-guide.md#golden-image-tag).
-
-If a prerequisite fails, inspect the reported CLI or operator and run
-`make prereqs-check` again. That check does not change the cluster.
-`make images-mirror` enables the registry route and stops on access errors.
-CI image names, tags, public pull checks, and retained upstream Quay dependencies
-are documented in [Container images](docs/container-images.md).
-`make ssh-key-generate` and `make keycloak-deploy` keep existing keys and
-passwords. If a GUI port is in use, choose another `GUI_PORT`; the command
-will not stop the other process.
-
-The live acceptance test runs only on a dedicated OpenShift test cluster.
-After the tested commit is pushed, set `TEST_CLUSTER_CONTEXT`,
-`TEST_SAW_NAME`, `TEST_PATTERN_SAW_NAME`, `TEST_OWNER`, `TEST_OWNER_SUBJECT`,
-`TEST_SECOND_TOKEN_DIR`, `PROVIDER`, `MODEL`, `API_KEY`,
-`TARGET_BRANCH`, `TARGET_ORIGIN`, and the inference
-and owner access checks described in the deployment guide. The repo supplies
-the second-user denial check by default. `CREDENTIAL_PROXY_IMAGE` is optional,
-for a digest-pinned mirror or PR build override. Set `WEB_SEARCH_API_KEY` to test
-web search on; leave it unset to test off. Then run
-`make test-deployment`. It tests manual setup and
-the pattern install, uninstall, and reinstall cycle. It records timestamps,
-the commit, the cluster context, and exit codes in a local evidence file.
-It requires confirmation for interactive TUI and GUI checks. It runs
-inference and access checks and records their status codes. See
-[the deployment guide](docs/deployment-guide.md#live-deployment-test).
-
-The existing Python CLI has a smaller command set than Make.
-
-#### Supported inference providers
+### Supported inference providers
 
 | Provider | Key | Example model |
 |---|---|---|
+| NVIDIA Build (default) | `build` | `nvidia/nemotron-3.5-lightning-30b-a3b` |
 | Google Gemini | `gemini` | `gemini-2.5-flash` |
 | Anthropic | `anthropic` | `claude-sonnet-4-6` |
 | OpenAI | `openai` | `gpt-4o` |
-| NVIDIA Build | `build` | `meta/llama-3.3-70b-instruct` |
 | OpenRouter | `openrouter` | `anthropic/claude-sonnet-4-6` |
-| Ollama (local) | `ollama` | `llama3` |
-| Custom OpenAI-compatible endpoint (vLLM, Ollama, ...) | `custom-inference` + `ENDPOINT_URL` | the model the server serves; see [Custom inference provider](#custom-inference-provider) |
+| Ollama | `ollama` | `llama3` |
+| Your own OpenAI-compatible endpoint | `custom-inference` | the model it serves |
 
-The `data-science` profile defaults to NVIDIA
-`nvidia/nemotron-3.5-lightning-30b-a3b`. OpenAI and Anthropic are optional and
-disabled by default. To add either to the existing notebook with Option A:
+To add OpenAI or Anthropic to the default `notebook` sandbox:
 
-1. Set its `enabled: true` in
+1. Set `enabled: true` for it in
    `charts/saw-bom/profiles/data-science/default/providers.yaml`.
-2. Add its name (`openai` or `anthropic`) to `notebook.providers` in the same
-   directory's `sandbox.yaml`. Keep `inference.providerRef: nvidia` and its
-   `inference.model` to retain the NVIDIA startup model. The additional
-   OpenAI and Anthropic choices are configured in `inference.models`.
-3. Add its separate `inference-openai` or `inference-anthropic` entry from
-   `values-secret.yaml.template`, keeping the existing NVIDIA and web-search
-   entries. Each uses `api_key`, an optional `provider` check, and an optional
-   `model` override. The Secret's `model` overrides that provider's model in
-   the sandbox's `inference.models`; defaults are `gpt-6-luna` for OpenAI and
-   `claude-sonnet-4-6` for Anthropic. Official APIs need no URL.
-4. Run `uv run --locked scripts/saw-profile-catalog.py`, then commit and push
-   the updated profiles and catalogs. The generated credential bindings attach
-   each API Secret to its provider's allowed hosts. ESO creates the full Secrets
-   for the namespace proxy and `inference-openai-meta` /
-   `inference-anthropic-meta` for the VM, containing only the nonsecret
-   `provider`, `model` and `url` fields. The sandbox sends a nonsecret marker;
-   the namespace proxy injects the real key only for the bound HTTPS host on
-   port 443.
+2. Add it to `notebook.providers` in `sandbox.yaml` in the same directory.
+3. Add its `inference-openai` or `inference-anthropic` entry from
+   `values-secret.yaml.template` to your secrets file.
+4. Run `uv run --locked scripts/saw-profile-catalog.py`, then commit and push.
 
-Select the provider's model in the notebook chat's model picker. These optional
-providers apply only to `default/notebook`; `cuda-dev` continues to use NVIDIA.
+Pick the model in the notebook chat's model picker.
 
-#### Custom inference provider
+### Custom inference provider
 
-Use a model server of your own (vLLM, Ollama, or any OpenAI-compatible API) instead of a cloud provider. The key stays in the namespace credential proxy; the VM and sandbox use a nonsecret marker. A keyed endpoint must use HTTPS on port 443 with a publicly trusted certificate. The proxy binds the key to the host of `url` in the `inference` Secret. Add a governance profile under `overrides/governance-profiles/` for the same host, served by the `governance-extra-profiles` application. The `custom-inference` SAW-BOM profile reads the URL and model through the sandbox's typed `inference:` block and onboards OpenClaw against that URL (see [docs/custom-inference.md](docs/custom-inference.md)).
+Use your own model server (vLLM, Ollama, or any OpenAI-compatible API). A keyed
+endpoint must use HTTPS on port 443 with a publicly trusted certificate. Use
+the same host in every step.
 
-**Option A (Validated Pattern)** — configure an admin-approved endpoint in your fork, then provide the key through the Secret. Replace `api.inference.example.com` below with the hostname in the `inference.url` value; it must be identical in steps 2 and 3.
-
-1. **Publish the profile** — `overrides/governance-profiles/kustomization.yaml` already publishes `custom-inference.yaml`. Publishing the profile alone does not grant any workspace egress or access to a credential destination:
-
-   ```yaml
-   configMapGenerator:
-     - name: governance-interceptor-extra-profiles
-       files:
-         - custom-inference.yaml
-   ```
-
-2. **Approve the credential destination** — in `overrides/governance-profiles/custom-inference.yaml`, set the endpoint the credential proxy may use:
+1. Approve the host in `overrides/governance-profiles/custom-inference.yaml`:
 
    ```yaml
    endpoints:
@@ -607,7 +380,7 @@ Use a model server of your own (vLLM, Ollama, or any OpenAI-compatible API) inst
        access: read-write
    ```
 
-3. **Allow VM egress to that same host** — add it under `defaults.openshellSaw` in `overrides/saw-users.yaml`:
+2. For VM users, allow egress to the same host in `overrides/saw-users.yaml`:
 
    ```yaml
    defaults:
@@ -617,18 +390,12 @@ Use a model server of your own (vLLM, Ollama, or any OpenAI-compatible API) inst
            - api.inference.example.com
    ```
 
-   An in-cluster Service needs a narrow `networkPolicy.extraEgress` rule instead.
+3. Give the user `profiles: [custom-inference]`. Container users also set
+   `customInferenceURL` and `modelInputs` (see
+   [Container workspace](#container-workspace)).
 
-4. **Select the profile** — give the user entry in `overrides/saw-users.yaml` `profiles: [custom-inference]`. For example, add Erin alongside any existing users:
-
-   ```yaml
-   users:
-     # Keep existing user entries here.
-     - name: erin
-       profiles: [custom-inference]
-   ```
-
-5. **Add the Secret** — update the existing `inference` entry under `secrets:` in `~/values-secret-secure-agent-workspace.yaml`. Set a `url` ending in `/v1`, the served `model`, and an `api_key` file reference:
+4. For VM users, set the endpoint in the `inference` entry of your secrets
+   file:
 
    ```yaml
    - name: inference
@@ -641,587 +408,255 @@ Use a model server of your own (vLLM, Ollama, or any OpenAI-compatible API) inst
          path: ~/.custom-inference-api-key
    ```
 
-   `provider: custom-inference` is an optional check for a Secret dedicated to this profile. Omit the `provider` field when the same Secret also serves data-science workspaces. Keep this file and the key outside Git.
+5. Load the secrets and push:
 
-A second endpoint with its own key needs its own profile `id` and a SAW-BOM provider named and typed after that id. This configures the agent to call an existing endpoint; it does not deploy a model server.
+   ```bash
+   ./pattern.sh make load-secrets
+   git add overrides
+   git commit -m "Configure custom inference"
+   git push
+   ```
 
-Load the Secret, create any missing Keycloak accounts from the local user file, and push the configuration to the branch Argo CD watches:
+An existing VM picks up the change after `make saw-restart OPENSHELL_SAW_NAME=<name>`.
+For more, including a second endpoint and in-cluster model servers, see
+[Custom inference](docs/custom-inference.md).
 
-```bash
-./pattern.sh make load-secrets
-make keycloak-add-users
-git add overrides
-git commit -m "Configure custom inference for erin"
-git push
-oc -n vp-gitops get applications | grep -E 'governance-extra-profiles|saw-erin'
-```
+## Governance with APF (optional)
 
-Wait for `governance-extra-profiles`, `saw-erin`, `saw-erin-bom`, and `saw-erin-secrets` to be Synced/Healthy. A **new VM** runs the installer on boot and needs no restart. For an **existing VM**, run `make saw-restart OPENSHELL_SAW_NAME=erin` after the updated profiles and Secret have synced. In either case, follow the installer until `apply: Done`:
+Every gateway calls a fail-closed governance service. The default is the
+OpenShell governance interceptor. You can switch to NVIDIA Agent Policy Fabric
+(APF), which serves the same policy as a signed bundle and keeps an audit
+trail.
 
-```bash
-make saw-logs OPENSHELL_SAW_NAME=erin
-```
+1. Get read access to the private APF chart and images on `ghcr.io/mkhaas/apf`.
+   Then save a `read:packages` token in `~/.ghcr-token`.
+2. Create your signing key and bundle, then commit and push them:
 
-Argo CD health alone does not confirm the in-VM installer finished. The log shows `Provider 'custom-inference': type 'custom-inference' is a governance-catalog profile` and OpenClaw onboarded with `--custom-base-url <your url>`.
+   ```bash
+   make apf-keys
+   make apf-bundle
+   git add charts/governance-interceptor/files/apf
+   git commit -m "Sign the APF policy bundle"
+   git push
+   ```
 
-To open the chat, configure the CLI and sign in as Erin, then open the notebook through a local tunnel:
+3. Add the `ghcr` and `apf-signing` entries to your secrets file, then run
+   `./pattern.sh make load-secrets`.
+4. Set `global.governance.engine: apf` in `values-global.yaml`, push, then
+   restart each VM workspace once.
 
-```bash
-make saw-configure OPENSHELL_SAW_NAME=erin SAW_NS=saw-erin
-make openclaw-gui OPENSHELL_SAW_NAME=erin SAW_NS=saw-erin \
-  WORKSPACE=default SANDBOX_NAME=notebook GUI_PORT=28789
-```
+Full steps, the quickstart variant, and switching back are in
+[APF](docs/apf.md).
 
-`make keycloak-password KC_USER=erin` copies Erin's password using an available clipboard tool. Keep the GUI command running while using the browser. GitOps user entries do not automatically create RHDH catalog entries or Tekton runs; the shipped custom-inference profile also has no notebook UI Route enabled. The tunnel works without either.
+## Quickstart without GitOps
 
-For Keycloak releases that enforce Admin REST audience checks, deploy the updated service-client bootstrap before creating workspaces; see [Keycloak compatibility](docs/custom-inference.md#keycloak-compatibility).
+The quickstart deploys one VM workspace with Make, without Argo CD. Install the
+OpenShift Virtualization and Red Hat Build of Keycloak operators first, and
+create a `HyperConverged` resource. See
+[Quickstart notes](docs/deployment-guide.md#quickstart-notes).
 
-**Option B (Quickstart)** — one command:
+1. Clone the repository and log in:
 
-```bash
-make saw-create OPENSHELL_SAW_NAME=alice PROFILES=custom-inference \
-  PROVIDER=custom-inference MODEL=<served model> \
-  ENDPOINT_URL=https://<publicly-trusted-host>/v1 \
-  API_KEY=<key>
-```
+   ```bash
+   git clone https://github.com/validatedpatterns-sandbox/secure-agent-workspace.git
+   cd secure-agent-workspace
+   oc login --server=https://api.<cluster>:6443 -u <admin-user>
+   export KEYCLOAK_NS=saw-keycloak OPENSHELL_SAW_NAME=alice
+   ```
 
-Notes:
+2. Prepare the cluster and deploy Keycloak and governance:
 
-- The namespace credential proxy reaches keyed HTTPS endpoints; the VM reaches keyless HTTP endpoints. `ENDPOINT_URL=http://vllm.<namespace>.svc:8000/v1` is supported only with `API_KEY=''`. `localhost` and keyed HTTPS ports other than 443 are refused.
-- Governance must be on: the `custom-inference` profile reaches the gateway through the governance catalog. The installer refuses the apply, naming `overrides/governance-profiles`, until the profile is served.
-- Self-hosted models can be slow; the profile sets a 300-second inference timeout (`inference.timeoutSeconds`).
+   ```bash
+   make quickstart-prereqs-check
+   make saw-init
+   make keycloak-deploy
+   make keycloak-check
+   make governance-deploy
+   make login
+   ```
 
-Details: [docs/custom-inference.md](docs/custom-inference.md).
+3. Create the workspace. When asked, press Enter to make yourself the owner.
 
-#### Governance with APF (optional)
+   ```bash
+   read -r API_KEY < "$HOME/.nvidia-api-key"; export API_KEY
+   make saw-create PROVIDER=build MODEL=nvidia/nemotron-3.5-lightning-30b-a3b
+   unset API_KEY
+   ```
 
-Every SAW gateway calls a fail-closed governance service. By default that is the OpenShell governance interceptor. It can instead be NVIDIA **Agent Policy Fabric (APF)**, which serves the same policy (`charts/governance-policy`) as an Ed25519-signed bundle, stamps provenance on every sandbox, refuses runtime policy changes and writes an audit trail. Details: [docs/apf.md](docs/apf.md).
+   For web search, also export `WEB_SEARCH_API_KEY` from `~/.brave-api-key`.
+   For a custom endpoint, add `PROFILES=custom-inference PROVIDER=custom-inference
+   ENDPOINT_URL=https://<host>/v1`.
 
-**1. Get access to APF (once).** APF's Helm chart and images are private on `ghcr.io/mkhaas/apf`.
+4. Wait for the installer, then connect:
 
-- Ask the owner (@mkhaas) for read access to the chart **and to each image package**: `apf-policy-service`, `apf-policy-gateway` and `apf-compile`. On GHCR each image has its own access list, so access to one does not give the others.
-- Create a GitHub token (classic) with the `read:packages` scope and save it:
-  ```bash
-  printf '%s' '<token>' > ~/.ghcr-token && chmod 600 ~/.ghcr-token
-  ```
-- Check that you can pull:
-  ```bash
-  docker login ghcr.io -u <github-user> --password-stdin < ~/.ghcr-token
-  docker pull ghcr.io/mkhaas/apf/apf-policy-gateway:0.1.0-driverconfig.3
-  ```
+   ```bash
+   make saw-status          # wait for install and apply: Done
+   make saw-configure
+   openshell sandbox list
+   ```
 
-**2. Create your signing key and bundle.** This repository ships no key and no bundle. Each deployment makes its own, so no deployment trusts someone else's key.
+For container or Kata workspaces, add `DEPLOYMENT_MODE=container` or
+`DEPLOYMENT_MODE=kata` to `saw-init` and `saw-create`. See
+[Standalone installation](docs/container-installation.md#standalone-installation-and-first-site-approval).
 
-```bash
-python3 -m pip install cryptography        # if missing
-make apf-keys      # seed -> ~/.apf-keys/apf.seed (never in git); public key -> charts/governance-interceptor/files/apf/apf.pub
-make apf-bundle    # signs charts/governance-policy -> charts/governance-interceptor/files/apf/bundle.tar.gz
-git add charts/governance-interceptor/files/apf
-git commit -m "chore(governance): sign the APF policy bundle"
-git push origin <branch the pattern deploys from>
-```
+## Uninstall
 
-Keep `~/.apf-keys/apf.seed` safe: only its holder can sign policy changes. `make apf-bundle-check` verifies the committed bundle.
+Remove workspaces first, while Keycloak, the portal and Argo CD are still
+running:
 
-**3. Add the secrets.** Add these two entries under `secrets:` in your values-secret file (`~/values-secret-secure-agent-workspace.yaml`, or `~/values-secret.yaml`):
+- portal workspaces: use **Delete my agent workspace** in Developer Hub;
+- Git users: remove the entries (with `pruneOnRemove: true` for VM users);
+- quickstart workspaces: run `make saw-delete`.
 
-```yaml
-  # Pull the private APF chart (Argo CD) and images (cluster)
-  - name: ghcr
-    fields:
-    - name: username
-      value: <github-user>
-    - name: token
-      path: ~/.ghcr-token
-  # The private half of the key from step 2
-  - name: apf-signing
-    fields:
-    - name: seed
-      path: ~/.apf-keys/apf.seed
-```
-
-Load them and check that the three ExternalSecrets become ready:
-
-```bash
-./pattern.sh make load-secrets          # reports one more secret per entry
-oc get externalsecret ghcr-pull governance-apf-signing -n openshell-agents
-oc get externalsecret governance-apf-chart-repo -n vp-gitops
-```
-
-They read `secret/hub/ghcr` and `secret/hub/apf-signing` in Vault and create the image pull secret, the signing key Secret, and the Argo CD repository Secret for the private chart, all outside the user namespaces.
-
-**4. Switch the engine.** Either set it in git:
-
-```yaml
-# values-global.yaml
-global:
-  governance:
-    engine: apf
-```
-
-or set it on the installed pattern without a commit:
+Then remove the platform:
 
 ```bash
-oc patch pattern secure-agent-workspace -n patterns-operator --type merge \
-  -p '{"spec":{"extraParameters":[{"name":"global.governance.engine","value":"apf"}]}}'
+./pattern.sh make pattern-uninstall   # Validated Pattern
+make quickstart-delete                # quickstart
 ```
 
-For a new install, pass the same override: `./pattern.sh make install EXTRA_HELM_OPTS="--set main.extraParameters[0].name=global.governance.engine --set main.extraParameters[0].value=apf"`.
+For reinstall checks and troubleshooting, see
+[Uninstall and reinstall](docs/deployment-guide.md#uninstall-and-reinstall).
 
-Argo CD then removes the interceptor, creates the `governance-apf` app (the APF chart, still serving `governance-interceptor.openshell-agents.svc:18081`), and re-renders each user's gateway config with APF's bindings. Restart each user VM once so it boots with them:
+## Testing
 
 ```bash
-oc get application governance-apf -n vp-gitops              # Synced / Healthy
-oc get pod -n openshell-agents -l app.kubernetes.io/name=apf  # 2/2 Running
-virtctl -n saw-<user> restart <user>
+make lint    # charts and static checks, no cluster needed
+make test    # the full pytest suite
 ```
 
-While APF is not running the gateways refuse write operations (fail closed). If the APF pod shows `ErrImagePull` with `denied`, your account lacks access to that image package (step 1).
-
-**Quickstart (no Argo CD):** after steps 1 and 2, `GHCR_USER=<github-user> GHCR_TOKEN="$(cat ~/.ghcr-token)" make governance-apf`, then create SAWs with `make saw-create ... GOVERNANCE_ENGINE=apf`.
-
-**Changing policy:** edit `charts/governance-policy`, run `make apf-bundle` (it bumps `policy_revision`), commit and push the new bundle. **Switching back:** set `engine: interceptor` (or remove the override), delete the `governance-apf` Application and restart the user VMs.
-
-### Self-service workspaces and sandbox web UIs
-
-Users can create their own workspace from Red Hat Developer Hub: they pick a SAW-BOM profile and enter only the keys it needs; the keys go to Vault under `secret/data/hub/saw-<user>`, and an Argo CD ApplicationSet builds the workspace like any `overrides/saw-users.yaml` entry. A sandbox with `ui: {route: true}` in its profile gets its own route to the OpenClaw / NemoClaw web UI, signed in with Keycloak and open to the workspace owner only (its sign-in is registered by the redirect registrar: [Web UI sign-in](#web-ui-sign-in-redirect-uris)). Details: [docs/self-service-portal.md](docs/self-service-portal.md); step-by-step test: [docs/rhdh-user-guide.md](docs/rhdh-user-guide.md).
-
-### Agent harness: skills, MCP servers and tools
-
-A sandbox's `harnessRef` in its SAW-BOM profile names a harness bundle: skills, MCP servers (`mcp.json`) and OpenClaw tool plugins (`.mjs`). The installer puts it, unchanged, into a volume the sandbox mounts read-only at `/sandbox/harness`, and points OpenClaw at it. Keys never go in a bundle: a server or plugin that calls a service gets its key through a provider attached to the sandbox. A bundle is either an OCI image built from `harness-bundles/` and published to GHCR by CI (`harnessRef: { image: ghcr.io/<owner>/saw-harness-<bundle>@sha256:… }`), or an inline bundle in the saw-bom chart (`harnessRef: { name: <bundle> }`). Details: [docs/harness-bundles.md](docs/harness-bundles.md).
-
-For an MCP server running inside OpenShift, see [In-cluster MCP Services](docs/harness-bundles.md#in-cluster-mcp-services) for network rules, governance, provider attachment, and BOM provider provisioning.
-
-### Validating the deployment
-
-**Video walkthrough: sandbox UIs and the OpenShell CLI**
-
-Explore the data-science profile's notebook and CUDA workspaces, open the
-OpenClaw and NemoClaw sandbox UIs through Developer Hub, and connect from a
-laptop with the OpenShell CLI. The walkthrough covers signing in through
-Keycloak, selecting a workspace, and inspecting the running sandboxes. Use the
-commands below to check your deployment and open its UIs.
-
-https://github.com/user-attachments/assets/d1e93830-ce8b-47c0-9b78-761971ee6067
+To check a deployed user's workspace end to end (Argo CD health, the sandbox,
+one real OpenClaw turn through the user's inference provider, the tool-gate
+audit log and OCSF export), with `oc` logged in as an administrator:
 
 ```bash
-# List sandboxes (default workspace, then cuda-dev)
-openshell sandbox list
-openshell sandbox list --workspace cuda-dev
-
-# NemoClaw sandbox (TUI and GUI) — workspace cuda-dev
-SANDBOX_NAME=cuda-sandbox \
-WORKSPACE=cuda-dev \
-make nemoclaw-tui
-SANDBOX_NAME=cuda-sandbox \
-WORKSPACE=cuda-dev \
-GUI_PORT=18789 \
-make nemoclaw-gui
-
-# OpenClaw sandbox (TUI and GUI) — workspace default
-SANDBOX_NAME=notebook \
-make openclaw-tui
-SANDBOX_NAME=notebook \
-GUI_PORT=18790 \
-make openclaw-gui
-
-# Default NemoClaw entry points
-make saw-tui
-make saw-gui
-
-# List owner-restricted sandbox UI routes, when the profile enables them
-make sandbox-ui
-
-# Installer status, and a shell on the gateway VM for debugging
-# (adds your SSH key to the VM on demand)
-make saw-status
-make saw-vm-ssh
-
-# Local tests and all 13 Helm charts (no cluster needed)
-make lint
-make test
-
-# Tool-action gate tests (needs node; also included in the CI suite)
-make test-tool-gate
-
-# Run offline template validation
-./tests/test-oidc-templates.sh
-
-# NetworkPolicy chart checks run offline; name two test SAWs for live checks
-SKIP_LIVE=1 ./tests/test-network-policy.sh
-SAW_NS=saw-nptest-a VM_NAME=nptest-a PEER_NS=saw-nptest-b \
-  PEER_VM_NAME=nptest-b REQUIRE_PEER=1 ./tests/test-network-policy.sh
+make e2e-workspace OPENSHELL_SAW_NAME=alice DEPLOYMENT_MODE=container   # or kata, vm
 ```
 
-When a sandbox has an owner-restricted UI route, its gateway uses trusted-proxy
-authentication. The localhost GUI forward authenticates with the gateway's
-loopback password: enter `gateway.auth.password` from the selected sandbox's
-`/sandbox/.openclaw/openclaw.json` in **Gateway secret** (or **Password (not
-stored)** in older clients) and click **Connect**. The `make sandbox-ui` routes use the owner's Keycloak sign-in.
+`vm` also needs the OpenShell CLI connected to the user's gateway (see
+[Use your workspace](#use-your-workspace)).
 
-See the [test-writing and test-running guide](docs/testing.md) for local tools,
-selection commands, CI coverage, and fixture rules. `make test` and
-`make test-installer` both run the complete pytest suite.
+See [Testing](docs/testing.md), and the
+[live deployment test](docs/deployment-guide.md#live-deployment-test) for a
+dedicated test cluster.
 
-### Delete
+## Security model
 
-For a clean reinstall, retire workspaces while the portal, Keycloak and Argo
-are available. Use the RHDH **Delete my agent workspace** template for portal owners,
-remove static owners through Git with `pruneOnRemove: true`, and run
-`make saw-delete` with the original site inputs for standalone installations.
-Wait for each workspace Application and runtime namespace to disappear before
-uninstalling the platform. RHDH preserves generated Applications when its
-ApplicationSet disappears. A successful platform uninstall alone can therefore
-leave a workspace running. Container audit history is retained separately.
-
-```bash
-# Delete a single sandbox
-make saw-delete
-
-# Delete Keycloak + PostgreSQL
-make keycloak-delete
-
-# Delete quickstart Keycloak and image releases after deleting each SAW
-make quickstart-delete
-
-# Uninstall the validated pattern through the documented wrapper
-./pattern.sh make pattern-uninstall
-```
-
-A full SAW uninstall first drains the Pattern-owned `openshell-rhdh` and
-`saw-users` Applications. The command sets their clustergroup `disabled`
-overrides on the Pattern and waits for Argo to mark each child for pruning.
-It terminates any active sync and waits for foreground deletion before
-the framework removes operators and webhooks. The VM cleanup runs after this
-drain so a reconciling SAW Application cannot recreate a VM during teardown.
-If the drain fails, correct
-the reported problem and rerun `pattern-uninstall`. Those two overrides
-persist on the Pattern until uninstall completes.
-
-To qualify a fresh RHDH-enabled installation, run the first check on the
-clean cluster and the second after installing with the configured site inputs:
-
-```bash
-scripts/check-rhdh-bootstrap.sh before
-./pattern.sh make install
-scripts/check-rhdh-bootstrap.sh after
-```
-
-ESO creates `rhdh/rhdh-oidc` from Vault before the Keycloak client hook can
-start. The hook requires that Secret and has a 15-minute execution deadline.
-The check requires the completed Job, a Synced/Healthy RHDH Application, and
-a ready rollout of the actual Backstage Deployment. On a cold start, dynamic
-plugins can still be installing when Argo reports Healthy. The portal Deployment
-has a 30-minute rollout deadline and retains the operator’s startup health
-endpoint with a larger failure budget for a cold backend. The check waits up
-to 30 minutes for Deployment availability. Set `RHDH_NAME` if the Backstage
-resource has a site-specific name. Verify owner sign-in and workspace creation
-through the portal separately. After changing owner enrollment, wait until the
-RHDH catalog offers the intended deployment mode and profile before submitting
-a create request. Catalog ingestion can finish after the Deployment rollout.
-
-On busy clusters, use a site value to reserve CPU for the framework's
-imperative Jobs during cold bootstrap. For example, add this to
-`values-cluster-<name>.yaml` and size the requests for available nodes:
-
-```yaml
-clusterGroup:
-  extraObjects:
-    bootstrap-resources:
-      apiVersion: v1
-      kind: LimitRange
-      metadata:
-        name: bootstrap-requests
-        namespace: imperative
-      spec:
-        limits:
-          - type: Container
-            defaultRequest:
-              cpu: "1"
-              memory: 256Mi
-```
-
-Check `oc -n imperative get pods,limitrange` and the admitted unseal Pod's
-`spec.initContainers[].resources.requests`. In clustergroup 0.9.58 the stock
-unseal playbook has a 600-second timeout. Exit 124 followed by HTTP 403
-creating the Vault secrets engine can indicate an interruption after unseal
-and before the stock CLI login. In that state the RHDH ExternalSecret stays
-unready. A CPU reservation can reduce contention. It cannot recover an
-already interrupted bootstrap. [Stock Job](https://github.com/validatedpatterns/clustergroup-chart/blob/v0.9.58/templates/imperative/unsealjob.yaml),
-[stock Vault role](https://github.com/validatedpatterns/rhvp.cluster_utils/blob/6aec8c6d50/roles/vault_utils/tasks/vault_unseal.yaml).
-
-A reinstall also depends on OpenShift Virtualization cleanup. Uninstall waits
-up to one hour for the Pattern-owned `openshift-cnv` namespace to disappear
-before checking whether its marked HyperConverged CRD is unused. A timeout
-returns an error. Check namespace termination, then rerun
-`./pattern.sh make pattern-uninstall` before installing again. A retained
-CRD can point OLM at a conversion webhook that no longer exists.
-
-When switching from an OperatorHub Quickstart to a clean Pattern test, confirm
-that both the test CNV namespace and its HyperConverged CRD are absent. A CSV
-uninstall can leave the CRD behind. On Pattern teardown, the cleanup command
-reads HyperConverged objects through the CRD's served storage version. This
-allows it to remove the tracked SAW instance even after the conversion service
-disappears. It checks for other instances and subscriptions before deleting
-the marked CRD.
-
-## Repository structure
-
-```
-.
-├── Makefile                          # Root Makefile (includes common + quickstart)
-├── Makefile-common                   # Validated Pattern targets (install, load-secrets, etc.)
-├── Makefile-quickstart               # Component-action quickstart targets
-├── values-global.yaml                # Pattern config (name, ArgoCD, secret loader)
-├── values-prod.yaml                  # ClusterGroup (operators, subscriptions, applications)
-├── values-secret.yaml.template       # Secrets template (inference keys, SSH keys)
-├── overrides/
-│   └── saw-users.yaml                # One list entry per user
-├── charts/                           # ArgoCD-managed Helm charts
-│   ├── openshell-keycloak/           # Keycloak CR + KeycloakRealmImport (RHBK operator)
-│   ├── openshell-saw/            # Per-user sandbox VM + gateway + agent
-│   ├── pattern-secrets/              # ExternalSecrets for provider API keys + SSH
-│   └── saw-users/                    # Turns the user list into namespaces and Argo apps
-├── credential-proxy/                 # Per-namespace TLS proxy that injects provider keys
-├── image-builder-charts/             # Build-time charts (imagestreams, bootc image)
-│   └── helm/
-│       ├── nemoclaw-imagestream/     # NemoClaw sandbox image BuildConfig
-│       ├── nemoclaw-cli-imagestream/ # NemoClaw CLI image BuildConfig
-│       └── openshell-gateway-image/  # Bootc gateway VM image + golden image
-├── scripts/                          # Runtime utilities and automation
-│   ├── test-deployment.sh            # Live OpenShift deployment test
-│   ├── openshell-saw-create.sh             # Sandbox provisioning logic
-│   ├── openshell-saw-gui.sh                # Web UI port-forward
-│   ├── openshell-saw-logout.sh             # Clear local gateway credentials
-│   ├── generate-keys.sh              # SSH keypair generation
-│   └── oidc-login.sh                 # Browser-based OIDC login
-├── tests/                            # Test scripts
-│   ├── test-bootc-e2e.sh             # Bootc pipeline E2E (28 checks)
-│   ├── test-oidc-templates.sh        # Helm template validation (43 checks)
-│   └── test-network-policy.sh        # Offline and live network isolation checks
-├── cli/                              # Admin provisioning CLI (openshell-saw)
-├── pattern.sh                        # VP utility container wrapper
-└── ansible.cfg                       # VP ansible config
-```
-
-## References
-
-- [NVIDIA Secure Agent Workspace Reference Design](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/)
-- [Network troubleshooting](docs/troubleshooting.md)
-- [OpenShift Virtualization Reference Implementation](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/openshift-virtualization-reference-implementation.html)
-- [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell)
-- [NVIDIA NemoClaw](https://github.com/NVIDIA/NemoClaw)
-- [Red Hat Validated Patterns](https://validatedpatterns.io/)
-- [Red Hat Build of Keycloak](https://docs.redhat.com/en/documentation/red_hat_build_of_keycloak/)
-
-## Technical details
-
-### Security model
-
-The system implements layered isolation:
-
-1. **VM-level isolation** — Each user gets a dedicated KubeVirt VM (one VM per user, no shared agent process space)
-2. **OIDC authentication** — Keycloak provides SSO with PKCE and device code flow support
-3. **Per-user access control** — Dashboard and sandbox UI proxies allow the owner and explicit support users by `preferred_username`. Each gateway also checks workspace membership for list and create operations.
-4. **TLS passthrough** — Gateway route preserves gRPC/HTTP2 end-to-end; the gateway validates OIDC tokens directly
-5. **Secret management** — Provider keys stay in namespace Secrets mounted into the credential proxy. The VM stores markers and metadata, and its platform admin mTLS identity exists only during an installer apply in tmpfs. The user's SSH private key never touches the cluster. See [Credential isolation](docs/credential-isolation.md).
-6. **Network isolation** — Default-deny NetworkPolicy blocks cross-namespace and API/metadata traffic from the VM; EgressFirewall limits external destinations to exact allowed hostnames. CI checks shipped profile hosts and ports against both layers.
-7. **Governed gateways** — every gateway calls a fail-closed governance service: the OpenShell governance interceptor, or APF with a signed policy bundle ([docs/apf.md](docs/apf.md))
+1. **Isolation:** each user gets their own VM or set of namespaces. No agent
+   process is shared.
+2. **Sign-in:** Keycloak OIDC for the CLI and every web UI. The gateway
+   validates tokens itself, through a TLS passthrough route.
+3. **Owner-only access:** web UIs admit only the owner and explicit support
+   users. The gateway checks workspace membership.
+4. **Keys outside the sandbox:** provider keys come from Vault through External
+   Secrets. The sandbox only sees non-secret markers. See
+   [Credential isolation](docs/credential-isolation.md).
+5. **Network:** default-deny NetworkPolicy, plus an egress firewall that allows
+   only listed hosts.
+6. **Governance:** every gateway calls a fail-closed governance service.
+7. **Audit:** container gateways and sandboxes export OCSF events to an
+   OpenTelemetry collector (best-effort); signed tool-call receipts are an
+   option.
 
 **Video walkthrough: a personal assistant with governed access**
 
-See a personal assistant read Slack messages and Gmail under read-only provider
-profiles. The walkthrough demonstrates a denied Slack
-write, rejection of an unapproved provider type, and a reviewed policy change
-that grants read-only access to Notion through GitOps. Credentials stay outside
-the sandbox in default proxy mode; provider profiles define the allowed
-destinations and operations. The interceptor approves gateway operations such
-as provider creation; sandbox policy enforces API access and the agent tool
-gate can refuse a write before it reaches the network.
-See the [personal assistant guide](docs/personal-assistant.md) for setup,
-[Governance interceptor](docs/governance-interceptor.md) for policy rules, and
-[Credential isolation](docs/credential-isolation.md) for how credentials are
-handled.
-
 https://github.com/user-attachments/assets/fdbcb0f3-705c-4546-9d22-d86106c33538
 
-### Keycloak production and demo users
+See the [personal assistant guide](docs/personal-assistant.md) and the
+[governance interceptor](docs/governance-interceptor.md).
 
-Production deploys no demo identities, and self-registration is off. Create
-real accounts with `make keycloak-add-users` after adding names to
-`overrides/saw-users.yaml`. The Pattern resolves each existing Keycloak account
-to its subject and enrolls it without a first-login edit. A regular owner
-needs only `openshell-user`. `openshell-admin` is a platform operator role:
-it grants administrative access at every gateway. Give it only to an
-explicit operator account.
+## Keycloak production and demo users
 
-Quickstart demo identities require an explicit command:
+Production has no demo users, and self-registration is off. Accounts come from
+`overrides/saw-users.yaml`:
 
 ```bash
-make -f Makefile-quickstart keycloak-deploy DEMO_ENABLED=true
+make keycloak-add-users                      # create missing accounts
+make keycloak-password KC_USER=carol         # copy a password (never printed)
+make keycloak-reset-password KC_USER=carol   # set a new one
+make keycloak-passwords                      # list users with stored passwords
 ```
 
-For a Pattern demo, set the Keycloak application override
-`demo.enabled=true`, use `overrides/saw-users-demo.yaml` as the saw-users
-extra values file, and add generated `keycloak-users` fields for `developer`,
-`admin`, `alice`, and `bob` to your private `values-secret.yaml`. The normal
-`values-secret.yaml.template` has no demo password keys.
+Each account gets a random strong password, stored in a Secret in the Keycloak
+namespace. Each entry can also set `email`, `firstName`, `lastName` and
+`roles` (default `[openshell-user]`). Give `openshell-admin` only to operators:
+it grants admin access to every gateway.
 
-| Username | Roles |
-|---|---|
-| `developer` | `openshell-user` |
-| `admin` | `openshell-user`, `openshell-admin` |
-| `alice` | `openshell-user` |
-| `bob` | `openshell-user` |
+To test as two users, sign in as the second user in a private browser window.
 
-There are no default passwords. Each user gets a random one (20+
-characters with upper and lower case, digits and symbols), kept in Secret
-`openshell-keycloak-user-passwords` in the Keycloak namespace: from Vault in
-an explicitly configured demo Vault entry in the Validated Pattern, or
-generated by the demo quickstart command.
-`make keycloak-passwords` lists the users with stored passwords. It does not
-print the values.
+**Demo users** (`developer`, `admin`, `alice`, `bob`) are only for test
+clusters. In the quickstart, use
+`make -f Makefile-quickstart keycloak-deploy DEMO_ENABLED=true`. For the
+pattern, set `demo.enabled=true` on the Keycloak application, and use
+`overrides/saw-users-demo.yaml`.
 
-To sign in as Alice or Bob on macOS, first find the Secret for that user.
-For an explicit Pattern demo, the command names
-`openshell-keycloak-user-passwords` in `saw-keycloak`.
+On a realm imported by an older release, run `make keycloak-harden` and
+`make keycloak-session-max` to apply the current password, lockout and session
+settings.
+
+## Web UI sign-in (redirect URIs)
+
+Every workspace web UI has its own host. Keycloak needs each one registered as
+a redirect URI. The **redirect registrar** in the Keycloak namespace does this
+automatically, within seconds of a route appearing. It also removes entries for
+deleted workspaces.
+
+To keep Keycloak admin access out of the cluster, set
+`redirectRegistrar.enabled: false` in the `openshell-keycloak` values.
+Register the redirect URIs yourself instead:
 
 ```bash
-make keycloak-password KC_USER=alice
-set -o pipefail
-oc get secret openshell-keycloak-user-passwords -n saw-keycloak \
-  -o jsonpath='{.data.alice}' | base64 -D | pbcopy
+make -f Makefile-quickstart keycloak-register KC_USER=carol   # one user's UIs
+make -f Makefile-quickstart keycloak-redirects                # show what is missing
+make -f Makefile-quickstart keycloak-redirects-sync           # sync all workspaces
 ```
 
-On Linux, use `base64 -d | xclip -selection clipboard` in place of
-`base64 -D | pbcopy` (or use `wl-copy` on Wayland).
-
-Paste the clipboard value into Alice's Keycloak password field. For Bob:
-
-```bash
-make keycloak-password KC_USER=bob
-set -o pipefail
-oc get secret openshell-keycloak-user-passwords -n saw-keycloak \
-  -o jsonpath='{.data.bob}' | base64 -D | pbcopy
-```
-
-The commands do not print a password in the terminal. Clear the clipboard
-after sign-in with `printf '' | pbcopy`.
-If `make keycloak-password` names `openshell-keycloak-users` instead, use
-that Secret name in the `oc get` command; it holds passwords created or reset
-through the quickstart targets. Do not put a password in a command argument
-or share it in a test log.
-
-For a separate Bob sign-in, open a private browser window and start the
-Keycloak login flow there. A normal window can reuse Alice's session and
-open her chat without a login page. Bob must receive HTTP 403 when he opens
-Alice's sandbox UI. Use Bob's own workspace URL to test his access.
-The default `overrides/saw-users.yaml` creates no workspace. The demo file
-creates Alice's workspace. Add Bob to the selected list for a second
-workspace.
-
-Self-registration is off: an admin adds users from `overrides/saw-users.yaml`
-(the same list that creates their workspaces). Each name not in the realm
-yet gets an account with a generated password; users that exist are left
-alone, so running it again is safe. Optional per entry: `email`,
-`firstName`, `lastName`, `roles` (default `[openshell-user]`). Another file:
-`USERS_FILE=<file>`.
-
-```bash
-make keycloak-add-users                      # add missing users
-make keycloak-password KC_USER=carol         # show the Secret location
-make keycloak-reset-password KC_USER=carol   # reset the stored password
-```
-
-Passwords set this way are kept in Secret `openshell-keycloak-users`;
-`keycloak-passwords` lists the users. These commands do not print passwords.
-
-The realm requires strong passwords for anything users set themselves
-(`keycloak.passwordPolicy`: 14+ characters, upper, lower, digit, special,
-not the user name or email, not one of the last 5), and locks an account out
-for a growing time after 5 failed sign-ins (`keycloak.bruteForce`). A realm
-imported before this kept its old settings and passwords (an import never
-changes an existing realm): run `make keycloak-harden` to apply the policy
-and turn registration off. Run `make keycloak-session-max` to apply the
-chart's 24-hour SSO session maximum. This command keeps the realm's current
-idle timeout. Follow the existing-install migration in the deployment guide
-before disabling any account.
-
-### Web UI sign-in (redirect URIs)
-
-Each workspace's web UIs (the VM's OpenShell dashboard, and each sandbox UI
-route) sign in through Keycloak's `openshell-dashboard` client, and Keycloak
-only sends the browser back to a redirect URI registered on that client. Every
-UI has its own host, and Keycloak takes no wildcard in a host name, so each
-one is registered.
-
-By default the **redirect registrar** does it: one Deployment in Keycloak's
-namespace (`charts/openshell-keycloak`, `redirectRegistrar`) registers each
-web UI route's `https://<host>/oauth2/callback` within about 15 seconds of
-the route appearing (from `overrides/saw-users.yaml` or the self-service
-portal), and removes the entries of workspaces that are gone. It signs in as
-its own Keycloak client that may only manage the OpenShell realm's clients;
-its init container uses the Keycloak admin Secret once per start to set that
-client up, and the registrar itself never sees it.
-
-To keep Keycloak admin access out of the cluster entirely, turn it off
-(`redirectRegistrar.enabled: false` in the `openshell-keycloak` values) and
-register as an administrator instead, with your own `oc` session. The same
-targets work alongside the registrar too:
-
-```bash
-make -f Makefile-quickstart keycloak-register KC_USER=carol   # account (if new) + carol's web UIs
-make -f Makefile-quickstart keycloak-redirects                # what is registered, what is missing
-make -f Makefile-quickstart keycloak-redirects-sync           # all workspaces; drops deleted ones
-```
-
-`keycloak-register` creates the Keycloak account if it does not exist yet
-(generated password stored in a Secret), then adds
-`https://<host>/oauth2/callback` for each of the user's web UI routes,
-waiting up to `REDIRECT_WAIT` seconds (default 600) for Argo CD to create
-them. Until then, signing in to that workspace's UIs fails with Keycloak's
-"Invalid parameter: redirect_uri". `keycloak-redirects-sync` adds whatever is
-missing and removes the entries it added for workspaces that are gone;
-entries it did not add (registered by hand, other apps) are kept.
-
-The registrar and `keycloak-redirects-sync` apply the same rules.
-
-The web UI routes are the ones labelled `saw.redhat.com/oidc-redirect=true` in
-the `saw-*` namespaces. With another OIDC issuer, register their callbacks
-there instead; this lists them:
+With another OIDC issuer, register the callbacks there. To list them, run:
 
 ```bash
 oc get routes -A -l saw.redhat.com/oidc-redirect=true \
   -o jsonpath='{range .items[*]}https://{.spec.host}/oauth2/callback{"\n"}{end}'
 ```
 
-The scripts verify Keycloak's certificate; for a router certificate signed by
-a private CA, set `KEYCLOAK_CA=<ca-bundle.pem>`. For a Keycloak CR not named
-`openshell-keycloak`, set `KEYCLOAK_NAME`.
+## Repository structure
 
-### Namespaces
+```
+.
+├── Makefile, Makefile-common, Makefile-quickstart   # all make targets (make help)
+├── pattern.sh                  # Validated Patterns wrapper
+├── values-global.yaml          # pattern settings
+├── values-prod.yaml            # cluster group: operators and applications
+├── values-secret.yaml.template # secrets template
+├── overrides/
+│   ├── saw-users.yaml          # one entry per user
+│   ├── saw-container-defaults.yaml
+│   └── governance-profiles/    # extra governance profiles
+├── charts/                     # Argo CD-managed Helm charts
+├── kubernetes-runtime/         # container workspace controller
+├── credential-proxy/           # VM credential proxy
+├── harness-bundles/            # agent skills, MCP servers and tools
+├── image-builder-charts/       # image builds and the golden VM image
+├── scripts/                    # install and helper scripts
+├── tests/                      # pytest suite and shell checks
+└── docs/                       # guides
+```
 
-| Namespace | Contents |
-|---|---|
-| `saw-<name>` (one per sandbox) | The gateway VM, metadata inputs, credential proxy, and provider Secrets mounted only into that proxy |
-| `openshell-agents` | Golden VM image, image builds, governance interceptor |
-| `saw-keycloak` | Keycloak (RHBK) |
+## References
 
-The gateway VM installs itself from a versioned Bill of Materials on every boot; see [docs/versioned-bom-installer.md](docs/versioned-bom-installer.md).
-
-### OIDC issuer resolution
-
-The sandbox chart resolves the OIDC issuer URL automatically:
-- **Validated Pattern flow:** Computed from `global.clusterDomain` (injected by ArgoCD)
-- **Quickstart flow:** Detected from the Keycloak route at `make saw-create` time
-- **Manual override:** Set `oidc.issuerUrl` explicitly
+- [NVIDIA Secure Agent Workspace reference design](https://docs.nvidia.com/enterprise-reference-architectures/secure-agent-workspace-reference-design/latest/)
+- [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) and [NemoClaw](https://github.com/NVIDIA/NemoClaw)
+- [Red Hat Validated Patterns](https://validatedpatterns.io/)
+- [Red Hat Build of Keycloak](https://docs.redhat.com/en/documentation/red_hat_build_of_keycloak/)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Agent harness bundles](docs/harness-bundles.md)
+- [Versioned BOM installer](docs/versioned-bom-installer.md)
 
 ## Tags
 
 | Field | Value |
 |---|---|
 | **Title** | Secure Agent Workspace |
-| **Description** | Deploy isolated, per-user AI agent sandboxes on OpenShift Virtualization |
+| **Description** | Deploy isolated, per-user AI agent sandboxes on OpenShift |
 | **Industry** | Cross-industry |
 | **Product** | Red Hat OpenShift |
 | **Use case** | AI agent sandboxing, secure coding environments |

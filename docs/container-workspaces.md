@@ -44,14 +44,14 @@ flowchart TD
 | Common `workspace.py` | Projects a registration and catalog into `saw-users` values: sandbox topology, image overrides, approved profile digest, model inputs and public enrollment. Also implements shared readiness: matching BOM/intent generation, healthy Argo application and owner login challenge. It performs no credential storage or resource mutation. |
 | RHDH adapter | Authenticates requests, resolves owners, stores provider inputs, maintains registration and drives the existing Tekton/ApplicationSet flow. Its forms come from the shared catalog. |
 | Standalone projector | An ApplicationSet plugin installed by `saw-users` when `projection.enabled`. Uses the same `workspace.py` as RHDH, with operator-owned YAML instead of portal registrations. Reads named public enrollment ConfigMaps and its own named child Applications. It has no Kubernetes write or Secret-read permission. |
-| Container composition | Creates per-registration identity, network policy, credential proxy, gateway, PVCs, audit services, preparation Jobs, reconciler and browser relay through Argo CD. |
+| Container composition | Creates per-registration identity, network policy, gateway, PVCs, audit services, preparation Jobs, reconciler and browser relay through Argo CD. |
 | Enrollment Job | Compares deployed resources against an administrator-approved boundary; records actual resource UIDs and hashes, PVC identities and public trust material in an immutable publication. It cannot approve an arbitrary observed configuration. |
 | Kubernetes reconciler | Reads BOM + intent, checks the approved boundary and attachment identities, compiles stock OpenShell RPCs, and reconciles owned objects using a retained ledger. It does not create application Pods directly. |
 | Stock gateway / driver | Implements workspace/provider/sandbox APIs and creates supervisor Pods and agent-sandbox resources. Gateway state has its own PVC. |
 | Stock agent-sandbox controller | Reconciles the workload resource into the application Pod. Its CRD/controller is a separate prerequisite, not a SAW API. |
 | Governance interceptor | Supplies signed provider profiles and policy. SAW's extension restricts Kubernetes driver configuration to an approved PVC/resource envelope submitted by a platform mTLS operator. |
-| Credential proxy | Resolves opaque credential markers using trusted-namespace Secrets and the shared provider policy. It supplies credentials only for approved destinations. |
-| Audit writer | Owns retained history outside the application namespace and signs acknowledgements after append. The application mounts an exchange volume, not the history PVC. |
+| Provider credentials | OpenShell providers. The reconciler hands OpenShell each value from the trusted-namespace Secret when it creates a provider or the Secret rotates (and configures OAuth refresh); the plan and its state hold only references. OpenShell's supervisor, in its own Pod, puts placeholders in the agent's environment and substitutes the real value only for the endpoints in that provider's profile. |
+| Audit writer | With `auditReceipts` only: owns retained history outside the application namespace and signs acknowledgements after append. The application mounts an exchange volume, not the history PVC. Without it, the tool gate appends to a best-effort log on the sandbox's own audit volume. |
 | Browser relay | Combines owner-only login, a dedicated nonadmin Keycloak client, shared connection limiter and stock OpenShell forwarding. Its membership is scoped to the intended workspace. Only its membership Job opens a temporary gateway operator session; the UI has no operator identity or trust-write permission. |
 
 The implementation lives in `kubernetes-runtime/` and the `saw-kubernetes-*`,
@@ -103,8 +103,8 @@ not mean that a container runs the VM installer.
 4. Argo creates the foundation. Enrollment verifies the approved configuration
    and publishes the registration binding. The generator reads only the named
    public publications and reprojects the values to enable runtime resources.
-   A new site can set `automaticEnrollment.enabled: false` to deploy its
-   foundation for review. Enabling enrollment requires approved reference
+   A new site deploys only its foundation for review until it sets
+   `automaticEnrollment.enabled: true`. Enabling enrollment requires approved reference
    hashes; discovery is not approval.
 5. The reconciler requires a coherent BOM digest and intent generation, checks
    namespace/PVC UIDs and the live boundary, and then calls the gateway. It
@@ -121,7 +121,7 @@ sequenceDiagram
   participant Gateway as OpenShell gateway
   participant Pod as Workload
   Git->>Argo: Approved profile + site + desired registration
-  Argo->>Argo: Identity, network, proxy, gateway, PVCs, BOM
+  Argo->>Argo: Identity, network, gateway, PVCs, BOM
   Argo->>Enroll: Pinned bootstrap inputs
   Enroll->>Enroll: Check approved boundary and ownership
   Enroll->>Project: Immutable binding: UIDs, hashes, public keys
@@ -144,8 +144,16 @@ Policies protect different boundaries:
 - **OpenShift admission and network policy** constrain Pod roles, service
   accounts, placement and network reachability. A reconciler's permission to
   call the gateway does not bypass these controls.
-- **Credential-proxy policy** derives from the same provider catalog and Helm
-  helper used by VM mode; credentials are not copied into application Pods.
+- **Provider credentials** follow OpenShell's provider model: the platform
+  provider profiles the gateway serves (shipped or published by the governance
+  interceptor) decide where each credential may be used, and the supervisor
+  enforces it. The agent Pod never receives a credential, only a placeholder.
+  Supervisors may reach public HTTPS (`network.publicHTTPS`). Before creating a
+  credentialed provider, the runtime controller requires the live profile's
+  endpoints to be exactly the approved set, all in enforce mode: the governed
+  profile shipped with the runtime image, or for `custom-inference` only the
+  workspace's `customInferenceURL` host on 443. Otherwise it stops with
+  `ProviderProfileMismatch`.
 - **Tool-action policy** uses the same `tool-actions.yaml`, decision engine and
   OpenClaw hook as VM mode. The Kubernetes adapter changes storage and audit
   transport, not the decision rules.
@@ -224,11 +232,12 @@ flowchart LR
   Login --> Relay[Scoped relay / OpenShell forward]
   Relay --> Gateway[Gateway and supervisor]
   Gateway --> Agent[Agent / OpenClaw]
-  Agent -->|Provider marker| Proxy[Trusted credential proxy]
+  Agent -->|Placeholder| Supervisor[OpenShell supervisor Pod]
   Vault[Vault] --> ESO[External Secrets]
   ESO --> Secrets[Trusted-namespace Secrets]
-  Secrets --> Proxy
-  Proxy -->|Real credential| Provider[Approved inference / tool API]
+  Secrets -->|Reconciler, on create or rotation| Gateway[OpenShell gateway credential store]
+  Gateway --> Supervisor
+  Supervisor -->|Real credential, profile endpoints only| Provider[Approved inference / tool API]
   Agent --> Gate[Shared tool gate]
   Gate --> Exchange[Audit exchange PVC]
   Exchange --> Writer[Restricted forwarder and writer]
@@ -252,13 +261,17 @@ replaced together so removed permissions or providers do not survive an update.
 An explicit container model uses an internal OpenClaw provider ID such as
 `saw-openai/gpt-4.1`. This prevents the stock built-in model catalog from
 rewriting a requested model to a different release. The BOM still names
-`openai`; its approved OpenAI endpoint, protocol, credential marker and proxy
-authorization are unchanged. Chat transcripts therefore identify the internal
+`openai`; its approved OpenAI endpoint, protocol and OpenShell provider are
+unchanged. Chat transcripts therefore identify the internal
 provider alias and the exact requested model. VM native onboarding remains
 unchanged. The native writer regression can run against a stock binary with
 `node tests/openclaw-config-publication.mjs`; add `--expect-restore` on versions
 that restore configurations missing metadata. It uses synthetic credentials in
 temporary state and sends no inference requests.
+
+By default the gate appends each decision to a best-effort log on the sandbox's
+own audit volume, which the agent can modify. The rest of this section describes
+`auditReceipts: true` ([Audit receipts](container-installation.md#audit-receipts)).
 
 The application receives its writable workspace, a read-only prepared gate and
 optional harness, and an audit exchange. The writer's history and signing key

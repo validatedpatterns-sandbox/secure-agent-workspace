@@ -8,6 +8,7 @@ from pathlib import Path
 import yaml
 
 TARGETS = {
+    ("kataconfiguration.openshift.io", "KataConfig"): "v1",
     ("rhdh.redhat.com", "Backstage"): "v1alpha5",
     ("hco.kubevirt.io", "HyperConverged"): "v1beta1",
     ("tekton.dev", "Pipeline"): "v1",

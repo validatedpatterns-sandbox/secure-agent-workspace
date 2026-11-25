@@ -106,27 +106,27 @@ bom:
   apiVersion: saw.redhat.com/v1alpha1
   kind: InstallerBOM
   metadata:
-    name: openshell-0-1-6-rhaiv-4
+    name: openshell-0-1-10-rhaiv-0
   spec:
     installerVersion: 0.1.0
     # OpenShell 0.1.x. Moving from 0.0.x recreates the gateway state and
     # every sandbox (the installer does it; see docs/versioned-bom-installer.md).
     openshell:
       cli:
-        version: 0.1.6-rhaiv.4
-        image: quay.io/opendatahub/odh-openshell-cli@sha256:9128f07cbb29b87472a71e09a4b164ec35ea0484712cc31028209f8d1e5291c4
+        version: 0.1.10-rhaiv.0
+        image: quay.io/opendatahub/odh-openshell-cli@sha256:439f6ea6acc93e4d3539125b15ca93d23e20740d2ab7150eef56bf7842c8a6c4
       gateway:
-        version: 0.1.6-rhaiv.4
-        image: quay.io/opendatahub/odh-openshell-gateway@sha256:bd2d7c9084b80b8d3d8ef92d00a27b963b35168fad84cd862b7f91fd9c488c3e
+        version: 0.1.10-rhaiv.0
+        image: quay.io/opendatahub/odh-openshell-gateway@sha256:e4b89770ef55238cc45d9880614eda64b8ab9a76be5e6c81c63a350889eb0717
       supervisor:
-        version: 0.1.6-rhaiv.4
-        image: quay.io/opendatahub/odh-openshell-supervisor@sha256:626b91a0f53393dac0d591c142b81100916aa66b4e65444b5527672b5533fe86
+        version: 0.1.10-rhaiv.0
+        image: quay.io/opendatahub/odh-openshell-supervisor@sha256:c2c8e9d3d19a1612074df0f637078064cff45b92d35c74b116a72fb503b3c1bc
       # Sandbox runtime image: the podman driver mounts the supervisor from it
       # into every sandbox (gateway.toml sandbox_runtime_image). Pulled, not
       # extracted.
       sandbox:
-        version: 0.1.6-rhaiv.4
-        image: quay.io/opendatahub/odh-openshell-sandbox@sha256:0cde11346e68485907c22d3c9b30802e52cf16e3853720a864ac8347bb68f6ef
+        version: 0.1.10-rhaiv.0
+        image: quay.io/opendatahub/odh-openshell-sandbox@sha256:365d321345ea142a10d442f91bebeaf6d67dac4384b6dc29b4e72ada01a9b959
     # NemoClaw CLI, needed by `type: nemoclaw` sandboxes (the default
     # data-science profile has one). Remove it if no profile needs it.
     # A tag is accepted here with a warning; pin a digest when one exists.

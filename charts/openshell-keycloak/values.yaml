@@ -144,6 +144,22 @@ redirectRegistrar:
   hostSuffix: ""
   intervalSeconds: 15
 
+# Container-mode workspace relays register their own Keycloak clients with a
+# registrar credential (Secret saw-relay-provisioner) that this keeps in place.
+# Enable wherever container workspaces may be created.
+relayProvisioner:
+  enabled: false
+  image: registry.access.redhat.com/ubi9/python-311@sha256:a0bdb55576fc5b8d6704279307817828ef027e1065533ceba133fe9516003a6c
+  # The OpenShell audience relay tokens carry (the gateway's OIDC client).
+  audience: openshell-cli
+  # Empty: discover the operator's <keycloak>-ingress HTTPS Route.
+  keycloakUrl: ""
+  # Optional PEM CA for an external/private issuer.
+  caBundle: ""
+  # Empty: <keycloak>-initial-admin (the operator's).
+  adminSecret: ""
+  intervalSeconds: 300
+
 # Resolve Pattern user-list owners without placing Keycloak admin credentials
 # in tenant namespaces. The user-list chart grants this service account patch
 # access only to each tenant's saw-owner-subject ConfigMap.

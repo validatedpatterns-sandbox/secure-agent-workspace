@@ -35,7 +35,20 @@ clusterGroup:
     # the namespace with the workspace registry and its pipelines.
     rhdh:
     saw-portal:
+    # Agent Sandbox controller for container and Kata workspaces (cluster-wide).
+    agent-sandbox-system:
     redhat-ods-operator:
+      operatorGroup: true
+      targetNamespaces: []
+    # OpenShift sandboxed containers, for Kata workspaces. The operator alone
+    # changes no node; the saw-kata application's KataConfig (off by default)
+    # installs the runtime.
+    openshift-sandboxed-containers-operator:
+      operatorGroup: true
+      targetNamespaces:
+        - openshift-sandboxed-containers-operator
+    # Red Hat build of OpenTelemetry: the collector for OCSF audit events.
+    openshift-opentelemetry-operator:
       operatorGroup: true
       targetNamespaces: []
     vault:
@@ -65,6 +78,14 @@ clusterGroup:
       name: rhods-operator
       namespace: redhat-ods-operator
       channel: fast
+    sandboxed-containers:
+      name: sandboxed-containers-operator
+      namespace: openshift-sandboxed-containers-operator
+      channel: stable
+    opentelemetry:
+      name: opentelemetry-product
+      namespace: openshift-opentelemetry-operator
+      channel: stable
   applications:
     openshift-external-secrets:
       name: openshift-external-secrets
@@ -90,6 +111,18 @@ clusterGroup:
           value: "true"
         - name: ownerResolver.enabled
           value: "true"
+        # Registrar for container workspaces' browser relays.
+        - name: relayProvisioner.enabled
+          value: "true"
+    # Stock upstream Agent Sandbox controller (CRDs + controller), required by
+    # container and Kata workspaces. Remove if the platform already provides it.
+    agent-sandbox:
+      name: agent-sandbox
+      namespace: agent-sandbox-system
+      path: charts/agent-sandbox
+      overrides:
+        - name: enabled
+          value: "true"
     # One namespace and three apps (secrets, bill of materials, VM) per user,
     # from overrides/saw-users.yaml. The chart release is tracked here; the
     # Application objects it creates live in the Argo CD namespace.
@@ -100,6 +133,7 @@ clusterGroup:
       namespace: openshell-agents
       path: charts/saw-users
       extraValueFiles:
+        - /overrides/saw-container-defaults.yaml
         - /overrides/saw-users.yaml
       overrides:
         - name: ownerResolution.enabled
@@ -124,7 +158,22 @@ clusterGroup:
       namespace: rhdh
       path: charts/openshell-rhdh
       extraValueFiles:
+        # containerDefaults (the shared site for portal container requests)
+        # and portal.deploymentModes come from the same files as saw-users.
+        - /overrides/saw-container-defaults.yaml
         - /overrides/saw-users.yaml
+    # Kata runtime for Kata workspaces. Reboots the selected workers when
+    # enabled (charts/saw-kata); off by default.
+    saw-kata:
+      name: saw-kata
+      namespace: openshift-sandboxed-containers-operator
+      path: charts/saw-kata
+    # Collector for the OCSF events container gateways and their supervisors
+    # export (best-effort audit). Point its exporters at your SIEM or log store.
+    saw-telemetry:
+      name: saw-telemetry
+      namespace: openshell-agents
+      path: charts/saw-telemetry
     governance-policy:
       name: governance-policy
       namespace: openshell-agents

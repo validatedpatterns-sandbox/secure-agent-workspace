@@ -7,6 +7,7 @@ or copy provider keys and never patches a generated runtime resource.
 """
 import argparse
 import copy
+import hashlib
 import importlib.util
 import json
 import os
@@ -17,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from urllib.request import HTTPRedirectHandler, build_opener
 
 import yaml
@@ -32,7 +34,6 @@ def load_module(name, source):
 
 
 workspace = load_module("saw_workspace", ROOT / "charts/saw-users/files/workspace.py")
-container_topology = load_module("container_topology", ROOT / "scripts/container_topology.py")
 preflight_checks = load_module("saw_preflight", ROOT / "charts/saw-portal-container/files/preflight.py")
 kata_worker_check = load_module("kata_worker_check", ROOT / "scripts/kata_worker_check.py")
 
@@ -64,6 +65,48 @@ def get(kind, name, namespace=None):
     return json.loads(raw) if raw.strip() else None
 
 
+def deep_merge(base, over):
+    out = copy.deepcopy(base)
+    for key, value in over.items():
+        out[key] = deep_merge(out[key], value) if isinstance(value, dict) and isinstance(out.get(key), dict) \
+            else copy.deepcopy(value)
+    return out
+
+
+def apply_container_defaults(config, user):
+    """Same defaults as saw-users.containerUser in charts/saw-users/templates/_helpers.tpl."""
+    name = user["name"]
+    if not user.get("registration"):
+        user["registration"] = hashlib.sha256(f"{name}:{user.get('generation') or 1}".encode()).hexdigest()[:16]
+    base = (user.get("vaultPrefix") or config.get("defaults", {}).get("vaultPrefix") or "secret/data/hub").rstrip("/")
+    if not base.endswith((f"/saw-{name}", f"/saw-{name}/{user['registration']}")):
+        base = f"{base}/saw-{name}"  # the same for every generation; the portal's keeps its registration
+    user["vaultPrefix"] = base
+    user.setdefault("pruneOnRemove", True)
+    user.setdefault("intentGeneration", 1)
+    if not user.get("installationID") and re.fullmatch(r"[a-f0-9]{16}", str(user["registration"])):
+        user["installationID"] = str(uuid.uuid5(uuid.NAMESPACE_URL, f"urn:saw:portal:{name}:{user['registration']}"))
+
+
+def container_site(config, user):
+    """Same layering as saw-users.containerSite: containerDefaults under containerSites.<name>."""
+    site = deep_merge(config.get("containerDefaults") or {}, config.get("containerSites", {}).get(user["name"]) or {})
+    if site and not site.get("subject"):
+        site["subject"] = user.get("ownerSubject")
+    return site
+
+
+def resolve_subject(name):
+    """The enabled Keycloak account's subject, as `make keycloak-user-info` prints it."""
+    try:
+        subject = subprocess.run([str(Path(__file__).with_name("keycloak-users.sh")), "resolve-subject", name],
+                                 capture_output=True, text=True, timeout=90, check=True).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        raise InstallError(f"set ownerSubject for {name}, or create the Keycloak account first "
+                           f"(make keycloak-add-user KC_USER={name})") from None
+    return subject
+
+
 def select(values, name):
     """The operator supplies the same public saw-users/site configuration as GitOps."""
     if not isinstance(values, dict):
@@ -82,12 +125,15 @@ def select(values, name):
     if mode not in {"container", "kata"} or mode != os.environ.get("DEPLOYMENT_MODE", "container"):
         raise InstallError("the selected user must explicitly select the requested Kubernetes deployment mode")
     config["ownerResolution"] = {**config.get("ownerResolution", {}), "enabled": False}
+    if not user.get("ownerSubject"):
+        user["ownerSubject"] = resolve_subject(name)
+    apply_container_defaults(config, user)
     for field, pattern in [("registration", r"[a-f0-9]{16}"),
                            ("installationID", r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}"),
                            ("ownerSubject", r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}")]:
         if not re.fullmatch(pattern, str(user.get(field, ""))):
             raise InstallError("container inputs require a valid "+field)
-    site = config.get("containerSites", {}).get(name)
+    site = container_site(config, user)
     if not site or site.get("subject") != user["ownerSubject"] or user.get("pruneOnRemove") is not True:
         raise InstallError("container inputs require the matching site identity and foreground cleanup")
     if type(user.get("intentGeneration")) is not int or user["intentGeneration"] < 1:
@@ -322,8 +368,11 @@ def status(user, config):
     class NoRedirect(HTTPRedirectHandler):
         def redirect_request(self, *args, **kwargs):
             return None
-    site = config["containerSites"][user["name"]]
-    issuer = site["automaticEnrollment"]["relay"]["issuer"]
+    site = container_site(config, user)
+    relay = site.get("automaticEnrollment", {}).get("relay", {})
+    # The charts' default: the cluster's Keycloak route.
+    issuer = relay.get("issuer") or "https://openshell-keycloak-ingress-{}.apps.{}/realms/openshell".format(
+        relay.get("keycloakNamespace") or "saw-keycloak", config.get("global", {}).get("clusterDomain"))
     client = build_opener(NoRedirect())
     catalog = json.loads((ROOT/"charts/saw-users/files/profile-catalog.json").read_text())["profiles"]
     def observed(path):
@@ -355,14 +404,6 @@ def main():
         config, user = select(yaml.safe_load(Path(args.values).read_text()), args.name)
         for command in ("oc", "helm"):
             if not shutil.which(command): raise InstallError(command+" is required")
-        overlay = os.environ.get("SAW_TOPOLOGY_OVERLAY")
-        if not overlay and os.environ.get("SAW_TOPOLOGY_PROBE"):
-            raise InstallError("set SAW_TOPOLOGY_OVERLAY to the local reviewed overlay path")
-        if overlay:
-            container_topology.install_values(config, args.name, overlay,
-                                              os.environ.get("SAW_TOPOLOGY_PROBE"),
-                                              os.environ.get("SAW_TOPOLOGY_CONTAINER"),
-                                              verify=args.action == "apply")
         # Validate chart inputs before contacting or changing the cluster.
         with tempfile.TemporaryDirectory(prefix="saw-container-values-") as directory:
             values_file = Path(directory)/"values.json"

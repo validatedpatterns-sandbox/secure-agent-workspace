@@ -26,6 +26,12 @@ def test_compiler_harness_output_and_tampering_against_rust_guard(tmp_path):
         assert len(driver["kubernetes"]["volumes"]) == 3 + additional
         assert len(driver["kubernetes"]["containers"]["agent"]["volume_mounts"]) == 5 + additional
         valid.append(driver)
+    # The default gate without receipts (localAudit) must pass the same guard.
+    local = copy.deepcopy(config)
+    gate = local["bindings"]["personal-assistant/assistant"]["toolGate"]
+    del gate["receiptKey"]
+    gate["localAudit"] = True
+    valid.append(compile_profile_files(files, local)["workspaces"][0]["sandboxes"][0]["spec"]["template"]["driver_config"])
     invalid = []
     for index, field, value in [
         (3,"name","saw-workspace"), (3,"read_only",False), (3,"mount_path","/etc"),

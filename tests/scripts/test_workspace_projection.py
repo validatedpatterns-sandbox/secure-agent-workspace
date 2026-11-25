@@ -19,7 +19,8 @@ def inputs():
                  profiles=["data-science"], values={"deployment": {"mode": "container"}},
                  lifecycleVersion=1, initialModelInputs={"inference.model": "first"},
                  modelInputs={"inference.model": "second"}, desiredState="Running", restartGeneration=2)
-    site = dict(subject=owner["ownerSubject"], automaticEnrollment={"approvedProfiles": {"data-science": "b"*64}},
+    site = dict(subject=owner["ownerSubject"], auditReceipts=True,
+                automaticEnrollment={"approvedProfiles": {"data-science": "b"*64}},
                 profileImageOverrides={"data-science": {"default": {"notebook": "example/agent@sha256:"+"c"*64}}})
     return owner, site
 
@@ -81,6 +82,100 @@ def test_foundation_requires_no_synthetic_approval_hash():
     site["automaticEnrollment"]["enabled"] = True
     with pytest.raises(workspace.WorkspaceError):
         workspace.project_workspace(owner, {}, site, CATALOG, lambda _: {})
+
+
+def auto_site(owner):
+    return dict(subject=owner["ownerSubject"], auditReceipts=True, automaticEnrollment={
+        "autoApprove": True, "revision": "main", "image": "example/runtime@sha256:" + "d"*64,
+        "buildNamespace": "saw-builds", "relay": {"revision": "main"}})
+
+
+def published(owner, subject=None):
+    intent = {"bindings": {"ownerID": owner["installationID"], "namespace": "saw-" + owner["name"],
+                           "ownerSubject": subject or owner["ownerSubject"]},
+              "profileRef": {"name": "saw-bom-profiles", "sha256": "e"*64}}
+    binding = {"registration": owner["registration"], "intent": intent,
+               "approved": {"observed": "f"*64}, "gatewayCA": "ca"}
+    return {"immutable": True, "metadata": {"labels": {"saw.redhat.com/runtime-owner": owner["installationID"]}},
+            "data": {"binding.json": json.dumps(binding)}}
+
+
+def test_auto_approve_needs_no_reference_or_profile_digest():
+    owner, _ = inputs()
+    result = workspace.project_workspace(owner, {}, auto_site(owner), CATALOG, lambda _: {})
+    projected = result["containerSites"]["alice"]
+    assert not projected["selectedDigest"] and "enrollment" not in projected
+
+
+def test_auto_approve_accepts_the_observed_enrollment_but_still_binds_the_owner():
+    owner, _ = inputs()
+    projected = workspace.project_workspace(owner, {}, auto_site(owner), CATALOG,
+                                            lambda _: published(owner))["containerSites"]["alice"]
+    assert projected["enrollment"]["approved"] == {"observed": "f"*64}
+    assert projected["enrollment"]["revision"] == "main"
+    with pytest.raises(workspace.WorkspaceError, match="does not belong"):
+        workspace.project_workspace(owner, {}, auto_site(owner), CATALOG,
+                                    lambda _: published(owner, subject="33333333-3333-4333-8333-333333333333"))
+
+
+def test_custom_inference_uses_the_owners_own_url():
+    owner, _ = inputs()
+    owner.update(profiles=["custom-inference"])
+    for key in ("lifecycleVersion", "initialModelInputs", "modelInputs", "desiredState", "restartGeneration"):
+        owner.pop(key)
+    owner["modelInputs"] = {"inference.model": "org/model"}
+    site = auto_site(owner)
+    # No site-level URL: the entry names its own; the governance profile approves the host at run time.
+    with pytest.raises(workspace.WorkspaceError, match="set customInferenceURL"):
+        workspace.project_workspace(owner, {}, site, CATALOG, lambda _: {})
+    owner["customInferenceURL"] = "https://api.inference.example/v1"
+    result = workspace.project_workspace(owner, {}, site, CATALOG, lambda _: {})
+    projected = result["containerSites"]["alice"]
+    assert projected["customInferenceURL"] == "https://api.inference.example/v1"
+    assert "profileBoundaries" not in projected or "custom-inference" not in projected["profileBoundaries"]
+    assert "reference" not in projected["automaticEnrollment"]
+    assert result["users"][0]["webSearch"] == {"enabled": False}  # dedicated endpoint, as in the portal
+    for bad in ("http://api.inference.example/v1", "https://api.inference.example/v2",
+                "https://api.inference.example:8443/v1", "https://10.0.0.1/v1"):
+        owner["customInferenceURL"] = bad
+        with pytest.raises(workspace.WorkspaceError, match="HTTPS base URL ending in /v1"):
+            workspace.project_workspace(owner, {}, site, CATALOG, lambda _: {})
+    owner["customInferenceURL"] = "https://api.inference.example/v1"
+    del owner["modelInputs"]
+    with pytest.raises(workspace.WorkspaceError, match="set modelInputs.inference.model"):
+        workspace.project_workspace(owner, {}, site, CATALOG, lambda _: {})
+
+
+@pytest.mark.parametrize("receipts", [False, None])
+def test_mutable_models_are_rejected_before_reading_enrollment_without_receipts(receipts):
+    owner, site = inputs()
+    site.pop("auditReceipts")
+    if receipts is not None:
+        site["auditReceipts"] = receipts
+    def unexpected_read(_):
+        pytest.fail("invalid audit configuration must be rejected before enrollment reads")
+    with pytest.raises(workspace.WorkspaceError, match="model selection requires auditReceipts=true"):
+        workspace.project_workspace(owner, {}, site, CATALOG, unexpected_read)
+    # Fixed models keep the default best-effort audit path.
+    owner.pop("lifecycleVersion")
+    result = workspace.project_workspace(owner, {}, site, CATALOG)
+    assert all("modelInput" not in target for target in result["containerSites"]["alice"]["targets"].values())
+
+
+def test_only_an_endpoint_profile_takes_a_custom_inference_url():
+    owner, _ = inputs()
+    owner["customInferenceURL"] = "https://api.inference.example/v1"
+    with pytest.raises(workspace.WorkspaceError, match="only a profile with an endpoint input"):
+        workspace.project_workspace(owner, {}, auto_site(owner), CATALOG, lambda _: {})
+
+
+def test_reviewed_site_still_rejects_an_unreviewed_enrollment():
+    owner, _ = inputs()
+    site = auto_site(owner)
+    site["automaticEnrollment"].update(autoApprove=False, reference={"other": "0"*64},
+                                       approvedProfiles={"data-science": "e"*64})
+    with pytest.raises(workspace.WorkspaceError, match="invalid published enrollment"):
+        workspace.project_workspace(owner, {}, site, CATALOG, lambda _: published(owner))
 
 
 @pytest.mark.parametrize("mode", ["vm", "container"])

@@ -16,10 +16,11 @@ enabled: true
 # The pattern sets global.governance.engine (values-global.yaml), which wins.
 engine: interceptor
 
-# Public NVIDIA/OpenShell v0.1.6 interceptor, built at repository fe19b46.
-# Multi-arch index: linux/amd64 and linux/arm64. See the release record for
-# build/source commits, architecture manifests and clean-install acceptance.
-image: "ghcr.io/validatedpatterns-sandbox/governance-interceptor@sha256:19f145ac163822bca6d406898975b5b770b75b196fa0bee0bc86b108fad213b3"
+# NVIDIA/OpenShell v0.1.10 interceptor with the SAW extension that admits the
+# container runtime's mTLS operator (118b4cfa). CI image tag sha-3ed7ef66
+# (build-governance-interceptor.yml, linux/amd64 + linux/arm64). Replace with
+# the main publish once this reaches main.
+image: "ghcr.io/sauagarwa/governance-interceptor@sha256:890df5d17388d98330a240625a36e4ce70810b4ab3bccc28d0f49919c25f5127"
 # gRPC listen port
 port: 18081
 # Provider profiles a deployment adds to the shipped catalog: a ConfigMap of

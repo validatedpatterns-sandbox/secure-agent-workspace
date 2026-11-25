@@ -69,19 +69,151 @@ def helm_values(application):
     return yaml.safe_load(application["spec"]["source"]["helm"]["values"])
 
 
-def test_container_policy_is_derived_from_documented_hosts(tmp_path):
+def test_container_credentials_are_bound_by_secret_and_type(tmp_path):
     site = yaml.safe_load((ROOT / "tests/fixtures/container-site.yaml").read_text())["portal"]["containerSites"]["alice"]
-    del site["providerPolicy"]
+    site.pop("credentialBindings", None)
     user = {
         "name": "alice", "registration": "a" * 16,
         "installationID": "22222222-2222-4222-8222-222222222222",
         "ownerSubject": site["subject"], "profiles": ["data-science"],
-        "intentGeneration": 1, "vaultPrefix": "secret/data/hub/saw-alice/" + "a" * 16,
+        "intentGeneration": 1, "vaultPrefix": "secret/data/hub/saw-alice",
         "pruneOnRemove": True, "values": {"deployment": {"mode": "container"}},
     }
     docs = docs_from(render_file(tmp_path, [user], {"containerSites": {"alice": site}}))
     rendered_site = helm_values(app(docs, "saw-alice"))["site"]
-    assert rendered_site["providerPolicy"]["allowHosts"] == site["providerAllowHosts"]
+    assert "providerPolicy" not in rendered_site and "providerAllowHosts" not in rendered_site
+    assert {b["secret"] for b in rendered_site["credentialBindings"]} >= {"inference"}
+    assert all(set(b) >= {"secret", "key", "type"} for b in rendered_site["credentialBindings"])
+
+
+def container_alice(**extra):
+    site = yaml.safe_load((ROOT / "tests/fixtures/container-site.yaml").read_text())["portal"]["containerSites"]["alice"]
+    user = {"name": "alice", "registration": "3f9a1c0e7b2d4a68", "ownerSubject": site["subject"],
+            "profiles": ["data-science"], "intentGeneration": 1, "pruneOnRemove": True,
+            "vaultPrefix": "secret/data/hub/saw-alice",
+            "values": {"deployment": {"mode": "container"}}, **extra}
+    return user, {"containerSites": {"alice": site}}
+
+
+@pytest.mark.parametrize(("given", "expected"), [
+    (None, "c4d7d813-fd00-5645-b4b9-7b73e372d0dd"),  # uuid5 of urn:saw:portal:alice:3f9a1c0e7b2d4a68
+    ("22222222-2222-4222-8222-222222222222", "22222222-2222-4222-8222-222222222222"),
+])
+def test_container_installation_id_defaults_to_portal_uuid5(tmp_path, given, expected):
+    user, extra = container_alice(**({"installationID": given} if given else {}))
+    docs = docs_from(render_file(tmp_path, [user], extra))
+    namespace = [d for d in by_kind(docs, "Namespace") if d["metadata"]["name"] == "saw-alice"][0]
+    assert namespace["metadata"]["labels"]["saw.redhat.com/runtime-owner"] == expected
+    assert helm_values(app(docs, "saw-alice"))["installationID"] == expected
+
+
+@pytest.mark.parametrize("auto_approve", [True, False])
+def test_minimal_container_entry_uses_cluster_defaults(tmp_path, auto_approve):
+    site = yaml.safe_load((ROOT / "tests/fixtures/container-site.yaml").read_text())["portal"]["containerSites"]["alice"]
+    subject = site.pop("subject")
+    for item in site["stack"].values():
+        item.pop("revision")
+    site["automaticEnrollment"].pop("revision")
+    site["automaticEnrollment"]["relay"].pop("revision")
+    site["automaticEnrollment"]["autoApprove"] = auto_approve
+    user = {"name": "alice", "ownerSubject": subject, "profiles": ["data-science"],
+            "vaultPrefix": "secret/data/hub", "values": {"deployment": {"mode": "container"}}}
+    docs = docs_from(render_file(tmp_path, [user], {"containerDefaults": site}))
+    values = helm_values(app(docs, "saw-alice"))
+    registration = "1f732dc2bd1766a0"  # sha256("alice:1")[:16]
+    assert values["registration"] == registration
+    assert values["installationID"] == "a4300afa-4ae4-5da1-a5b1-44e50a34eb59"
+    assert values["vaultPrefix"] == "secret/data/hub/saw-alice"  # the same for every generation
+    assert values["site"]["subject"] == subject
+    # Only an autoApprove site follows the pattern branch; a reviewed site must
+    # pin commit SHAs itself, so its revisions stay unset and the workspace
+    # chart and preflight reject it.
+    expected = {"main"} if auto_approve else {None}
+    assert {item.get("revision") for item in values["site"]["stack"].values()} == expected
+    assert values["site"]["automaticEnrollment"].get("revision") == next(iter(expected))
+    assert values["site"]["automaticEnrollment"]["relay"].get("revision") == next(iter(expected))
+
+
+def test_per_user_auto_approve_false_overrides_the_default(tmp_path):
+    # Sprig's mergeOverwrite would drop the false; the portal's merge keeps it
+    # (tests/portal/test_portal.py), so both paths must agree.
+    site = yaml.safe_load((ROOT / "tests/fixtures/container-site.yaml").read_text())["portal"]["containerSites"]["alice"]
+    subject = site.pop("subject")
+    site["automaticEnrollment"]["autoApprove"] = True
+    alice = {"name": "alice", "ownerSubject": subject, "profiles": ["data-science"],
+             "vaultPrefix": "secret/data/hub", "values": {"deployment": {"mode": "container"}}}
+    override = {"alice": {"automaticEnrollment": {"autoApprove": False}}}
+    values = helm_values(app(docs_from(render_file(
+        tmp_path, [alice], {"containerDefaults": site, "containerSites": override})), "saw-alice"))
+    enrollment = values["site"]["automaticEnrollment"]
+    assert enrollment["autoApprove"] is False
+    assert enrollment["image"] == site["automaticEnrollment"]["image"]  # siblings still come from the defaults
+
+    projection = {"enabled": True, "applicationSetControllerLabels": {
+                      "app.kubernetes.io/name": "vp-gitops-applicationset-controller"},
+                  "egress": [{"to": [{"ipBlock": {"cidr": "10.0.0.3/32"}}],
+                              "ports": [{"protocol": "TCP", "port": 6443}]}]}
+    (tmp_path / "projected").mkdir()
+    docs = docs_from(render_file(tmp_path / "projected", [alice], {
+        "containerDefaults": site, "containerSites": override, "projection": projection,
+        "ownerResolution": {"enabled": True}}))
+    config = [d for d in by_kind(docs, "ConfigMap") if d["metadata"]["name"].endswith("-configuration")]
+    projected = json.loads(config[0]["data"]["workspaces.json"])["containerSites"]["alice"]
+    assert projected["automaticEnrollment"]["autoApprove"] is False
+
+
+def test_vm_and_container_users_coexist(tmp_path):
+    site = yaml.safe_load((ROOT / "tests/fixtures/container-site.yaml").read_text())["portal"]["containerSites"]["alice"]
+    subject = site.pop("subject")
+    alice = {"name": "alice", "ownerSubject": subject, "profiles": ["data-science"],
+             "vaultPrefix": "secret/data/hub", "values": {"deployment": {"mode": "container"}}}
+    bob = {"name": "bob"}
+    projection = {"enabled": True, "applicationSetControllerLabels": {
+                      "app.kubernetes.io/name": "vp-gitops-applicationset-controller"},
+                  "egress": [{"to": [{"ipBlock": {"cidr": "10.0.0.3/32"}}],
+                              "ports": [{"protocol": "TCP", "port": 6443}]}]}
+    extra = {"containerDefaults": site, "projection": projection, "ownerResolution": {"enabled": True}}
+    mixed = docs_from(render_file(tmp_path, [alice, bob], extra))
+    (tmp_path / "vm").mkdir()
+    alone = docs_from(render_file(tmp_path / "vm", [bob], {"ownerResolution": {"enabled": True}}))
+
+    # Bob's VM resources are exactly what a VM-only list renders.
+    def bobs(docs):
+        return sorted((d["kind"], d["metadata"]["name"], json.dumps(d, sort_keys=True)) for d in docs
+                      if d["metadata"].get("labels", {}).get("openshell.pattern/owner") == "bob"
+                      or d["metadata"].get("namespace") == "saw-bob" or d["metadata"]["name"] == "saw-bob")
+    assert bobs(mixed) and bobs(mixed) == bobs(alone)
+    assert {"saw-bob", "saw-bob-secrets", "saw-bob-bom"} <= {d["metadata"]["name"] for d in by_kind(mixed, "Application")}
+
+    # Alice goes through the projector only: no direct Application or Namespace.
+    names = {(d["kind"], d["metadata"]["name"]) for d in mixed}
+    assert ("Application", "saw-alice") not in names and ("Namespace", "saw-alice") not in names
+    config = [d for d in by_kind(mixed, "ConfigMap") if d["metadata"]["name"].endswith("-configuration")]
+    workspaces = json.loads(config[0]["data"]["workspaces.json"])
+    assert [u["name"] for u in workspaces["users"]] == ["alice"]
+    assert list(workspaces["containerSites"]) == ["alice"]
+    assert workspaces["containerSites"]["alice"]["subject"] == subject
+    assert workspaces["users"][0]["registration"] == "1f732dc2bd1766a0"
+    assert "containerDefaults" not in workspaces
+
+
+def test_container_user_without_subject_waits_without_blocking_others(tmp_path):
+    site = yaml.safe_load((ROOT / "tests/fixtures/container-site.yaml").read_text())["portal"]["containerSites"]["alice"]
+    site.pop("subject")
+    alice = {"name": "alice", "profiles": ["data-science"], "values": {"deployment": {"mode": "container"}}}
+    docs = docs_from(render_file(tmp_path, [alice, {"name": "bob"}], {"containerDefaults": site}))
+    names = {(d["kind"], d["metadata"]["name"]) for d in docs}
+    assert ("Application", "saw-bob") in names
+    assert not any(n == "saw-alice" or n.startswith("saw-alice-") for _, n in names)
+    waiting = [d for d in by_kind(docs, "ConfigMap") if d["metadata"]["name"] == "saw-users-awaiting-owner"]
+    assert waiting[0]["data"]["users"] == "alice"
+
+
+def test_container_entry_without_defaults_or_site_fails(tmp_path):
+    user = {"name": "alice", "ownerSubject": "11111111-1111-4111-8111-111111111111",
+            "profiles": ["data-science"], "values": {"deployment": {"mode": "container"}}}
+    result = render_file(tmp_path, [user])
+    assert result.returncode != 0 and "requires containerDefaults or a containerSites entry" in result.stderr
 
 
 def test_static_owner_revision_pin_selects_all_children_and_preserves_sibling(tmp_path):
@@ -805,3 +937,63 @@ def test_invalid_deployment_shape_rejected(tmp_path, deployment, level):
     assert result.returncode != 0
     assert "deployment" in result.stderr
     assert not result.stdout.strip()
+
+
+def test_the_projector_applicationset_is_not_held_behind_its_identity_job():
+    """The identity Job owner-references its Secrets to the ApplicationSet and
+    waits for it, so a later sync wave would deadlock a fresh install."""
+    source = (ROOT / "charts/saw-users/templates/projector.yaml").read_text()
+    appset = source[source.index("kind: ApplicationSet"):]
+    appset = appset[:appset.index("\nspec:")]
+    assert "sync-wave" not in appset
+    identity = (ROOT / "charts/saw-users/files/projector_identity.py").read_text()
+    assert '"ApplicationSet", "applicationsets"' in identity
+
+
+def test_projector_needs_no_cluster_addresses(tmp_path):
+    """Defaults only: DNS by selector, the API through the control-plane nodes,
+    and the conventional ApplicationSet controller label."""
+    site = yaml.safe_load((ROOT / "tests/fixtures/container-site.yaml").read_text())["portal"]["containerSites"]["alice"]
+    subject = site.pop("subject")
+    alice = {"name": "alice", "ownerSubject": subject, "profiles": ["data-science"],
+             "vaultPrefix": "secret/data/hub", "values": {"deployment": {"mode": "container"}}}
+    docs = docs_from(render_file(tmp_path, [alice], {
+        "containerDefaults": site, "projection": {"enabled": True}, "ownerResolution": {"enabled": True}}))
+    api, = by_kind(docs, "AdminNetworkPolicy")
+    assert api["spec"]["egress"][0]["action"] == "Allow"
+    assert api["spec"]["egress"][0]["to"][0]["nodes"]["matchExpressions"][0]["key"] == "node-role.kubernetes.io/control-plane"
+    labels = api["spec"]["subject"]["pods"]["podSelector"]["matchLabels"]
+    pods = [d["spec"]["template"]["metadata"]["labels"] for d in docs if d["kind"] in ("Deployment", "Job")
+            and d["metadata"]["name"].startswith("saw-projector-")]
+    assert pods and all(labels.items() <= p.items() for p in pods)
+    policy, = [d for d in by_kind(docs, "NetworkPolicy") if d["metadata"]["name"].startswith("saw-projector-")]
+    assert "ipBlock" not in json.dumps(policy["spec"]["egress"])
+    assert policy["spec"]["ingress"][0]["from"][0]["podSelector"]["matchLabels"] == {
+        "app.kubernetes.io/name": "vp-gitops-applicationset-controller"}
+
+
+def test_a_kata_user_defaults_to_the_pattern_runtime_class(tmp_path):
+    """No per-cluster binding in git: the projector reads saw-kata's UID and
+    digest on an autoApprove site, so it may read exactly that class."""
+    site = yaml.safe_load((ROOT / "tests/fixtures/container-site.yaml").read_text())["portal"]["containerSites"]["alice"]
+    subject = site.pop("subject")
+    site["automaticEnrollment"]["autoApprove"] = True
+    bob = {"name": "bob", "ownerSubject": subject, "profiles": ["data-science"],
+           "vaultPrefix": "secret/data/hub", "values": {"deployment": {"mode": "kata"}}}
+    docs = docs_from(render_file(tmp_path, [bob], {"containerDefaults": site, "projection": {"enabled": True}}))
+    config, = [d for d in by_kind(docs, "ConfigMap") if d["metadata"]["name"].endswith("-configuration")]
+    sites = json.loads(config["data"]["workspaces.json"])["containerSites"]
+    assert sites["bob"]["kataRuntimeClass"] == {"name": "saw-kata"}
+    rules = [r for d in by_kind(docs, "ClusterRole") for r in d.get("rules", [])]
+    assert {"apiGroups": ["node.k8s.io"], "resources": ["runtimeclasses"],
+            "resourceNames": ["saw-kata"], "verbs": ["get"]} in rules
+
+
+def test_a_container_user_gets_no_runtime_class(tmp_path):
+    site = yaml.safe_load((ROOT / "tests/fixtures/container-site.yaml").read_text())["portal"]["containerSites"]["alice"]
+    subject = site.pop("subject")
+    alice = {"name": "alice", "ownerSubject": subject, "profiles": ["data-science"],
+             "vaultPrefix": "secret/data/hub", "values": {"deployment": {"mode": "container"}}}
+    docs = docs_from(render_file(tmp_path, [alice], {"containerDefaults": site, "projection": {"enabled": True}}))
+    config, = [d for d in by_kind(docs, "ConfigMap") if d["metadata"]["name"].endswith("-configuration")]
+    assert "kataRuntimeClass" not in json.loads(config["data"]["workspaces.json"])["containerSites"]["alice"]

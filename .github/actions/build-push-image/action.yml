@@ -1,7 +1,7 @@
 name: Build and push image
 description: >-
   Shared tail for the container image builds: buildx setup, ghcr.io login, and a
-  gated build/push (publish only on main) with GitHub Actions layer cache.
+  gated build/push (publish on main, or on request) with GitHub Actions layer cache.
   Callers do their own checkout / values.yaml read / upstream clone as normal
   steps before calling this.
 
@@ -30,6 +30,13 @@ inputs:
     description: Optional extra tag pushed with :latest and :sha-<commit> (e.g. the upstream version)
     required: false
     default: ""
+  publish:
+    description: >-
+      'true' also publishes from a branch (a manual run), tagged only
+      :sha-<commit>; :latest and extra_tag move only from main.
+      Empty -> publish only on main.
+    required: false
+    default: ""
   platform:
     description: >-
       One platform to build (e.g. linux/arm64) on a runner of that architecture.
@@ -53,11 +60,18 @@ runs:
       run: |
         owner=${OWNER,,}
         echo "owner=$owner" >> "$GITHUB_OUTPUT"
+        publish=false
+        if [ "$PUBLISH" = true ] || { [ "$EVENT" != pull_request ] && [ "$REF" = refs/heads/main ]; }; then
+          publish=true
+        fi
+        echo "publish=$publish" >> "$GITHUB_OUTPUT"
         {
           echo "tags<<EOF"
-          echo "ghcr.io/$owner/$IMAGE:latest"
           echo "ghcr.io/$owner/$IMAGE:sha-$SHA"
-          if [ -n "$EXTRA_TAG" ]; then echo "ghcr.io/$owner/$IMAGE:$EXTRA_TAG"; fi
+          if [ "$REF" = refs/heads/main ]; then
+            echo "ghcr.io/$owner/$IMAGE:latest"
+            if [ -n "$EXTRA_TAG" ]; then echo "ghcr.io/$owner/$IMAGE:$EXTRA_TAG"; fi
+          fi
           echo "EOF"
         } >> "$GITHUB_OUTPUT"
       env:
@@ -65,11 +79,14 @@ runs:
         IMAGE: ${{ inputs.image_name }}
         SHA: ${{ github.sha }}
         EXTRA_TAG: ${{ inputs.extra_tag }}
+        PUBLISH: ${{ inputs.publish }}
+        EVENT: ${{ github.event_name }}
+        REF: ${{ github.ref }}
 
     - uses: docker/setup-buildx-action@v3
 
     - name: Log in to ghcr.io
-      if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+      if: ${{ steps.meta.outputs.publish == 'true' }}
       uses: docker/login-action@v3
       with:
         registry: ghcr.io
@@ -84,7 +101,7 @@ runs:
         context: ${{ inputs.context }}
         file: ${{ inputs.dockerfile }}
         build-args: ${{ inputs.build_args }}
-        push: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+        push: ${{ steps.meta.outputs.publish == 'true' }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
         cache-from: type=gha,scope=${{ inputs.cache_scope }}
@@ -92,7 +109,7 @@ runs:
         provenance: false
 
     - uses: ./.github/actions/verify-public-image
-      if: ${{ inputs.platform == '' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+      if: ${{ inputs.platform == '' && steps.meta.outputs.publish == 'true' }}
       with:
         image: ghcr.io/${{ steps.meta.outputs.owner }}/${{ inputs.image_name }}:sha-${{ github.sha }}
 
@@ -115,13 +132,13 @@ runs:
         platforms: ${{ inputs.platform }}
         tags: ghcr.io/${{ steps.meta.outputs.owner }}/${{ inputs.image_name }}
         labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
-        outputs: type=image,push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+        outputs: type=image,push-by-digest=true,name-canonical=true,push=${{ steps.meta.outputs.publish == 'true' }}
         cache-from: type=gha,scope=${{ inputs.cache_scope }}-${{ steps.plat.outputs.suffix }}
         cache-to: type=gha,mode=max,scope=${{ inputs.cache_scope }}-${{ steps.plat.outputs.suffix }},ignore-error=true
         provenance: false
 
     - name: Record digest
-      if: inputs.platform != '' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+      if: inputs.platform != '' && steps.meta.outputs.publish == 'true'
       shell: bash
       run: |
         mkdir -p "$RUNNER_TEMP/digests"
@@ -130,7 +147,7 @@ runs:
         DIGEST: ${{ steps.digest-build.outputs.digest }}
 
     - uses: actions/upload-artifact@v4
-      if: inputs.platform != '' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+      if: inputs.platform != '' && steps.meta.outputs.publish == 'true'
       with:
         name: digests-${{ inputs.image_name }}-${{ steps.plat.outputs.suffix }}
         path: ${{ runner.temp }}/digests/*

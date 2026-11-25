@@ -25,7 +25,7 @@ def inputs():
     site = yaml.safe_load((ROOT / "tests/fixtures/container-site.yaml").read_text())["portal"]["containerSites"]["alice"]
     user = dict(name="alice", registration="a"*16, installationID="22222222-2222-4222-8222-222222222222",
                 ownerSubject=site["subject"], profiles=["data-science"], intentGeneration=1,
-                vaultPrefix="secret/data/hub/saw-alice/"+"a"*16, pruneOnRemove=True,
+                vaultPrefix="secret/data/hub/saw-alice", pruneOnRemove=True,
                 values={"deployment": {"mode": "container"}})
     return {"users": [user, {"name": "bob"}], "containerSites": {"alice": site},
             "ownerResolution": {"enabled": True},
@@ -40,6 +40,42 @@ def test_select_isolates_container_without_modifying_vm_or_input():
     assert selected["users"] == [user]
     assert selected["ownerResolution"]["enabled"] is False
     assert selected["projection"]["enabled"] is True
+
+
+def test_select_accepts_the_minimal_entry_with_container_defaults(monkeypatch):
+    values = inputs()
+    site = values.pop("containerSites")["alice"]
+    subject = site.pop("subject")
+    values["containerDefaults"] = site
+    values["users"][0] = {"name": "alice", "profiles": ["data-science"], "vaultPrefix": "secret/data/hub",
+                          "values": {"deployment": {"mode": "container"}}}
+    monkeypatch.setattr(install, "resolve_subject", lambda name: subject)
+    selected, user = install.select(values, "alice")
+    assert user["registration"] == "1f732dc2bd1766a0"  # sha256("alice:1")[:16], as the chart derives
+    assert user["installationID"] == "a4300afa-4ae4-5da1-a5b1-44e50a34eb59"
+    assert user["vaultPrefix"] == "secret/data/hub/saw-alice"
+    portal = {**user, "vaultPrefix": "secret/data/hub/saw-alice/" + user["registration"]}
+    install.apply_container_defaults({}, portal)
+    assert portal["vaultPrefix"] == "secret/data/hub/saw-alice/" + user["registration"]  # the portal's path is kept
+    assert user["ownerSubject"] == subject and user["pruneOnRemove"] is True and user["intentGeneration"] == 1
+    assert selected["containerSites"]["alice"]["subject"] == subject
+
+
+def test_select_without_subject_or_keycloak_account_explains(monkeypatch):
+    values = inputs()
+    del values["users"][0]["ownerSubject"]
+    def missing(name):
+        raise install.InstallError("set ownerSubject for alice, or create the Keycloak account first")
+    monkeypatch.setattr(install, "resolve_subject", missing)
+    with pytest.raises(install.InstallError, match="Keycloak account"):
+        install.select(values, "alice")
+
+
+def test_select_derives_installation_id_like_the_portal():
+    values = inputs()
+    del values["users"][0]["installationID"]
+    _, user = install.select(values, "alice")
+    assert user["installationID"] == "12305846-148f-5386-9827-819d16cda0e1"  # uuid5 of urn:saw:portal:alice:aaaa...
 
 
 @pytest.mark.parametrize(("requested", "declared"), [
@@ -79,7 +115,6 @@ def test_update_cannot_adopt_another_registration(field):
 
 def test_make_preflight_accepts_a_first_registration_with_complete_approval(monkeypatch):
     values, user = install.select(inputs(), "alice")
-    del values["containerSites"]["alice"]["providerPolicy"]
     assert install.preflight_checks.configuration_facts(values["containerSites"]["alice"])["providerEgress"]
     calls = []
     monkeypatch.setattr(install, "get", lambda kind, name, namespace=None:
@@ -298,51 +333,3 @@ def test_oc_diagnostic_does_not_echo_stderr(monkeypatch, error, expected):
     with pytest.raises(install.InstallError, match=expected) as exc:
         install.run("oc", "get", "namespace", "test")
     assert "private-fixture-value" not in str(exc.value)
-
-
-def test_make_applies_checked_overlay_before_render_and_fails_before_mutation_on_drift(monkeypatch, tmp_path):
-    values, user = install.select(inputs(), "alice")
-    values["containerSites"]["alice"]["automaticEnrollment"]["enabled"] = False
-    base = tmp_path / "site.yaml"
-    overlay = tmp_path / "net.yaml"
-    base.write_text(yaml.safe_dump(values))
-    network = install.container_topology
-    site = values["containerSites"]["alice"]
-    ip = ["10.0.0.7"]
-    def discover(config, probe, container):
-        assert probe == "ops/probe" and config["containerSites"]["alice"] == site
-        result = {"projection": {"egress": []}, "containerSites": {"alice": {}}}
-        o = result["containerSites"]["alice"]
-        for path in (network.GATEWAY + ("oidc", "issuerUrl"), network.RELAY + ("issuer",)):
-            network.put(o, path, "https://issuer.example")
-        for path in (network.BOOTSTRAP, network.RELAY + ("egress",), network.GATEWAY + ("kubernetes", "network", "gatewayEgress")):
-            network.put(o, path, [network.host_rule(ip[0], 443)])
-        return result
-
-    monkeypatch.setenv("SAW_TOPOLOGY_OVERLAY", str(overlay))
-    monkeypatch.setenv("SAW_TOPOLOGY_PROBE", "ops/probe")
-    monkeypatch.setattr(network, "container_overlay", discover)
-    monkeypatch.setattr(sys, "argv", ["container-workspace.py", "apply", "--name", "alice", "--values", str(base)])
-    monkeypatch.setattr(install.shutil, "which", lambda _: "/tool")
-    monkeypatch.setattr(install, "get", lambda kind, *a: {"spec":{"domain":"apps.cluster.example.test"}}
-                        if kind == "ingress.config.openshift.io" else None)
-    monkeypatch.setattr(install, "preflight", lambda *args: ({}, "vp-gitops"))
-    writes = []
-    monkeypatch.setattr(install, "ensure_namespace", lambda *args: writes.append("namespace"))
-    def run(*args, **kwargs):
-        if args[:2] == ("helm", "list"):
-            return "[]"
-        if args[:2] in (("helm", "template"), ("helm", "upgrade")):
-            rendered_values = json.loads(Path(args[args.index("-f")+1]).read_text())
-            assert network.path_value(rendered_values["containerSites"]["alice"], network.RELAY + ("egress",)) == [
-                network.host_rule("10.0.0.7", 443)]
-        if args[:2] == ("helm", "upgrade"):
-            writes.append("helm")
-        return ""
-    monkeypatch.setattr(install, "run", run)
-    assert install.main() == 0 and writes == ["namespace", "helm"]
-    ip[0] = "10.0.0.8"
-    writes.clear()
-    with pytest.raises(SystemExit):
-        install.main()
-    assert not writes

@@ -387,3 +387,41 @@ def test_abandoned_cleanup_does_not_follow_authority_symlink(tmp_path):
     with pytest.raises(sessions.admin.AdminSessionError, match="symlink"):
         sessions.admin.remove_abandoned(root)
     assert (outside/"session.keep").exists()
+
+
+@pytest.mark.parametrize("code", ["UNKNOWN", "INTERNAL", "DEADLINE_EXCEEDED", "UNAVAILABLE"])
+def test_probe_keeps_one_session_until_the_gateway_trusts_it(ca, tmp_path, monkeypatch, code):
+    """TLS 1.3 rejects an untrusted client after the handshake, so the probe
+    sees a transport code; the session must survive until the CA propagates."""
+    api = Api(ca)
+    identity_factory = sessions.admin.identity
+    def identity(base, runtime, **kwargs):
+        return identity_factory(base, runtime, require_tmpfs=False, erase=lambda p: p.unlink(), **kwargs)
+    monkeypatch.setattr(sessions.admin, "identity", identity)
+    monkeypatch.setattr(sessions.admin, "require_memory", lambda _: None)
+    monkeypatch.setattr(sessions.admin.time, "sleep", lambda _: None)
+    attempts, seen = [], set()
+    class Gateway:
+        def __init__(self, *args, **kwargs): pass
+        def call(self, method, body):
+            seen.update(published(api))
+            attempts.append(method)
+            if len(attempts) < 4: raise sessions.RpcError(code)
+        def close(self): pass
+    with sessions.GatewaySessions(api.trust(ca), "https://gateway:17670", tmp_path, gateway_factory=Gateway).open():
+        assert len(attempts) == 4
+    assert len(seen) == 1 and not published(api)
+
+
+def test_each_session_ca_has_a_distinct_name(tmp_path):
+    names = set()
+    for n in range(2):
+        runtime = tmp_path/str(n)
+        runtime.mkdir()
+        with sessions.admin.identity(b"server-ca\n", runtime, require_tmpfs=False,
+                                     erase=lambda p: p.unlink()) as one:
+            names.add(one["ca"])
+    import subprocess
+    subjects = {subprocess.run(["openssl", "x509", "-noout", "-subject"], input=pem.encode(),
+                               capture_output=True, check=True).stdout for pem in names}
+    assert len(subjects) == 2

@@ -42,24 +42,53 @@ rules:
       - openclaw cron get
       - openclaw cron show
       - openclaw cron runs
+      - openclaw cron --help
+      - openclaw cron add --help
+      - openclaw cron create --help
+      - openclaw cron edit --help
+      - openclaw cron rm --help
+      - openclaw cron remove --help
+      - openclaw cron delete --help
+      - openclaw cron enable --help
+      - openclaw cron disable --help
+      - openclaw cron run --help
       - openclaw automations list
       - openclaw automations status
       - openclaw automations get
       - openclaw automations show
       - openclaw automations runs
+      - openclaw automations --help
+      - openclaw automations add --help
+      - openclaw automations create --help
+      - openclaw automations edit --help
+      - openclaw automations rm --help
+      - openclaw automations remove --help
+      - openclaw automations delete --help
+      - openclaw automations enable --help
+      - openclaw automations disable --help
+      - openclaw automations run --help
+  # "Allow always" skips the card for later automation changes until the
+  # gateway restarts; each call is still audited.
   - id: exec-openclaw-automation-change
     tool: exec
     action: approval
+    allowAlways: true
     whenCommandMatches:
       - openclaw cron add
+      - openclaw cron create
       - openclaw cron edit
       - openclaw cron rm
+      - openclaw cron remove
+      - openclaw cron delete
       - openclaw cron enable
       - openclaw cron disable
       - openclaw cron run
       - openclaw automations add
+      - openclaw automations create
       - openclaw automations edit
       - openclaw automations rm
+      - openclaw automations remove
+      - openclaw automations delete
       - openclaw automations enable
       - openclaw automations disable
       - openclaw automations run

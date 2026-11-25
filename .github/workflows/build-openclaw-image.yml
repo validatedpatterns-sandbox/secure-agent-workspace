@@ -1,0 +1,106 @@
+name: Build the OpenShift-ready OpenClaw image
+
+# Publishes ghcr.io/<repository owner>/saw-openclaw (linux/amd64 and
+# linux/arm64): the notebook BOM's stock OpenClaw image with /sandbox
+# searchable by OpenShift namespace UIDs (images/saw-openclaw/Containerfile).
+# Pin the published digest in containerDefaults.profileImageOverrides.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - images/saw-openclaw/**
+      - charts/saw-bom/profiles/data-science/default/sandbox.yaml
+      - .github/workflows/build-openclaw-image.yml
+      - .github/actions/build-push-image/**
+      - .github/actions/merge-image/**
+  pull_request:
+    paths:
+      - images/saw-openclaw/**
+      - charts/saw-bom/profiles/data-science/default/sandbox.yaml
+      - .github/workflows/build-openclaw-image.yml
+      - .github/actions/build-push-image/**
+      - .github/actions/merge-image/**
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish this branch's build as ghcr.io/<owner>/saw-openclaw:sha-<commit>
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-openclaw-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.event_name == 'pull_request' || (github.ref != 'refs/heads/main' && !inputs.publish)
+    strategy: &platforms
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps: &build_steps
+      - uses: actions/checkout@v4
+      - name: Resolve the stock image and its user
+        id: source
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          image=$(yq -r '.spec.sandboxes[] | select(.name == "notebook") | .image' charts/saw-bom/profiles/data-science/default/sandbox.yaml)
+          [[ "$image" =~ ^[a-z0-9][a-z0-9./:_-]+@sha256:([0-9a-f]{64})$ ]] || { echo "notebook image must be pinned by digest: $image" >&2; exit 1; }
+          digest="${BASH_REMATCH[1]}"
+          user=$(docker buildx imagetools inspect "$image" --format '{{json .Image}}' |
+            jq -er --arg p "$PLATFORM" 'if has("config") then .config.User else .[$p].config.User end | select(type == "string" and length > 0)')
+          [[ "$user" =~ ^[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$ && "${user%%:*}" != root && "${user%%:*}" != 0 ]] || { echo "stock image must declare a non-root USER: $user" >&2; exit 1; }
+          {
+            echo "image=$image"
+            echo "user=$user"
+            echo "tag=src-${digest:0:12}"
+          } >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/build-push-image
+        with:
+          image_name: saw-openclaw
+          context: images/saw-openclaw
+          dockerfile: images/saw-openclaw/Containerfile
+          cache_scope: saw-openclaw
+          platform: ${{ matrix.platform }}
+          publish: ${{ inputs.publish && 'true' || '' }}
+          build_args: |
+            SOURCE_IMAGE=${{ steps.source.outputs.image }}
+            IMAGE_USER=${{ steps.source.outputs.user }}
+          registry_token: ${{ ((github.event_name != 'pull_request' && github.ref == 'refs/heads/main') || inputs.publish) && secrets.GITHUB_TOKEN || '' }}
+
+  publish:
+    if: (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') || inputs.publish
+    permissions: {contents: read, packages: write}
+    strategy: *platforms
+    runs-on: ${{ matrix.runner }}
+    steps: *build_steps
+
+  merge:
+    needs: publish
+    permissions: {contents: read, packages: write}
+    if: (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') || inputs.publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Source tag
+        id: source
+        run: |
+          image=$(yq -r '.spec.sandboxes[] | select(.name == "notebook") | .image' charts/saw-bom/profiles/data-science/default/sandbox.yaml)
+          digest="${image##*@sha256:}"
+          echo "tag=src-${digest:0:12}" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/merge-image
+        with:
+          image_name: saw-openclaw
+          extra_tag: ${{ steps.source.outputs.tag }}
+          registry_token: ${{ secrets.GITHUB_TOKEN }}

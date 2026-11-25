@@ -10,9 +10,14 @@ network:
   # Required administrator allocation, unique among overlapping ANPs (0..99).
   priority: null
   # ANP egress peers/ports. The chart fixes each action to Pass, then denies
-  # all remaining IPv4/IPv6. Populate actual DNS, gateway, workload-boundary,
-  # credential-proxy and approved external destinations before enabling.
+  # all remaining IPv4/IPv6. Populate actual DNS, gateway, workload-boundary
+  # and approved in-cluster destinations before enabling.
   egress: []
+  # Let supervisors reach public HTTPS (provider APIs). Credentials go only to
+  # their provider profile's endpoints, and the runtime controller refuses a
+  # credentialed profile whose endpoints are not the approved set (the shipped
+  # governed profile, or the site's custom inference host).
+  publicHTTPS: false
 
 # Filled by the shared composition from the approved BOM and gateway configuration.
 sandboxControllerUsername: system:serviceaccount:agent-sandbox-system:agent-sandbox-controller
@@ -21,5 +26,9 @@ supervisorImage: ""
 runtimeImage: ""
 serverTLSSecret: ""
 supervisorCommand: []
+# OCSF collector the gateway passes to supervisors; empty means none may be set.
+ocsfEndpoint: ""
+# Collector the agent trace relay forwards to; empty means none may be set.
+agentTraceEndpoint: ""
 preparationImage: ""
 forwarderImage: ""

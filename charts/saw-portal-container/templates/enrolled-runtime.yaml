@@ -1,4 +1,4 @@
-{{- $site := .Values.site | default dict }}
+{{- $site := include "portal.site" . | fromJson }}
 {{- $e := $site.enrollment | default dict }}
 {{- if and $e (eq $e.registration .Values.registration) }}
 {{- $reg := .Values.registration }}
@@ -24,7 +24,9 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata: {name: portal-ledger, namespace: {{ $ctl }}}
 spec:
-  storageClassName: {{ $site.stack.audit.values.storageClass }}
+  {{- with $site.stack.audit.values.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
   accessModes: [ReadWriteOnce]
   resources: {requests: {storage: 1Gi}}
 ---
@@ -32,21 +34,23 @@ apiVersion: v1
 kind: ServiceAccount
 metadata: {name: saw-gate-preparation, namespace: {{ $ns }}}
 automountServiceAccountToken: false
+{{- with include "portal.pullNamespace" $e }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
-metadata: {name: {{ printf "portal-gate-%s" $reg }}, namespace: {{ $e.buildNamespace }}}
+metadata: {name: {{ printf "portal-gate-%s" $reg }}, namespace: {{ . }}}
 rules: [{apiGroups: [image.openshift.io], resources: [imagestreams/layers], resourceNames: [{{ base (index (splitList "@" $e.image) 0) | quote }}], verbs: [get]}]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
-metadata: {name: {{ printf "portal-gate-%s" $reg }}, namespace: {{ $e.buildNamespace }}}
+metadata: {name: {{ printf "portal-gate-%s" $reg }}, namespace: {{ . }}}
 roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ printf "portal-gate-%s" $reg }}}
 subjects: [{kind: ServiceAccount, name: saw-gate-preparation, namespace: {{ $ns }}}]
+{{- end }}
 {{- range $key,$target := $targets }}
 {{- $slot := index $b.bindings $key }}
 {{- $gate := $slot.toolGate }}
-{{- if or (ne $slot.workspace.claimName (printf "workspace-%s" $target.base)) (ne $gate.trusted.claimName (printf "saw-gate-%s" $target.base)) (ne $gate.audit.claimName (printf "saw-audit-%s" $target.base)) (ne $gate.ownerLogin $u) (not $gate.receiptKey) }}{{ fail "invalid storage binding" }}{{- end }}
+{{- if or (ne $slot.workspace.claimName (printf "workspace-%s" $target.base)) (ne $gate.trusted.claimName (printf "saw-gate-%s" $target.base)) (ne $gate.audit.claimName (printf "saw-audit-%s" $target.base)) (ne $gate.ownerLogin $u) (not (or $gate.receiptKey $gate.localAudit)) }}{{ fail "invalid storage binding" }}{{- end }}
 {{- if and $target.ui (or (ne $slot.browser.ownerLogin $u) (ne $slot.browser.origin (printf "https://%s-%s-%s-ui.apps.%s" $u $target.workspace $target.sandbox $.Values.global.clusterDomain))) }}{{ fail "invalid owner UI binding" }}{{- end }}
 {{- $job := ternary "saw-gate-preparation" (printf "gate-%s" $target.relayID) (eq (len $targets) 1) }}
 {{- if $gate.harness }}
@@ -68,7 +72,9 @@ kind: Job
 metadata: {name: {{ $job }}, namespace: {{ $ns }}, annotations: {argocd.argoproj.io/sync-wave: '2'}}
 spec:
   backoffLimit: 2
-  activeDeadlineSeconds: 360
+  # Waits in ContainerCreating until the relay's identity Job projects the
+  # browser proof; Argo never recreates a failed Job, so allow for that.
+  activeDeadlineSeconds: 1800
   template:
     spec:
       serviceAccountName: saw-gate-preparation
@@ -78,11 +84,13 @@ spec:
       containers:
       - name: prep
         image: {{ $e.image | quote }}
-        command: [python3, -m, saw_kubernetes.prepare_gate, --owner, {{ $u | quote }}, --subject, {{ $b.ownerSubject | quote }}, --workspace, {{ $target.workspace }}, --sandbox, {{ $target.sandbox }}, --receipt-key, {{ $gate.receiptKey | quote }}{{ if $target.ui }}, --browser-proof, /proof/relay-proof{{ end }}{{ if $gate.harness }}, --harness, {{ $gate.harness.name | quote }}, {{ $gate.harness.digest | quote }}{{ end }}{{ if $model }}, --model, {{ $model | quote }}, --model-generation, {{ $publication | quote }}{{ end }}]
+        command: [python3, -m, saw_kubernetes.prepare_gate, --owner, {{ $u | quote }}, --subject, {{ $b.ownerSubject | quote }}, --workspace, {{ $target.workspace }}, --sandbox, {{ $target.sandbox }}{{ with $gate.receiptKey }}, --receipt-key, {{ . | quote }}{{ end }}{{ if $target.ui }}, --browser-proof, /proof/relay-proof{{ end }}{{ if $gate.harness }}, --harness, {{ $gate.harness.name | quote }}, {{ $gate.harness.digest | quote }}{{ end }}{{ if $model }}, --model, {{ $model | quote }}, --model-generation, {{ $publication | quote }}{{ end }}]
         securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
         volumeMounts: [{name: gate, mountPath: /volume}{{ if $target.ui }}, {name: proof, mountPath: /proof, readOnly: true}{{ end }}{{ if $gate.harness }}, {name: bom, mountPath: /bom, readOnly: true}{{ end }}]
       volumes: [{name: gate, persistentVolumeClaim: {claimName: {{ $gate.trusted.claimName }}}}{{ if $target.ui }}, {name: proof, secret: {secretName: ui-{{ $target.relayID }}-browser-proof, items: [{key: relay-proof, path: relay-proof}]}}{{ end }}{{ if $gate.harness }}, {name: bom, configMap: {name: saw-bom-profiles}}{{ end }}]
 {{- end }}
+{{- $credentialSecrets := list }}
+{{- range ($site.credentialBindings | default list) }}{{- $credentialSecrets = append $credentialSecrets .secret }}{{- end }}
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -105,14 +113,15 @@ spec:
         enabled: true
         image: {{ $e.image | quote }}
         stateClaim: portal-ledger
-        imageBuildNamespace: {{ $e.buildNamespace }}
+        imageBuildNamespace: {{ include "portal.pullNamespace" $e | quote }}
         claimNames: {{ $claims | toJson }}
         configuration:
           gateway: {{ $u }}
           namespace: {{ $ns }}
           trustedNamespace: {{ $ctl }}
           governanceNamespace: {{ $site.governanceNamespace }}
-          proxyPolicy: {{ $u }}-proxy-policy
+          # The Secrets this workspace's providers read from (External Secrets copies).
+          credentialSecrets: {{ $credentialSecrets | uniq | sortAlpha | toJson }}
           ownerID: {{ $b.ownerID }}
           namespaceUID: {{ $b.namespaceUID }}
           mode: {{ $b.mode }}
@@ -124,7 +133,7 @@ spec:
           status: saw-runtime-status
           approved: {{ $e.approved | toJson }}
         trustedEgress:
-{{ toYaml $site.stack.proxy.values.network.bootstrapEgress | indent 10 }}
+{{ toYaml $site.stack.identity.values.network.bootstrapEgress | indent 10 }}
           - to:
             - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ $ns }}}}
               podSelector: {matchLabels: {app.kubernetes.io/instance: {{ $u }}, openshell.pattern/role: gateway}}

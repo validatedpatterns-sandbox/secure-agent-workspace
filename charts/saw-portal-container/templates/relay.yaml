@@ -1,8 +1,8 @@
-{{- $site := .Values.site | default dict }}
+{{- $site := include "portal.site" . | fromJson }}
 {{- $e := $site.enrollment | default dict }}
 {{- if and $e (eq $e.registration .Values.registration) $e.relay }}
 {{- $r := $e.relay }}
-{{- if not (regexMatch "^[a-f0-9]{40}$" ($r.revision | default "")) }}{{ fail "relay revision must be a full Git commit SHA" }}{{ end }}
+{{- if not (regexMatch (include "portal.revisionPattern" $) ($r.revision | default "")) }}{{ fail "relay revision must be a full Git commit SHA (only autoApprove sites may follow a branch)" }}{{ end }}
 {{- $u := .Values.owner }}
 {{- $reg := .Values.registration }}
 {{- $ctl := printf "saw-ctl-%s" $reg }}
@@ -48,13 +48,13 @@ spec:
         gateway: {{ $u }}
         gatewayEndpoint: https://{{ $u }}-gateway.{{ $ns }}.svc:17670
         gatewayCA: {{ $r.gatewayCA | quote }}
-        issuer: {{ $r.issuer | quote }}
+        issuer: {{ $r.issuer | default (printf "https://openshell-keycloak-ingress-%s.apps.%s/realms/openshell" $r.keycloakNamespace $.Values.global.clusterDomain) | quote }}
         ownerLogin: {{ $u }}
         ownerSubject: {{ $.Values.ownerSubject }}
         installationID: {{ $.Values.installationID }}
         host: {{ $u }}-{{ $target.workspace }}-{{ $target.sandbox }}-ui.apps.{{ $.Values.global.clusterDomain }}
         sdkImage: {{ $e.image }}
-        imageBuildNamespace: {{ $e.buildNamespace }}
+        imageBuildNamespace: {{ include "portal.pullNamespace" $e | quote }}
         egress: {{ $r.egress | toJson }}
   ignoreDifferences:
     - {group: "", kind: Secret, name: ui-{{ $rid }}-registration-state, namespace: {{ $r.keycloakNamespace }}, jsonPointers: [/data]}

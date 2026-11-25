@@ -1,5 +1,5 @@
-# OpenShell 0.1.x needs Rust 1.94 (rust-version in its Cargo.toml).
-ARG BUILDER_IMAGE=rust:1.94-bookworm
+# OpenShell 0.1.10 pins Rust 1.95 (its rust-toolchain.toml).
+ARG BUILDER_IMAGE=rust:1.95-bookworm
 ARG RUNTIME_IMAGE=debian-runtime
 
 FROM ${BUILDER_IMAGE} AS builder
@@ -7,7 +7,7 @@ FROM ${BUILDER_IMAGE} AS builder
 RUN apt-get update && apt-get install -y protobuf-compiler pkg-config libssl-dev git make cmake g++ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-ARG OPENSHELL_REF=v0.1.6
+ARG OPENSHELL_REF=v0.1.10
 ARG OPENSHELL_URI=https://github.com/NVIDIA/OpenShell.git
 ARG CONTEXT_DIR=examples/governance-interceptor
 RUN git init . \

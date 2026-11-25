@@ -116,8 +116,8 @@ def public_model_inputs(profile, secrets):
     return _project(_workspace.public_model_inputs, profile, secrets)
 
 
-def approved_endpoint(profile, secrets, boundary):
-    return _project(_workspace.approved_endpoint, profile, secrets, boundary)
+def approved_endpoint(profile, secrets):
+    return _project(_workspace.approved_endpoint, profile, secrets)
 
 
 def enrolled_site(site, workspace, read):
@@ -394,17 +394,84 @@ DEPLOYMENT_MODES = ("vm", *KUBERNETES_MODES)
 PROVISIONABLE_MODES = ("vm",)
 
 
-def container_site(user):
-    """Trusted site inventory, never names/URLs supplied by the request."""
+def _deep_merge(base, over):
+    out = json.loads(json.dumps(base))
+    for key, value in over.items():
+        out[key] = (_deep_merge(out[key], value) if isinstance(value, dict) and isinstance(out.get(key), dict)
+                    else json.loads(json.dumps(value)))
+    return out
+
+
+def container_defaults():
+    """Operator-owned shared site (saw-users containerDefaults); empty when unset."""
+    defaults = json.loads(os.environ.get("SAW_CONTAINER_DEFAULTS") or "{}")
+    return defaults if isinstance(defaults, dict) else {}
+
+
+_OWNER_SUBJECTS = {}
+
+
+def owner_subject(user):
+    """The owner's enabled Keycloak id from the owner directory, or "" when unavailable."""
+    if user not in _OWNER_SUBJECTS:
+        url = os.environ.get("KEYCLOAK_URL", "")
+        try:
+            with open(env("KEYCLOAK_SECRET_FILE"), encoding="utf-8") as credential:
+                ids = keycloak_user_ids(url.rstrip("/"), env("KEYCLOAK_REALM"), env("KEYCLOAK_CLIENT_ID"),
+                                        credential.read().strip(), [user],
+                                        os.environ.get("KEYCLOAK_SKIP_VERIFY") == "true") if url else {}
+        except (PortalError, OSError, ValueError, KeyError) as exc:
+            log(f"WARN: owner lookup for {user} failed ({exc})")
+            return ""
+        if not ids.get(user):
+            return ""  # not cached: the account may be created later
+        _OWNER_SUBJECTS[user] = ids[user]
+    return _OWNER_SUBJECTS[user]
+
+
+def container_site(user, subject=None):
+    """Trusted site inventory, never names/URLs supplied by the request.
+
+    An owner's own containerSites entry is layered over the shared
+    containerDefaults. A site from the defaults takes the owner's subject from
+    the registry entry or the owner directory, and unset chart revisions follow
+    the pattern branch, as for saw-users entries."""
     sites = json.loads(os.environ.get("SAW_CONTAINER_SITES", "{}"))
     site = sites.get(user)
+    defaults = container_defaults()
+    if defaults and (site is None or isinstance(site, dict)):
+        site = _deep_merge(defaults, site or {})
+        if not site.get("subject"):
+            site["subject"] = subject or owner_subject(user)
+        # Only an autoApprove site follows the pattern branch; a reviewed site
+        # pins commit SHAs, and preflight rejects any it leaves unset.
+        revision = os.environ.get("SAW_TARGET_REVISION", "") if auto_approved(site) else ""
+        if revision:
+            stack = site.setdefault("stack", {})
+            for key in ("identity", "policy", "gateway", "audit"):
+                item = stack.setdefault(key, {})
+                if isinstance(item, dict) and not item.get("revision"):
+                    item["revision"] = revision
+            automatic = site.get("automaticEnrollment")
+            if isinstance(automatic, dict):
+                automatic.setdefault("revision", revision)
+                if isinstance(automatic.get("relay"), dict):
+                    automatic["relay"].setdefault("revision", revision)
     if not isinstance(site, dict) or not re.fullmatch(
             r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", str(site.get("subject", ""))):
         return None
     return site
 
 
-def container_profiles(site):
+def auto_approved(site):
+    automatic = (site or {}).get("automaticEnrollment", {})
+    return isinstance(automatic, dict) and automatic.get("autoApprove") is True
+
+
+def container_profiles(site, catalog=None):
+    """Profiles an owner may request: every catalog profile on an autoApprove site."""
+    if auto_approved(site):
+        return {profile: "" for profile in (catalog or {})}
     automatic = site.get("automaticEnrollment", {})
     return automatic.get("approvedProfiles", {})
 
@@ -428,7 +495,8 @@ def container_status(k8s, user, entry, argo_ns, domain, ping, catalog=None):
             if exc.code == 403:
                 return {}
             raise
-    return _workspace.container_status(read, normalized, container_site(user), argo_ns, domain, ping, catalog)
+    return _workspace.container_status(read, normalized, container_site(user, entry.get("ownerSubject")),
+                                       argo_ns, domain, ping, catalog)
 
 
 def installation_id(user, registration):
@@ -744,8 +812,9 @@ def _approved_profile_reference(site, profile):
 def check_live_boundary_approval(k8s, user, site, mode, profile, catalog):
     """Check the existing namespace policy against the owner-approved hash."""
     automatic = site.get("automaticEnrollment", {}) if isinstance(site, dict) else {}
-    if not isinstance(automatic, dict) or not automatic or automatic.get("enabled") is False:
-        return
+    if (not isinstance(automatic, dict) or not automatic or automatic.get("enabled") is False
+            or automatic.get("autoApprove") is True):
+        return  # autoApprove: enrollment publishes the first observed boundary
     reference = _approved_profile_reference(site, profile)
     try:
         _preflight.verify_boundary_reference(reference, mode)
@@ -815,8 +884,41 @@ def check_live_boundary_approval(k8s, user, site, mode, profile, catalog):
                  "sandboxPlacementBinding")
 
 
+def credential_bindings(entry):
+    """Which Secret key backs which OpenShell provider type for one profile.
+
+    Mirrors the saw-users.credentialBindings helper, which renders the same
+    list into the site once the workspace is created.
+    """
+    keys = {}
+    for name, spec in (entry.get("secrets") or {}).items():
+        fields = list(spec.get("fields") or [])
+        refresh = spec.get("refresh") or {}
+        if refresh:
+            fields.append({"key": refresh.get("credentialKey"), "kind": "secret", "refresh": True})
+        for field in fields:
+            if field.get("kind") != "secret" or field.get("refreshMaterial"):
+                continue
+            binding = keys.setdefault((name, field["key"]), {"providers": [], "refresh": False})
+            for provider in spec.get("providers") or []:
+                for kind in [provider] + (["build"] if provider == "nvidia" else []):
+                    if kind not in binding["providers"]:
+                        binding["providers"].append(kind)
+            binding["refresh"] = binding["refresh"] or bool(field.get("refresh"))
+    bindings = []
+    for (name, key), binding in sorted(keys.items()):
+        for kind in binding["providers"]:
+            item = {"secret": name, "key": key, "type": kind}
+            if binding["refresh"]:
+                item["refresh"] = "oauth2_refresh_token"
+            bindings.append(item)
+    return bindings
+
+
 def check_workspace_preflight(k8s, user, site, mode, profile, catalog):
     """Run read-only platform gates before reserving or writing keys."""
+    if "credentialBindings" not in site:
+        site = {**site, "credentialBindings": credential_bindings(catalog[profile])}
     observations = _preflight.configuration_facts(site)
     observations["api"] = True
     try:
@@ -1327,7 +1429,7 @@ def workspace_status(k8s, user, catalog, ns, argo_ns, domain, ping=None):
                 "title": message, "text": message, "message": message, "ready": False,
                 "failed": state != "running", "steps": [], "links": []}
     mode = entry_deployment_mode(entry)
-    if mode in KUBERNETES_MODES and container_site(user):
+    if mode in KUBERNETES_MODES and container_site(user, entry.get("ownerSubject")):
         return container_status(k8s, user, entry, argo_ns, domain, ping or owner_route_available, catalog)
     if mode not in PROVISIONABLE_MODES:
         message = f"{mode} workspace lifecycle and readiness are not qualified in this release"
@@ -1674,7 +1776,7 @@ def handle(action, request_name):
                     _workspace.validate_runtime_placement(mode, site)
                 except _workspace.WorkspaceError as exc:
                     raise PortalError(str(exc)) from exc
-                approved = container_profiles(site)
+                approved = container_profiles(site, catalog)
                 if data.get("profile") not in approved:
                     raise PortalError("selected profile is not approved for your container workspace; "
                                       "approved profiles: " + (", ".join(sorted(approved)) or "none") +
@@ -1693,13 +1795,16 @@ def handle(action, request_name):
             if mode in KUBERNETES_MODES:
                 if cm and read_entry(cm)["profiles"] != [profile]:
                     raise PortalError("changing the profile requires a new container registration")
-                endpoint = approved_endpoint(catalog[profile], secrets,
-                                             site.get("profileBoundaries", {}).get(profile, {}))
+                endpoint = approved_endpoint(catalog[profile], secrets)
                 if cm and endpoint != read_entry(cm).get("customInferenceURL"):
                     raise PortalError("changing the endpoint requires a new registration")
                 models = public_model_inputs(catalog[profile], secrets)
                 previous = committed_entry(cm)
                 lifecycle = previous.get("lifecycleVersion") == 1 if previous else container_site(user).get("modelLifecycle") is True
+                try:
+                    _workspace.validate_model_audit(site, lifecycle, catalog[profile])
+                except _workspace.WorkspaceError as exc:
+                    raise PortalError(str(exc)) from exc
                 if previous and not lifecycle and previous.get("modelInputs", {}) != models:
                     raise PortalError("changing model selection requires a new container registration")
             check_namespace_is_ours(k8s, user)
@@ -1723,7 +1828,7 @@ def handle(action, request_name):
                     entry["webSearch"] = {"enabled": False}
                 if models:
                     entry["modelInputs"] = models
-                if "approvedProfiles" in site.get("automaticEnrollment",{}):
+                if "approvedProfiles" in site.get("automaticEnrollment",{}) or auto_approved(site):
                     slots=sandbox_targets(user,generation,catalog[profile])
                     entry["uiNamespaces"]=sorted({"saw-ui-"+slot["relayID"] for slot in slots.values() if slot["ui"]})
                 entry["intentGeneration"] = previous.get("intentGeneration", 0) + 1
@@ -1900,7 +2005,8 @@ def generator_params(workspaces, defaults, read=None, catalog=None, previous=Non
     for entry in workspaces:
         ws = {**entry, "values": {**entry.get("values", {}),
                                   "deployment": {"mode": entry_deployment_mode(entry)}}}
-        site = container_site(ws["name"]) if entry_deployment_mode(ws) in KUBERNETES_MODES else {}
+        site = (container_site(ws["name"], ws.get("ownerSubject"))
+                if entry_deployment_mode(ws) in KUBERNETES_MODES else {})
         if site:
             if not ws.get("ownerSubject") or ws["ownerSubject"] != site["subject"]:
                 continue

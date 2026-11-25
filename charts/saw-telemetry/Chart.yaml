@@ -1,0 +1,6 @@
+apiVersion: v2
+name: saw-telemetry
+description: OpenTelemetry collector for the OCSF events that OpenShell gateways and supervisors export
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

@@ -9,6 +9,10 @@ import tempfile
 
 from .core import shared
 
+# Superseded trees are kept beside the live one and never removed here: a
+# running sandbox's subPath mount stays on the tree it started with, and a
+# policy update does not restart it. Each tree is a few KB.
+
 
 def verify(directory, files, model_selector=False, browser=False):
     if directory.is_symlink() or not directory.is_dir():
@@ -28,27 +32,38 @@ def verify(directory, files, model_selector=False, browser=False):
             raise ValueError("existing gate differs from the requested policy or owner")
 
 
-def publish(root, identity, receipt_key=None, *, model=None, generation=None, browser=False):
+def publish(root, identity, receipt_key=None, *, model=None, generation=None, browser=False, harness_rules=()):
     assets = Path(shared.__file__).parent
-    files, _, digest, _ = shared.tool_gate_bundle(assets, identity, receipt_key)
+    files, _, digest, _ = shared.tool_gate_bundle(assets, identity, receipt_key, harness_rules)
     target = root / "bundle"
-    publish_tree(root, target, files, model_selector=model is not None, browser=browser)
+    publish_tree(root, target, files, model_selector=model is not None, browser=browser, replace=True)
     if model is not None:
         publish_model(root, target, model, generation)
     return digest
 
 
-def publish_tree(root, target, files, *, model_selector=False, browser=False):
+def _write_tree(scratch, files):
+    tmp = Path(scratch) / "bundle"
+    tmp.mkdir(mode=0o755)
+    for rel, (data, _) in files.items():
+        path = tmp / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        path.chmod(0o444)
+    return tmp
+
+
+def publish_tree(root, target, files, *, model_selector=False, browser=False, replace=False):
+    """Publish `files` at `target`, write-once unless `replace` allows an update.
+
+    A content-addressed tree (a harness) is never replaced. The gate tree
+    is: a policy update for the same owner installs the new tree atomically
+    and keeps every previous one for sandboxes still running on it. A tree
+    for another owner, or one that is not a plain directory, is refused.
+    """
     if not target.exists():
         with tempfile.TemporaryDirectory(dir=root) as scratch:
-            tmp = Path(scratch) / "bundle"
-            tmp.mkdir(mode=0o755)
-            for rel, (data, _) in files.items():
-                path = tmp / rel
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(data)
-                path.chmod(0o444)
-            # The final nonempty tree is never overwritten, including concurrent publishers.
+            tmp = _write_tree(scratch, files)
             try:
                 tmp.rename(target)
             except FileExistsError:
@@ -56,6 +71,30 @@ def publish_tree(root, target, files, *, model_selector=False, browser=False):
             except OSError:
                 if not target.is_dir():
                     raise
+    try:
+        verify(target, files, model_selector=model_selector, browser=browser)
+        return
+    except ValueError:
+        if not replace:
+            raise
+    with (root / ".bundle-lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:  # A concurrent publisher of the same tree may have won.
+            verify(target, files, model_selector=model_selector, browser=browser)
+            return
+        except ValueError:
+            pass
+        if target.is_symlink() or not target.is_dir():
+            raise ValueError("invalid gate directory")
+        identity = target / "identity.json"
+        if (not identity.is_file() or identity.is_symlink()
+                or identity.read_bytes() != files["identity.json"][0]):
+            raise ValueError("existing gate belongs to another owner or workspace")
+        with tempfile.TemporaryDirectory(dir=root) as scratch:
+            tmp = _write_tree(scratch, files)
+            previous = Path(tempfile.mkdtemp(prefix="superseded-", dir=root))
+            target.rename(previous / "bundle")
+            tmp.rename(target)
     verify(target, files, model_selector=model_selector, browser=browser)
 
 
@@ -66,6 +105,7 @@ def publish_harness(root, bom, name, expected_digest):
     if not bundle or bundle.name != name or bundle.digest != expected_digest:
         raise ValueError("mounted BOM does not match enrolled harness")
     publish_tree(root, root / ("harness-" + bundle.digest.removeprefix("sha256:")), bundle_tree(bundle))
+    return bundle
 
 
 def publish_model(root, target, model, generation):
@@ -132,9 +172,11 @@ if __name__ == "__main__":
         from .receipt import receipt_key
         args.receipt_key = receipt_key(args.writer_service, args.writer_namespace, args.writer_ca)
     os.umask(0o022)
+    rules = []
     if args.harness:
-        publish_harness(Path("/volume"), Path("/bom"), *args.harness)
-    result = publish(Path("/volume"), shared.tool_gate_identity(args.owner, args.subject, args.workspace, args.sandbox), args.receipt_key, model=args.model, generation=args.model_generation, browser=bool(args.browser_proof))
+        from .harness import tool_rules
+        rules = tool_rules(publish_harness(Path("/volume"), Path("/bom"), *args.harness))
+    result = publish(Path("/volume"), shared.tool_gate_identity(args.owner, args.subject, args.workspace, args.sandbox), args.receipt_key, model=args.model, generation=args.model_generation, browser=bool(args.browser_proof), harness_rules=rules)
     if args.browser_proof:
         publish_browser_proof(Path("/volume/bundle"), Path(args.browser_proof).read_bytes())
     print(result)

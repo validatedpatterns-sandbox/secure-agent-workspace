@@ -159,7 +159,7 @@ def test_repeat_renders_have_no_random_keys_or_identity():
 @pytest.mark.parametrize('assignment', [
     'kubernetes.experimental=false', 'deployment.mode=confidential',
     'deployment.mode=vm', 'kubernetes.gateway.image=repo:latest',
-    'kubernetes.identity.serverTlsSecret=', 'kubernetes.storage.className=',
+    'kubernetes.identity.serverTlsSecret=',
     'kubernetes.workload.runtimeClassName=kata', 'kubernetes.supervisor.runtimeClassName=kata',
     'oidc.issuerUrl=http://issuer.test', 'kubernetes.proxy.caConfigMap=',
     'kubernetes.governance.endpoint=http://outside.example.test:18081',
@@ -211,15 +211,29 @@ def test_unbounded_gateway_egress_rejected(rules):
     assert not result.stdout.strip()
 
 
+def test_gateway_may_reach_any_address_only_for_https():
+    """The OIDC issuer can sit behind a load balancer or an ingress virtual IP."""
+    rules = [{'to': [{'ipBlock': {'cidr': '0.0.0.0/0'}}], 'ports': [{'protocol': 'TCP', 'port': 443}]}]
+    assert template('--set-json', 'kubernetes.network.gatewayEgress=' + json.dumps(rules)).returncode == 0
+    rules[0]['ports'].append({'protocol': 'TCP', 'port': 80})
+    assert template('--set-json', 'kubernetes.network.gatewayEgress=' + json.dumps(rules)).returncode != 0
+
+
 def test_kata_uses_stock_workload_runtime_default_and_named_read():
     docs = render('--set', 'deployment.mode=kata', '--set', 'kubernetes.workload.runtimeClassName=saw-kata')
     driver = config(docs)['drivers']['kubernetes']
     assert driver['default_runtime_class_name'] == 'saw-kata'
-    assert 'supervisor_runtime_class_name' not in driver
+    # Two VMs: the supervisor gets its own Kata guest, not the workload's.
+    assert driver['supervisor_runtime_class_name'] == 'saw-kata'
     rules = docs['ClusterRole', 'saw-test-saw-test-gateway']['rules']
     assert [r for r in rules if 'runtimeclasses' in r['resources']] == [
         {'apiGroups': ['node.k8s.io'], 'resources': ['runtimeclasses'], 'verbs': ['get'],
          'resourceNames': ['saw-kata']}]
+
+
+def test_container_supervisors_keep_the_default_runtime():
+    driver = config(render())['drivers']['kubernetes']
+    assert 'supervisor_runtime_class_name' not in driver
 
 
 def test_container_keeps_stock_openshell_startup_timeouts():
@@ -267,3 +281,35 @@ def test_openshell_startup_timeouts_must_be_in_supported_range(assignment):
     result = template('--set', assignment)
     assert result.returncode != 0
     assert not result.stdout.strip()
+
+
+def test_native_providers_need_no_upstream_proxy():
+    docs = render('--set', 'kubernetes.proxy.url=', '--set', 'kubernetes.proxy.caConfigMap=')
+    driver = config(docs)['drivers']['kubernetes']
+    for key in ('https_proxy', 'proxy_connect_by_hostname', 'proxy_ca_bundle'):
+        assert key not in driver
+    sts = next(v for (kind, _), v in docs.items() if kind == 'StatefulSet')
+    assert 'proxy-ca' not in {v['name'] for v in sts['spec']['template']['spec']['volumes']}
+
+
+def test_ocsf_export_is_off_unless_a_collector_is_named():
+    assert 'otlp' not in config(render())['gateway']
+    endpoint = 'http://saw-ocsf-collector.openshell-agents.svc:4317'
+    otlp = config(render('--set', 'telemetry.ocsfEndpoint=' + endpoint))['gateway']['otlp']
+    # OCSF only: no top-level endpoint, so OpenShell's own spans are not exported.
+    assert otlp == {'ocsf': {'enabled': True, 'endpoint': endpoint}}
+
+
+def test_agent_trace_relay_forwards_to_the_same_collector():
+    endpoint = 'http://saw-ocsf-collector.openshell-agents.svc:4317'
+    otlp = config(render('--set', 'telemetry.ocsfEndpoint=' + endpoint,
+                         '--set', 'telemetry.agentTraces=true'))['gateway']['otlp']
+    assert otlp == {'ocsf': {'enabled': True, 'endpoint': endpoint},
+                    'agent': {'enabled': True, 'endpoint': endpoint}}
+    # The relay needs a collector to forward to.
+    assert template('--set', 'telemetry.agentTraces=true').returncode != 0
+
+
+@pytest.mark.parametrize('endpoint', ['saw-ocsf-collector:4317', 'http://collector', 'http://c:4317/v1/logs'])
+def test_ocsf_endpoint_must_be_an_otlp_grpc_address(endpoint):
+    assert template('--set', 'telemetry.ocsfEndpoint=' + endpoint).returncode != 0

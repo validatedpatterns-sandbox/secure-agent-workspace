@@ -21,7 +21,7 @@ def test_portal_bom_route_requires_same_sandboxes_browser_binding():
     profile=ROOT/"tests/fixtures/profiles/audited-openclaw"
     cfg={"namespace":"saw-owner","namespaceUID":"ns","ownerID":"76c95ca5-b9bc-4be7-b764-bc028087ae28",
          "ownerSubject":"owner","mode":"container","gatewayVersion":"0.1.2-rhaiv.6",
-         "approvedCredentialFreeProviders":[],"proxyBindings":[{"type":"openai", "secret":"inference", "key":"api_key", "refresh":False}],"bindings":{"agent/audited":{
+         "approvedCredentialFreeProviders":[],"credentialBindings":[{"type":"openai", "secret":"inference", "key":"api_key"}],"bindings":{"agent/audited":{
              "workspace":{"claimName":"tenant-data","uid":"claim","readOnly":False},
              "toolGate":{"ownerLogin":"owner", "trusted":{"claimName":"saw-gate-fixture","uid":"gate","readOnly":True},
                          "audit":{"claimName":"saw-audit-fixture","uid":"audit","readOnly":False}},

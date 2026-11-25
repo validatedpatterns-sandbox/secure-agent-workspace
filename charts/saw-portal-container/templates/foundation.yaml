@@ -7,7 +7,7 @@
 {{- $trusted := printf "saw-ctl-%s" $id }}
 {{- if ne .Release.Namespace $runtime }}{{ fail "release namespace must match workspace owner" }}{{ end }}
 {{- $prefix := required "owner-scoped vaultPrefix required" .Values.vaultPrefix }}
-{{- if not (regexMatch (printf "^[a-zA-Z0-9_-]+/data/([a-zA-Z0-9_-]+/)*saw-%s/%s$" $u $id) $prefix) }}{{ fail "vaultPrefix must match the owner and registration" }}{{ end }}
+{{- if not (regexMatch (printf "^[a-zA-Z0-9_-]+/data/([a-zA-Z0-9_-]+/)*saw-%s(/%s)?$" $u $id) $prefix) }}{{ fail "vaultPrefix must match the owner (…/saw-<owner>, or …/saw-<owner>/<registration> from the portal)" }}{{ end }}
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -20,6 +20,37 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
 ---
+# The workspace's platform pods (gateway, controller, identity and enrollment
+# Jobs, relay) reach the Kubernetes API through the control-plane nodes. An
+# AdminNetworkPolicy can select nodes by label, so no cluster IPs are needed.
+# Allow here is final and takes precedence over the default-deny below. It
+# comes after the runtime's own policy (priority 51), which only covers
+# sandbox supervisors, and never selects a sandbox pod.
+{{- $apiSite := include "portal.site" . | fromJson }}
+{{- $api := $apiSite.kubernetesApi | default dict }}
+{{- $apiNamespaces := list $runtime $trusted }}
+{{- range $slot := ($apiSite.targets | default dict) }}{{- if $slot.ui }}{{- $apiNamespaces = append $apiNamespaces (printf "saw-ui-%s" $slot.relayID) }}{{- end }}{{- end }}
+apiVersion: policy.networking.k8s.io/v1alpha1
+kind: AdminNetworkPolicy
+metadata:
+  name: saw-{{ $id }}-kubernetes-api
+  annotations: {argocd.argoproj.io/sync-wave: "-1"}
+spec:
+  priority: {{ required "kubernetesApi.priority required" $api.priority }}
+  subject:
+    pods:
+      namespaceSelector:
+        matchExpressions:
+        - {key: kubernetes.io/metadata.name, operator: In, values: {{ $apiNamespaces | uniq | toJson }}}
+      podSelector:
+        matchLabels: {saw.redhat.com/kubernetes-api: allow}
+        matchExpressions: [{key: openshell.ai/boundary-role, operator: DoesNotExist}]
+  egress:
+  - name: kubernetes-api
+    action: Allow
+    to: {{ required "kubernetesApi.to required" $api.to | toJson }}
+    ports: [{portNumber: {protocol: TCP, port: {{ $api.port | default 6443 }}}}]
+---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata: {name: default-deny, namespace: {{ $trusted }}, annotations: {argocd.argoproj.io/sync-wave: "-1"}}
@@ -31,16 +62,14 @@ metadata: {name: default-deny, namespace: {{ $runtime }}, annotations: {argocd.a
 spec: {podSelector: {}, policyTypes: [Ingress, Egress], ingress: [], egress: []}
 {{- $customSecret := "" }}
 {{- $sources := dict }}
-{{- with required "explicit governed provider policy required" (.Values.site | default dict).providerPolicy }}
-{{- $sources = dict }}
-{{- range .bindings }}
+{{- /* helm lint turns required into a warning and yields "", which range cannot iterate. */}}
+{{- $bindings := required "explicit credential bindings required" (.Values.site | default dict).credentialBindings }}
+{{- range ($bindings | default list) }}
+{{- if eq .type "custom-inference" }}{{- $customSecret = .secret }}{{- end }}
 {{- $fields := get $sources .secret | default list }}
-{{- if .refresh }}
-{{- range .refresh.material }}{{- $fields = append $fields . }}{{- end }}
-{{- else }}{{- $fields = append $fields .key }}{{- end }}
-{{- if has "custom-inference" .providers }}{{- $customSecret = .secret }}{{- end }}
+{{- /* A refreshable credential's Secret holds only the refresh material; OpenShell mints the token. */}}
+{{- if .refresh }}{{- $fields = concat $fields (list "client_id" "client_secret" "refresh_token") }}{{- else }}{{- $fields = append $fields .key }}{{- end }}
 {{- $_ := set $sources .secret ($fields | uniq | sortAlpha) }}
-{{- end }}
 {{- end }}
 {{- range $secret, $fields := $sources }}
 ---

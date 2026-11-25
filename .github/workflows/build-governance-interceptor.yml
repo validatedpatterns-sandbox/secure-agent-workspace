@@ -19,6 +19,11 @@ on:
       - tests/charts/test_governance_interceptor_image.py
       - image-builder-charts/helm/governance-interceptor-image/**
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish this branch's build as ghcr.io/<owner>/governance-interceptor:sha-<commit>
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -31,7 +36,7 @@ jobs:
   # One native build per architecture (no QEMU), each pushed by digest; the
   # merge job joins them into one multi-arch :latest / :sha-<commit> tag.
   build:
-    if: github.event_name == 'pull_request' || github.ref != 'refs/heads/main'
+    if: github.event_name == 'pull_request' || (github.ref != 'refs/heads/main' && !inputs.publish)
     strategy: &platforms
       # Each architecture reports its own result; merge still needs both.
       fail-fast: false
@@ -78,7 +83,8 @@ jobs:
           # the interceptor must match the SAW gateways' OpenShell release.
           extra_tag: ${{ steps.params.outputs.openshell_ref }}
           platform: ${{ matrix.platform }}
-          registry_token: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && secrets.GITHUB_TOKEN || '' }}
+          publish: ${{ inputs.publish && 'true' || '' }}
+          registry_token: ${{ ((github.event_name != 'pull_request' && github.ref == 'refs/heads/main') || inputs.publish) && secrets.GITHUB_TOKEN || '' }}
 
       # Compile the OpenShift build source too, including its behavioral
       # tests, on each architecture. This targets the builder stage; no
@@ -121,7 +127,7 @@ jobs:
           provenance: false
 
   publish:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') || inputs.publish
     permissions: {contents: read, packages: write}
     strategy: *platforms
     runs-on: ${{ matrix.runner }}
@@ -130,7 +136,7 @@ jobs:
   merge:
     needs: publish
     permissions: {contents: read, packages: write}
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') || inputs.publish
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

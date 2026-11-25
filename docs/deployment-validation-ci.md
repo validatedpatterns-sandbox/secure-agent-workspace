@@ -163,5 +163,6 @@ served OpenAPI v3 schemas from their CRD files:
 
 - [RHDH Backstage CRD](https://github.com/redhat-developer/rhdh-operator/blob/82b4a840d12c06abb771bc6957b365c245477667/config/crd/bases/rhdh.redhat.com_backstages.yaml)
 - [HyperConverged CRD](https://github.com/kubevirt/hyperconverged-cluster-operator/blob/37b709d5d9400d47dc03f96fef5f6ac21dc70f8f/config/crd/bases/hco.kubevirt.io_hyperconvergeds.yaml)
+- [KataConfig CRD](https://github.com/openshift/sandboxed-containers-operator/blob/891eadc9fa270c38b1d7040d05675636990058b8/config/crd/bases/kataconfiguration.openshift.io_kataconfigs.yaml)
 - [Tekton Pipeline CRD](https://github.com/tektoncd/pipeline/blob/592dfb840f02a0e9e2920f75b1737372ceb17c15/config/300-crds/300-pipeline.yaml)
 - [Tekton Task CRD](https://github.com/tektoncd/pipeline/blob/592dfb840f02a0e9e2920f75b1737372ceb17c15/config/300-crds/300-task.yaml)

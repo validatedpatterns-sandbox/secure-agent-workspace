@@ -38,6 +38,7 @@ def test_vendored_schemas_have_no_upstream_sample_data():
 
 def test_vendored_crd_schema_names_match_kubeconform_lookup():
     expected = (
+        ("kataconfiguration.openshift.io", "kataconfig_v1.json"),
         ("rhdh.redhat.com", "backstage_v1alpha5.json"),
         ("hco.kubevirt.io", "hyperconverged_v1beta1.json"),
         ("tekton.dev", "pipeline_v1.json"),
